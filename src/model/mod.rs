@@ -1,8 +1,8 @@
 mod store;
 pub mod error;
+pub mod users;
 
 use std::sync::Arc;
-use serde::{Deserialize, Serialize};
 
 
 
@@ -24,21 +24,19 @@ impl ModelController {
 	}
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ServerUser {
-    user_id: String,
-	name: String
-}
-impl  ServerUser {
-	pub fn user_id(&self) -> &String {
-		&self.user_id
-	}
-}
+
+
 
 impl  ModelController {
-	pub async fn get_user(&self, user_id: &str) -> Result<ServerUser> {
+	pub async fn get_user(&self, user_id: &str) -> Result<users::ServerUser> {
 		let id = user_id.to_string();
 		let user = self.store.get_user(&id).await;	
 		user
+	}
+
+	pub async fn get_users(&self) -> Result<Vec<users::ServerUser>> {
+
+		let users = self.store.get_users().await;	
+		users
 	}
 }

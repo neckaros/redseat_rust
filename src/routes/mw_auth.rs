@@ -6,7 +6,7 @@ use axum::middleware::Next;
 use axum::response::Response;
 use serde::{Deserialize, Serialize};
 
-use crate::model::{ModelController, ServerUser};
+use crate::model::{ModelController, users::ServerUser};
 use crate::server::get_server_id;
 use crate::tools::auth::verify;
 use crate::{error::Error, Result};
@@ -19,6 +19,14 @@ pub struct TokenParams {
 }
 
 
+
+
+pub async fn mw_must_be_admin(user: ServerUser, headers: HeaderMap, query: Query<TokenParams>, mut req: Request, next: Next) -> Result<Response> {
+
+    println!("TEST USER {:?}", user);
+    
+    Ok(next.run(req).await)
+}
 
 
 
@@ -35,9 +43,7 @@ pub async fn mw_token_resolver(mc: State<ModelController>, headers: HeaderMap, q
         let server_id = get_server_id().await;
         let claims = verify(&token, &server_id)?;
         let user = mc.0.get_user(&claims.sub).await;
-        println!("RETURN {:?}", user);
         if let Ok(user) = user {
-            println!("INSERT {:?}", user);
             req.extensions_mut().insert(user);
         }
 
@@ -60,8 +66,9 @@ impl<S: Send + Sync> FromRequestParts<S> for ServerUser {
 
 		let server_user = parts
 			.extensions
-			.get::<ServerUser>().ok_or(Error::AuthFail)?;
+			.get::<ServerUser>().ok_or(Error::AuthFail)?
+            .clone();
 
-        return  Ok(server_user.clone());
+        return  Ok(server_user);
     }
 }
