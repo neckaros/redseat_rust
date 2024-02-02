@@ -1,0 +1,41 @@
+[package]
+name = "redseat-rust"
+version = "0.1.0"
+edition = "2021"
+
+
+[dependencies]
+axum = {version = "0.7", features = ["query"]}
+axum-server = { version = "0.6", features = ["tls-rustls"] }
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.5.0", features = ["cors","trace"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_with = "3"
+nanoid = "0.4.0"
+http-body-util = "0.1.0"
+hyper = { version = "1.0.0", features = ["full"] }
+mime = "0.3"
+
+jsonwebtoken = "9"
+tower = "0.4"
+dirs = "5.0.1"
+clap = { version = "4.4.18", features = ["derive"] }
+lazy_static = "1.4.0"
+rsa = "0.9.6"
+rand = "0.8.5"
+instant-acme = "0.4.2"
+rcgen = "0.12.1"
+x509-parser = "0.15.1"
+chrono = { version = "0.4.33", features = ["serde"]}
+reqwest = "0.11.23"
+query_external_ip = "0.1.1"
+axum-server-dual-protocol = "0.6.0"
+tokio-rusqlite = "0.5.0"
+derive_more = "0.99.17"
+strum_macros = "0.26.1"
+
+[dev-dependencies]
+tower = { version = "0.4", features = ["util"] }
+hyper-util = { version = "0.1", features = ["client", "http1", "client-legacy"] }
+serial_test = "*"
