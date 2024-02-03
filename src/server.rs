@@ -27,7 +27,8 @@ struct Args {
 }
 
 pub async fn initialize_config() {
-    
+    let local_path = get_server_local_path().await.expect("Unable to create local library path");
+    println!("LocalPath: {:?}", local_path);
     let config = get_config_with_overrides().await.unwrap();
     let _ = CONFIG.set(Mutex::new(config));
 }
@@ -35,6 +36,7 @@ pub async fn initialize_config() {
 pub async fn get_server_local_path() -> Result<PathBuf> {
     let Some(mut dir_path) = dirs::config_local_dir() else { return Err(Error::ServerUnableToAccessServerLocalFolder); };
     dir_path.push("redseat");
+    
 
     let Ok(_) = create_dir_all(&dir_path).await else { return Err(Error::ServerUnableToAccessServerLocalFolder); };
 

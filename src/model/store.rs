@@ -22,6 +22,30 @@ impl SqliteStore {
 	pub async fn new() -> Result<Self> {
         let server_db_path = get_server_file_path("database.db").await.map_err(|_| Error::CannotOpenDatabase)?;
         let connection = Connection::open(server_db_path).await?;
+        let version = connection.call( |conn| {
+            let version = conn.query_row(
+                "SELECT user_version FROM pragma_user_version;",
+                [],
+                |row| {
+                    let version: usize = row.get(0)?;
+                    Ok(version)
+                })?;
+
+                if version < 1 {
+                    let initial = String::from_utf8_lossy(include_bytes!("SQL/001 - INITIAL.sql"));
+                    conn.execute_batch(&initial)?;
+                    
+                    conn.pragma_update(None, "user_version", 1)?;
+                    println!("Update SQL to verison 1")
+                }
+                
+                Ok(version)
+        }).await?;
+
+    
+
+        println!("Current Database version: {}", version);
+
 		Ok(Self {
 			server_store: connection
 		})
