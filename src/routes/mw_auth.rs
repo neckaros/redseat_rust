@@ -6,7 +6,8 @@ use axum::middleware::Next;
 use axum::response::Response;
 use serde::{Deserialize, Serialize};
 
-use crate::model::{ModelController, users::ServerUser};
+use crate::model::users::{ConnectedUser, UserRole};
+use crate::model::ModelController;
 use crate::server::get_server_id;
 use crate::tools::auth::verify;
 use crate::{error::Error, Result};
@@ -21,10 +22,14 @@ pub struct TokenParams {
 
 
 
-pub async fn mw_must_be_admin(user: ServerUser, headers: HeaderMap, query: Query<TokenParams>, mut req: Request, next: Next) -> Result<Response> {
+pub async fn mw_must_be_admin(user: ConnectedUser, req: Request, next: Next) -> Result<Response> {
 
-    println!("TEST USER {:?}", user);
-    
+    match user {
+        ConnectedUser::Server(user) => if user.role != UserRole::Admin {
+            return Err(Error::Forbiden)
+        },
+        ConnectedUser::Anonymous => return Err(Error::Forbiden),
+    }
     Ok(next.run(req).await)
 }
 
@@ -42,9 +47,9 @@ pub async fn mw_token_resolver(mc: State<ModelController>, headers: HeaderMap, q
     if let Some(token) = token {
         let server_id = get_server_id().await;
         let claims = verify(&token, &server_id)?;
-        let user = mc.0.get_user(&claims.sub).await;
+        let user = mc.0.get_user_unchecked(&claims.sub).await;
         if let Ok(user) = user {
-            req.extensions_mut().insert(user);
+            req.extensions_mut().insert(ConnectedUser::Server(user));
         }
 
         
@@ -59,14 +64,14 @@ pub async fn mw_token_resolver(mc: State<ModelController>, headers: HeaderMap, q
 
 
 #[async_trait]
-impl<S: Send + Sync> FromRequestParts<S> for ServerUser {
+impl<S: Send + Sync> FromRequestParts<S> for ConnectedUser {
 	type Rejection = Error;
 
 	async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self> {
 
 		let server_user = parts
 			.extensions
-			.get::<ServerUser>().ok_or(Error::AuthFail)?
+			.get::<ConnectedUser>().ok_or(Error::AuthFail)?
             .clone();
 
         return  Ok(server_user);

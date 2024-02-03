@@ -1,6 +1,11 @@
 use derive_more::From;
+use hyper::StatusCode;
 use serde::Serialize;
 use serde_with::{serde_as, DisplayFromStr};
+
+use crate::error::ClientError;
+
+use super::{libraries::ServerLibraryForUpdate, users::{ConnectedUser, ServerUser, ServerUserForUpdate}};
 
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -8,14 +13,28 @@ pub type Result<T> = core::result::Result<T, Error>;
 #[serde_as]
 #[derive(Debug, Serialize, From, strum_macros::AsRefStr)]
 pub enum Error {
+
+    UnableToParseEnum,
+
     CannotOpenDatabase,
 	TxnCantCommitNoOpenTxn,
 	CannotBeginTxnWithTxnFalse,
 	CannotCommitTxnWithTxnFalse,
 
+	UserGetNotAuth { user: ConnectedUser, requested_user: String },
+	UserListNotAuth { user: ConnectedUser},
+	UserUpdateNotAuthorized { user: ServerUser, update_user: ServerUserForUpdate },
+	UserRoleUpdateNotAuthOnlyAdmin,
+	LibraryUpdateNotAuthorized { user: ServerUser, update_library: ServerLibraryForUpdate },
+
 	// -- Externals
 	#[from]
-	Rusqlite(#[serde_as(as = "DisplayFromStr")] tokio_rusqlite::Error),
+	TokioRusqlite(#[serde_as(as = "DisplayFromStr")] tokio_rusqlite::Error),
+	#[from]
+	Rusqlite(#[serde_as(as = "DisplayFromStr")] rusqlite::Error),
+	#[from]
+	Serde(#[serde_as(as = "DisplayFromStr")] serde_json::Error),
+
 }
 
 // region:    --- Error Boilerplate
@@ -32,3 +51,27 @@ impl core::fmt::Display for Error {
 impl std::error::Error for Error {}
 
 // endregion: --- Error Boilerplate
+
+impl Error {
+	pub fn client_status_and_error(&self) -> (StatusCode, ClientError) {
+		#[allow(unreachable_patterns)]
+		match self {
+			Error::UnableToParseEnum => (StatusCode::INTERNAL_SERVER_ERROR, ClientError::SERVICE_ERROR),
+
+
+			Self::UserGetNotAuth { user: _, requested_user: _ } => (StatusCode::FORBIDDEN, ClientError::FORBIDDEN),
+			Error::CannotOpenDatabase => (StatusCode::INTERNAL_SERVER_ERROR, ClientError::SERVICE_ERROR),
+			Error::TxnCantCommitNoOpenTxn => (StatusCode::INTERNAL_SERVER_ERROR, ClientError::SERVICE_ERROR),
+			Error::CannotBeginTxnWithTxnFalse => (StatusCode::INTERNAL_SERVER_ERROR, ClientError::SERVICE_ERROR),
+			Error::CannotCommitTxnWithTxnFalse => (StatusCode::INTERNAL_SERVER_ERROR, ClientError::SERVICE_ERROR),
+			Error::UserGetNotAuth { user: _, requested_user: _ } => (StatusCode::FORBIDDEN, ClientError::FORBIDDEN),
+			Error::UserListNotAuth { user: _ } => (StatusCode::FORBIDDEN, ClientError::FORBIDDEN),
+			Error::UserUpdateNotAuthorized { user: _, update_user: _ } => (StatusCode::FORBIDDEN, ClientError::FORBIDDEN),
+			Error::UserRoleUpdateNotAuthOnlyAdmin => (StatusCode::FORBIDDEN, ClientError::FORBIDDEN),
+			Error::LibraryUpdateNotAuthorized { user: _, update_library: _ } => (StatusCode::FORBIDDEN, ClientError::FORBIDDEN),
+			Error::Rusqlite(_) | Error::TokioRusqlite(_) => (StatusCode::INTERNAL_SERVER_ERROR, ClientError::SERVICE_ERROR),
+			Error::Serde(_) => (StatusCode::INTERNAL_SERVER_ERROR, ClientError::SERVICE_ERROR),
+			
+		}
+	}
+}

@@ -1,8 +1,11 @@
 use std::sync::Arc;
 
-use axum::{http::StatusCode, response::{IntoResponse, Response}};
+use axum::{http::StatusCode, response::{IntoResponse, Response}, Json};
 use serde::Serialize;
 use derive_more::From;
+use serde_json::json;
+
+use nanoid::nanoid;
 
 pub type Result<T> = core::result::Result<T, Error>;
 
@@ -14,6 +17,8 @@ pub enum Error {
 	LoginFail,
 
 	// -- Auth errors.
+
+	Forbiden,
 	AuthFail,
 	AuthFailNoAuthTokenCookie,
 	AuthFailTokenWrongFormat,
@@ -57,14 +62,26 @@ impl std::error::Error for Error {}
 // endregion: --- Error Boilerplate
 impl IntoResponse for Error {
 	fn into_response(self) -> Response {
-
-		// Create a placeholder Axum reponse.
-		let mut response = StatusCode::INTERNAL_SERVER_ERROR.into_response();
-
+		let nanoid = nanoid!();
+		println!("ERROR {}", self);
+		
+		println!("->> {:<12} - {:?}", "SERVICE_ERROR", self);
+		let (status_code, client_error) = self.client_status_and_error();
+	
+		// -- If client error, build the new reponse.
+		let error_json = json!({
+						"error": {
+							"type": client_error.as_ref(),
+							"req_uuid": nanoid.to_string(),
+						}
+					});
+	
+		let mut error_response = (status_code, Json(error_json)).into_response();
+		
 		// Insert the Error into the reponse.
-		response.extensions_mut().insert(Arc::new(self));
+		error_response.extensions_mut().insert(Arc::new(self));
 
-		response
+		error_response
 	}
 }
 
@@ -72,14 +89,19 @@ impl Error {
 	pub fn client_status_and_error(&self) -> (StatusCode, ClientError) {
 		#[allow(unreachable_patterns)]
 		match self {
-			Self::LoginFail => (StatusCode::FORBIDDEN, ClientError::LOGIN_FAIL),
+			
 
+			Self::LoginFail => (StatusCode::FORBIDDEN, ClientError::LOGIN_FAIL),
+			Self::Model(err) => err.client_status_and_error(),
 			// -- Auth.
+			Self::Forbiden => (StatusCode::FORBIDDEN, ClientError::FORBIDDEN),
 			Self::AuthFailNoAuthTokenCookie
 			| Self::AuthFail
-			| Self::AuthFailTokenWrongFormat
-			| Self::AuthFailExpiredToken => {
-				(StatusCode::FORBIDDEN, ClientError::NO_AUTH)
+			| Self::AuthFailTokenWrongFormat => {
+				(StatusCode::UNAUTHORIZED, ClientError::NO_AUTH)
+			},
+			Self::AuthFailExpiredToken => {
+				(StatusCode::UNAUTHORIZED, ClientError::TOKEN_EXPIRED)
 			}
 
 			// -- Model.
@@ -102,6 +124,8 @@ impl Error {
 pub enum ClientError {
 	LOGIN_FAIL,
 	NO_AUTH,
+	TOKEN_EXPIRED,
+	FORBIDDEN,
 	INVALID_PARAMS,
 	SERVICE_ERROR,
 }

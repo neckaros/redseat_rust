@@ -1,5 +1,5 @@
-use crate::{model::{ModelController, users::ServerUser}, Result};
-use axum::{extract::State, middleware, routing::get, Json, Router};
+use crate::{model::{ModelController, users::ConnectedUser}, Result};
+use axum::{extract::{Path, State}, middleware, routing::get, Json, Router};
 use serde_json::{json, Value};
 
 use super::mw_auth;
@@ -16,13 +16,14 @@ pub fn routes(mc: ModelController) -> Router {
 
 	Router::new()
 		.route("/me", get(handler_me))
+		.route("/:id", get(handler_id))
 		.merge(admin_routes)
 		.with_state(mc)
 	
         
 }
 
-async fn handler_me(user: ServerUser) -> Result<Json<Value>> {
+async fn handler_me(user: ConnectedUser) -> Result<Json<Value>> {
 	let body = Json(json!({
 		"result": {
 			"success": true,
@@ -32,8 +33,20 @@ async fn handler_me(user: ServerUser) -> Result<Json<Value>> {
 	Ok(body)
 }
 
-async fn handler_list(State(mc): State<ModelController>, user: ServerUser) -> Result<Json<Value>> {
-	let users = mc.get_users().await?;
+async fn handler_id(Path(user_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	let user = mc.get_user(&user_id, &user).await?;
+	let body = Json(json!({
+		"result": {
+			"success": true,
+			"user": user,
+		}
+	}));
+	Ok(body)
+}
+
+
+async fn handler_list(State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	let users = mc.get_users(&user).await?;
 	let body = Json(json!({
 		"result": {
 			"success": true,
