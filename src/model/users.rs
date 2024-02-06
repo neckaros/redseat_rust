@@ -6,7 +6,9 @@ use rusqlite::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::{error::{Error, Result}, libraries::{LibraryRole, LibraryType}};
+use crate::domain::library::{LibraryRole, LibraryType};
+
+use super::error::{Error, Result};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum ConnectedUser {
@@ -109,6 +111,12 @@ pub struct ServerUserLibrariesRights {
     #[serde(rename = "type")]
     pub kind: LibraryType,
     pub roles: Vec<LibraryRole>,
+}
+
+impl ServerUserLibrariesRights {
+    pub fn has_role(&self, role: &LibraryRole) -> bool {
+        self.roles.iter().any(|r| r == role)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

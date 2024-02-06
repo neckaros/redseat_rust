@@ -37,6 +37,7 @@ tokio-rusqlite = "0.5.0"
 
 derive_more = "0.99.17"
 strum_macros = "0.26.1"
+tokio-util = "0.7.10"
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }

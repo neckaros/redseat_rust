@@ -3,18 +3,12 @@ use std::{cmp::Ordering, str::FromStr};
 use rusqlite::{types::{FromSql, FromSqlError, FromSqlResult, ValueRef}, ToSql};
 use serde::{Deserialize, Serialize};
 
+use crate::domain::library::{LibraryRole, LibraryType, ServerLibrary, ServerLibrarySettings};
+
 use super::{error::{Error, Result}, users::ConnectedUser};
 
 
 // region:    --- Library type
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-#[serde(rename_all = "snake_case")] 
-pub enum LibraryType {
-	Photos,
-	Shows,
-	Movies,
-	Iptv,
-}
 
 impl FromStr for LibraryType {
     type Err = Error;
@@ -41,14 +35,7 @@ impl FromSql for LibraryType {
 // endregion:    --- 
 
 // region:    --- Library Role
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-#[serde(rename_all = "snake_case")] 
-pub enum LibraryRole {
-	Admin,
-	Read,
-	Write,
-	None,
-}
+
 
 
 impl From<u8> for &LibraryRole {
@@ -130,12 +117,7 @@ impl ToSql for LibraryRole {
 // endregion: ---
 
 // region:    --- Library Settings
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")] 
-pub struct ServerLibrarySettings {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    face_threshold: Option<f32>,
-}
+
 impl FromSql for ServerLibrarySettings {
     fn column_result(value: ValueRef) -> FromSqlResult<Self> {
         String::column_result(value).and_then(|as_string| {
@@ -149,17 +131,6 @@ impl FromSql for ServerLibrarySettings {
 // endregion:    --- 
 
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ServerLibrary {
-    pub id: String,
-	pub name: String,
-	pub source: String,
-    pub root: Option<String>,
-    #[serde(rename = "type")]
-    pub kind: LibraryType,
-    pub crypt: Option<bool>,
-    pub settings: ServerLibrarySettings
-}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ServerLibraryForRead {
@@ -201,10 +172,18 @@ pub struct ServerLibraryForUpdate {
 pub(super) fn map_library_for_user(library: ServerLibrary, user: &ConnectedUser) -> Option<ServerLibraryForRead> {
     match user {
         ConnectedUser::Server(user) => {
-            if !user.libraries.iter().any(|x| x.id == library.id) {
-                Some(ServerLibraryForRead::from(library))
+            println!("GO");
+            let rights = user.libraries.iter().find(|x| x.id == library.id);
+            println!("GA {:?}", user.libraries);
+            if let Some(rights) = rights {
+                let mut library = ServerLibraryForRead::from(library);
+                if !rights.has_role(&LibraryRole::Admin) {
+                    library.root = None;
+                    library.settings = None;
+                }
+                return Some(ServerLibraryForRead::from(library))
             } else {
-                None
+                return None
             }
         },
         ConnectedUser::Anonymous => None,

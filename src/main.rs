@@ -23,7 +23,8 @@ mod error;
 mod tools;
 mod server;
 mod certificate;
-
+mod plugins;
+mod domain;
 
 
 #[tokio::main]
