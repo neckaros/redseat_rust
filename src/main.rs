@@ -34,7 +34,9 @@ async fn main() ->  Result<()> {
     println!("Initializing config");
     server::initialize_config().await;
 
-    
+    tokio::spawn(async move {
+        tools::video_tools::play();
+    });
 
     let register_infos = register().await?;
     let app = app();
@@ -138,7 +140,8 @@ mod tests {
         body::Body,
         http::{self, Request, StatusCode, header},
     };
-    use http_body_util::BodyExt; // for `collect`
+    use http_body_util::BodyExt; use libheif_rs::{HeifContext, LibHeif};
+    // for `collect`
     use serde_json::{json, Value};
     use tower::ServiceExt; // for `call`, `oneshot`, and `ready`
 
@@ -188,5 +191,19 @@ mod tests {
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let body = response.into_body().collect().await.unwrap().to_bytes();
         assert!(body.is_empty());
+    }
+
+
+    
+    #[tokio::test]
+    async fn heic() {
+        let lib_heif = LibHeif::new();
+    let ctx = HeifContext::read_from_file("C:\\Users\\arnau\\Downloads\\IMG_5006.heic").unwrap();
+    let handle = ctx.primary_image_handle().unwrap();
+    assert_eq!(handle.width(), 4284);
+    assert_eq!(handle.height(), 5712);
+
+        
+       
     }
 }

@@ -41,8 +41,16 @@ tokio-util = "0.7.10"
 time = "0.3.34"
 tokio-stream = "0.1.14"
 gstreamer = "0.21.3"
+libheif-rs = "1.0.0"
+image = { version = "0.24" }
+ffmpeg-next = "6.1.1"
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }
 hyper-util = { version = "0.1", features = ["client", "http1", "client-legacy"] }
 serial_test = "*"
+
+[package.metadata.vcpkg]
+git = "https://github.com/microsoft/vcpkg"
+rev = "53bef89"
+dependencies = ["gstreamer[plugins-base,plugins-good,plugins-bad,plugins-ugly]", "libheif"]
