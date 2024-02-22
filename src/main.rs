@@ -8,12 +8,13 @@ use axum::{
     Router
 };
 use axum_server::tls_rustls::RustlsConfig;
+use image::ImageOutputFormat;
 use model::ModelController;
 use routes::mw_auth;
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
 use tower_http::cors::{CorsLayer, Any};
-use crate::{server::{get_config, update_ip}, tools::auth::get_or_init_keys};
+use crate::{server::{get_config, update_ip}, tools::{auth::get_or_init_keys, image_tools::resize_image_path}};
 
 pub use self::error::{Result, Error};
 
@@ -35,7 +36,8 @@ async fn main() ->  Result<()> {
     server::initialize_config().await;
 
     tokio::spawn(async move {
-        tools::video_tools::play();
+        resize_image_path("test_data/image.jpg", "test_data/image-thumb.jpg", 500, ImageOutputFormat::Jpeg(80)).await.unwrap()
+        //tools::video_tools::convert_to_pipe("C:/Users/arnau/Downloads/IMG_5020.mov", None).await;
     });
 
     let register_infos = register().await?;

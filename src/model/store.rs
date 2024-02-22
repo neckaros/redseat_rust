@@ -214,7 +214,6 @@ pub async fn get_libraries(&self) -> Result<Vec<ServerLibrary>> {
         },
         )?;
         let libraries:Vec<ServerLibrary> = rows.collect::<std::result::Result<Vec<ServerLibrary>, rusqlite::Error>>()?; 
-
         Ok(libraries)
     }).await?;
     Ok(row)

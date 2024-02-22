@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod video_tools;
+pub mod image_tools;
 
 #[cfg(test)]
 mod tests {

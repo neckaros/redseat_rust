@@ -40,7 +40,7 @@ pub enum Error {
 	ServerUnableToAccessServerLocalFolder,
 	ServerFileNotFound,
 
-
+	GenericRedseatError,
 	
 	// -- Externals
 
