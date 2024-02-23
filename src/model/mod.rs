@@ -58,9 +58,12 @@ impl  ModelController {
 	}
 
 	pub async fn get_libraries(&self, requesting_user: &ConnectedUser) -> Result<Vec<libraries::ServerLibraryForRead>> {
-		let libraries = self.store.get_libraries().await.map(|libs| {
+		let libraries = self.store.get_libraries().await?.into_iter().flat_map(|l|  map_library_for_user(l, &requesting_user));
+		
+		
+		/*.map(|libs| {
 			libs.into_iter().filter_map(|l| map_library_for_user(l, &requesting_user)).collect::<Vec<libraries::ServerLibraryForRead>>()
-		});	
-		libraries
+		});	*/
+		Ok(libraries.collect::<Vec<libraries::ServerLibraryForRead>>())
 	}
 }

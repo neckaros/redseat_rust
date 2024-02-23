@@ -14,7 +14,7 @@ use routes::mw_auth;
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
 use tower_http::cors::{CorsLayer, Any};
-use crate::{server::{get_config, update_ip}, tools::{auth::get_or_init_keys, image_tools::resize_image_path}};
+use crate::{server::{get_config, update_ip}, tools::{auth::get_or_init_keys, image_tools::resize_image_path, log::log_info}};
 
 pub use self::error::{Result, Error};
 
@@ -30,9 +30,8 @@ mod domain;
 
 #[tokio::main]
 async fn main() ->  Result<()> {
-    
-    println!("Starting redseat server");
-    println!("Initializing config");
+    log_info(tools::log::LogServiceType::Register, format!("Starting redseat server"));
+    log_info(tools::log::LogServiceType::Register, format!("Initializing config"));
     server::initialize_config().await;
 
     tokio::spawn(async move {
@@ -43,13 +42,14 @@ async fn main() ->  Result<()> {
     let register_infos = register().await?;
     let app = app();
     if let Some(certs) = register_infos.cert_paths {
-        println!("Starting HTTP/HTTPS server");
-        println!("{:?}", certs);
+
+        log_info(tools::log::LogServiceType::Register, format!("Starting HTTP/HTTPS server"));
+        
         let tls_config = RustlsConfig::from_pem_chain_file(certs.0, certs.1).await.unwrap();
 
         let addr = SocketAddr::new(IpAddr::from(Ipv6Addr::UNSPECIFIED), 6969);
+        log_info(tools::log::LogServiceType::Register, format!("->> LISTENING HTTP/HTTPS on {:?}\n", addr));
 
-        println!("->> LISTENING HTTP/HTTPS on {:?}\n", addr);
         axum_server_dual_protocol::bind_dual_protocol(addr, tls_config)
 	.serve(app.await?.into_make_service())
 	.await.unwrap();
@@ -104,9 +104,9 @@ struct RegisterInfo {
 }
 
 async fn register() -> Result<RegisterInfo>{
-    println!("Checking registration");
+    log_info(tools::log::LogServiceType::Register, "Checking registration".to_string());
     let config = get_config().await;
-    println!("Server ID: {}", config.id);   
+    log_info(tools::log::LogServiceType::Register, format!("Server ID: {}", config.id));   
     let _ = get_or_init_keys().await;
     
     let domain = config.domain.clone();
@@ -117,7 +117,7 @@ async fn register() -> Result<RegisterInfo>{
     
 
     if domain.is_some() && duck_dns.is_some() {
-        println!("Public domain certificate check");
+        log_info(tools::log::LogServiceType::Register, "Public domain certificate check".to_string());
 
         let certs = certificate::dns_certify(&domain.unwrap(), &duck_dns.unwrap()).await?;
         register_info.cert_paths = Some(certs);
@@ -142,7 +142,7 @@ mod tests {
         body::Body,
         http::{self, Request, StatusCode, header},
     };
-    use http_body_util::BodyExt; use libheif_rs::{HeifContext, LibHeif};
+    use http_body_util::BodyExt;
     // for `collect`
     use serde_json::{json, Value};
     use tower::ServiceExt; // for `call`, `oneshot`, and `ready`
@@ -197,15 +197,4 @@ mod tests {
 
 
     
-    #[tokio::test]
-    async fn heic() {
-        let lib_heif = LibHeif::new();
-    let ctx = HeifContext::read_from_file("C:\\Users\\arnau\\Downloads\\IMG_5006.heic").unwrap();
-    let handle = ctx.primary_image_handle().unwrap();
-    assert_eq!(handle.width(), 4284);
-    assert_eq!(handle.height(), 5712);
-
-        
-       
-    }
 }

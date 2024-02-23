@@ -172,9 +172,9 @@ pub struct ServerLibraryForUpdate {
 pub(super) fn map_library_for_user(library: ServerLibrary, user: &ConnectedUser) -> Option<ServerLibraryForRead> {
     match user {
         ConnectedUser::Server(user) => {
-            println!("GO");
+            //println!("GO");
             let rights = user.libraries.iter().find(|x| x.id == library.id);
-            println!("GA {:?}", user.libraries);
+            //println!("GA {:?}", user.libraries);
             if let Some(rights) = rights {
                 let mut library = ServerLibraryForRead::from(library);
                 if !rights.has_role(&LibraryRole::Admin) {

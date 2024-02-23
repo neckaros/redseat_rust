@@ -49,6 +49,7 @@ pub async fn mw_token_resolver(mc: State<ModelController>, headers: HeaderMap, q
         let claims = verify(&token, &server_id)?;
         let user = mc.0.get_user_unchecked(&claims.sub).await;
         if let Ok(user) = user {
+            print!("USER: {:?}", user);
             req.extensions_mut().insert(ConnectedUser::Server(user));
         }
 

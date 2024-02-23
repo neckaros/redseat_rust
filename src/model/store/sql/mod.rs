@@ -1,6 +1,9 @@
+pub mod libraries;
+pub mod users;
+
 use tokio_rusqlite::Connection;
 
-use super::Result;
+use super::{Result, SqliteStore};
 
 pub async fn migrate_database(connection: &Connection) -> Result<usize> {
     let version = connection.call( |conn| {
@@ -25,3 +28,7 @@ pub async fn migrate_database(connection: &Connection) -> Result<usize> {
 
     Ok(version)
 } 
+
+impl SqliteStore {
+    
+}

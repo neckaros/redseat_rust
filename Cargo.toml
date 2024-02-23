@@ -40,7 +40,6 @@ strum_macros = "0.26.1"
 tokio-util = "0.7.10"
 time = "0.3.34"
 tokio-stream = "0.1.14"
-libheif-rs = "1.0.0"
 image = { version = "0.24" }
 ffmpeg-next = "6.1.1"
 

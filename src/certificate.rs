@@ -11,11 +11,10 @@ use instant_acme::{
 };
 use x509_parser::{parse_x509_certificate, pem::parse_x509_pem, time::ASN1Time};
 
-use crate::{error::Error, server::{get_server_file_path, get_server_file_string, write_server_file}, Result};
+use crate::{error::Error, server::{get_server_file_path, get_server_file_string, write_server_file}, tools::log::{log_info, LogServiceType}, Result};
 
 pub async fn dns_certify(domain: &str, duck_dns: &str) -> Result<(PathBuf, PathBuf)> {
-    println!("Getting https certificate");
-
+    log_info(LogServiceType::Register, format!("Getting https certificate"));
     const ACCOUNT_FILENAME: &str = "letsencrypt_account.json";
     const PUBLIC_FILENAME: &str = "cert_chain.pem";
     const PRIVATE_FILENAME: &str = "cert_private.pem";
@@ -24,27 +23,25 @@ pub async fn dns_certify(domain: &str, duck_dns: &str) -> Result<(PathBuf, PathB
     let existing_private_certificate = get_server_file_string(PRIVATE_FILENAME).await.unwrap_or(None);
 
     if existing_private_certificate.is_some() && existing_public_certificate.is_some() {
-        println!("Existing certificate, cheking validity");
+        log_info(LogServiceType::Register, format!("Existing certificate, cheking validity"));
 
         let public = existing_public_certificate.unwrap();
         let res = parse_x509_pem(public.as_bytes()).unwrap();
         let res_x509 = parse_x509_certificate(&res.1.contents).unwrap();
-        println!("{:?}",res_x509.1.validity.not_after);
+        log_info(LogServiceType::Register, format!("certificate validity: {:?}",res_x509.1.validity.not_after));
 
         let expiry: &ASN1Time = &res_x509.1.validity.not_after;
         let utc_time: DateTime<Utc> = Utc::now() + Duration::days(-5);
 
         let expiry_date: DateTime<Utc> = DateTime::<Utc>::from_timestamp(expiry.timestamp(), 0).expect("invalid timestamp");
          if expiry_date > utc_time { 
-            println!("Certificate valid");
-
+            log_info(LogServiceType::Register, format!("Certificate valid"));
             return Ok((get_server_file_path(PUBLIC_FILENAME).await?,get_server_file_path(PRIVATE_FILENAME).await?));
          } else {
-            println!("Certificate expired")
+            log_info(LogServiceType::Register, format!("Certificate expired"));
          }
     }
-
-    println!("No certificates found, requesting new one");
+    log_info(LogServiceType::Register, format!("No certificates found, requesting new one"));
 
     let (account, credentials) = {
         if let Some(existing_credentials) = get_server_file_string(ACCOUNT_FILENAME).await? {
@@ -53,7 +50,8 @@ pub async fn dns_certify(domain: &str, duck_dns: &str) -> Result<(PathBuf, PathB
             let credentials: AccountCredentials =  serde_json::from_str(&existing_credentials).unwrap();
             (account, credentials)
         } else {
-            print!("Create new account");
+            log_info(LogServiceType::Register, format!("Create new ACME accounts"));
+
             let (account, credentials) = Account::create(
                 &NewAccount {
                     contact: &[],
@@ -72,10 +70,7 @@ pub async fn dns_certify(domain: &str, duck_dns: &str) -> Result<(PathBuf, PathB
         }
     };
 
-    println!(
-        "account credentials:\n\n{}",
-        serde_json::to_string_pretty(&credentials).unwrap()
-    );
+
 
     let identifier = Identifier::Dns(domain.to_string());
     let mut order = account
@@ -86,7 +81,7 @@ pub async fn dns_certify(domain: &str, duck_dns: &str) -> Result<(PathBuf, PathB
         .unwrap();
 
     let state = order.state();
-    println!("order state: {:#?}", state);
+    //println!("order state: {:#?}", state);
     //assert!(matches!(state.status, OrderStatus::Pending));
 
     let authorizations = order.authorizations().await.unwrap();
@@ -107,11 +102,11 @@ pub async fn dns_certify(domain: &str, duck_dns: &str) -> Result<(PathBuf, PathB
 
         let Identifier::Dns(identifier) = &authz.identifier;
 
-        println!(
+        log_info(LogServiceType::Register, format!(
             "_acme-challenge.{} IN TXT {}",
             identifier,
             order.key_authorization(challenge).dns_value()
-        );
+        ));
 
         let duck_url = format!("https://www.duckdns.org/update?domains={}&token={}&txt={}&verbose=true", domain.replace(".duckdns.org", ""), duck_dns, order.key_authorization(challenge).dns_value());
      
@@ -145,16 +140,16 @@ pub async fn dns_certify(domain: &str, duck_dns: &str) -> Result<(PathBuf, PathB
         sleep(delay).await;
         let state = order.refresh().await.unwrap();
         if let OrderStatus::Ready | OrderStatus::Invalid = state.status {
-            println!("order state: {:#?}", state);
+            //println!("order state: {:#?}", state);
             break;
         }
 
         delay *= 2;
         tries += 1;
         match tries < 10 {
-            true => println!("order is not ready, waiting {:?}", tries),
+            true => log_info(LogServiceType::Register, format!("order is not ready, waiting {:?}", tries)),
             false => {
-                println!("order is not ready: {:#?}", state);
+                //println!("order is not ready: {:#?}", state);
                 return Err(Error::Error { message: "order is not ready".to_string()});
             }
         }
@@ -195,7 +190,8 @@ pub async fn dns_certify(domain: &str, duck_dns: &str) -> Result<(PathBuf, PathB
     let _ = write_server_file("cert_chain.pem", cert_chain_pem.as_bytes()).await?;
     let _ = write_server_file("cert_private.pem", cert.serialize_private_key_pem().as_bytes()).await?;
 
-    println!("Certificates created and saved");
+    log_info(LogServiceType::Register, format!("Certificates created and saved"));
+
     Ok((get_server_file_path(PUBLIC_FILENAME).await?,get_server_file_path(PRIVATE_FILENAME).await?))
     //Ok((cert_chain_pem, cert.serialize_private_key_pem()))
 }

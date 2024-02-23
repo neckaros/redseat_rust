@@ -4,7 +4,7 @@ use tokio::{fs::{create_dir_all, metadata, read_to_string, File}, io::AsyncWrite
 use serde::{Deserialize, Serialize};
 use nanoid::nanoid;
 use clap::Parser;
-use crate::{error::Error, Result};
+use crate::{error::Error, tools::log::{log_info, LogServiceType}, Result};
 
 
 static CONFIG: OnceLock<Mutex<ServerConfig>> = OnceLock::new();
@@ -28,7 +28,7 @@ struct Args {
 
 pub async fn initialize_config() {
     let local_path = get_server_local_path().await.expect("Unable to create local library path");
-    println!("LocalPath: {:?}", local_path);
+    log_info(LogServiceType::Register, format!("LocalPath: {:?}", local_path));
     let config = get_config_with_overrides().await.unwrap();
     let _ = CONFIG.set(Mutex::new(config));
 }
@@ -173,7 +173,7 @@ pub async fn get_server_file_string(name: &str) -> Result<Option<String>> {
 
 
 pub async fn update_ip() -> Result<Option<(String, String)>> {
-    println!("Checking public IPs");
+    log_info(LogServiceType::Register, "Checking public IPs".to_string());
     let config = get_config().await;
 
     let Some(domain) = config.domain else {
@@ -183,7 +183,7 @@ pub async fn update_ip() -> Result<Option<(String, String)>> {
     };
 
     if let Some(duck_dns) = config.duck_dns {
-        println!("Updating public ip for duckdns");
+        log_info(LogServiceType::Register, "Updating public ip for duckdns".to_string());
         let ips = Consensus::get().await.or_else(|_| Err(Error::Error { message: "Unable to get external IPs".to_string() }))?;
     
         let ipv4 = {
@@ -200,8 +200,8 @@ pub async fn update_ip() -> Result<Option<(String, String)>> {
                 "".to_string()
             }
         };
-        
-        println!("Updating ips: {} {}", ipv4, ipv6);
+        log_info(LogServiceType::Register, format!("Updating ips: {} {}", ipv4, ipv6));
+
         let duck_url = format!("https://www.duckdns.org/update?domains={}&token={}&ip={}&ipv6={}&verbose=true", domain.replace(".duckdns.org", ""), duck_dns, ipv4, ipv6);
 
         let _ = reqwest::get(duck_url)
