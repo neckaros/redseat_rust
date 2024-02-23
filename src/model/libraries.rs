@@ -3,7 +3,7 @@ use std::{cmp::Ordering, str::FromStr};
 use rusqlite::{types::{FromSql, FromSqlError, FromSqlResult, ValueRef}, ToSql};
 use serde::{Deserialize, Serialize};
 
-use crate::domain::library::{LibraryRole, LibraryType, ServerLibrary, ServerLibrarySettings};
+use crate::domain::{library::{LibraryMessage, LibraryRole, LibraryType, ServerLibrary, ServerLibrarySettings}, ElementAction};
 
 use super::{error::{Error, Result}, users::ConnectedUser};
 
@@ -153,6 +153,25 @@ pub(super) fn map_library_for_user(library: ServerLibrary, user: &ConnectedUser)
     }
 
 
+}
+
+
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")] 
+pub struct LibrarySocketMessage {
+    pub action: ElementAction,
+    pub library: ServerLibraryForRead
+}
+
+impl LibraryMessage {
+    pub fn for_socket(&self, user: &ConnectedUser) -> Option<LibrarySocketMessage> {
+        if let Some(library) =  map_library_for_user(self.library.clone(), user) {
+            Some(LibrarySocketMessage { action: self.action.clone(), library })
+        } else {
+            None
+        }
+    }
 }
 
 

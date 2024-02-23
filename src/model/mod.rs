@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 
 
-use crate::tools::log::log_info;
+use crate::{domain::library::LibraryMessage, tools::log::log_info};
 
 use self::{libraries::{map_library_for_user, ServerLibraryForRead, ServerLibraryForUpdate}, store::SqliteStore, users::{ConnectedUser, UserRole}};
 use error::{Result, Error};
@@ -68,7 +68,8 @@ impl  ModelController {
 	pub async fn get_library(&self, library_id: &str, requesting_user: &ConnectedUser) -> Result<Option<libraries::ServerLibraryForRead>> {
 		let lib = self.store.get_library(library_id).await?;
 		if let Some(lib) = lib {
-		let return_library = map_library_for_user(lib, &requesting_user).map(|x| ServerLibraryForRead::from(x));
+			self.send_library(LibraryMessage { action: crate::domain::ElementAction::Added, library: lib.clone() });
+			let return_library = map_library_for_user(lib, &requesting_user).map(|x| ServerLibraryForRead::from(x));
 			Ok(return_library)
 		} else {
 			Ok(None)
@@ -91,37 +92,34 @@ impl  ModelController {
 }
 
 
+
 impl  ModelController {
 
 	pub fn set_socket(&mut self, io: SocketIo) {
 		self.io = Some(io);
 	}
 
-	fn for_connected_users(&self, action: fn(user: &ConnectedUser, socket: &SocketRef) -> ()) {
+	fn for_connected_users<T: Clone>(&self, message: &T, action: fn(user: &ConnectedUser, socket: &SocketRef, message: T) -> ()) {
 		let io = self.io.clone();
 		if let Some(io) = io {
 			if let Ok(sockets) = io.sockets() {
 				for socket in sockets {
 					if let Some(user) = socket.extensions.get::<ConnectedUser>() {
-						action(&user, &socket)
+						action(&user, &socket, message.clone())
 					}
 				}
 			}
 		}
 	}
 
-	pub fn send_watched(&self) {
-		self.for_connected_users(|user, socket| {
-			if let ConnectedUser::Server(user) = user {
-				socket.emit("message", json!({"user!": user.name.clone()}));
+	pub fn send_library(&self, message: LibraryMessage) {
+		self.for_connected_users(&message, |user, socket, message| {
+			if let Some(message) = message.for_socket(user) {
+				let _ = socket.emit("library", message);
 			}
-		})
+		});
 	}
-	pub fn send_library(&self) {
-		if let Some(io) = &self.io {
-			io.emit("message", json!({"test": "too"}));
-		}
-	}
+	
 
 
 }

@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use super::ElementAction;
+
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ServerLibrary {
@@ -36,4 +38,13 @@ pub enum LibraryType {
 pub struct ServerLibrarySettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     face_threshold: Option<f32>,
+}
+
+
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")] 
+pub struct LibraryMessage {
+    pub action: ElementAction,
+    pub library: ServerLibrary
 }

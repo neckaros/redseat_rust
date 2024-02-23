@@ -1,8 +1,7 @@
 
 use crate::{model::{libraries::ServerLibraryForUpdate, users::ConnectedUser, ModelController}, Error, Result};
-use axum::{extract::{Path, State}, routing::{get, patch}, Extension, Json, Router};
+use axum::{extract::{Path, State}, routing::{get, patch}, Json, Router};
 use serde_json::{json, Value};
-use socketioxide::SocketIo;
 
 
 
@@ -18,7 +17,6 @@ pub fn routes(mc: ModelController) -> Router {
 async fn handler_libraries(State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
 	let libraries = mc.get_libraries(&user).await?;
 	let body = Json(json!(libraries));
-	mc.send_watched();
 	Ok(body)
 }
 
