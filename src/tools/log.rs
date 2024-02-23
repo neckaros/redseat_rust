@@ -3,6 +3,7 @@ use chrono::Local;
 pub enum LogServiceType {
     Register,
     Database,
+    Scoket,
     Other
 }
 impl LogServiceType {
@@ -10,6 +11,7 @@ impl LogServiceType {
         match self {
             LogServiceType::Register => "REGISTER",
             LogServiceType::Database => "DATABASE",
+            LogServiceType::Scoket => "SOCKET",
             LogServiceType::Other => "OTHER"
         }
     }

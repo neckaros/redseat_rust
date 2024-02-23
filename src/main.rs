@@ -3,19 +3,22 @@
 use std::{net::{IpAddr, Ipv6Addr, SocketAddr}, path::PathBuf};
 
 use axum::{
-    http::Method,
-    middleware,
-    Router
+    handler::Handler, http::Method, middleware, Extension, Router
 };
 use axum_server::tls_rustls::RustlsConfig;
 use image::ImageOutputFormat;
-use model::ModelController;
-use routes::mw_auth;
+use model::{store::SqliteStore, ModelController};
+use routes::mw_auth::{self, parse_auth_message};
+
+
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
 use tower_http::cors::{CorsLayer, Any};
 use crate::{server::{get_config, update_ip}, tools::{auth::get_or_init_keys, image_tools::resize_image_path, log::log_info}};
-
+use socketioxide::{
+    extract::{AckSender, Bin, TryData, Data, SocketRef},
+    SocketIo,
+};
 pub use self::error::{Result, Error};
 
 mod model;
@@ -72,22 +75,33 @@ async fn main() ->  Result<()> {
 	Ok(())
 }
 
+
+
 async fn app() -> Result<Router> {
-    let mc = ModelController::new().await?;
+    let store = SqliteStore::new().await.unwrap();
+    let mut mc = ModelController::new(store).await?;
 
     let cors: CorsLayer = CorsLayer::new()
     // allow `GET` and `POST` when accessing the resource
     .allow_methods(vec![Method::GET, Method::PATCH, Method::DELETE, Method::POST])
     // allow requests from any origin
     .allow_origin(Any);
-
+    let (iolayer, io) = SocketIo::builder().with_state(mc.clone()).build_layer();
+    io.ns("/", routes::socket::on_connect);
+    mc.set_socket(io.clone());
 
     Ok(Router::new()
         .nest("/ping", routes::ping::routes())
         .nest("/libraries", routes::libraries::routes(mc.clone()))
+        .nest("/library", routes::libraries::routes(mc.clone())) // duplicate for legacy
         .nest("/users", routes::users::routes(mc.clone()))
         //.layer(middleware::map_response(main_response_mapper))
         .layer(middleware::from_fn_with_state(mc.clone(), mw_auth::mw_token_resolver))
+        .layer(
+            ServiceBuilder::new()
+                .layer(CorsLayer::permissive()) // Enable CORS policy
+                .layer(iolayer),
+        )
         .layer(
         ServiceBuilder::new()
             .layer(cors)

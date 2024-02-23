@@ -1,26 +1,33 @@
-mod store;
+pub mod store;
 pub mod error;
 pub mod users;
 pub mod libraries;
+pub mod server;
 
 use std::sync::Arc;
 
 
 
-use self::{libraries::map_library_for_user, store::SqliteStore, users::{ConnectedUser, UserRole}};
+use crate::tools::log::log_info;
+
+use self::{libraries::{map_library_for_user, ServerLibraryForRead, ServerLibraryForUpdate}, store::SqliteStore, users::{ConnectedUser, UserRole}};
 use error::{Result, Error};
+use serde_json::json;
+use socketioxide::{extract::SocketRef, SocketIo};
 
 #[derive(Clone)]
 pub struct ModelController {
-	store: Arc<SqliteStore>
+	store: Arc<SqliteStore>,
+	io: Option<SocketIo>
 }
 
 
 // Constructor
 impl ModelController {
-	pub async fn new() -> Result<Self> {
+	pub async fn new(store: SqliteStore) -> Result<Self> {
 		Ok(Self {
-			store: Arc::new(SqliteStore::new().await.unwrap())
+			store: Arc::new(store),
+			io: None,
 		})
 	}
 }
@@ -29,6 +36,7 @@ impl ModelController {
 
 
 impl  ModelController {
+
 	pub async fn get_user_unchecked(&self, user_id: &str) -> Result<users::ServerUser> {
 		self.store.get_user(&user_id).await
 	}
@@ -57,13 +65,63 @@ impl  ModelController {
 		Err(Error::UserListNotAuth { user: requesting_user.clone() })
 	}
 
+	pub async fn get_library(&self, library_id: &str, requesting_user: &ConnectedUser) -> Result<Option<libraries::ServerLibraryForRead>> {
+		let lib = self.store.get_library(library_id).await?;
+		if let Some(lib) = lib {
+		let return_library = map_library_for_user(lib, &requesting_user).map(|x| ServerLibraryForRead::from(x));
+			Ok(return_library)
+		} else {
+			Ok(None)
+		}
+	}
+
 	pub async fn get_libraries(&self, requesting_user: &ConnectedUser) -> Result<Vec<libraries::ServerLibraryForRead>> {
 		let libraries = self.store.get_libraries().await?.into_iter().flat_map(|l|  map_library_for_user(l, &requesting_user));
-		
-		
-		/*.map(|libs| {
-			libs.into_iter().filter_map(|l| map_library_for_user(l, &requesting_user)).collect::<Vec<libraries::ServerLibraryForRead>>()
-		});	*/
 		Ok(libraries.collect::<Vec<libraries::ServerLibraryForRead>>())
 	}
+	pub async fn update_library(&self, library_id: &str, update: ServerLibraryForUpdate, requesting_user: &ConnectedUser) -> Result<Option<libraries::ServerLibraryForRead>> {
+		let lib = self.store.get_library(library_id).await?;
+		if let Some(lib) = lib {
+		let return_library = map_library_for_user(lib, &requesting_user).map(|x| ServerLibraryForRead::from(x));
+			Ok(return_library)
+		} else {
+			Ok(None)
+		}
+	}
+}
+
+
+impl  ModelController {
+
+	pub fn set_socket(&mut self, io: SocketIo) {
+		self.io = Some(io);
+	}
+
+	fn for_connected_users(&self, action: fn(user: &ConnectedUser, socket: &SocketRef) -> ()) {
+		let io = self.io.clone();
+		if let Some(io) = io {
+			if let Ok(sockets) = io.sockets() {
+				for socket in sockets {
+					if let Some(user) = socket.extensions.get::<ConnectedUser>() {
+						action(&user, &socket)
+					}
+				}
+			}
+		}
+	}
+
+	pub fn send_watched(&self) {
+		self.for_connected_users(|user, socket| {
+			if let ConnectedUser::Server(user) = user {
+				socket.emit("message", json!({"user!": user.name.clone()}));
+			}
+		})
+	}
+	pub fn send_library(&self) {
+		if let Some(io) = &self.io {
+			io.emit("message", json!({"test": "too"}));
+		}
+	}
+
+
 }

@@ -15,6 +15,7 @@ pub type Result<T> = core::result::Result<T, Error>;
 pub enum Error {
 	Error { message: String},
 	LoginFail,
+	NotFound,
 
 	// -- Auth errors.
 
@@ -89,7 +90,7 @@ impl Error {
 	pub fn client_status_and_error(&self) -> (StatusCode, ClientError) {
 		#[allow(unreachable_patterns)]
 		match self {
-			
+			Self::NotFound => (StatusCode::NOT_FOUND, ClientError::NOT_FOUND),
 
 			Self::LoginFail => (StatusCode::FORBIDDEN, ClientError::LOGIN_FAIL),
 			Self::Model(err) => err.client_status_and_error(),
@@ -126,6 +127,7 @@ pub enum ClientError {
 	NO_AUTH,
 	TOKEN_EXPIRED,
 	FORBIDDEN,
+	NOT_FOUND,
 	INVALID_PARAMS,
 	SERVICE_ERROR,
 }

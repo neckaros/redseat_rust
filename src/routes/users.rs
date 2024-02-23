@@ -24,35 +24,20 @@ pub fn routes(mc: ModelController) -> Router {
 }
 
 async fn handler_me(user: ConnectedUser) -> Result<Json<Value>> {
-	let body = Json(json!({
-		"result": {
-			"success": true,
-			"user": user,
-		}
-	}));
+	let body = Json(json!(user));
 	Ok(body)
 }
 
 async fn handler_id(Path(user_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
 	let user = mc.get_user(&user_id, &user).await?;
-	let body = Json(json!({
-		"result": {
-			"success": true,
-			"user": user,
-		}
-	}));
+	let body = Json(json!(user));
 	Ok(body)
 }
 
 
 async fn handler_list(State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
 	let users = mc.get_users(&user).await?;
-	let body = Json(json!({
-		"result": {
-			"success": true,
-			"users": users,
-		}
-	}));
+	let body = Json(json!(users));
 
 	Ok(body)
 }

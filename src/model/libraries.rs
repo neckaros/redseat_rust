@@ -94,41 +94,7 @@ impl core::fmt::Display for LibraryRole {
     }
 }
 
-impl FromSql for LibraryRole {
-    fn column_result(value: ValueRef) -> FromSqlResult<Self> {
-        String::column_result(value).and_then(|as_string| {
-            let r = LibraryRole::from_str(&as_string).map_err(|_| FromSqlError::InvalidType);
-            r
-        })
-    }
-}
 
-impl ToSql for LibraryRole {
-    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
-        match self {
-            LibraryRole::Admin  => "admin".to_sql(),
-            LibraryRole::Read  => "read".to_sql(),
-            LibraryRole::Write  => "write".to_sql(),
-            LibraryRole::None  => "none".to_sql(),
-        }
-    }
-}
-
-// endregion: ---
-
-// region:    --- Library Settings
-
-impl FromSql for ServerLibrarySettings {
-    fn column_result(value: ValueRef) -> FromSqlResult<Self> {
-        String::column_result(value).and_then(|as_string| {
-
-            let r = serde_json::from_str::<ServerLibrarySettings>(&as_string).map_err(|_| FromSqlError::InvalidType)?;
-
-            Ok(r)
-        })
-    }
-}
-// endregion:    --- 
 
 
 
@@ -164,7 +130,6 @@ impl From<ServerLibrary> for ServerLibraryForRead {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ServerLibraryForUpdate {
-    pub id: String,
 	pub name: Option<String>,
 	pub source: Option<String>,
 }
@@ -172,18 +137,16 @@ pub struct ServerLibraryForUpdate {
 pub(super) fn map_library_for_user(library: ServerLibrary, user: &ConnectedUser) -> Option<ServerLibraryForRead> {
     match user {
         ConnectedUser::Server(user) => {
-            //println!("GO");
             let rights = user.libraries.iter().find(|x| x.id == library.id);
-            //println!("GA {:?}", user.libraries);
             if let Some(rights) = rights {
                 let mut library = ServerLibraryForRead::from(library);
                 if !rights.has_role(&LibraryRole::Admin) {
                     library.root = None;
                     library.settings = None;
                 }
-                return Some(ServerLibraryForRead::from(library))
+                Some(ServerLibraryForRead::from(library))
             } else {
-                return None
+                None
             }
         },
         ConnectedUser::Anonymous => None,

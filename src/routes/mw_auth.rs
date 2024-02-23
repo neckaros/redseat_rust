@@ -6,6 +6,7 @@ use axum::middleware::Next;
 use axum::response::Response;
 use serde::{Deserialize, Serialize};
 
+use crate::model::server::AuthMessage;
 use crate::model::users::{ConnectedUser, UserRole};
 use crate::model::ModelController;
 use crate::server::get_server_id;
@@ -36,6 +37,7 @@ pub async fn mw_must_be_admin(user: ConnectedUser, req: Request, next: Next) -> 
 
 
 pub async fn mw_token_resolver(mc: State<ModelController>, headers: HeaderMap, query: Query<TokenParams>, mut req: Request, next: Next) -> Result<Response> {
+    println!("==================CONN CHECK");
     let token: Option<String> = match headers.get("AUTHORIZATION").and_then(|t| t.to_str().ok()) {
         Some(token) => Some(token.replace(BEARER, "")),
         None => match &query.token {
@@ -43,25 +45,25 @@ pub async fn mw_token_resolver(mc: State<ModelController>, headers: HeaderMap, q
             None => None,
         },
     };
-    
-    if let Some(token) = token {
-        let server_id = get_server_id().await;
-        let claims = verify(&token, &server_id)?;
-        let user = mc.0.get_user_unchecked(&claims.sub).await;
-        if let Ok(user) = user {
-            print!("USER: {:?}", user);
-            req.extensions_mut().insert(ConnectedUser::Server(user));
-        }
+    let auth_message = AuthMessage { token: token, share_token: None};
+    let connected_user = parse_auth_message(&auth_message, &mc.0).await?;
+    req.extensions_mut().insert(connected_user);
 
-        
-        
-    }
-    
-    
     Ok(next.run(req).await)
 }
 
+pub async fn parse_auth_message(auth: &AuthMessage, mc: &ModelController) -> Result<ConnectedUser> {
+    if let Some(token) = &auth.token {
+        let server_id = get_server_id().await;
+        let claims = verify(&token, &server_id)?;
+        let user = mc.get_user_unchecked(&claims.sub).await?;
+        
+        Ok(ConnectedUser::Server(user))
 
+    } else {
+        Ok(ConnectedUser::Anonymous)
+    }
+}
 
 
 #[async_trait]
