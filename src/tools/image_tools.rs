@@ -1,6 +1,6 @@
 use std::{fs::File, io::{self, BufWriter, Seek, Write}};
 
-use image::{DynamicImage, GenericImageView, ImageError as RsImageError, ImageFormat, ImageOutputFormat};
+use image::{DynamicImage, ImageError as RsImageError, ImageOutputFormat};
 
 
 

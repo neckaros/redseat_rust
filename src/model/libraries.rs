@@ -1,10 +1,9 @@
 use std::{cmp::Ordering, str::FromStr};
 
 use nanoid::nanoid;
-use rusqlite::{types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, ToSql};
 use serde::{Deserialize, Serialize};
 
-use crate::domain::{library::{self, LibraryMessage, LibraryRole, LibraryType, ServerLibrary, ServerLibrarySettings}, ElementAction};
+use crate::domain::{library::{LibraryMessage, LibraryRole, LibraryType, ServerLibrary, ServerLibrarySettings}, ElementAction};
 
 use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
 
@@ -231,14 +230,29 @@ impl ModelController {
                 settings: library_for_add.settings,
             };
         self.store.add_library(library).await?;
+        let user_id = requesting_user.user_id()?;
+        self.store.add_library_rights(library_id.clone(), user_id, vec![LibraryRole::Admin]).await?;
         let library = self.store.get_library(&library_id).await?;
         if let Some(library) = library { 
-            self.send_library(LibraryMessage { action: crate::domain::ElementAction::Updated, library: library.clone() });
+            self.send_library(LibraryMessage { action: crate::domain::ElementAction::Added, library: library.clone() });
+            Ok(Some(ServerLibraryForRead::from(library)))
+        } else {
+            Ok(None)
+        }
+	}
+    
+	pub async fn remove_library(&self, library_id: &str, requesting_user: &ConnectedUser) -> Result<Option<super::libraries::ServerLibraryForRead>> {
+        let library = self.store.get_library(&library_id).await?;
+        if let Some(library) = library { 
+            self.store.remove_library(library_id.to_string()).await?;
+            self.send_library(LibraryMessage { action: crate::domain::ElementAction::Removed, library: library.clone() });
             Ok(map_library_for_user(library, &requesting_user))
         } else {
             Ok(None)
         }
 	}
+
+
 }
 
 

@@ -16,6 +16,48 @@ pub enum ConnectedUser {
     Anonymous
 }
 
+impl ConnectedUser {
+    pub fn is_registered(&self) -> bool {
+        matches!(&self, ConnectedUser::Server(_)) 
+    }
+    pub fn is_admin(&self) -> bool {
+        if let ConnectedUser::Server(user) = &self {
+            user.is_admin()
+        } else {
+            false
+        }
+    }
+    pub fn user_id(&self) -> Result<String> {
+        if let ConnectedUser::Server(user) = &self {
+            Ok(user.id.clone())
+        } else {
+            Err(Error::NotServerConnected)
+        }
+    }
+    pub fn check_role(&self, role: &UserRole) -> Result<()> {
+        if let ConnectedUser::Server(user) = &self {
+            if user.has_role(role) {
+                Ok(())
+            } else {
+                Err(Error::InsufficientUserRole { user: self.clone(), role: role.clone() })
+            }
+        } else {
+            Err(Error::InsufficientUserRole { user: self.clone(), role: role.clone() })
+        }
+    }
+    pub fn check_library_role(&self, library_id: &str, role: &LibraryRole) -> Result<()> {
+        if let ConnectedUser::Server(user) = &self {
+            if user.has_library_role(&library_id, role) {
+                Ok(())
+            } else {
+                Err(Error::InsufficientLibraryRole { user: self.clone(), library_id: library_id.to_string(), role: role.clone() })
+            }
+        } else {
+            Err(Error::InsufficientLibraryRole { user: self.clone(), library_id: library_id.to_string(), role: role.clone() })
+        }
+    }
+}
+
 // region:    --- User Role
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -120,12 +162,21 @@ impl ServerUserLibrariesRights {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct ServerUserLibrariesRightsWithUser {
     pub id: String,
     pub user_id: String,
     pub name: String,
     #[serde(rename = "type")]
     pub kind: LibraryType,
+    pub roles: Vec<LibraryRole>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerLibrariesRightsForAdd {
+    pub library_id: String,
+    pub user_id: String,
     pub roles: Vec<LibraryRole>,
 }
 
@@ -138,6 +189,24 @@ pub struct ServerUser {
     pub role: UserRole,
     pub preferences: ServerUserPreferences,
     pub libraries: Vec<ServerUserLibrariesRights>
+}
+
+impl ServerUser {
+    pub fn is_admin(&self) -> bool {
+        matches!(&self.role, UserRole::Admin)
+    }
+    pub fn has_role(&self, role: &UserRole) -> bool {
+        &self.role >= role
+    }
+    pub fn has_library_role(&self, library_id: &str, role: &LibraryRole) -> bool {
+        let libraries = &self.libraries.clone();
+        let found = libraries.into_iter().find(|l| l.id == library_id);
+        if let Some(found) = found {
+            found.has_role(role)
+        } else {
+            false
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use crate::{domain::library::{LibraryType, ServerLibrary, ServerLibrarySettings}, model::{libraries::ServerLibraryForUpdate, store::SqliteStore}};
+use crate::{domain::library::{LibraryType, ServerLibrary, ServerLibrarySettings}, model::{libraries::ServerLibraryForUpdate, store::{to_comma_separated, SqliteStore}}};
 use super::Result;
 use crate::domain::library::LibraryRole;
 use rusqlite::{params, params_from_iter, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, ToSql};
@@ -121,6 +121,17 @@ impl SqliteStore {
         Ok(row)
     }
 
+    pub async fn remove_library(&self, library_id: String) -> Result<()> {
+        self.server_store.call( move |conn| { 
+            conn.execute("DELETE FROM Libraries WHERE id = ?", &[&library_id])?;
+            conn.execute("DELETE FROM Libraries_Users_Rights WHERE library_ref = ?", &[&library_id])?;
+            conn.execute("DELETE FROM Backups_Files WHERE library = ?", &[&library_id])?;
+            conn.execute("DELETE FROM Invitation WHERE library = ?", &[&library_id])?;
+            Ok(())
+        }).await?;
+        Ok(())
+    }
+
     pub async fn add_library(&self, library: ServerLibrary) -> Result<()> {
         self.server_store.call( move |conn| { 
 
@@ -133,6 +144,20 @@ impl SqliteStore {
                 library.root,
                 library.settings,
                 library.crypt
+            ])?;
+            
+            Ok(())
+        }).await?;
+        Ok(())
+    }
+    pub async fn add_library_rights(&self, library_id: String, user_id: String, role: Vec<LibraryRole>) -> Result<()> {
+        self.server_store.call( move |conn| { 
+
+            conn.execute("INSERT INTO Libraries_Users_Rights (user_ref, library_ref, roles)
+            VALUES (?, ?, ?)", params![
+                &user_id,
+                &library_id,
+                to_comma_separated(role)
             ])?;
             
             Ok(())
