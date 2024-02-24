@@ -7,6 +7,8 @@ pub mod library;
 use rusqlite::ToSql;
 use tokio_rusqlite::Connection;
 
+use crate::tools::log::{log_info, LogServiceType};
+
 use super::{Result, SqliteStore};
 
 
@@ -26,6 +28,30 @@ pub async fn migrate_database(connection: &Connection) -> Result<usize> {
                 
                 conn.pragma_update(None, "user_version", 2)?;
                 println!("Update SQL to verison 2")
+            }
+            
+            Ok(version)
+    }).await?;
+
+    Ok(version)
+} 
+
+pub async fn migrate_library_database(connection: &Connection) -> Result<usize> {
+    let version = connection.call( |conn| {
+        let mut version = conn.query_row(
+            "SELECT user_version FROM pragma_user_version;",
+            [],
+            |row| {
+                let version: usize = row.get(0)?;
+                Ok(version)
+            })?;
+
+            if version < 28 {
+                let initial = String::from_utf8_lossy(include_bytes!("library/001 - INITIAL.sql"));
+                conn.execute_batch(&initial)?;
+                version = 28;
+                conn.pragma_update(None, "user_version", version)?;
+                log_info(LogServiceType::Database, format!("Update Library Database to version: {}", version));
             }
             
             Ok(version)
