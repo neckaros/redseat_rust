@@ -142,6 +142,18 @@ pub async fn get_server_file_path(name: &str) -> Result<PathBuf> {
     return Ok(dir_path);
 }
 
+pub async fn get_server_file_path_array(names: &mut Vec<&str>) -> Result<PathBuf> {
+    let mut dir_path: PathBuf = get_server_local_path().await?;
+    if let Some(last) = names.pop() {
+        for name in names {
+            dir_path.push(name);
+        }
+        create_dir_all(&dir_path).await?;
+        dir_path.push(last);
+    }
+    return Ok(dir_path);
+}
+
 pub async fn has_server_file(name: &str) -> bool {
     if let Ok(path) = get_server_file_path(name).await {
         match metadata(path).await {

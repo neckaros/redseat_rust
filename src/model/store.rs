@@ -4,7 +4,7 @@ use tokio_rusqlite::Connection;
 
 
 use crate::model::store::sql::migrate_database;
-use crate::server::get_server_file_path;
+use crate::server::{get_server_file_path, get_server_file_path_array};
 use crate::tools::log::{log_info, LogServiceType};
 
 use super::error::{Result, Error};
@@ -17,11 +17,10 @@ pub struct SqliteStore {
 	server_store: Connection 
 }
 
-
 // Constructor
 impl SqliteStore {
 	pub async fn new() -> Result<Self> {
-        let server_db_path = get_server_file_path("database.db").await.map_err(|_| Error::CannotOpenDatabase)?;
+        let server_db_path = get_server_file_path_array(&mut vec![&"dbs", &"database.db"]).await.map_err(|_| Error::CannotOpenDatabase)?;
         let connection = Connection::open(server_db_path).await?;
         
         let version = migrate_database(&connection).await?;
