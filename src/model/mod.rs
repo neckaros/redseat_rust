@@ -3,6 +3,7 @@ pub mod error;
 pub mod users;
 pub mod libraries;
 pub mod server;
+pub mod credentials;
 
 use std::sync::Arc;
 

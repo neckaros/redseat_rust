@@ -16,6 +16,8 @@ pub enum Error {
 
     UnableToParseEnum,
 
+	NotFound,
+
     CannotOpenDatabase,
 	TxnCantCommitNoOpenTxn,
 	CannotBeginTxnWithTxnFalse,
@@ -60,6 +62,9 @@ impl Error {
 	pub fn client_status_and_error(&self) -> (StatusCode, ClientError) {
 		#[allow(unreachable_patterns)]
 		match self {
+			Error::NotFound => (StatusCode::NOT_FOUND, ClientError::NOT_FOUND),
+
+			
 			Error::UnableToParseEnum => (StatusCode::INTERNAL_SERVER_ERROR, ClientError::SERVICE_ERROR),
 
 			Error::NotServerConnected => (StatusCode::FORBIDDEN, ClientError::FORBIDDEN),

@@ -53,7 +53,7 @@ impl ConnectedUser {
                 Err(Error::InsufficientLibraryRole { user: self.clone(), library_id: library_id.to_string(), role: role.clone() })
             }
         } else {
-            Err(Error::InsufficientLibraryRole { user: self.clone(), library_id: library_id.to_string(), role: role.clone() })
+            Err(Error::NotServerConnected)
         }
     }
 }
@@ -157,7 +157,7 @@ pub struct ServerUserLibrariesRights {
 
 impl ServerUserLibrariesRights {
     pub fn has_role(&self, role: &LibraryRole) -> bool {
-        self.roles.iter().any(|r| r == role)
+        self.roles.iter().any(|r| r >= role)
     }
 }
 

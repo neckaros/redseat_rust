@@ -177,7 +177,7 @@ pub async fn update_ip() -> Result<Option<(String, String)>> {
     let config = get_config().await;
 
     let Some(domain) = config.domain else {
-        println!("No domain");
+        log_info(LogServiceType::Register, format!("No Domain"));
 
         return Ok(None);
     };

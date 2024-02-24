@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::{library::{LibraryMessage, LibraryRole, LibraryType, ServerLibrary, ServerLibrarySettings}, ElementAction};
 
-use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
+use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
 
 
 // region:    --- Library type
@@ -97,7 +97,13 @@ impl core::fmt::Display for LibraryRole {
 }
 
 
-
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ServerLibraryInvitation {
+	pub code: String,
+	pub expires: Option<String>,
+	pub library: String,
+	pub roles: Vec<LibraryRole>,
+}
 
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -194,6 +200,7 @@ impl LibraryMessage {
 impl ModelController {
     
 	pub async fn get_library(&self, library_id: &str, requesting_user: &ConnectedUser) -> Result<Option<super::libraries::ServerLibraryForRead>> {
+        requesting_user.check_library_role(&library_id, &LibraryRole::Read)?;
 		let lib = self.store.get_library(library_id).await?;
 		if let Some(lib) = lib {
 			let return_library = map_library_for_user(lib, &requesting_user);
@@ -204,10 +211,12 @@ impl ModelController {
 	}
 
 	pub async fn get_libraries(&self, requesting_user: &ConnectedUser) -> Result<Vec<super::libraries::ServerLibraryForRead>> {
+        requesting_user.check_role(&UserRole::Read)?;
 		let libraries = self.store.get_libraries().await?.into_iter().flat_map(|l|  map_library_for_user(l, &requesting_user));
 		Ok(libraries.collect::<Vec<super::libraries::ServerLibraryForRead>>())
 	}
 	pub async fn update_library(&self, library_id: &str, update: ServerLibraryForUpdate, requesting_user: &ConnectedUser) -> Result<Option<super::libraries::ServerLibraryForRead>> {
+        requesting_user.check_library_role(&library_id, &LibraryRole::Admin)?;
 		self.store.update_library(library_id, update).await?;
         let library = self.store.get_library(library_id).await?;
         if let Some(library) = library { 
@@ -219,6 +228,7 @@ impl ModelController {
 	}
 
 	pub async fn add_library(&self, library_for_add: ServerLibraryForAdd, requesting_user: &ConnectedUser) -> Result<Option<super::libraries::ServerLibraryForRead>> {
+        requesting_user.check_role(&UserRole::Admin)?;
 		let library_id = nanoid!();
         let library = ServerLibrary {
                 id: library_id.clone(),
@@ -241,15 +251,28 @@ impl ModelController {
         }
 	}
     
-	pub async fn remove_library(&self, library_id: &str, requesting_user: &ConnectedUser) -> Result<Option<super::libraries::ServerLibraryForRead>> {
+	pub async fn remove_library(&self, library_id: &str, requesting_user: &ConnectedUser) -> Result<ServerLibraryForRead> {
+        requesting_user.check_library_role(&library_id, &LibraryRole::Admin)?;
         let library = self.store.get_library(&library_id).await?;
         if let Some(library) = library { 
             self.store.remove_library(library_id.to_string()).await?;
             self.send_library(LibraryMessage { action: crate::domain::ElementAction::Removed, library: library.clone() });
-            Ok(map_library_for_user(library, &requesting_user))
+            Ok(ServerLibraryForRead::from(library))
         } else {
-            Ok(None)
+            Err(Error::NotFound)
         }
+	}
+
+    pub async fn add_library_invitation(&self, library_id: &str, roles: Vec<LibraryRole>, requesting_user: &ConnectedUser) -> Result<super::libraries::ServerLibraryInvitation> {
+        requesting_user.check_library_role(&library_id, &LibraryRole::Admin)?;
+        let invitation = ServerLibraryInvitation {
+            code: nanoid!(),
+            expires: None,
+            library: library_id.to_string(),
+            roles,
+        };
+        self.store.add_library_invitation(invitation.clone()).await?;
+        Ok(invitation)
 	}
 
 

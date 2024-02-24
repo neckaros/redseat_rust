@@ -1,6 +1,8 @@
 pub mod libraries;
 pub mod users;
+pub mod credentials;
 
+use rusqlite::ToSql;
 use tokio_rusqlite::Connection;
 
 use super::{Result, SqliteStore};
@@ -29,6 +31,11 @@ pub async fn migrate_database(connection: &Connection) -> Result<usize> {
     Ok(version)
 } 
 
-impl SqliteStore {
-    
+pub fn add_for_sql_update<'a, T: ToSql + 'a,>(optional: Option<T>, name: &str, columns: &mut Vec<String>, values: &mut Vec<Box<dyn ToSql + 'a>>) {
+    if let Some(value) = optional {
+        let r = format!("{} = ?", name.to_string());
+        columns.push(r);
+        values.push(Box::new(value));
+    } 
 }
+

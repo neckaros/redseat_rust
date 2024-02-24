@@ -12,6 +12,7 @@ use routes::mw_auth;
 
 
 use tokio::net::TcpListener;
+use tools::log::LogServiceType;
 use tower::ServiceBuilder;
 use tower_http::cors::{CorsLayer, Any};
 use crate::{server::{get_config, update_ip}, tools::{auth::get_or_init_keys, image_tools::resize_image_path, log::log_info}};
@@ -57,7 +58,8 @@ async fn main() ->  Result<()> {
 
     } else {
         let listener = TcpListener::bind("127.0.0.1:8080").await.unwrap();
-        println!("->> LISTENING on {:?}\n", listener.local_addr());
+        log_info(LogServiceType::Register, format!("->> LISTENING on {:?}\n", listener.local_addr()));
+        
         axum::serve(listener, app.await?)
             .await
             .unwrap();
@@ -92,6 +94,7 @@ async fn app() -> Result<Router> {
         .nest("/libraries", routes::libraries::routes(mc.clone()))
         .nest("/library", routes::libraries::routes(mc.clone())) // duplicate for legacy
         .nest("/users", routes::users::routes(mc.clone()))
+        .nest("/credentials", routes::credentials::routes(mc.clone()))
         //.layer(middleware::map_response(main_response_mapper))
         .layer(middleware::from_fn_with_state(mc.clone(), mw_auth::mw_token_resolver))
         .layer(

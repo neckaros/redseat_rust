@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use crate::{domain::library::{LibraryType, ServerLibrary, ServerLibrarySettings}, model::{libraries::ServerLibraryForUpdate, store::{to_comma_separated, SqliteStore}}};
+use crate::{domain::library::{LibraryType, ServerLibrary, ServerLibrarySettings}, model::{libraries::{ServerLibraryForUpdate, ServerLibraryInvitation}, store::{to_comma_separated, SqliteStore}}};
 use super::Result;
 use crate::domain::library::LibraryRole;
 use rusqlite::{params, params_from_iter, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, ToSql};
@@ -168,24 +168,14 @@ impl SqliteStore {
     pub async fn update_library(&self, library_id: &str, update: ServerLibraryForUpdate) -> Result<()> {
         let library_id = library_id.to_string();
         self.server_store.call( move |conn| { 
-            let mut columns: Vec<&str> = Vec::new();
+            let mut columns: Vec<String> = Vec::new();
             let mut values: Vec<Box<dyn ToSql>> = Vec::new();
-            if let Some(name) = update.name {
-                columns.push("name = ?");
-                values.push(Box::new(name));
-            } 
-            if let Some(source) = update.source {
-                columns.push("source = ?");
-                values.push(Box::new(source));
-            } 
-            if let Some(root) = update.root {
-                columns.push("root = ?");
-                values.push(Box::new(root));
-            } 
-            if let Some(settings) = update.settings {
-                columns.push("settings = ?");
-                values.push(Box::new(settings));
-            } 
+
+            super::add_for_sql_update(update.name, "name", &mut columns, &mut values);
+            super::add_for_sql_update(update.source, "source", &mut columns, &mut values);
+            super::add_for_sql_update(update.root, "root", &mut columns, &mut values);
+            super::add_for_sql_update(update.settings, "settings", &mut columns, &mut values);
+
             if columns.len() > 0 {
                 values.push(Box::new(library_id));
                 let update_sql = format!("UPDATE Libraries SET {} WHERE id = ?", columns.join(", "));
@@ -196,7 +186,22 @@ impl SqliteStore {
         Ok(())
     }
     
-    
+    pub async fn add_library_invitation(&self, invitation: ServerLibraryInvitation) -> Result<()> {
+        self.server_store.call( move |conn| { 
+
+            conn.execute("INSERT INTO Invitation (code, role, expires, library)
+            VALUES (?, ?, ?, ?)", params![
+                &invitation.code,
+                to_comma_separated(invitation.roles),
+                &invitation.expires,
+                &invitation.library
+            ])?;
+            
+            Ok(())
+        }).await?;
+        Ok(())
+    }
+
     // endregion:    --- Libraries
     
     }
