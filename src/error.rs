@@ -7,6 +7,8 @@ use serde_json::json;
 
 use nanoid::nanoid;
 
+use crate::tools::log::{log_error, log_info, LogServiceType};
+
 pub type Result<T> = core::result::Result<T, Error>;
 
 
@@ -64,9 +66,7 @@ impl std::error::Error for Error {}
 impl IntoResponse for Error {
 	fn into_response(self) -> Response {
 		let nanoid = nanoid!();
-		println!("ERROR {}", self);
-		
-		println!("->> {:<12} - {:?}", "SERVICE_ERROR", self);
+		log_error(LogServiceType::Other, format!("{:?}", self));
 		let (status_code, client_error) = self.client_status_and_error();
 	
 		// -- If client error, build the new reponse.

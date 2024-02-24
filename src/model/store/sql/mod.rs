@@ -1,11 +1,14 @@
 pub mod libraries;
 pub mod users;
 pub mod credentials;
+pub mod backups;
+pub mod library;
 
 use rusqlite::ToSql;
 use tokio_rusqlite::Connection;
 
 use super::{Result, SqliteStore};
+
 
 pub async fn migrate_database(connection: &Connection) -> Result<usize> {
     let version = connection.call( |conn| {

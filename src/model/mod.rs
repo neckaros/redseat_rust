@@ -4,6 +4,7 @@ pub mod users;
 pub mod libraries;
 pub mod server;
 pub mod credentials;
+pub mod backups;
 
 use std::sync::Arc;
 
