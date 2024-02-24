@@ -38,7 +38,12 @@ pub enum LibraryType {
 pub struct ServerLibrarySettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     face_threshold: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ignore_groups: Option<bool>,
 }
+
+
+
 
 
 

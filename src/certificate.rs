@@ -43,7 +43,7 @@ pub async fn dns_certify(domain: &str, duck_dns: &str) -> Result<(PathBuf, PathB
     }
     log_info(LogServiceType::Register, format!("No certificates found, requesting new one"));
 
-    let (account, credentials) = {
+    let (account, _) = {
         if let Some(existing_credentials) = get_server_file_string(ACCOUNT_FILENAME).await? {
             let credentials: AccountCredentials =  serde_json::from_str(&existing_credentials).unwrap();
             let account: Account = Account::from_credentials(credentials).await.unwrap();
@@ -80,7 +80,7 @@ pub async fn dns_certify(domain: &str, duck_dns: &str) -> Result<(PathBuf, PathB
         .await
         .unwrap();
 
-    let state = order.state();
+    //let state = order.state();
     //println!("order state: {:#?}", state);
     //assert!(matches!(state.status, OrderStatus::Pending));
 

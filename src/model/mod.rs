@@ -8,11 +8,10 @@ use std::sync::Arc;
 
 
 
-use crate::{domain::library::LibraryMessage, tools::log::log_info};
+use crate::domain::library::LibraryMessage;
 
-use self::{libraries::{map_library_for_user, ServerLibraryForRead, ServerLibraryForUpdate}, store::SqliteStore, users::{ConnectedUser, UserRole}};
+use self::{store::SqliteStore, users::{ConnectedUser, UserRole}};
 use error::{Result, Error};
-use serde_json::json;
 use socketioxide::{extract::SocketRef, SocketIo};
 
 #[derive(Clone)]
@@ -65,30 +64,6 @@ impl  ModelController {
 		Err(Error::UserListNotAuth { user: requesting_user.clone() })
 	}
 
-	pub async fn get_library(&self, library_id: &str, requesting_user: &ConnectedUser) -> Result<Option<libraries::ServerLibraryForRead>> {
-		let lib = self.store.get_library(library_id).await?;
-		if let Some(lib) = lib {
-			self.send_library(LibraryMessage { action: crate::domain::ElementAction::Added, library: lib.clone() });
-			let return_library = map_library_for_user(lib, &requesting_user).map(|x| ServerLibraryForRead::from(x));
-			Ok(return_library)
-		} else {
-			Ok(None)
-		}
-	}
-
-	pub async fn get_libraries(&self, requesting_user: &ConnectedUser) -> Result<Vec<libraries::ServerLibraryForRead>> {
-		let libraries = self.store.get_libraries().await?.into_iter().flat_map(|l|  map_library_for_user(l, &requesting_user));
-		Ok(libraries.collect::<Vec<libraries::ServerLibraryForRead>>())
-	}
-	pub async fn update_library(&self, library_id: &str, update: ServerLibraryForUpdate, requesting_user: &ConnectedUser) -> Result<Option<libraries::ServerLibraryForRead>> {
-		let lib = self.store.get_library(library_id).await?;
-		if let Some(lib) = lib {
-		let return_library = map_library_for_user(lib, &requesting_user).map(|x| ServerLibraryForRead::from(x));
-			Ok(return_library)
-		} else {
-			Ok(None)
-		}
-	}
 }
 
 

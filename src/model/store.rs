@@ -3,14 +3,12 @@ use std::str::FromStr;
 use tokio_rusqlite::Connection;
 
 
-use crate::domain::library::ServerLibrary;
 use crate::model::store::sql::migrate_database;
 use crate::server::get_server_file_path;
 use crate::tools::log::{log_info, LogServiceType};
 
 use super::error::{Result, Error};
 
-use super::users::{ServerUser, ServerUserForUpdate, ServerUserLibrariesRights, ServerUserLibrariesRightsWithUser, ServerUserPreferences, UserRole};
 
 mod sql;
 

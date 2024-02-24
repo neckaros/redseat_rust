@@ -1,7 +1,7 @@
 use serde_json::Value;
 use socketioxide::extract::{AckSender, Bin, Data, SocketRef, State, TryData};
 
-use crate::{domain::library, model::{server::AuthMessage, users::UserRole, ModelController}, tools::{self, log::log_info}};
+use crate::model::{server::AuthMessage, users::UserRole, ModelController};
 
 use super::mw_auth::parse_auth_message;
 

@@ -37,7 +37,6 @@ pub async fn mw_must_be_admin(user: ConnectedUser, req: Request, next: Next) -> 
 
 
 pub async fn mw_token_resolver(mc: State<ModelController>, headers: HeaderMap, query: Query<TokenParams>, mut req: Request, next: Next) -> Result<Response> {
-    println!("==================CONN CHECK");
     let token: Option<String> = match headers.get("AUTHORIZATION").and_then(|t| t.to_str().ok()) {
         Some(token) => Some(token.replace(BEARER, "")),
         None => match &query.token {

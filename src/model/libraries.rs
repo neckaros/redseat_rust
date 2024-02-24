@@ -1,11 +1,12 @@
 use std::{cmp::Ordering, str::FromStr};
 
-use rusqlite::{types::{FromSql, FromSqlError, FromSqlResult, ValueRef}, ToSql};
+use nanoid::nanoid;
+use rusqlite::{types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, ToSql};
 use serde::{Deserialize, Serialize};
 
-use crate::domain::{library::{LibraryMessage, LibraryRole, LibraryType, ServerLibrary, ServerLibrarySettings}, ElementAction};
+use crate::domain::{library::{self, LibraryMessage, LibraryRole, LibraryType, ServerLibrary, ServerLibrarySettings}, ElementAction};
 
-use super::{error::{Error, Result}, users::ConnectedUser};
+use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
 
 
 // region:    --- Library type
@@ -23,12 +24,14 @@ impl FromStr for LibraryType {
     }
 }
 
-impl FromSql for LibraryType {
-    fn column_result(value: ValueRef) -> FromSqlResult<Self> {
-        String::column_result(value).and_then(|as_string| {
-            let r = LibraryType::from_str(&as_string).map_err(|_| FromSqlError::InvalidType);
-            r
-        })
+impl ToString for LibraryType {
+    fn to_string(&self) -> String {
+        match &self {
+            LibraryType::Photos => "photos",
+            LibraryType::Shows => "shows",
+            LibraryType::Movies => "movies",
+            LibraryType::Iptv => "iptv",
+        }.to_string()
     }
 }
 
@@ -132,6 +135,19 @@ impl From<ServerLibrary> for ServerLibraryForRead {
 pub struct ServerLibraryForUpdate {
 	pub name: Option<String>,
 	pub source: Option<String>,
+	pub root: Option<String>,
+	pub settings: Option<ServerLibrarySettings>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ServerLibraryForAdd {
+	pub name: String,
+	pub source: String,
+	pub root: Option<String>,
+	pub settings: ServerLibrarySettings,
+    #[serde(rename = "type")]
+    pub kind: LibraryType,
+    pub crypt: Option<bool>,
 }
  
 pub(super) fn map_library_for_user(library: ServerLibrary, user: &ConnectedUser) -> Option<ServerLibraryForRead> {
@@ -172,6 +188,57 @@ impl LibraryMessage {
             None
         }
     }
+}
+
+
+
+impl ModelController {
+    
+	pub async fn get_library(&self, library_id: &str, requesting_user: &ConnectedUser) -> Result<Option<super::libraries::ServerLibraryForRead>> {
+		let lib = self.store.get_library(library_id).await?;
+		if let Some(lib) = lib {
+			let return_library = map_library_for_user(lib, &requesting_user);
+			Ok(return_library)
+		} else {
+			Ok(None)
+		}
+	}
+
+	pub async fn get_libraries(&self, requesting_user: &ConnectedUser) -> Result<Vec<super::libraries::ServerLibraryForRead>> {
+		let libraries = self.store.get_libraries().await?.into_iter().flat_map(|l|  map_library_for_user(l, &requesting_user));
+		Ok(libraries.collect::<Vec<super::libraries::ServerLibraryForRead>>())
+	}
+	pub async fn update_library(&self, library_id: &str, update: ServerLibraryForUpdate, requesting_user: &ConnectedUser) -> Result<Option<super::libraries::ServerLibraryForRead>> {
+		self.store.update_library(library_id, update).await?;
+        let library = self.store.get_library(library_id).await?;
+        if let Some(library) = library { 
+            self.send_library(LibraryMessage { action: crate::domain::ElementAction::Updated, library: library.clone() });
+            Ok(map_library_for_user(library, &requesting_user))
+        } else {
+            Ok(None)
+        }
+	}
+
+	pub async fn add_library(&self, library_for_add: ServerLibraryForAdd, requesting_user: &ConnectedUser) -> Result<Option<super::libraries::ServerLibraryForRead>> {
+		let library_id = nanoid!();
+        let library = ServerLibrary {
+                id: library_id.clone(),
+                name: library_for_add.name,
+                source: library_for_add.source,
+                root: library_for_add.root,
+                kind: library_for_add.kind,
+                crypt: library_for_add.crypt,
+                settings: library_for_add.settings,
+            };
+        self.store.add_library(library).await?;
+        let library = self.store.get_library(&library_id).await?;
+        if let Some(library) = library { 
+            self.send_library(LibraryMessage { action: crate::domain::ElementAction::Updated, library: library.clone() });
+            Ok(map_library_for_user(library, &requesting_user))
+        } else {
+            Ok(None)
+        }
+	}
 }
 
 

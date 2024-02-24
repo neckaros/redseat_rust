@@ -3,22 +3,19 @@
 use std::{net::{IpAddr, Ipv6Addr, SocketAddr}, path::PathBuf};
 
 use axum::{
-    handler::Handler, http::Method, middleware, Extension, Router
+    http::Method, middleware, Router
 };
 use axum_server::tls_rustls::RustlsConfig;
 use image::ImageOutputFormat;
 use model::{store::SqliteStore, ModelController};
-use routes::mw_auth::{self, parse_auth_message};
+use routes::mw_auth;
 
 
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
 use tower_http::cors::{CorsLayer, Any};
 use crate::{server::{get_config, update_ip}, tools::{auth::get_or_init_keys, image_tools::resize_image_path, log::log_info}};
-use socketioxide::{
-    extract::{AckSender, Bin, TryData, Data, SocketRef},
-    SocketIo,
-};
+use socketioxide::SocketIo;
 pub use self::error::{Result, Error};
 
 mod model;
