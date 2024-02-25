@@ -48,7 +48,7 @@ async fn main() ->  Result<()> {
         
         let tls_config = RustlsConfig::from_pem_chain_file(certs.0, certs.1).await.unwrap();
 
-        let addr = SocketAddr::new(IpAddr::from(Ipv6Addr::UNSPECIFIED), 6969);
+        let addr = SocketAddr::new(IpAddr::from(Ipv6Addr::UNSPECIFIED), 6970);
         log_info(tools::log::LogServiceType::Register, format!("->> LISTENING HTTP/HTTPS on {:?}\n", addr));
 
         axum_server_dual_protocol::bind_dual_protocol(addr, tls_config)
@@ -92,6 +92,7 @@ async fn app() -> Result<Router> {
     Ok(Router::new()
         .nest("/ping", routes::ping::routes())
         .nest("/libraries", routes::libraries::routes(mc.clone()))
+        .nest("/libraries/:libraryid/tags", routes::tags::routes(mc.clone()))
         .nest("/library", routes::libraries::routes(mc.clone())) // duplicate for legacy
         .nest("/users", routes::users::routes(mc.clone()))
         .nest("/credentials", routes::credentials::routes(mc.clone()))

@@ -5,6 +5,7 @@ pub mod library;
 pub mod ffmpeg;
 pub mod credential;
 pub mod backup;
+pub mod tag;
 
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
