@@ -93,7 +93,7 @@ impl ModelController {
 		store.update_tag(&tag_id, update).await?;
         let tag = store.get_tag(&tag_id).await?;
         if let Some(tag) = tag { 
-            self.send_tag(TagMessage { library: library_id.to_string(), action: ElementAction::Updated, tag: tag.clone() });
+            self.send_tag(TagMessage { library: library_id.to_string(), action: ElementAction::Updated, tags: vec![tag.clone()] });
             Ok(tag)
         } else {
             Err(Error::NotFound)

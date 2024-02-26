@@ -53,9 +53,9 @@ impl SqliteLibraryStore {
 
 
 
-    pub async fn update_tag(&self, id: &str, update: TagForUpdate) -> Result<()> {
-
-        let id = id.to_string();
+    pub async fn update_tag(&self, tag_id: &str, update: TagForUpdate) -> Result<Vec<Tag>> {
+        let id = tag_id.to_string();
+        let existing_tag = self.get_tag(&tag_id);
         self.connection.call( move |conn| { 
 
             let mut where_query = QueryBuilder::new();
@@ -69,6 +69,7 @@ impl SqliteLibraryStore {
             where_query.add_update(update.path, QueryWhereType::Equal("path".to_string()));
 
             where_query.add_where(Some(id), QueryWhereType::Equal("id".to_string()));
+            
 
             let update_sql = format!("UPDATE Tags SET {} {}", where_query.format_update(), where_query.format());
 
@@ -76,24 +77,31 @@ impl SqliteLibraryStore {
             
             Ok(())
         }).await?;
-        Ok(())
-    }
-/*
-    pub async fn add_backup(&self, backup: Backup) -> Result<()> {
-        self.server_store.call( move |conn| { 
+        let new_tag = self.get_tag(&tag_id).await?;
+        let all_updated = vec![new_tag];
+        if let Some(name) = update.name {
+            
+        }
 
-            conn.execute("INSERT INTO Backups (id, source, credentials, library, path, schedule, filter, last, password, size)
-            VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?)", params![
-                backup.id,
-                backup.source,
-                backup.credentials,
-                backup.library,
-                backup.path,
-                backup.schedule,
-                backup.filter,
-                backup.last,
-                backup.password,
-                backup.size
+        Ok(all_updated.iter().flatten().map(|t| t.clone()).collect::<Vec<Tag>>())
+    }
+
+    pub async fn add_tag(&self, tag: Tag) -> Result<()> {
+        self.connection.call( move |conn| { 
+
+            conn.execute("INSERT INTO tags (id, name, parent, type, alt, thumb, params, modified, added, generated, path)
+            VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, ?)", params![
+                tag.id,
+                tag.name,
+                tag.parent,
+                tag.kind,
+                to_comma_separated_optional(tag.alt),
+                tag.thumb,
+                tag.params,
+                tag.modified,
+                tag.added,
+                tag.generated,
+                tag.path
             ])?;
             
             Ok(())
@@ -101,11 +109,11 @@ impl SqliteLibraryStore {
         Ok(())
     }
 
-    pub async fn remove_backup(&self, credential_id: String) -> Result<()> {
-        self.server_store.call( move |conn| { 
-            conn.execute("DELETE FROM Backups WHERE id = ?", &[&credential_id])?;
+    pub async fn remove_tag(&self, tag_id: String) -> Result<()> {
+        self.connection.call( move |conn| { 
+            conn.execute("DELETE FROM tags WHERE id = ?", &[&tag_id])?;
             Ok(())
         }).await?;
         Ok(())
-    }*/
+    }
 }

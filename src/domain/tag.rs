@@ -21,11 +21,20 @@ pub struct Tag {
     pub path: String,
 }
 
+impl Tag {
+    pub fn full_path(&self) -> String {
+        format!("{}{}", self.path, self.name)
+    }
+    pub fn childs_path(&self) -> String {
+        format!("{}{}/", self.path, self.name)
+    }
+}
+
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")] 
 pub struct TagMessage {
     pub library: String,
     pub action: ElementAction,
-    pub tag: Tag
+    pub tags: Vec<Tag>
 }
