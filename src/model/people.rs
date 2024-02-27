@@ -6,13 +6,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 
-use crate::domain::{backup::Backup, library::LibraryRole, tag::{Tag, TagMessage}, ElementAction};
+use crate::domain::{backup::Backup, library::LibraryRole, people::PeopleMessage, tag::{Tag, TagMessage}, ElementAction};
 
 use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
 
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct TagForAdd {
+pub struct PersonForAdd {
 	pub name: String,
     pub parent: Option<String>,
     #[serde(rename = "type")]
@@ -23,7 +23,7 @@ pub struct TagForAdd {
     pub generated: bool,
 }
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct TagForInsert {
+pub struct PersonForInsert {
     pub id: String,
 	pub name: String,
     pub parent: Option<String>,
@@ -37,20 +37,16 @@ pub struct TagForInsert {
 
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct TagQuery {
-    pub path: Option<String>,
+pub struct PeopleQuery {
     pub after: Option<u64>
 }
 
-impl TagQuery {
-    pub fn new_empty() -> TagQuery {
-        TagQuery { path: None, after: None }
+impl PeopleQuery {
+    pub fn new_empty() -> PeopleQuery {
+        PeopleQuery { after: None }
     }
-    pub fn new_with_path(path: String) -> TagQuery {
-        TagQuery { path: Some(path), after: None }
-    }
-    pub fn from_after(after: u64) -> TagQuery {
-        TagQuery { path: None, after: Some(after) }
+    pub fn from_after(after: u64) -> PeopleQuery {
+        PeopleQuery { after: Some(after) }
     }
 }
 
@@ -70,35 +66,21 @@ pub struct TagForUpdate {
 
 impl ModelController {
 
-	pub async fn get_tags(&self, library_id: &str, query: TagQuery, requesting_user: &ConnectedUser) -> Result<Vec<Tag>> {
+	pub async fn get_people(&self, library_id: &str, query: PeopleQuery, requesting_user: &ConnectedUser) -> Result<Vec<Tag>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
-		let tags = store.get_tags(query).await?;
+		let tags = store.get_people(query).await?;
 		Ok(tags)
 	}
 
-
-    pub fn fill_tags_paths(current_parent: Option<String>, current_path: &str, list: &Vec<Tag>) -> Vec<Tag> {
-        let mut output: Vec<Tag> = Vec::new();
-        let elements = list.clone().into_iter().filter(|x| x.parent == current_parent).collect::<Vec<Tag>>();
-        let remaining_list = list.clone().into_iter().filter(|x| x.parent != current_parent).collect::<Vec<Tag>>();
-        for mut element in elements {
-            element.path = current_path.to_string();
-            output.push(element.clone());
-            let mut sub_outout = ModelController::fill_tags_paths(Some(element.id), &format!("{}{}/", &current_path, &element.name), &remaining_list);
-            output.append(&mut sub_outout);
-        }
-        output
-    }
-
-    pub async fn get_tag(&self, library_id: &str, tag_id: String, requesting_user: &ConnectedUser) -> Result<Option<Tag>> {
+    pub async fn get_person(&self, library_id: &str, tag_id: String, requesting_user: &ConnectedUser) -> Result<Option<Tag>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
 		let tag = store.get_tag(&tag_id).await?;
 		Ok(tag)
 	}
 
-    pub async fn update_tag(&self, library_id: &str, tag_id: String, update: TagForUpdate, requesting_user: &ConnectedUser) -> Result<Tag> {
+    pub async fn update_person(&self, library_id: &str, tag_id: String, update: TagForUpdate, requesting_user: &ConnectedUser) -> Result<Tag> {
         requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
 		store.update_tag(&tag_id, update.clone()).await?;
@@ -117,7 +99,7 @@ impl ModelController {
 	}
 
 
-	pub fn send_tags(&self, message: TagMessage) {
+	pub fn send_people(&self, message: PeopleMessage) {
 		self.for_connected_users(&message, |user, socket, message| {
             let r = user.check_library_role(&message.library, LibraryRole::Read);
 			if r.is_ok() {
@@ -127,10 +109,10 @@ impl ModelController {
 	}
 
 
-    pub async fn add_tag(&self, library_id: &str, new_tag: TagForAdd, requesting_user: &ConnectedUser) -> Result<Tag> {
+    pub async fn add_pesron(&self, library_id: &str, new_tag: PersonForAdd, requesting_user: &ConnectedUser) -> Result<Tag> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
-        let backup = TagForInsert {
+        let backup = PersonForInsert {
             id: nanoid!(),
             name: new_tag.name,
             parent: new_tag.parent,
@@ -140,14 +122,14 @@ impl ModelController {
             params: new_tag.params,
             generated: new_tag.generated,
         };
-		store.add_tag(backup.clone()).await?;
+		store.add_person(backup.clone()).await?;
         let new_tag = self.get_tag(library_id, backup.id, requesting_user).await?.ok_or(Error::NotFound)?;
-        self.send_tags(TagMessage { library: library_id.to_string(), action: ElementAction::Added, tags: vec![new_tag.clone()] });
+        self.send_people(PeopleMessage { library: library_id.to_string(), action: ElementAction::Added, people: vec![new_tag.clone()] });
 		Ok(new_tag)
 	}
 
 
-    pub async fn remove_tag(&self, library_id: &str, tag_id: &str, requesting_user: &ConnectedUser) -> Result<Tag> {
+    pub async fn remove_person(&self, library_id: &str, tag_id: &str, requesting_user: &ConnectedUser) -> Result<Tag> {
         requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         let existing = store.get_tag(&tag_id).await?;

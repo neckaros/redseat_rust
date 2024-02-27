@@ -45,9 +45,9 @@ impl ConnectedUser {
             Err(Error::InsufficientUserRole { user: self.clone(), role: role.clone() })
         }
     }
-    pub fn check_library_role(&self, library_id: &str, role: &LibraryRole) -> Result<()> {
+    pub fn check_library_role(&self, library_id: &str, role: LibraryRole) -> Result<()> {
         if let ConnectedUser::Server(user) = &self {
-            if user.has_library_role(&library_id, role) {
+            if user.has_library_role(&library_id, &role) {
                 Ok(())
             } else {
                 Err(Error::InsufficientLibraryRole { user: self.clone(), library_id: library_id.to_string(), role: role.clone() })

@@ -7,6 +7,7 @@ pub mod credentials;
 pub mod backups;
 
 pub mod tags;
+pub mod people;
 
 use std::sync::Arc;
 

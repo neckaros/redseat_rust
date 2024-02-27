@@ -55,24 +55,55 @@ impl SqliteStore {
 
 }
 
+fn from_separated<T: FromStr>(text: String, separator: &str) -> Vec<T> {
+    text.split(separator).map(|s| s.trim()).filter_map(|s| T::from_str(s).ok()).collect::<Vec<T>>()
+}
+fn to_separated<T: ToString>(elements: Vec<T>, separator: &str) -> String {
+    elements.into_iter().map(|e| e.to_string()).collect::<Vec<String>>().join(separator)
+}
+
 fn from_comma_separated<T: FromStr>(text: String) -> Vec<T> {
-    text.split(",").map(|s| s.trim()).filter_map(|s| T::from_str(s).ok()).collect::<Vec<T>>()
+    from_separated(text, ",")
 }
 fn from_comma_separated_optional<T: FromStr>(text: Option<String>) -> Option<Vec<T>> {
     if let Some(text) = text {
-        Some(text.split(",").map(|s| s.trim()).filter_map(|s| T::from_str(s).ok()).collect::<Vec<T>>())
-    } else {
-        None
-    }
-}
-fn to_comma_separated<T: ToString>(elements: Vec<T>) -> String {
-    elements.into_iter().map(|e| e.to_string()).collect::<Vec<String>>().join(",")
-}
-fn to_comma_separated_optional<T: ToString>(elements: Option<Vec<T>>) -> Option<String> {
-    if let Some(elements) = elements {
-        Some(elements.into_iter().map(|e| e.to_string()).collect::<Vec<String>>().join(","))
+        Some(from_separated(text, ","))
     } else {
         None
     }
 }
 
+
+fn to_comma_separated<T: ToString>(elements: Vec<T>) -> String {
+    to_separated(elements, ",")
+}
+fn to_comma_separated_optional<T: ToString>(elements: Option<Vec<T>>) -> Option<String> {
+    if let Some(elements) = elements {
+        Some(to_separated(elements, ","))
+    } else {
+        None
+    }
+}
+
+
+
+fn from_pipe_separated<T: FromStr>(text: String) -> Vec<T> {
+    from_separated(text, "|")
+}
+fn from_pipe_separated_optional<T: FromStr>(text: Option<String>) -> Option<Vec<T>> {
+    if let Some(text) = text {
+        Some(from_separated(text, "|"))
+    } else {
+        None
+    }
+}
+fn to_pipe_separated<T: ToString>(elements: Vec<T>) -> String {
+    to_separated(elements, "|")
+}
+fn to_pipe_separated_optional<T: ToString>(elements: Option<Vec<T>>) -> Option<String> {
+    if let Some(elements) = elements {
+        Some(to_separated(elements, "|"))
+    } else {
+        None
+    }
+}

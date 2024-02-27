@@ -200,7 +200,7 @@ impl LibraryMessage {
 impl ModelController {
     
 	pub async fn get_library(&self, library_id: &str, requesting_user: &ConnectedUser) -> Result<Option<super::libraries::ServerLibraryForRead>> {
-        requesting_user.check_library_role(&library_id, &LibraryRole::Read)?;
+        requesting_user.check_library_role(&library_id, LibraryRole::Read)?;
 		let lib = self.store.get_library(library_id).await?;
 		if let Some(lib) = lib {
 			let return_library = map_library_for_user(lib, &requesting_user);
@@ -216,7 +216,7 @@ impl ModelController {
 		Ok(libraries.collect::<Vec<super::libraries::ServerLibraryForRead>>())
 	}
 	pub async fn update_library(&self, library_id: &str, update: ServerLibraryForUpdate, requesting_user: &ConnectedUser) -> Result<Option<super::libraries::ServerLibraryForRead>> {
-        requesting_user.check_library_role(&library_id, &LibraryRole::Admin)?;
+        requesting_user.check_library_role(&library_id, LibraryRole::Admin)?;
 		self.store.update_library(library_id, update).await?;
         let library = self.store.get_library(library_id).await?;
         if let Some(library) = library { 
@@ -252,7 +252,7 @@ impl ModelController {
 	}
     
 	pub async fn remove_library(&self, library_id: &str, requesting_user: &ConnectedUser) -> Result<ServerLibraryForRead> {
-        requesting_user.check_library_role(&library_id, &LibraryRole::Admin)?;
+        requesting_user.check_library_role(&library_id, LibraryRole::Admin)?;
         let library = self.store.get_library(&library_id).await?;
         if let Some(library) = library { 
             self.store.remove_library(library_id.to_string()).await?;
@@ -264,7 +264,7 @@ impl ModelController {
 	}
 
     pub async fn add_library_invitation(&self, library_id: &str, roles: Vec<LibraryRole>, requesting_user: &ConnectedUser) -> Result<super::libraries::ServerLibraryInvitation> {
-        requesting_user.check_library_role(&library_id, &LibraryRole::Admin)?;
+        requesting_user.check_library_role(&library_id, LibraryRole::Admin)?;
         let invitation = ServerLibraryInvitation {
             code: nanoid!(),
             expires: None,

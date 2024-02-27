@@ -6,6 +6,8 @@ pub mod ffmpeg;
 pub mod credential;
 pub mod backup;
 pub mod tag;
+pub mod rs_link;
+pub mod people;
 
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

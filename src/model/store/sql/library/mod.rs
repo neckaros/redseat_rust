@@ -5,6 +5,7 @@ use crate::{model::{tags::TagQuery, ModelController}, tools::log::{log_info, Log
 use super::Result;
 
 pub mod tags;
+pub mod people;
 
 pub struct SqliteLibraryStore {
 	connection: Connection,
@@ -42,6 +43,14 @@ impl SqliteLibraryStore {
                     let initial = String::from_utf8_lossy(include_bytes!("029 - TAGPATH.sql"));
                     conn.execute_batch(&initial)?;
                     version = 29;
+                    conn.pragma_update(None, "user_version", version)?;
+                    log_info(LogServiceType::Database, format!("Update Library Database to version: {}", version));                   
+                }
+                
+                if version < 30 {
+                    let initial = String::from_utf8_lossy(include_bytes!("030 - INSERT TRIGGERS.sql"));
+                    conn.execute_batch(&initial)?;
+                    version = 30;
                     conn.pragma_update(None, "user_version", version)?;
                     log_info(LogServiceType::Database, format!("Update Library Database to version: {}", version));                   
                 }

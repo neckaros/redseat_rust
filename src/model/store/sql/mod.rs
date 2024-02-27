@@ -4,10 +4,10 @@ pub mod credentials;
 pub mod backups;
 pub mod library;
 
-use rusqlite::{params_from_iter, types::FromSql, ParamsFromIter, ToSql};
+use rusqlite::{params_from_iter, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, ParamsFromIter, ToSql};
 use tokio_rusqlite::Connection;
 
-use crate::tools::log::{log_info, LogServiceType};
+use crate::{domain::rs_link::RsLink, tools::log::{log_info, LogServiceType}};
 
 use super::{Result, SqliteStore};
 
@@ -47,16 +47,63 @@ pub fn add_for_sql_update<'a, T: ToSql + 'a,>(optional: Option<T>, name: &str, c
 
 
 
+
+impl FromSql for RsLink {
+    fn column_result(value: ValueRef) -> FromSqlResult<Self> {
+        String::column_result(value).and_then(|as_string| {
+            let r = serde_json::from_str(&as_string).map_err(|_| FromSqlError::InvalidType);
+            r
+        })
+    }
+}
+
+impl ToSql for RsLink {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        let r = serde_json::to_string(self).map_err(|_| FromSqlError::InvalidType)?;
+        Ok(ToSqlOutput::from(r))
+    }
+}
+
+
+
+
 pub enum QueryWhereType {
     Like(String),
     Equal(String),
+    After(String),
+    Before(String),
     Custom(String),
 }
+
+pub enum SqlOrder {
+    ASC,
+    DESC
+}
+
+pub struct OrderBuilder {
+    column: String,
+    order: SqlOrder
+}
+
+impl OrderBuilder {
+    pub fn new(column: String, order: SqlOrder) -> Self {
+        OrderBuilder { column, order }
+    }
+    pub fn format(&self) -> String {
+        match self.order {
+            SqlOrder::ASC => self.column.clone(),
+            SqlOrder::DESC => format!("{} DESC", self.column),
+        }
+    }
+}
+
 pub struct QueryBuilder<'a> {
     columns_where: Vec<String>,
     values_where: Vec<Box<dyn ToSql + 'a>>,
     columns_update: Vec<String>,
-    values_update: Vec<Box<dyn ToSql + 'a>>
+    values_update: Vec<Box<dyn ToSql + 'a>>,
+    
+    columns_orders: Vec<OrderBuilder>,
 }
 
 impl <'a> QueryBuilder<'a> {
@@ -65,7 +112,8 @@ impl <'a> QueryBuilder<'a> {
             columns_where: Vec::new(),
             values_where: Vec::new(),
             columns_update: Vec::new(),
-            values_update: Vec::new()
+            values_update: Vec::new(),
+            columns_orders: Vec::new()
         }
     }
 
@@ -75,6 +123,8 @@ impl <'a> QueryBuilder<'a> {
                 QueryWhereType::Equal(name) => format!("{} = ?", name),
                 QueryWhereType::Like(name) => format!("{} like ?", name),
                 QueryWhereType::Custom(custom) => custom,
+                QueryWhereType::After(name) => format!("{} > ?", name),
+                QueryWhereType::Before(name) => format!("{} < ?", name),
             };
             self.columns_update.push(column);
             self.values_update.push(Box::new(value));
@@ -87,6 +137,8 @@ impl <'a> QueryBuilder<'a> {
                 QueryWhereType::Equal(name) => format!("{} = ?", name),
                 QueryWhereType::Like(name) => format!("{} like ?", name),
                 QueryWhereType::Custom(custom) => custom,
+                QueryWhereType::After(name) => format!("{} > ?", name),
+                QueryWhereType::Before(name) => format!("{} < ?", name),
             };
             self.columns_where.push(column);
             self.values_where.push(Box::new(value));
@@ -105,6 +157,18 @@ impl <'a> QueryBuilder<'a> {
     pub fn format(&self) -> String {
         if self.columns_where.len() > 0 {
             format!("WHERE {}", self.columns_where.join(" and "))
+        } else {
+            "".to_string()
+        }
+    }
+
+    pub fn add_oder(&mut self, order: OrderBuilder) {
+        self.columns_orders.push(order);
+    }
+
+    pub fn format_order(&self) -> String {
+        if self.columns_orders.len() > 0 {
+            format!(" ORDER BY {}", self.columns_orders.iter().map(|o| o.format()).collect::<Vec<String>>().join(", "))
         } else {
             "".to_string()
         }

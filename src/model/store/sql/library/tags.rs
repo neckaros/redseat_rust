@@ -1,10 +1,10 @@
 use std::str::FromStr;
 
-use rusqlite::{params, params_from_iter, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, Row, ToSql};
+use rusqlite::{params, OptionalExtension, Row};
 
-use crate::{domain::{backup::Backup, credential::{Credential, CredentialType}, tag::Tag}, model::{backups::BackupForUpdate, credentials::CredentialForUpdate, store::{from_comma_separated, from_comma_separated_optional, sql::{QueryBuilder, QueryWhereType}, to_comma_separated, to_comma_separated_optional, SqliteStore}, tags::{TagForUpdate, TagQuery}}, tools::log::log_info};
+use crate::{domain::tag::Tag, model::{store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_pipe_separated_optional}, tags::{TagForInsert, TagForUpdate, TagQuery}}};
 use super::{Result, SqliteLibraryStore};
-
+use crate::model::Error;
 
 
 impl SqliteLibraryStore {
@@ -15,7 +15,7 @@ impl SqliteLibraryStore {
             name: row.get(1)?,
             parent: row.get(2)?,
             kind: row.get(3)?,
-            alt: from_comma_separated_optional(row.get(4)?),
+            alt: from_pipe_separated_optional(row.get(4)?),
             thumb: row.get(5)?,
             params: row.get(6)?,
             modified: row.get(7)?,
@@ -29,9 +29,13 @@ impl SqliteLibraryStore {
         let row = self.connection.call( move |conn| { 
             let mut where_query = QueryBuilder::new();
             where_query.add_where(query.path, QueryWhereType::Like("path".to_string()));
+            where_query.add_where(query.after, QueryWhereType::After("modified".to_string()));
+            if query.after.is_some() {
+                where_query.add_oder(OrderBuilder::new("modified".to_string(), SqlOrder::ASC))
+            }
 
 
-            let mut query = conn.prepare(&format!("SELECT id, name, parent, type, alt, thumb, params, modified, added, generated, path  FROM tags {}", where_query.format()))?;
+            let mut query = conn.prepare(&format!("SELECT id, name, parent, type, alt, thumb, params, modified, added, generated, path  FROM tags {}{}", where_query.format(), where_query.format_order()))?;
             let rows = query.query_map(
             where_query.values(), Self::row_to_tag,
             )?;
@@ -53,55 +57,67 @@ impl SqliteLibraryStore {
 
 
 
-    pub async fn update_tag(&self, tag_id: &str, update: TagForUpdate) -> Result<Vec<Tag>> {
+    pub async fn update_tag(&self, tag_id: &str, update: TagForUpdate) -> Result<()> {
         let id = tag_id.to_string();
-        let existing_tag = self.get_tag(&tag_id);
+        let existing_tag = self.get_tag(&tag_id).await?.ok_or_else(|| Error::NotFound)?;
         self.connection.call( move |conn| { 
-
+            let tx = conn.transaction()?;
             let mut where_query = QueryBuilder::new();
-            where_query.add_update(update.name, QueryWhereType::Equal("name".to_string()));
-            where_query.add_update(update.parent, QueryWhereType::Equal("parent".to_string()));
+            where_query.add_update(update.name.clone(), QueryWhereType::Equal("name".to_string()));
+            where_query.add_update(update.parent.clone(), QueryWhereType::Equal("parent".to_string()));
             where_query.add_update(update.kind, QueryWhereType::Equal("kind".to_string()));
-            where_query.add_update(to_comma_separated_optional(update.alt), QueryWhereType::Equal("alt".to_string()));
+            where_query.add_update(to_pipe_separated_optional(update.alt), QueryWhereType::Equal("alt".to_string()));
             where_query.add_update(update.thumb, QueryWhereType::Equal("thumb".to_string()));
             where_query.add_update(update.params, QueryWhereType::Equal("params".to_string()));
             where_query.add_update(update.generated, QueryWhereType::Equal("generated".to_string()));
-            where_query.add_update(update.path, QueryWhereType::Equal("path".to_string()));
 
             where_query.add_where(Some(id), QueryWhereType::Equal("id".to_string()));
             
 
             let update_sql = format!("UPDATE Tags SET {} {}", where_query.format_update(), where_query.format());
 
-            conn.execute(&update_sql, where_query.values())?;
+            tx.execute(&update_sql, where_query.values())?;
             
+            if let Some(new_name) = &update.name {
+                tx.execute("UPDATE tags SET path = REPLACE(path, ?, ?) where path like ?", params![existing_tag.childs_path(), format!("{}{}/", existing_tag.path, new_name), existing_tag.childs_path()])?;
+            } 
+            if let Some(new_parent) = update.parent {
+                let mut query_parent = tx.prepare("SELECT id, name, parent, type, alt, thumb, params, modified, added, generated, path FROM tags WHERE id = ?")?;
+                let parent = query_parent.query_row(&[&new_parent],Self::row_to_tag)?;
+                
+                tx.execute("UPDATE tags SET path = ? where id = ?", params![parent.childs_path(), &existing_tag.id])?;
+
+                tx.execute("UPDATE tags SET path = REPLACE(path, ?, ?) where path like ?", params![existing_tag.childs_path(), format!("{}{}/", parent.childs_path(), &existing_tag.name), existing_tag.childs_path()])?;
+            } 
+
+            tx.commit()?;
             Ok(())
         }).await?;
-        let new_tag = self.get_tag(&tag_id).await?;
-        let all_updated = vec![new_tag];
-        if let Some(name) = update.name {
-            
-        }
 
-        Ok(all_updated.iter().flatten().map(|t| t.clone()).collect::<Vec<Tag>>())
+        Ok(())
     }
 
-    pub async fn add_tag(&self, tag: Tag) -> Result<()> {
+    pub async fn add_tag(&self, tag: TagForInsert) -> Result<()> {
         self.connection.call( move |conn| { 
-
-            conn.execute("INSERT INTO tags (id, name, parent, type, alt, thumb, params, modified, added, generated, path)
-            VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, ?)", params![
+            let new_path = if let Some(parent) = &tag.parent {
+                let mut query_parent = conn.prepare("SELECT id, name, parent, type, alt, thumb, params, modified, added, generated, path FROM tags WHERE id = ?")?;
+                let parent = query_parent.query_row(&[&parent],Self::row_to_tag)?;
+                parent.childs_path()
+            } else {
+                String::from("/")
+            };
+            
+            conn.execute("INSERT INTO tags (id, name, parent, type, alt, thumb, params, generated, path)
+            VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?)", params![
                 tag.id,
                 tag.name,
                 tag.parent,
                 tag.kind,
-                to_comma_separated_optional(tag.alt),
+                to_pipe_separated_optional(tag.alt),
                 tag.thumb,
                 tag.params,
-                tag.modified,
-                tag.added,
                 tag.generated,
-                tag.path
+                new_path
             ])?;
             
             Ok(())
@@ -111,7 +127,15 @@ impl SqliteLibraryStore {
 
     pub async fn remove_tag(&self, tag_id: String) -> Result<()> {
         self.connection.call( move |conn| { 
-            conn.execute("DELETE FROM tags WHERE id = ?", &[&tag_id])?;
+            let tx = conn.transaction()?;
+            
+            let existing = tx.query_row("SELECT id, name, parent, type, alt, thumb, params, modified, added, generated, path FROM tags WHERE id = ?", &[&tag_id],Self::row_to_tag)?;
+
+            tx.execute("DELETE FROM tags WHERE id = ?", &[&tag_id])?;
+            tx.execute("DELETE FROM media_tag_mapping  WHERE tag_ref = ?", &[&tag_id])?;
+            tx.execute("DELETE FROM tags WHERE path like ?", &[&format!("{}%", existing.childs_path())])?;
+
+            tx.commit()?;
             Ok(())
         }).await?;
         Ok(())
