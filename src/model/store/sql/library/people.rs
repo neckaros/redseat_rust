@@ -3,7 +3,7 @@ use std::str::FromStr;
 use rusqlite::{params, types::FromSqlError, OptionalExtension, Row};
 use serde_json::Value;
 
-use crate::{domain::people::Person, model::{people::{PeopleQuery, PersonForInsert, PersonForUpdate}, store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_pipe_separated_optional}, tags::{TagForInsert, TagForUpdate, TagQuery}}};
+use crate::{domain::people::Person, model::{people::{PeopleQuery, PersonForInsert, PersonForUpdate}, store::{from_pipe_separated_optional, sql::{deserialize_from_row, OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_pipe_separated_optional}, tags::{TagForInsert, TagForUpdate, TagQuery}}, tools::{array_tools::replace_add_remove_from_array, serialization::optional_serde_to_string}};
 use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
 
@@ -12,11 +12,10 @@ use crate::model::Error;
 impl SqliteLibraryStore {
   
     fn row_to_person(row: &Row) -> rusqlite::Result<Person> {
-        let socials: Value = row.get(2)?;
         Ok(Person {
             id: row.get(0)?,
             name: row.get(1)?,
-            socials: serde_json::from_value(socials).map_err(|_| FromSqlError::InvalidType)?,
+            socials: deserialize_from_row(row, 2).map_err(|_| FromSqlError::InvalidType)?,
             kind: row.get(3)?,
             alt: from_pipe_separated_optional(row.get(4)?),
             portrait: row.get(5)?,
@@ -58,22 +57,27 @@ impl SqliteLibraryStore {
 
 
 
-    pub async fn update_person(&self, tag_id: &str, update: PersonForUpdate) -> Result<()> {
-        let id = tag_id.to_string();
-        let social = if let Some(so) = update.socials {
-            Some(serde_json::to_string(&so)?)
-        } else {
-            None
-        };
+    pub async fn update_person(&self, person_id: &str, update: PersonForUpdate) -> Result<()> {
+        let id = person_id.to_string();
+
+        let existing = self.get_person(&person_id).await?.ok_or_else( || Error::NotFound)?;
+
+
         self.connection.call( move |conn| { 
             let mut where_query = QueryBuilder::new();
             where_query.add_update(update.name.clone(), QueryWhereType::Equal("name".to_string()));
-            where_query.add_update( social, QueryWhereType::Equal("socials".to_string()));
+
             where_query.add_update(update.kind, QueryWhereType::Equal("type".to_string()));
-            where_query.add_update(to_pipe_separated_optional(update.alt), QueryWhereType::Equal("alt".to_string()));
             where_query.add_update(update.portrait, QueryWhereType::Equal("portrait".to_string()));
             where_query.add_update(update.params, QueryWhereType::Equal("params".to_string()));
             where_query.add_update(update.birthday, QueryWhereType::Equal("birthday".to_string()));
+
+            let alts = replace_add_remove_from_array(existing.alt, update.alt, update.add_alts, update.remove_alts);
+            where_query.add_update(to_pipe_separated_optional(alts), QueryWhereType::Equal("alt".to_string()));
+
+            let socials = replace_add_remove_from_array(existing.socials, update.socials, update.add_socials, update.remove_socials);
+            let socials = optional_serde_to_string(socials).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            where_query.add_update(socials, QueryWhereType::Equal("socials".to_string()));
 
             where_query.add_where(Some(id), QueryWhereType::Equal("id".to_string()));
             

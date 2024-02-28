@@ -3,7 +3,7 @@ use std::str::FromStr;
 use rusqlite::{params, types::FromSqlError, OptionalExtension, Row};
 use serde_json::Value;
 
-use crate::{domain::{people::Person, serie::Serie}, model::{people::{PeopleQuery, PersonForInsert, PersonForUpdate}, series::{SerieForInsert, SerieForUpdate, SerieQuery}, store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_pipe_separated_optional}, tags::{TagForInsert, TagForUpdate, TagQuery}}};
+use crate::{domain::{people::Person, serie::Serie}, model::{people::{PeopleQuery, PersonForInsert, PersonForUpdate}, series::{SerieForInsert, SerieForUpdate, SerieQuery}, store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_pipe_separated_optional}, tags::{TagForInsert, TagForUpdate, TagQuery}}, tools::array_tools::{add_remove_from_array, replace_add_remove_from_array}};
 use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
 
@@ -90,46 +90,13 @@ impl SqliteLibraryStore {
             where_query.add_update(update.trakt_rating, QueryWhereType::Equal("trakt_rating".to_string()));
             where_query.add_update(update.trakt_rating, QueryWhereType::Equal("trakt_rating".to_string()));
             where_query.add_update(update.year, QueryWhereType::Equal("year".to_string()));
+            where_query.add_update(update.max_created, QueryWhereType::Equal("maxCreated".to_string()));
 
-            let mut alts = if let Some(add_alts) = update.add_alts {
-                if let Some(mut existing_alts) = existing.alt.clone() {
-                    for alt in add_alts {
-                        if !existing_alts.contains(&alt) {
-                            existing_alts.push(alt);
-                        }
-                    }
-                    
-                    Some(existing_alts)
-                } else {
-                    Some(add_alts)
-                }
-            } else {
-               update.alt
-            };
-           let alts =  if let Some(remove_alts) = update.remove_alts  {
-                let mut base = match alts.clone() {
-                    Some(alts) => Some(alts),
-                    None => existing.alt,
-                };
-                if let Some(existing_alts) = base.as_mut() {
-                    for alt in remove_alts {
-                        if let Some(index) = existing_alts.iter().position(|x| *x == alt) {
-                            existing_alts.swap_remove(index);
-                        }
-                    }
-                } 
-                base
-            } else {
-                alts
-            };
-           
-
-
+            let alts = replace_add_remove_from_array(existing.alt, update.alt, update.add_alts, update.remove_alts);
             where_query.add_update(to_pipe_separated_optional(alts), QueryWhereType::Equal("alt".to_string()));
 
 
 
-            where_query.add_update(update.max_created, QueryWhereType::Equal("maxCreated".to_string()));
 
 
 

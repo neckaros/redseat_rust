@@ -55,9 +55,18 @@ impl PeopleQuery {
 pub struct PersonForUpdate {
 	pub name: Option<String>,
     pub socials: Option<Vec<RsLink>>,
+    
     #[serde(rename = "type")]
     pub kind: Option<String>,
+
     pub alt: Option<Vec<String>>,
+    pub add_alts: Option<Vec<String>>,
+    pub remove_alts: Option<Vec<String>>,
+
+    
+    pub add_socials: Option<Vec<RsLink>>,
+    pub remove_socials: Option<Vec<RsLink>>,
+
     pub portrait: Option<String>,
     pub params: Option<Value>,
     pub birthday: Option<u64>,

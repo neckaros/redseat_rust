@@ -4,7 +4,9 @@ pub mod credentials;
 pub mod backups;
 pub mod library;
 
-use rusqlite::{params_from_iter, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, ParamsFromIter, ToSql};
+use rusqlite::{params_from_iter, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, ParamsFromIter, Row, ToSql};
+use serde::{de::DeserializeOwned, Deserialize};
+use serde_json::Value;
 use tokio_rusqlite::Connection;
 
 use crate::{domain::rs_link::RsLink, tools::log::{log_info, LogServiceType}};
@@ -184,3 +186,10 @@ impl <'a> QueryBuilder<'a> {
     }
 }
 
+
+pub fn deserialize_from_row<T: DeserializeOwned>(row: &Row, index: usize) -> Result<T> {
+    let value: Value = row.get(index)?;
+
+    let u = serde_json::from_value::<T>(value)?;
+    Ok(u)
+}

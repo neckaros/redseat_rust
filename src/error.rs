@@ -48,10 +48,16 @@ pub enum Error {
 	// -- Externals
 
 	#[from]
-	Model(crate::model::error::Error),
+	Model(#[serde_as(as = "DisplayFromStr")] crate::model::error::Error),
 
 	#[from]
 	Io(#[serde_as(as = "DisplayFromStr")] std::io::Error),
+
+	#[from]
+	Source(#[serde_as(as = "DisplayFromStr")] SourcesError),
+
+	#[from]
+	Serde(#[serde_as(as = "DisplayFromStr")] serde_json::Error),
 }
 
 // region:    --- Error Boilerplate
