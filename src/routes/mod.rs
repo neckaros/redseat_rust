@@ -8,3 +8,4 @@ pub mod backups;
 
 pub mod tags;
 pub mod people;
+pub mod series;

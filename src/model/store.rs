@@ -39,7 +39,7 @@ impl SqliteStore {
 
         let libraries = new.get_libraries().await?;
         for library in libraries {
-            log_info(LogServiceType::Database, format!("Initiatin database: {}", &library.name));
+            log_info(LogServiceType::Database, format!("Loading database: {}", &library.name));
             let server_db_path = get_server_file_path_array(&mut vec![&"dbs", &format!("{}.db", &library.id)]).await.map_err(|_| Error::CannotOpenDatabase)?;
             let library_connection = Connection::open(server_db_path).await?;
             let library_store = SqliteLibraryStore::new(library_connection).await?;
@@ -56,9 +56,15 @@ impl SqliteStore {
 }
 
 fn from_separated<T: FromStr>(text: String, separator: &str) -> Vec<T> {
+    if text == "" {
+        return vec![];
+    }
     text.split(separator).map(|s| s.trim()).filter_map(|s| T::from_str(s).ok()).collect::<Vec<T>>()
 }
 fn to_separated<T: ToString>(elements: Vec<T>, separator: &str) -> String {
+    if elements.len() == 0 {
+        return "".into();
+    }
     elements.into_iter().map(|e| e.to_string()).collect::<Vec<String>>().join(separator)
 }
 

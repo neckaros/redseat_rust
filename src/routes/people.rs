@@ -47,10 +47,8 @@ async fn handler_delete(Path((library_id, tag_id)): Path<(String, String)>, Stat
 	Ok(body)
 }
 
-#[debug_handler]
 async fn handler_image(Path((library_id, tag_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, headers: HeaderMap) -> Result<Response> {
-	let m = mc.source_for_library(&library_id).await?;
-	let reader_response = m.get_file_read_stream(format!(".redseat\\.portraits\\{}.webp", tag_id)).await.map_err(|e| Error::GenericRedseatError)?;
+	let reader_response = mc.person_image(&library_id, &tag_id, &user).await?;
 
 	let headers = reader_response.hearders().map_err(|e| Error::GenericRedseatError)?;
     let stream = ReaderStream::new(reader_response.stream);

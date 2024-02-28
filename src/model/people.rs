@@ -136,13 +136,14 @@ impl ModelController {
 
 
     
-	pub async fn person_image(&self, library_id: &str, person_id: &str, requesting_user: &ConnectedUser) -> Result<BufReader<File>> {
+	pub async fn person_image(&self, library_id: &str, person_id: &str, requesting_user: &ConnectedUser) -> Result<FileStreamResult<BufReader<File>>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
-		let library = self.store.get_library(library_id).await?.ok_or_else(|| Error::NotFound)?;
-		let source = self.plugin_manager.source_for_library(library).await?;
-		let read = source.get_file_read_stream(format!(".redseat/.portraits/{}", person_id)).await?;
 
-        Ok(read.stream)
+        let m = self.source_for_library(&library_id).await?;
+        let reader_response = m.get_file_read_stream(format!(".redseat\\.portraits\\{}.webp", person_id)).await.map_err(|e| Error::NotFound)?;
+
+
+        Ok(reader_response)
 	}
 
     

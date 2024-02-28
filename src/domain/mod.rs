@@ -8,6 +8,7 @@ pub mod backup;
 pub mod tag;
 pub mod rs_link;
 pub mod people;
+pub mod serie;
 
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

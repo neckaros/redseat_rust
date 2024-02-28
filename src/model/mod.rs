@@ -8,6 +8,7 @@ pub mod backups;
 
 pub mod tags;
 pub mod people;
+pub mod series;
 
 use std::sync::Arc;
 

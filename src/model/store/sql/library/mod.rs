@@ -6,6 +6,7 @@ use super::Result;
 
 pub mod tags;
 pub mod people;
+pub mod series;
 
 pub struct SqliteLibraryStore {
 	connection: Connection,
