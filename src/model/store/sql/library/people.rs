@@ -3,7 +3,7 @@ use std::str::FromStr;
 use rusqlite::{params, types::FromSqlError, OptionalExtension, Row};
 use serde_json::Value;
 
-use crate::{domain::people::Person, model::{store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_pipe_separated_optional}, tags::{TagForInsert, TagForUpdate, TagQuery}}};
+use crate::{domain::people::Person, model::{people::{PeopleQuery, PersonForInsert, PersonForUpdate}, store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_pipe_separated_optional}, tags::{TagForInsert, TagForUpdate, TagQuery}}};
 use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
 
@@ -27,17 +27,16 @@ impl SqliteLibraryStore {
         })
     }
 
-    pub async fn get_people(&self, query: TagQuery) -> Result<Vec<Person>> {
+    pub async fn get_people(&self, query: PeopleQuery) -> Result<Vec<Person>> {
         let row = self.connection.call( move |conn| { 
             let mut where_query = QueryBuilder::new();
-            where_query.add_where(query.path, QueryWhereType::Like("path".to_string()));
             where_query.add_where(query.after, QueryWhereType::After("modified".to_string()));
             if query.after.is_some() {
                 where_query.add_oder(OrderBuilder::new("modified".to_string(), SqlOrder::ASC))
             }
 
 
-            let mut query = conn.prepare(&format!("SELECT id, name, parent, type, alt, thumb, params, modified, added, generated, path  FROM tags {}{}", where_query.format(), where_query.format_order()))?;
+            let mut query = conn.prepare(&format!("SELECT id, name, socials, type, alt, portrait, params, birthday, modified, added  FROM people {}{}", where_query.format(), where_query.format_order()))?;
             let rows = query.query_map(
             where_query.values(), Self::row_to_person,
             )?;
@@ -49,7 +48,7 @@ impl SqliteLibraryStore {
     pub async fn get_person(&self, credential_id: &str) -> Result<Option<Person>> {
         let credential_id = credential_id.to_string();
         let row = self.connection.call( move |conn| { 
-            let mut query = conn.prepare("SELECT id, name, parent, type, alt, thumb, params, modified, added, generated, path FROM tags WHERE id = ?")?;
+            let mut query = conn.prepare("SELECT id, name, socials, type, alt, portrait, params, birthday, modified, added FROM people WHERE id = ?")?;
             let row = query.query_row(
             [credential_id],Self::row_to_person).optional()?;
             Ok(row)
@@ -59,22 +58,27 @@ impl SqliteLibraryStore {
 
 
 
-    pub async fn update_person(&self, tag_id: &str, update: TagForUpdate) -> Result<()> {
+    pub async fn update_person(&self, tag_id: &str, update: PersonForUpdate) -> Result<()> {
         let id = tag_id.to_string();
+        let social = if let Some(so) = update.socials {
+            Some(serde_json::to_string(&so)?)
+        } else {
+            None
+        };
         self.connection.call( move |conn| { 
             let mut where_query = QueryBuilder::new();
             where_query.add_update(update.name.clone(), QueryWhereType::Equal("name".to_string()));
-            where_query.add_update(update.parent.clone(), QueryWhereType::Equal("parent".to_string()));
-            where_query.add_update(update.kind, QueryWhereType::Equal("kind".to_string()));
+            where_query.add_update( social, QueryWhereType::Equal("socials".to_string()));
+            where_query.add_update(update.kind, QueryWhereType::Equal("type".to_string()));
             where_query.add_update(to_pipe_separated_optional(update.alt), QueryWhereType::Equal("alt".to_string()));
-            where_query.add_update(update.thumb, QueryWhereType::Equal("thumb".to_string()));
+            where_query.add_update(update.portrait, QueryWhereType::Equal("portrait".to_string()));
             where_query.add_update(update.params, QueryWhereType::Equal("params".to_string()));
-            where_query.add_update(update.generated, QueryWhereType::Equal("generated".to_string()));
+            where_query.add_update(update.birthday, QueryWhereType::Equal("birthday".to_string()));
 
             where_query.add_where(Some(id), QueryWhereType::Equal("id".to_string()));
             
 
-            let update_sql = format!("UPDATE Tags SET {} {}", where_query.format_update(), where_query.format());
+            let update_sql = format!("UPDATE people SET {} {}", where_query.format_update(), where_query.format());
 
             conn.execute(&update_sql, where_query.values())?;
             Ok(())
@@ -83,19 +87,23 @@ impl SqliteLibraryStore {
         Ok(())
     }
 
-    pub async fn add_person(&self, tag: TagForInsert) -> Result<()> {
+    pub async fn add_person(&self, person: PersonForInsert) -> Result<()> {
         self.connection.call( move |conn| { 
-
-            conn.execute("INSERT INTO tags (id, name, parent, type, alt, thumb, params, generated, path)
-            VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?)", params![
-                tag.id,
-                tag.name,
-                tag.parent,
-                tag.kind,
-                to_pipe_separated_optional(tag.alt),
-                tag.thumb,
-                tag.params,
-                tag.generated
+            let socials = if let Some(soc) = person.socials {
+                Some(serde_json::to_string(&soc).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?)
+            } else {
+                None
+            };
+            conn.execute("INSERT INTO people (id, name, socials, type, alt, portrait, params, birthday)
+            VALUES (?, ?, ? ,?, ?, ?, ?, ?)", params![
+                person.id,
+                person.name,
+                socials,
+                person.kind,
+                to_pipe_separated_optional(person.alt),
+                person.portrait,
+                person.params,
+                person.birthday
             ])?;
             
             Ok(())
@@ -105,7 +113,7 @@ impl SqliteLibraryStore {
 
     pub async fn remove_person(&self, tag_id: String) -> Result<()> {
         self.connection.call( move |conn| { 
-            conn.execute("DELETE FROM tags WHERE id = ?", &[&tag_id])?;
+            conn.execute("DELETE FROM people WHERE id = ?", &[&tag_id])?;
             Ok(())
         }).await?;
         Ok(())

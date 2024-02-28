@@ -93,6 +93,7 @@ async fn app() -> Result<Router> {
         .nest("/ping", routes::ping::routes())
         .nest("/libraries", routes::libraries::routes(mc.clone()))
         .nest("/libraries/:libraryid/tags", routes::tags::routes(mc.clone()))
+        .nest("/libraries/:libraryid/people", routes::people::routes(mc.clone()))
         .nest("/library", routes::libraries::routes(mc.clone())) // duplicate for legacy
         .nest("/users", routes::users::routes(mc.clone()))
         .nest("/credentials", routes::credentials::routes(mc.clone()))

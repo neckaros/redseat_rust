@@ -10,12 +10,17 @@ pub struct Person {
     pub id: String,
 	pub name: String,
     pub socials: Option<Vec<RsLink>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "type")]
     pub kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub alt: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub portrait: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<Value>,
-    pub birthday: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub birthday: Option<u64>,
     pub modified: u64,
     pub added: u64
 }

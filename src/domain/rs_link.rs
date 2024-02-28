@@ -11,7 +11,11 @@ pub struct RsLink {
 	pub platform: String,
     #[serde(rename = "type")]
     pub kind: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub plugin: Option<String>,
 }

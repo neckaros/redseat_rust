@@ -1,5 +1,5 @@
 use std::{path::PathBuf, str::FromStr};
-use tokio_stream::StreamExt;
+
 
 use chrono::{Datelike, Utc};
 use tokio::{fs::File, io::{AsyncWrite, BufReader, BufWriter}};
@@ -22,7 +22,7 @@ impl Source for PathProvider {
         path.push(source);
         
         let file = BufReader::new(File::open(path).await.map_err(|_| SourcesError::Error)?);
-
+        let len = file.metadata().unwrap().len();
         Ok(FileStreamResult {
             stream: Box::new(file),
             size: Some(0)
