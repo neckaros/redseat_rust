@@ -3,7 +3,7 @@ use hyper::StatusCode;
 use serde::Serialize;
 use serde_with::{serde_as, DisplayFromStr};
 
-use crate::{domain::library::LibraryRole, error::ClientError};
+use crate::{domain::library::LibraryRole, error::ClientError, plugins::sources::error::SourcesError};
 
 use super::{libraries::ServerLibraryForUpdate, users::{ConnectedUser, ServerUser, ServerUserForUpdate, UserRole}};
 
@@ -40,6 +40,8 @@ pub enum Error {
 	Rusqlite(#[serde_as(as = "DisplayFromStr")] rusqlite::Error),
 	#[from]
 	Serde(#[serde_as(as = "DisplayFromStr")] serde_json::Error),
+	#[from]
+	Source(#[serde_as(as = "DisplayFromStr")] SourcesError),
 
 }
 
@@ -82,6 +84,7 @@ impl Error {
 			Error::LibraryUpdateNotAuthorized { user: _, update_library: _ } => (StatusCode::FORBIDDEN, ClientError::FORBIDDEN),
 			Error::Rusqlite(_) | Error::TokioRusqlite(_) => (StatusCode::INTERNAL_SERVER_ERROR, ClientError::SERVICE_ERROR),
 			Error::Serde(_) => (StatusCode::INTERNAL_SERVER_ERROR, ClientError::SERVICE_ERROR),
+			Error::Source(_) => (StatusCode::INTERNAL_SERVER_ERROR, ClientError::SERVICE_ERROR),
 			
 		}
 	}

@@ -4,9 +4,10 @@
 use nanoid::nanoid;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::{fs::File, io::BufReader};
 
 
-use crate::domain::{backup::Backup, library::LibraryRole, people::{PeopleMessage, Person}, rs_link::RsLink, tag::{Tag, TagMessage}, ElementAction};
+use crate::{domain::{backup::Backup, library::LibraryRole, people::{PeopleMessage, Person}, rs_link::RsLink, tag::{Tag, TagMessage}, ElementAction}, plugins::sources::FileStreamResult};
 
 use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
 
@@ -132,5 +133,17 @@ impl ModelController {
             Err(Error::NotFound)
         }
 	}
+
+
+    
+	pub async fn person_image(&self, library_id: &str, person_id: &str, requesting_user: &ConnectedUser) -> Result<BufReader<File>> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+		let library = self.store.get_library(library_id).await?.ok_or_else(|| Error::NotFound)?;
+		let source = self.plugin_manager.source_for_library(library).await?;
+		let read = source.get_file_read_stream(format!(".redseat/.portraits/{}", person_id)).await?;
+
+        Ok(read.stream)
+	}
+
     
 }

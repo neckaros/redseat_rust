@@ -8,6 +8,7 @@ use axum::{
 use axum_server::tls_rustls::RustlsConfig;
 use image::ImageOutputFormat;
 use model::{store::SqliteStore, ModelController};
+use plugins::PluginManager;
 use routes::mw_auth;
 
 
@@ -78,7 +79,8 @@ async fn main() ->  Result<()> {
 
 async fn app() -> Result<Router> {
     let store = SqliteStore::new().await.unwrap();
-    let mut mc = ModelController::new(store).await?;
+    let plugin_manager = PluginManager::new();
+    let mut mc = ModelController::new(store, plugin_manager).await?;
 
     let cors: CorsLayer = CorsLayer::new()
     // allow `GET` and `POST` when accessing the resource

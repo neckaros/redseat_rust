@@ -7,7 +7,7 @@ use serde_json::json;
 use serde_with::{serde_as, DisplayFromStr};
 use nanoid::nanoid;
 
-use crate::tools::log::{log_error, log_info, LogServiceType};
+use crate::{plugins::sources::error::SourcesError, tools::log::{log_error, log_info, LogServiceType}};
 
 pub type Result<T> = core::result::Result<T, Error>;
 

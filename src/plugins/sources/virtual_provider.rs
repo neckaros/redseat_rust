@@ -9,15 +9,15 @@ use crate::domain::library::ServerLibrary;
 
 use super::{error::{SourcesError, SourcesResult}, FileStreamResult, Source};
 
-pub struct PathProvider {
+pub struct VirtualProvider {
     root: PathBuf
 }
 
 #[async_trait]
-impl Source for PathProvider {
+impl Source for VirtualProvider {
     async fn new(library: ServerLibrary) -> SourcesResult<Self> {
         if let Some(root) = library.root {
-            Ok(PathProvider {
+            Ok(VirtualProvider {
                 root: PathBuf::from_str(&root).map_err(|_| SourcesError::Error)?
             })
         } else {
@@ -27,18 +27,16 @@ impl Source for PathProvider {
 
     async fn get_file_read_stream(&self, source: String) -> SourcesResult<FileStreamResult<BufReader<File>>> {
         let mut path = self.root.clone();
-        path.push(&source);
-        let guess = mime_guess::from_path(&source);
-        let filename = path.file_name().map(|f| f.to_string_lossy().into_owned());
-
+        path.push(source);
+        
         let file = File::open(path).await.map_err(|_| SourcesError::Error)?;
         let len = file.metadata().await.map_err(|_| SourcesError::Error)?;
         let filereader = BufReader::new(file);
         Ok(FileStreamResult {
             stream: filereader,
             size: Some(len.len()),
-            mime: guess.first(),
-            name: filename
+            mime: None,
+            name: None
         })
     }
 

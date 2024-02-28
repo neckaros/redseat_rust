@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 
 
-use crate::domain::library::LibraryMessage;
+use crate::{domain::library::{LibraryMessage, ServerLibrary}, plugins::{sources::{error::SourcesResult, Source}, PluginManager}};
 
 use self::{store::SqliteStore, users::{ConnectedUser, UserRole}};
 use error::{Result, Error};
@@ -22,16 +22,18 @@ use socketioxide::{extract::SocketRef, SocketIo};
 #[derive(Clone)]
 pub struct ModelController {
 	store: Arc<SqliteStore>,
-	io: Option<SocketIo>
+	io: Option<SocketIo>,
+	plugin_manager: Arc<PluginManager>
 }
 
 
 // Constructor
 impl ModelController {
-	pub async fn new(store: SqliteStore) -> Result<Self> {
+	pub async fn new(store: SqliteStore, plugin_manager: PluginManager) -> Result<Self> {
 		Ok(Self {
 			store: Arc::new(store),
 			io: None,
+			plugin_manager: Arc::new(plugin_manager)
 		})
 	}
 }
@@ -68,6 +70,13 @@ impl  ModelController {
 		}
 		Err(Error::UserListNotAuth { user: requesting_user.clone() })
 	}
+
+	pub async fn source_for_library(&self, library_id: &str) -> Result<Box<dyn Source>> {
+		let library = self.store.get_library(library_id).await?.ok_or_else(|| Error::NotFound)?;
+		let source = self.plugin_manager.source_for_library(library).await?;
+		Ok(source)
+	}
+
 
 }
 

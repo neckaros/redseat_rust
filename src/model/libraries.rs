@@ -210,6 +210,12 @@ impl ModelController {
 		}
 	}
 
+    pub async fn get_internal_library(&self, library_id: &str, requesting_user: &ConnectedUser) -> Result<Option<super::libraries::ServerLibrary>> {
+        requesting_user.check_library_role(&library_id, LibraryRole::Read)?;
+		let lib = self.store.get_library(library_id).await?;
+		Ok(lib)
+	}
+
 	pub async fn get_libraries(&self, requesting_user: &ConnectedUser) -> Result<Vec<super::libraries::ServerLibraryForRead>> {
         requesting_user.check_role(&UserRole::Read)?;
 		let libraries = self.store.get_libraries().await?.into_iter().flat_map(|l|  map_library_for_user(l, &requesting_user));
