@@ -1,9 +1,6 @@
-use std::str::FromStr;
+use rusqlite::{params, OptionalExtension, Row};
 
-use rusqlite::{params, types::FromSqlError, OptionalExtension, Row};
-use serde_json::Value;
-
-use crate::{domain::{people::Person, serie::Serie}, model::{people::{PeopleQuery, PersonForInsert, PersonForUpdate}, series::{SerieForInsert, SerieForUpdate, SerieQuery}, store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_pipe_separated_optional}, tags::{TagForInsert, TagForUpdate, TagQuery}}, tools::array_tools::{add_remove_from_array, replace_add_remove_from_array}};
+use crate::{domain::serie::Serie, model::{series::{SerieForInsert, SerieForUpdate, SerieQuery}, store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_pipe_separated_optional}}, tools::array_tools::replace_add_remove_from_array};
 use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
 
@@ -12,7 +9,6 @@ use crate::model::Error;
 impl SqliteLibraryStore {
   
     fn row_to_serie(row: &Row) -> rusqlite::Result<Serie> {
-        let socials: Value = row.get(2)?;
         Ok(Serie {
             id: row.get(0)?,
             name: row.get(1)?,

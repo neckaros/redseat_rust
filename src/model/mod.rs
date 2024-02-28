@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 
 
-use crate::{domain::library::{LibraryMessage, ServerLibrary}, plugins::{sources::{error::SourcesResult, Source}, PluginManager}};
+use crate::{domain::library::LibraryMessage, plugins::{sources::Source, PluginManager}};
 
 use self::{store::SqliteStore, users::{ConnectedUser, UserRole}};
 use error::{Result, Error};

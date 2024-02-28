@@ -1,8 +1,6 @@
-use std::str::FromStr;
+use rusqlite::{params, params_from_iter, OptionalExtension, ToSql};
 
-use rusqlite::{params, params_from_iter, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, ToSql};
-
-use crate::{domain::{backup::Backup, credential::{Credential, CredentialType}}, model::{backups::BackupForUpdate, credentials::CredentialForUpdate, store::SqliteStore}};
+use crate::{domain::backup::Backup, model::{backups::BackupForUpdate, store::SqliteStore}};
 use super::Result;
 
 

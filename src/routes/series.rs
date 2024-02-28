@@ -1,7 +1,6 @@
 
-use crate::{domain::backup, model::{backups::{BackupForAdd, BackupForUpdate}, credentials::{CredentialForAdd, CredentialForUpdate}, libraries::ServerLibraryForUpdate, series::{SerieForAdd, SerieForUpdate, SerieQuery}, tags::{TagForAdd, TagForUpdate, TagQuery}, users::ConnectedUser, ModelController}, Error, Result};
+use crate::{model::{series::{SerieForAdd, SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, Error, Result};
 use axum::{body::Body, extract::{Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
-use hyper::HeaderMap;
 use serde_json::{json, Value};
 use tokio_util::io::ReaderStream;
 
@@ -49,10 +48,10 @@ async fn handler_post(Path(library_id): Path<String>, State(mc): State<ModelCont
 }
 
 
-async fn handler_image(Path((library_id, tag_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, headers: HeaderMap) -> Result<Response> {
+async fn handler_image(Path((library_id, tag_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Response> {
 	let reader_response = mc.serie_image(&library_id, &tag_id, &user).await?;
 
-	let headers = reader_response.hearders().map_err(|e| Error::GenericRedseatError)?;
+	let headers = reader_response.hearders().map_err(|_| Error::GenericRedseatError)?;
     let stream = ReaderStream::new(reader_response.stream);
     let body = Body::from_stream(stream);
 	

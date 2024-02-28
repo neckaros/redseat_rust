@@ -6,9 +6,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 
-use crate::domain::{backup::Backup, library::LibraryRole, tag::{Tag, TagMessage}, ElementAction};
+use crate::domain::{library::LibraryRole, tag::{Tag, TagMessage}, ElementAction};
 
-use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
+use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
 
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

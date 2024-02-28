@@ -1,14 +1,8 @@
 
-use std::{path::PathBuf, pin::Pin};
-
-use crate::{domain::{backup, library, tag}, model::{backups::{BackupForAdd, BackupForUpdate}, credentials::{CredentialForAdd, CredentialForUpdate}, libraries::ServerLibraryForUpdate, people::{PeopleQuery, PersonForAdd, PersonForUpdate}, tags::{TagForAdd, TagForUpdate, TagQuery}, users::ConnectedUser, ModelController}, plugins::sources::{path_provider::PathProvider, virtual_provider::VirtualProvider, Source}, Result};
-use axum::{body::Body, debug_handler, extract::{Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
-use http_body_util::StreamBody;
-use hyper::{header, HeaderMap, Request, StatusCode};
-use mime::APPLICATION_OCTET_STREAM;
+use crate::{model::{people::{PeopleQuery, PersonForAdd, PersonForUpdate}, users::ConnectedUser, ModelController}, Result};
+use axum::{body::Body, extract::{Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
 use serde_json::{json, Value};
 use tokio_util::io::ReaderStream;
-use tower_http::services::ServeFile;
 use crate::Error;
 
 
@@ -47,10 +41,10 @@ async fn handler_delete(Path((library_id, tag_id)): Path<(String, String)>, Stat
 	Ok(body)
 }
 
-async fn handler_image(Path((library_id, tag_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, headers: HeaderMap) -> Result<Response> {
+async fn handler_image(Path((library_id, tag_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Response> {
 	let reader_response = mc.person_image(&library_id, &tag_id, &user).await?;
 
-	let headers = reader_response.hearders().map_err(|e| Error::GenericRedseatError)?;
+	let headers = reader_response.hearders().map_err(|_| Error::GenericRedseatError)?;
     let stream = ReaderStream::new(reader_response.stream);
     let body = Body::from_stream(stream);
 	

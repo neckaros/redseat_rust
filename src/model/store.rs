@@ -4,11 +4,10 @@ use std::str::FromStr;
 use tokio_rusqlite::Connection;
 
 
-use crate::model::store::sql::{migrate_database};
+use crate::model::store::sql::migrate_database;
 use crate::server::get_server_file_path_array;
 use crate::tools::log::{log_info, LogServiceType};
 
-use self::sql::libraries;
 use self::sql::library::SqliteLibraryStore;
 
 use super::error::{Result, Error};

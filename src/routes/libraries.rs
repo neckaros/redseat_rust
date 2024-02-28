@@ -1,5 +1,5 @@
 
-use crate::{domain::library::LibraryRole, model::{libraries::{ServerLibraryForAdd, ServerLibraryForUpdate}, users::{ConnectedUser, UserRole}, ModelController}, Error, Result};
+use crate::{domain::library::LibraryRole, model::{libraries::{ServerLibraryForAdd, ServerLibraryForUpdate}, users::{ConnectedUser}, ModelController}, Error, Result};
 use axum::{extract::{Path, Query, State}, routing::{delete, get, patch, post}, Json, Router};
 use hyper::StatusCode;
 use serde::Deserialize;

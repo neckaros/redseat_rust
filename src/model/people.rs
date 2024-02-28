@@ -7,9 +7,9 @@ use serde_json::Value;
 use tokio::{fs::File, io::BufReader};
 
 
-use crate::{domain::{backup::Backup, library::LibraryRole, people::{PeopleMessage, Person}, rs_link::RsLink, tag::{Tag, TagMessage}, ElementAction}, plugins::sources::FileStreamResult};
+use crate::{domain::{library::LibraryRole, people::{PeopleMessage, Person}, rs_link::RsLink, ElementAction}, plugins::sources::FileStreamResult};
 
-use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
+use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
 
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -149,7 +149,7 @@ impl ModelController {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
 
         let m = self.source_for_library(&library_id).await?;
-        let reader_response = m.get_file_read_stream(format!(".redseat\\.portraits\\{}.webp", person_id)).await.map_err(|e| Error::NotFound)?;
+        let reader_response = m.get_file_read_stream(format!(".redseat\\.portraits\\{}.webp", person_id)).await.map_err(|_| Error::NotFound)?;
 
 
         Ok(reader_response)

@@ -5,13 +5,13 @@ pub mod backups;
 pub mod library;
 
 use rusqlite::{params_from_iter, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, ParamsFromIter, Row, ToSql};
-use serde::{de::DeserializeOwned, Deserialize};
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tokio_rusqlite::Connection;
 
-use crate::{domain::rs_link::RsLink, tools::log::{log_info, LogServiceType}};
+use crate::domain::rs_link::RsLink;
 
-use super::{Result, SqliteStore};
+use super::Result;
 
 
 pub async fn migrate_database(connection: &Connection) -> Result<usize> {

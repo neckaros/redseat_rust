@@ -4,9 +4,8 @@ use std::str::FromStr;
 use nanoid::nanoid;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use x509_parser::nom::Err;
 
-use crate::domain::{credential::{self, Credential, CredentialType}, library::LibraryRole};
+use crate::domain::{credential::{Credential, CredentialType}};
 
 use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
 

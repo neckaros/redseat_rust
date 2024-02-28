@@ -1,5 +1,3 @@
-use std::str::FromStr;
-
 use rusqlite::{params, OptionalExtension, Row};
 
 use crate::{domain::tag::Tag, model::{store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_pipe_separated_optional}, tags::{TagForInsert, TagForUpdate, TagQuery}}};

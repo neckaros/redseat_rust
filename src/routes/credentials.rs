@@ -1,5 +1,5 @@
 
-use crate::{model::{credentials::{CredentialForAdd, CredentialForUpdate}, libraries::ServerLibraryForUpdate, users::ConnectedUser, ModelController}, Result};
+use crate::{model::{credentials::{CredentialForAdd, CredentialForUpdate}, users::ConnectedUser, ModelController}, Result};
 use axum::{extract::{Path, State}, routing::{delete, get, patch, post}, Json, Router};
 use serde_json::{json, Value};
 

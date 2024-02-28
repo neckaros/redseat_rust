@@ -1,6 +1,6 @@
-use crate::domain::library::{LibraryType, ServerLibrary};
+use crate::domain::library::ServerLibrary;
 
-use self::sources::{error::SourcesResult, path_provider::PathProvider, virtual_provider::VirtualProvider, Source, SourceManager};
+use self::sources::{error::SourcesResult, path_provider::PathProvider, virtual_provider::VirtualProvider, Source};
 
 pub mod sources;
 pub mod error;
