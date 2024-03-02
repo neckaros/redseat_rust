@@ -1,10 +1,11 @@
 use core::fmt;
-use std::{fs::File, io::{self, Seek, Write}, num::ParseIntError, path::PathBuf, str::FromStr};
+use std::{fs::{remove_file, File}, io::{self, Seek, Write}, num::ParseIntError, path::PathBuf, str::FromStr};
 
 use image::{ColorType, DynamicImage, ImageEncoder, ImageError as RsImageError, ImageFormat, ImageOutputFormat};
 use serde::{Deserialize, Serialize};
-use tokio::fs::remove_file;
-
+use serde_with::{serde_as, DisplayFromStr};
+use webp::WebPEncodingError;
+use derive_more::From;
 
 
 pub type ImageResult<T> = core::result::Result<T, ImageError>;
@@ -124,26 +125,29 @@ impl ImageType {
     }
 }
 
-#[derive(Debug, strum_macros::AsRefStr)]
+#[serde_as]
+#[derive(Debug, Serialize, strum_macros::AsRefStr, From)]
 pub enum ImageError {
 
     Error,
     FfmpegError,
-    RsImageError { error: RsImageError },
-    IoError { error: io::Error },
+
+    
+    UnableToDecodeWebp(String),
+    
+	#[from]
+	Io(#[serde_as(as = "DisplayFromStr")] std::io::Error),
+
+
+    
+	#[from]
+	RsImageError(#[serde_as(as = "DisplayFromStr")] image::ImageError),
 
 }
 
-
-impl From<RsImageError> for ImageError {
-    fn from(error: RsImageError) -> Self {
-        ImageError::RsImageError { error }
-    }
-}
-
-impl From<io::Error> for ImageError {
-    fn from(error: io::Error) -> Self {
-        ImageError::IoError { error }
+impl From<WebPEncodingError> for ImageError {
+    fn from(error: WebPEncodingError) -> Self {
+        ImageError::Error
     }
 }
 
@@ -163,18 +167,33 @@ impl std::error::Error for ImageError {}
 pub async fn resize_image_path(path: &PathBuf, to: &PathBuf, size: u32) -> ImageResult<()> {
     let mut output = File::create(to)?;
     let img = image::open(path)?;
+    let scaled = resize(img, size);
+    let result = webp::Encoder::from_image(&scaled).map_err(|e| ImageError::UnableToDecodeWebp(e.into()))?
+        .encode_simple(false, 80.0);
+
+    if result.is_err() {
+        let _ = remove_file(&to);
+    } else {
+        output.write_all(&*result.unwrap())?;
+    }
+    Ok(())
+}
+
+pub async fn resize_image_path_avif(path: &PathBuf, to: &PathBuf, size: u32) -> ImageResult<()> {
+    let mut output = File::create(to)?;
+    let img = image::open(path)?;
     
     let scaled = resize(img, size);
     let imbuf = scaled.to_rgba8();
-   // let retour = scaled.save_with_format(to, ImageOutputFormat::Avif);
 
     let mut encoded = Vec::new();
-    let encoder = image::codecs::avif::AvifEncoder::new_with_speed_quality(&mut encoded, 5, 75);
+    let encoder = image::codecs::avif::AvifEncoder::new_with_speed_quality(&mut encoded, 8, 80);
     let result = encoder.write_image(&imbuf, imbuf.width(), imbuf.height(), ColorType::Rgba8);
+   
     if result.is_err() {
-        let _ = remove_file(&to).await;
+        let _ = remove_file(&to);
     } else {
-        output.write_all(&encoded)?;
+        output.write_all(&*encoded)?;
     }
     Ok(())
 }

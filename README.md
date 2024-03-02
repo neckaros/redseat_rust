@@ -1,6 +1,8 @@
 Initial development
 
-
+For AVIF support
+On x86 install NASM
+https://github.com/xiph/rav1e/#dependency-nasm
 
 Install Clang
 libheif

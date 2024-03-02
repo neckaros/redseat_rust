@@ -1,6 +1,6 @@
 
 use crate::{model::{people::{PeopleQuery, PersonForAdd, PersonForUpdate}, users::ConnectedUser, ModelController}, Result};
-use axum::{body::Body, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
+use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
 use serde_json::{json, Value};
 use tokio_util::io::ReaderStream;
 use crate::Error;
@@ -44,6 +44,7 @@ async fn handler_delete(Path((library_id, tag_id)): Path<(String, String)>, Stat
 	Ok(body)
 }
 
+#[debug_handler]
 async fn handler_image(Path((library_id, tag_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ImageRequestOptions>) -> Result<Response> {
 	let reader_response = mc.person_image(&library_id, &tag_id, query.kind, query.size, &user).await?;
 

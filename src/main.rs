@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::{net::{IpAddr, Ipv6Addr, SocketAddr}, path::PathBuf};
+use std::{fs, net::{IpAddr, Ipv6Addr, SocketAddr}, path::PathBuf, str::FromStr};
 
 use axum::{
     http::Method, middleware, Router
@@ -39,6 +39,14 @@ async fn main() ->  Result<()> {
     tokio::spawn(async move {
         //resize_image_path("test_data/image.jpg", "test_data/image-thumb.jpg", 500, ImageOutputFormat::Jpeg(80)).await.unwrap()
         //tools::video_tools::convert_to_pipe("C:/Users/arnau/Downloads/IMG_5020.mov", None).await;
+        let source = PathBuf::from_str("test_data/image.jpg").expect("unable to set path");
+        let target = PathBuf::from_str("test_data/image2.webp").expect("unable to set path");
+        if target.exists() {
+            fs::remove_file(&target).expect("failed to remove existing result file");
+        }
+        log_info(LogServiceType::Other, "start".into());
+        resize_image_path(&source, &target, 500).await.unwrap();
+        log_info(LogServiceType::Other, "done".into());
     });
 
     let register_infos = register().await?;
