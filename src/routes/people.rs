@@ -1,6 +1,6 @@
 
 use crate::{model::{people::{PeopleQuery, PersonForAdd, PersonForUpdate}, users::ConnectedUser, ModelController}, Result};
-use axum::{body::Body, extract::{Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
+use axum::{body::Body, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
 use serde_json::{json, Value};
 use tokio_util::io::ReaderStream;
 use crate::Error;
@@ -16,6 +16,7 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/:id", patch(handler_patch))
 		.route("/:id", delete(handler_delete))
 		.route("/:id/image", get(handler_image))
+		.route("/:id/image", post(handler_post_image))
 		.with_state(mc)
         
 }
@@ -51,6 +52,19 @@ async fn handler_image(Path((library_id, tag_id)): Path<(String, String)>, State
     let body = Body::from_stream(stream);
 	
     Ok((headers, body).into_response())
+}
+
+async fn handler_post_image(Path((library_id, tag_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ImageRequestOptions>, mut multipart: Multipart) -> Result<Json<Value>> {
+	while let Some(mut field) = multipart.next_field().await.unwrap() {
+        let name = field.name().unwrap().to_string();
+		let filename = field.file_name().unwrap().to_string();
+		let mime: String = field.content_type().unwrap().to_string();
+        let data = field.bytes().await.unwrap();
+
+        println!("Length of `{}` {}  {} is {} bytes", name, filename, mime, data.len());
+    }
+	
+    Ok(Json(json!({"data": "ok"})))
 }
 
 async fn handler_post(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Json(tag): Json<PersonForAdd>) -> Result<Json<Value>> {
