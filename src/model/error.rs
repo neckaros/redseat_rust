@@ -3,7 +3,7 @@ use hyper::StatusCode;
 use serde::Serialize;
 use serde_with::{serde_as, DisplayFromStr};
 
-use crate::{domain::library::LibraryRole, error::ClientError, plugins::sources::error::SourcesError};
+use crate::{domain::library::LibraryRole, error::ClientError, plugins::sources::error::SourcesError, tools::image_tools::ImageError};
 
 use super::{libraries::ServerLibraryForUpdate, users::{ConnectedUser, ServerUser, ServerUserForUpdate, UserRole}};
 
@@ -16,7 +16,11 @@ pub enum Error {
 
     UnableToParseEnum,
 
+	ServiceError(String, Option<String>),
+
 	NotFound,
+	FileNotFound(String),
+
 
     CannotOpenDatabase,
 	TxnCantCommitNoOpenTxn,
@@ -42,6 +46,9 @@ pub enum Error {
 	Serde(#[serde_as(as = "DisplayFromStr")] serde_json::Error),
 	#[from]
 	Source(#[serde_as(as = "DisplayFromStr")] SourcesError),
+	
+	#[from]
+	Image(#[serde_as(as = "DisplayFromStr")] ImageError),
 
 }
 
@@ -65,8 +72,10 @@ impl Error {
 		#[allow(unreachable_patterns)]
 		match self {
 			Error::NotFound => (StatusCode::NOT_FOUND, ClientError::NOT_FOUND),
+			Error::FileNotFound(_) => (StatusCode::NOT_FOUND, ClientError::NOT_FOUND),
 
 			
+			Error::ServiceError(_, _) => (StatusCode::INTERNAL_SERVER_ERROR, ClientError::SERVICE_ERROR),
 			Error::UnableToParseEnum => (StatusCode::INTERNAL_SERVER_ERROR, ClientError::SERVICE_ERROR),
 
 			Error::NotServerConnected => (StatusCode::FORBIDDEN, ClientError::FORBIDDEN),
@@ -82,9 +91,11 @@ impl Error {
 			Error::UserUpdateNotAuthorized { user: _, update_user: _ } => (StatusCode::FORBIDDEN, ClientError::FORBIDDEN),
 			Error::UserRoleUpdateNotAuthOnlyAdmin => (StatusCode::FORBIDDEN, ClientError::FORBIDDEN),
 			Error::LibraryUpdateNotAuthorized { user: _, update_library: _ } => (StatusCode::FORBIDDEN, ClientError::FORBIDDEN),
+			
 			Error::Rusqlite(_) | Error::TokioRusqlite(_) => (StatusCode::INTERNAL_SERVER_ERROR, ClientError::SERVICE_ERROR),
 			Error::Serde(_) => (StatusCode::INTERNAL_SERVER_ERROR, ClientError::SERVICE_ERROR),
-			Error::Source(_) => (StatusCode::INTERNAL_SERVER_ERROR, ClientError::SERVICE_ERROR),
+			Error::Source(s) => s.client_status_and_error(),
+			Error::Image(s) => (StatusCode::INTERNAL_SERVER_ERROR, ClientError::SERVICE_ERROR),
 			
 		}
 	}

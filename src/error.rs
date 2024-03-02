@@ -117,7 +117,7 @@ impl Error {
 			// -- Model.
 			Self::TicketDeleteFailIdNotFound { .. } => {
 				(StatusCode::BAD_REQUEST, ClientError::INVALID_PARAMS)
-			}
+			},
 
 			// -- Fallback.
 			_ => (

@@ -7,7 +7,7 @@ use serde_json::Value;
 use tokio::{fs::File, io::BufReader};
 
 
-use crate::{domain::{library::LibraryRole, people::{PeopleMessage, Person}, serie::{Serie, SeriesMessage}, ElementAction}, plugins::sources::FileStreamResult};
+use crate::{domain::{library::LibraryRole, people::{PeopleMessage, Person}, serie::{Serie, SeriesMessage}, ElementAction}, plugins::sources::FileStreamResult, tools::image_tools::{ImageSize, ImageType}};
 
 use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
 
@@ -196,14 +196,8 @@ impl ModelController {
 
 
     
-	pub async fn serie_image(&self, library_id: &str, serie_id: &str, requesting_user: &ConnectedUser) -> Result<FileStreamResult<BufReader<File>>> {
-        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
-
-        let m = self.source_for_library(&library_id).await?;
-        let reader_response = m.get_file_read_stream(format!(".redseat\\.series\\{}.poster.webp", serie_id)).await.map_err(|_| Error::NotFound)?;
-
-
-        Ok(reader_response)
+	pub async fn serie_image(&self, library_id: &str, serie_id: &str, kind: Option<ImageType>, size: Option<ImageSize>, requesting_user: &ConnectedUser) -> Result<FileStreamResult<BufReader<File>>> {
+        self.library_image(library_id, ".series", serie_id, kind.or(Some(ImageType::Poster)), size, requesting_user).await
 	}
 
     

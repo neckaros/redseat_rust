@@ -1,36 +1,50 @@
-use std::{path::PathBuf, str::FromStr};
+use std::{io, path::PathBuf, str::FromStr};
 
 
 use axum::async_trait;
 use chrono::{Datelike, Utc};
+use query_external_ip::SourceError;
 use tokio::{fs::File, io::{AsyncWrite, BufReader, BufWriter}};
 
-use crate::domain::library::ServerLibrary;
+use crate::{domain::library::ServerLibrary, server::get_server_file_path_array};
 
 use super::{error::{SourcesError, SourcesResult}, FileStreamResult, Source};
 
 pub struct VirtualProvider {
-    root: PathBuf
+    root: PathBuf,
+    library: ServerLibrary
 }
 
 #[async_trait]
 impl Source for VirtualProvider {
     async fn new(library: ServerLibrary) -> SourcesResult<Self> {
-        if let Some(root) = library.root {
+        if let Some(root) = &library.root {
             Ok(VirtualProvider {
-                root: PathBuf::from_str(&root).map_err(|_| SourcesError::Error)?
+                root: PathBuf::from_str(&root).map_err(|_| SourcesError::Error)?,
+                library
             })
         } else {
             Err(SourcesError::Error)
         }
     }
 
-    async fn get_file_read_stream(&self, source: String) -> SourcesResult<FileStreamResult<BufReader<File>>> {
+    async fn exists(&self, source: &str) -> bool {
+        true
+    }
+
+    async fn get_file_read_stream(&self, source: &str) -> SourcesResult<FileStreamResult<BufReader<File>>> {
+        println!("Virtual {}", &source);
         let mut path = self.root.clone();
         path.push(source);
         
-        let file = File::open(path).await.map_err(|_| SourcesError::Error)?;
-        let len = file.metadata().await.map_err(|_| SourcesError::Error)?;
+        let file = File::open(&path).await.map_err(|err| {
+            if err.kind() == std::io::ErrorKind::NotFound {
+                SourcesError::NotFound(path.to_str().map(|a| a.to_string()))
+            } else {
+                SourcesError::Io(err)
+            }
+        })?;
+        let len = file.metadata().await?;
         let filereader = BufReader::new(file);
         Ok(FileStreamResult {
             stream: filereader,

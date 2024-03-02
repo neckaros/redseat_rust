@@ -26,8 +26,8 @@ pub struct Serie {
     
     pub imdb_rating: Option<f32>,
     pub imdb_votes: Option<u64>,
-    pub trakt_rating: Option<u64>,
-    pub trakt_votes: Option<f32>,
+    pub trakt_rating: Option<f32>,
+    pub trakt_votes: Option<u64>,
 
     pub trailer: Option<String>,
 

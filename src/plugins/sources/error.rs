@@ -1,7 +1,7 @@
 use derive_more::From;
 use hyper::StatusCode;
 use serde::Serialize;
-use serde_with::serde_as;
+use serde_with::{serde_as, DisplayFromStr};
 
 use crate::error::ClientError;
 
@@ -12,6 +12,11 @@ pub type SourcesResult<T> = core::result::Result<T, SourcesError>;
 pub enum SourcesError {
 
     Error,
+
+	NotFound(Option<String>),
+	
+	#[from]
+	Io(#[serde_as(as = "DisplayFromStr")] std::io::Error),
 
 
 }
@@ -35,6 +40,7 @@ impl SourcesError {
 	pub fn client_status_and_error(&self) -> (StatusCode, ClientError) {
 		#[allow(unreachable_patterns)]
 		match self {
+			SourcesError::NotFound(_) => (StatusCode::NOT_FOUND, ClientError::NOT_FOUND),
 			_ => (StatusCode::INTERNAL_SERVER_ERROR, ClientError::SERVICE_ERROR),
 			
 		}

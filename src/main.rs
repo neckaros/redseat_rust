@@ -37,7 +37,7 @@ async fn main() ->  Result<()> {
     server::initialize_config().await;
 
     tokio::spawn(async move {
-        resize_image_path("test_data/image.jpg", "test_data/image-thumb.jpg", 500, ImageOutputFormat::Jpeg(80)).await.unwrap()
+        //resize_image_path("test_data/image.jpg", "test_data/image-thumb.jpg", 500, ImageOutputFormat::Jpeg(80)).await.unwrap()
         //tools::video_tools::convert_to_pipe("C:/Users/arnau/Downloads/IMG_5020.mov", None).await;
     });
 

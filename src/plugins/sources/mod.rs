@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use axum::async_trait;
 use hyper::{header, HeaderMap};
 use mime::{Mime, APPLICATION_OCTET_STREAM};
@@ -24,7 +26,10 @@ impl<T: Sized + AsyncRead> FileStreamResult<T> {
         let mime = self.mime.clone();
         headers.insert(header::CONTENT_TYPE, mime.unwrap_or(APPLICATION_OCTET_STREAM).to_string().parse().map_err(|_| SourcesError::Error)?);
         if let Some(name) = self.name.clone() {
-            headers.insert(header::CONTENT_DISPOSITION, format!("attachment; filename=\"{:?}\"", name).parse().map_err(|_| SourcesError::Error)?);
+            headers.insert(header::CONTENT_DISPOSITION, format!("attachment; filename={:?}", name).parse().map_err(|_| SourcesError::Error)?);
+        }
+        if let Some(size) = self.size.clone() {
+            headers.insert(header::CONTENT_LENGTH, size.to_string().parse().map_err(|_| SourcesError::Error)?);
         }
         Ok(headers)
     }
@@ -34,7 +39,16 @@ impl<T: Sized + AsyncRead> FileStreamResult<T> {
 #[async_trait]
 pub trait Source: Send {
     async fn new(root: ServerLibrary) -> SourcesResult<Self> where Self: Sized;
-    async fn get_file_read_stream(&self, source: String) -> SourcesResult<FileStreamResult<BufReader<File>>>;
+    
+
+    async fn exists(&self, name: &str) -> bool;
+    async fn get_file_read_stream(&self, source: &str) -> SourcesResult<FileStreamResult<BufReader<File>>>;
     async fn get_file_write_stream(&self, name: &str) -> SourcesResult<Box<dyn AsyncWrite>>;
+    //async fn fill_file_information(&self, file: &mut ServerFile) -> SourcesResult<()>;
+}
+
+pub trait LocalSource: Send {
+    fn get_gull_path(&self, source: String) -> PathBuf;
+
     //async fn fill_file_information(&self, file: &mut ServerFile) -> SourcesResult<()>;
 }

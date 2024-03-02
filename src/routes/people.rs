@@ -5,6 +5,8 @@ use serde_json::{json, Value};
 use tokio_util::io::ReaderStream;
 use crate::Error;
 
+use super::ImageRequestOptions;
+
 
 pub fn routes(mc: ModelController) -> Router {
 	Router::new()
@@ -41,8 +43,8 @@ async fn handler_delete(Path((library_id, tag_id)): Path<(String, String)>, Stat
 	Ok(body)
 }
 
-async fn handler_image(Path((library_id, tag_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Response> {
-	let reader_response = mc.person_image(&library_id, &tag_id, &user).await?;
+async fn handler_image(Path((library_id, tag_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ImageRequestOptions>) -> Result<Response> {
+	let reader_response = mc.person_image(&library_id, &tag_id, query.kind, query.size, &user).await?;
 
 	let headers = reader_response.hearders().map_err(|_| Error::GenericRedseatError)?;
     let stream = ReaderStream::new(reader_response.stream);

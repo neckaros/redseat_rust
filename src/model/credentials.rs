@@ -5,7 +5,7 @@ use nanoid::nanoid;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::domain::{credential::{Credential, CredentialType}};
+use crate::domain::credential::{Credential, CredentialType};
 
 use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
 
@@ -118,6 +118,8 @@ impl ModelController {
 
 #[cfg(test)]
 mod tests {
+    use crate::domain::library::LibraryRole;
+
     use super::*;
 
     #[test]
