@@ -1,7 +1,7 @@
 use core::fmt;
-use std::{fs::File, io::{self, BufWriter, Seek, Write}, num::ParseIntError, path::PathBuf, str::FromStr};
+use std::{fs::File, io::{self, Seek, Write}, num::ParseIntError, path::PathBuf, str::FromStr};
 
-use image::{DynamicImage, ImageError as RsImageError, ImageFormat, ImageOutputFormat};
+use image::{ColorType, DynamicImage, ImageEncoder, ImageError as RsImageError, ImageFormat, ImageOutputFormat};
 use serde::{Deserialize, Serialize};
 use tokio::fs::remove_file;
 
@@ -160,13 +160,21 @@ impl core::fmt::Display for ImageError {
 
 impl std::error::Error for ImageError {}
 
-pub async fn resize_image_path(path: &PathBuf, to: &PathBuf, size: u32, format: ImageFormat) -> ImageResult<()> {
-    let output = File::create(to)?;
+pub async fn resize_image_path(path: &PathBuf, to: &PathBuf, size: u32) -> ImageResult<()> {
+    let mut output = File::create(to)?;
     let img = image::open(path)?;
+    
     let scaled = resize(img, size);
-    let retour = scaled.save_with_format(to, format);
-    if retour.is_err() {
+    let imbuf = scaled.to_rgba8();
+   // let retour = scaled.save_with_format(to, ImageOutputFormat::Avif);
+
+    let mut encoded = Vec::new();
+    let encoder = image::codecs::avif::AvifEncoder::new_with_speed_quality(&mut encoded, 5, 75);
+    let result = encoder.write_image(&imbuf, imbuf.width(), imbuf.height(), ColorType::Rgba8);
+    if result.is_err() {
         let _ = remove_file(&to).await;
+    } else {
+        output.write_all(&encoded)?;
     }
     Ok(())
 }
@@ -187,11 +195,18 @@ fn resize(image: DynamicImage, size: u32) -> DynamicImage {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
 
     #[tokio::test]
     async fn convert() {
-        //resize_image_path("test_data/image.jpg", "test_data/image.jpg", 500, ImageOutputFormat::Jpeg(80)).await.unwrap()
+        let source = PathBuf::from_str("test_data/image.jpg").expect("unable to set path");
+        let target = PathBuf::from_str("test_data/image.avif").expect("unable to set path");
+        if target.exists() {
+            fs::remove_file(&target).expect("failed to remove existing result file");
+        }
+        resize_image_path(&source, &target, 7680).await.unwrap()
         //convert_to_pipe("C:/Users/arnau/Downloads/IMG_5020.mov", None).await;
     }
 }

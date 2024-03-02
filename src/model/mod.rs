@@ -110,7 +110,7 @@ impl  ModelController {
 					let original_filepath = format!("{}/{}{}.webp", folder, id, ImageType::optional_to_filename_element(&kind));
 					let exist = m.exists(&original_filepath).await;
 					if exist {
-						resize_image_path(&m.get_gull_path(&original_filepath),  &m.get_gull_path(&source_filepath), int_size.to_size(), image::ImageFormat::WebP).await?;
+						resize_image_path(&m.get_gull_path(&original_filepath),  &m.get_gull_path(&source_filepath), int_size.to_size()).await?;
 						let reader_response = m.get_file_read_stream(&source_filepath).await?;
 						return Ok(reader_response);
 					}
