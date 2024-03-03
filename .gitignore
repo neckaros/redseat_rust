@@ -18,3 +18,4 @@ test_data/image-thumb.jpg
 test_data/image.avif
 test_data/image2.avif
 test_data/image2.webp
+$$/.DS_Store
