@@ -50,8 +50,3 @@ webp = "0.2.6"
 tower = { version = "0.4", features = ["util"] }
 hyper-util = { version = "0.1", features = ["client", "http1", "client-legacy"] }
 serial_test = "*"
-
-[package.metadata.vcpkg]
-git = "https://github.com/microsoft/vcpkg"
-rev = "53bef89"
-dependencies = ["libheif"]
