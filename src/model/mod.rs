@@ -124,7 +124,7 @@ impl  ModelController {
 	}
 
 	pub async fn update_library_image<T: AsyncRead>(&self, library_id: &str, folder: &str, id: &str, kind: &ImageType, reader: T, requesting_user: &ConnectedUser) -> Result<()> {
-        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
 
         let m = self.library_source_for_library(&library_id).await?;
 

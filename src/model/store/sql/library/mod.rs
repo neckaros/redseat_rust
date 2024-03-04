@@ -7,6 +7,7 @@ use super::Result;
 pub mod tags;
 pub mod people;
 pub mod series;
+pub mod episodes;
 
 pub struct SqliteLibraryStore {
 	connection: Connection,

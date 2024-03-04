@@ -82,9 +82,9 @@ impl SqliteLibraryStore {
             where_query.add_update(update.tvdb, QueryWhereType::Equal("tvdb".to_string()));
             where_query.add_update(update.otherids, QueryWhereType::Equal("otherids".to_string()));
             where_query.add_update(update.imdb_rating, QueryWhereType::Equal("imdb_rating".to_string()));
-            where_query.add_update(update.imdb_votes, QueryWhereType::Equal("parimdb_votesams".to_string()));
+            where_query.add_update(update.imdb_votes, QueryWhereType::Equal("imdb_votes".to_string()));
             where_query.add_update(update.trakt_rating, QueryWhereType::Equal("trakt_rating".to_string()));
-            where_query.add_update(update.trakt_rating, QueryWhereType::Equal("trakt_rating".to_string()));
+            where_query.add_update(update.trakt_votes, QueryWhereType::Equal("trakt_votes".to_string()));
             where_query.add_update(update.year, QueryWhereType::Equal("year".to_string()));
             where_query.add_update(update.max_created, QueryWhereType::Equal("maxCreated".to_string()));
 

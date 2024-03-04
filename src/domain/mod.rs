@@ -9,6 +9,7 @@ pub mod tag;
 pub mod rs_link;
 pub mod people;
 pub mod serie;
+pub mod episode;
 
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

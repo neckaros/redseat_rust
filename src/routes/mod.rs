@@ -13,9 +13,15 @@ pub mod backups;
 pub mod tags;
 pub mod people;
 pub mod series;
+pub mod episodes;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ImageRequestOptions {
     size: Option<ImageSize>,
     kind: Option<ImageType>
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ImageUploadOptions {
+    kind: ImageType
 }
