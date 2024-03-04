@@ -1,8 +1,8 @@
-use std::process::Stdio;
+use std::{path::Path, process::Stdio};
 use std::str;
 use serde::Serialize;
 use serde_with::serde_as;
-use tokio::{io::{AsyncBufReadExt, BufReader}, process::Command};
+use tokio::{io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader}, process::Command};
 
 use crate::{domain::ffmpeg::FfprobeResult, Error};
 
@@ -31,6 +31,66 @@ impl core::fmt::Display for VideoError {
 
 impl std::error::Error for VideoError {}
 
+struct VideoCommandBuilder {
+    cmd: Command,
+    input_options: Vec<String>,
+    output_options: Vec<String>,
+    video_effects: Vec<String>,
+}
+
+impl VideoCommandBuilder {
+    pub fn new(path: &str) -> Self {
+        let mut cmd = Command::new("ffmpeg");
+        cmd.arg("-i")
+            .arg(path);
+        Self {
+            cmd,
+            input_options: Vec::new(),
+            output_options: Vec::new(),
+            video_effects: Vec::new(),
+        }
+    }
+
+
+    /// Ex: 500x500^
+    pub fn set_size(&mut self, size: &str) -> &mut Self {
+        self.cmd
+            .arg("-resize")
+            .arg(size);
+        self
+    }
+
+    pub async fn run<'a, W>(&mut self, source: &str, format: &str, writer: &'a mut W) -> Result<(), Error>
+    where
+        W: AsyncWrite + Unpin + ?Sized,
+    {
+        let frames = get_number_of_frames(source).await;
+        let mut child = self.cmd
+        .arg(format!("{}:-", format))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    
+        let stdout = child.stdout.take().unwrap();
+        let reader = BufReader::new(stdout);
+        let mut lines = reader.lines();
+        while let Some(line) = lines.next_line().await.expect("msg") {
+             let line_spit = line.split("=").collect::<Vec<&str>>();
+             if line_spit[0] == "frame" {
+                 if let Some(frames) = frames {
+                     let frame_number = line_spit[1].parse::<isize>().unwrap();
+                     let percent = frame_number as f64 / frames as f64 * 100 as f64;
+                     println!("\rProgress: {}%", round(percent, 1));
+                 } else {
+                     println!("\rProgress: {} frames", line_spit[1]);
+                 }
+             }
+        }
+         child.wait().await.expect("oops");
+
+        Ok(())
+    }
+}
 
 
 

@@ -45,6 +45,7 @@ socketioxide = { version = "0.10.2", features = ["extensions","state",] }
 async-trait = "0.1.77"
 mime_guess = "2.0.4"
 webp = "0.2.6"
+which = "6.0.0"
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }

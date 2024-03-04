@@ -1,12 +1,13 @@
 use core::fmt;
-use std::{fs::{remove_file, File}, io::{self, Seek, Write}, num::ParseIntError, path::PathBuf, str::FromStr};
+use std::{fs::{remove_file, File}, io::{Seek, Write}, num::ParseIntError, path::PathBuf, process::Stdio, str::FromStr};
 
-use image::{ColorType, DynamicImage, ImageEncoder, ImageError as RsImageError, ImageFormat, ImageOutputFormat};
+use image::{ColorType, DynamicImage, ImageEncoder, ImageOutputFormat};
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr};
+use tokio::{io::{AsyncRead, AsyncWrite, AsyncWriteExt}, process::{Child, Command}};
 use webp::WebPEncodingError;
 use derive_more::From;
-
+use which::which;
 
 pub type ImageResult<T> = core::result::Result<T, ImageError>;
 
@@ -164,7 +165,74 @@ impl core::fmt::Display for ImageError {
 
 impl std::error::Error for ImageError {}
 
+pub fn has_image_magick() -> bool {
+    which("magickh").is_ok()
+}
+
+struct ImageCommandBuilder {
+    cmd: Command
+}
+
+impl ImageCommandBuilder {
+    pub fn new() -> Self {
+        let mut cmd = Command::new("magick");
+        cmd.arg("-");
+        Self { cmd}
+    }
+
+    pub fn set_quality(&mut self, quality: u16) -> &mut Self {
+        self.cmd
+            .arg("-quality")
+            .arg(quality.to_string());
+        self
+    }
+
+    /// Ex: 500x500^
+    pub fn set_size(&mut self, size: &str) -> &mut Self {
+        self.cmd
+            .arg("-resize")
+            .arg(size);
+        self
+    }
+
+    pub async fn run<'a, R, W>(&mut self, format: &str, reader: &'a mut R, writer: &'a mut W) -> ImageResult<usize>
+    where
+        R: AsyncRead + Unpin + ?Sized,
+        W: AsyncWrite + Unpin + ?Sized,
+    {
+        let mut cmd = self.cmd
+        .arg(format!("{}:-", format))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    
+        if let Some(mut stdin) = cmd.stdin.take() {  
+            tokio::io::copy(reader, &mut stdin).await?;
+        }
+        let output = cmd.wait_with_output().await?;
+        
+        writer.write_all(&output.stdout).await?;
+        Ok(output.stdout.len())
+    }
+}
+
 pub async fn resize_image_path(path: &PathBuf, to: &PathBuf, size: u32) -> ImageResult<()> {
+
+    let mut source = tokio::fs::File::open(&path).await?;
+    let mut file = tokio::fs::File::create(to).await?;
+
+    let mut builder = ImageCommandBuilder::new();
+    builder.set_quality(80);
+    builder.set_size(&format!("{}x{}^", size, size));
+    builder.run("webp",&mut source, &mut file).await?;
+    
+    Ok(())
+}
+
+
+
+pub async fn resize_image_path_native(path: &PathBuf, to: &PathBuf, size: u32) -> ImageResult<()> {
     let mut output = File::create(to)?;
     let img = image::open(path)?;
     let scaled = resize(img, size);
