@@ -1,13 +1,15 @@
 
 
 
+use std::{io::Read, pin::Pin};
+
 use nanoid::nanoid;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use tokio::{fs::File, io::BufReader};
+use serde_json::{Value};
+use tokio::{fs::File, io::{AsyncRead, BufReader}};
 
 
-use crate::{domain::{library::LibraryRole, people::{PeopleMessage, Person}, serie::{Serie, SeriesMessage}, ElementAction}, plugins::sources::FileStreamResult, tools::image_tools::{ImageSize, ImageType}};
+use crate::{domain::{library::LibraryRole, people::{PeopleMessage, Person}, serie::{Serie, SeriesMessage}, ElementAction}, plugins::sources::{AsyncReadPinBox, FileStreamResult}, tools::image_tools::{ImageSize, ImageType}};
 
 use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
 
@@ -150,11 +152,11 @@ impl ModelController {
 		Ok(tag)
 	}
 
-    pub async fn update_serie(&self, library_id: &str, tag_id: String, update: SerieForUpdate, requesting_user: &ConnectedUser) -> Result<Serie> {
+    pub async fn update_serie(&self, library_id: &str, serie_id: String, update: SerieForUpdate, requesting_user: &ConnectedUser) -> Result<Serie> {
         requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
-		store.update_serie(&tag_id, update).await?;
-        let person = store.get_serie(&tag_id).await?.ok_or(Error::NotFound)?;
+		store.update_serie(&serie_id, update).await?;
+        let person = store.get_serie(&serie_id).await?.ok_or(Error::NotFound)?;
         self.send_serie(SeriesMessage { library: library_id.to_string(), action: ElementAction::Updated, series: vec![person.clone()] });
         Ok(person)
 	}
@@ -170,24 +172,24 @@ impl ModelController {
 	}
 
 
-    pub async fn add_serie(&self, library_id: &str, new_serie: SerieForAdd, requesting_user: &ConnectedUser) -> Result<Person> {
+    pub async fn add_serie(&self, library_id: &str, new_serie: SerieForAdd, requesting_user: &ConnectedUser) -> Result<Serie> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         let backup: SerieForInsert = new_serie.into();
 		store.add_serie(backup.clone()).await?;
-        let new_person = self.get_person(library_id, backup.id, requesting_user).await?.ok_or(Error::NotFound)?;
-        self.send_people(PeopleMessage { library: library_id.to_string(), action: ElementAction::Added, people: vec![new_person.clone()] });
+        let new_person = self.get_serie(library_id, backup.id, requesting_user).await?.ok_or(Error::NotFound)?;
+        self.send_serie(SeriesMessage { library: library_id.to_string(), action: ElementAction::Added, series: vec![new_person.clone()] });
 		Ok(new_person)
 	}
 
 
-    pub async fn remove_serie(&self, library_id: &str, tag_id: &str, requesting_user: &ConnectedUser) -> Result<Person> {
+    pub async fn remove_serie(&self, library_id: &str, serie_id: &str, requesting_user: &ConnectedUser) -> Result<Serie> {
         requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
-        let existing = store.get_person(&tag_id).await?;
+        let existing = store.get_serie(&serie_id).await?;
         if let Some(existing) = existing { 
-            store.remove_person(tag_id.to_string()).await?;
-            self.send_people(PeopleMessage { library: library_id.to_string(), action: ElementAction::Removed, people: vec![existing.clone()] });
+            store.remove_serie(serie_id.to_string()).await?;
+            self.send_serie(SeriesMessage { library: library_id.to_string(), action: ElementAction::Removed, series: vec![existing.clone()] });
             Ok(existing)
         } else {
             Err(Error::NotFound)
@@ -196,9 +198,12 @@ impl ModelController {
 
 
     
-	pub async fn serie_image(&self, library_id: &str, serie_id: &str, kind: Option<ImageType>, size: Option<ImageSize>, requesting_user: &ConnectedUser) -> Result<FileStreamResult<BufReader<File>>> {
+	pub async fn serie_image(&self, library_id: &str, serie_id: &str, kind: Option<ImageType>, size: Option<ImageSize>, requesting_user: &ConnectedUser) -> Result<FileStreamResult<AsyncReadPinBox>> {
         self.library_image(library_id, ".series", serie_id, kind.or(Some(ImageType::Poster)), size, requesting_user).await
 	}
 
+    pub async fn update_serie_image<T: AsyncRead>(&self, library_id: &str, serie_id: &str, kind: &ImageType, reader: T, requesting_user: &ConnectedUser) -> Result<()> {
+        self.update_library_image(library_id, ".series", serie_id, kind, reader, requesting_user).await
+	}
     
 }

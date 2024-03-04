@@ -40,6 +40,9 @@ pub enum Error {
 	// -- Externals
 	#[from]
 	TokioRusqlite(#[serde_as(as = "DisplayFromStr")] tokio_rusqlite::Error),
+	
+	#[from]
+	TokioIo(#[serde_as(as = "DisplayFromStr")] tokio::io::Error),
 	#[from]
 	Rusqlite(#[serde_as(as = "DisplayFromStr")] rusqlite::Error),
 	#[from]
@@ -96,6 +99,8 @@ impl Error {
 			Error::Serde(_) => (StatusCode::INTERNAL_SERVER_ERROR, ClientError::SERVICE_ERROR),
 			Error::Source(s) => s.client_status_and_error(),
 			Error::Image(s) => (StatusCode::INTERNAL_SERVER_ERROR, ClientError::SERVICE_ERROR),
+			
+			_ => (StatusCode::INTERNAL_SERVER_ERROR, ClientError::SERVICE_ERROR),
 			
 		}
 	}

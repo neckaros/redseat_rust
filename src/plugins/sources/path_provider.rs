@@ -1,13 +1,13 @@
-use std::{path::PathBuf, str::FromStr};
+use std::{path::PathBuf, pin::Pin, str::FromStr};
 
 
 use axum::async_trait;
 use chrono::{Datelike, Utc};
-use tokio::{fs::File, io::{AsyncWrite, BufReader, BufWriter}};
+use tokio::{fs::{remove_file, File}, io::{AsyncRead, AsyncWrite, BufReader, BufWriter}};
 
 use crate::domain::library::ServerLibrary;
 
-use super::{error::{SourcesError, SourcesResult}, FileStreamResult, Source};
+use super::{error::{SourcesError, SourcesResult}, AsyncReadPinBox, FileStreamResult, Source};
 
 pub struct PathProvider {
     root: PathBuf
@@ -39,8 +39,15 @@ impl Source for PathProvider {
         let path = self.get_gull_path(&source);
         path.exists()
     }
-    async fn get_file_read_stream(&self, source: &str) -> SourcesResult<FileStreamResult<BufReader<File>>> {
-        let mut path = self.get_gull_path(&source);
+
+    async fn remove(&self, source: &str) -> SourcesResult<()> {
+        let path = self.get_gull_path(&source);
+        remove_file(path).await?;
+        Ok(())
+    }
+
+    async fn get_file_read_stream(&self, source: &str) -> SourcesResult<FileStreamResult<AsyncReadPinBox>> {
+        let path = self.get_gull_path(&source);
         let guess = mime_guess::from_path(&source);
         let filename = path.file_name().map(|f| f.to_string_lossy().into_owned());
 
@@ -55,22 +62,22 @@ impl Source for PathProvider {
         let len = file.metadata().await?;
         let filereader = BufReader::new(file);
         Ok(FileStreamResult {
-            stream: filereader,
+            stream: Box::pin(filereader),
             size: Some(len.len()),
             mime: guess.first(),
             name: filename
         })
     }
 
-    async fn get_file_write_stream(&self, name: &str) -> SourcesResult<Box<dyn AsyncWrite>> {
+    async fn get_file_write_stream(&self, name: &str) -> SourcesResult<Pin<Box<dyn AsyncWrite + Send>>> {
         let mut path = self.root.clone();
-        let year = Utc::now().year().to_string();
-        path.push(year);
+        //let year = Utc::now().year().to_string();
+        //path.push(year);
         path.push(name);
         
-        let file = BufWriter::new(File::create(path).await.map_err(|_| SourcesError::Error)?);
+        let file = BufWriter::new(File::create(path).await?);
         
-        Ok(Box::new(file))
+        Ok(Box::pin(file))
     }
 
 }

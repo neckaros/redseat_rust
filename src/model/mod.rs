@@ -9,17 +9,17 @@ pub mod backups;
 pub mod tags;
 pub mod people;
 pub mod series;
+pub mod episodes;
 
-use std::{path::PathBuf, sync::Arc};
+use std::{io::Read, path::PathBuf, pin::Pin, sync::Arc};
+use strum::IntoEnumIterator;
 
-
-
-use crate::{domain::library::{LibraryMessage, LibraryRole}, plugins::{sources::{error::SourcesError, path_provider::PathProvider, FileStreamResult, LocalSource, Source}, PluginManager}, server::get_server_file_path_array, tools::image_tools::{resize_image_path, ImageSize, ImageType}};
+use crate::{domain::library::{LibraryMessage, LibraryRole}, plugins::{sources::{error::SourcesError, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, LocalSource, Source}, PluginManager}, server::get_server_file_path_array, tools::{image_tools::{resize_image_path, ImageSize, ImageSizeIter, ImageType}, log::log_info}};
 
 use self::{store::SqliteStore, users::{ConnectedUser, UserRole}};
 use error::{Result, Error};
 use socketioxide::{extract::SocketRef, SocketIo};
-use tokio::{fs::File, io::BufReader};
+use tokio::{fs::{self, remove_file, File}, io::{copy, AsyncRead, BufReader}};
 
 #[derive(Clone)]
 pub struct ModelController {
@@ -98,7 +98,7 @@ impl  ModelController {
 		Ok(source)
 	}
 
-	pub async fn library_image(&self, library_id: &str, folder: &str, id: &str, kind: Option<ImageType>, size: Option<ImageSize>, requesting_user: &ConnectedUser) -> Result<FileStreamResult<BufReader<File>>> {
+	pub async fn library_image(&self, library_id: &str, folder: &str, id: &str, kind: Option<ImageType>, size: Option<ImageSize>, requesting_user: &ConnectedUser) -> Result<FileStreamResult<AsyncReadPinBox>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
 
         let m = self.library_source_for_library(&library_id).await?;
@@ -110,6 +110,7 @@ impl  ModelController {
 					let original_filepath = format!("{}/{}{}.webp", folder, id, ImageType::optional_to_filename_element(&kind));
 					let exist = m.exists(&original_filepath).await;
 					if exist {
+						log_info(crate::tools::log::LogServiceType::Other, format!("Creating image size: {} {} {} {}", folder, id, ImageType::optional_to_filename_element(&kind), int_size));
 						resize_image_path(&m.get_gull_path(&original_filepath),  &m.get_gull_path(&source_filepath), int_size.to_size()).await?;
 						let reader_response = m.get_file_read_stream(&source_filepath).await?;
 						return Ok(reader_response);
@@ -120,6 +121,33 @@ impl  ModelController {
 		}
 
         Ok(reader_response?)
+	}
+
+	pub async fn update_library_image<T: AsyncRead>(&self, library_id: &str, folder: &str, id: &str, kind: &ImageType, reader: T, requesting_user: &ConnectedUser) -> Result<()> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+
+        let m = self.library_source_for_library(&library_id).await?;
+
+		let source_filepath = format!("{}/{}{}.webp", folder, id, kind.to_filename_element());
+			let r = m.remove(&source_filepath).await;
+			if r.is_ok() {
+				log_info(crate::tools::log::LogServiceType::Other, format!("Deleted image {}", source_filepath));
+			}
+
+		for size in ImageSize::iter() {
+			let source_filepath = format!("{}/{}{}{}.webp", folder, id, kind.to_filename_element(), size.to_filename_element());
+			let r = m.remove(&source_filepath).await;
+			if r.is_ok() {
+				log_info(crate::tools::log::LogServiceType::Other, format!("Deleted image {}", source_filepath));
+			}
+		}
+		println!("1");
+		let writer = m.get_file_write_stream(&source_filepath).await?;
+		println!("2");
+		tokio::pin!(reader);
+		tokio::pin!(writer);
+		copy(&mut reader, &mut writer).await?;
+        Ok(())
 	}
 
 

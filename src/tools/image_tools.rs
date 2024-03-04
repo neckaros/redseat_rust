@@ -4,6 +4,7 @@ use std::{fs::{remove_file, File}, io::{Seek, Write}, num::ParseIntError, path::
 use image::{ColorType, DynamicImage, ImageEncoder, ImageOutputFormat};
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr};
+use strum_macros::EnumIter;
 use tokio::{io::{AsyncRead, AsyncWrite, AsyncWriteExt}, process::{Child, Command}};
 use webp::WebPEncodingError;
 use derive_more::From;
@@ -13,7 +14,7 @@ pub type ImageResult<T> = core::result::Result<T, ImageError>;
 
 
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, EnumIter)]
 #[serde(rename_all = "snake_case")] 
 pub enum ImageSize {
     Thumb,

@@ -3,10 +3,10 @@
 use std::{fs, net::{IpAddr, Ipv6Addr, SocketAddr}, path::PathBuf, str::FromStr};
 
 use axum::{
-    http::Method, middleware, Router
+    extract::DefaultBodyLimit, http::Method, middleware, Router
 };
 use axum_server::tls_rustls::RustlsConfig;
-use image::ImageOutputFormat;
+
 use model::{store::SqliteStore, ModelController};
 use plugins::PluginManager;
 use routes::mw_auth;
@@ -104,13 +104,14 @@ async fn app() -> Result<Router> {
         .nest("/libraries", routes::libraries::routes(mc.clone()))
         .nest("/libraries/:libraryid/tags", routes::tags::routes(mc.clone()))
         .nest("/libraries/:libraryid/people", routes::people::routes(mc.clone()))
-        .nest("/libraries/:libraryid/series", routes::series::routes(mc.clone()))
+        .nest("/libraries/:libraryid/shows", routes::series::routes(mc.clone()))
         .nest("/library", routes::libraries::routes(mc.clone())) // duplicate for legacy
         .nest("/users", routes::users::routes(mc.clone()))
         .nest("/credentials", routes::credentials::routes(mc.clone()))
         .nest("/backups", routes::backups::routes(mc.clone()))
         //.layer(middleware::map_response(main_response_mapper))
         .layer(middleware::from_fn_with_state(mc.clone(), mw_auth::mw_token_resolver))
+        .layer(DefaultBodyLimit::disable())
         .layer(
             ServiceBuilder::new()
                 .layer(CorsLayer::permissive()) // Enable CORS policy

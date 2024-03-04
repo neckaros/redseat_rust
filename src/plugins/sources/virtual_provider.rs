@@ -1,14 +1,14 @@
-use std::{io, path::PathBuf, str::FromStr};
+use std::{io, path::PathBuf, pin::Pin, str::FromStr};
 
 
 use axum::async_trait;
 use chrono::{Datelike, Utc};
 use query_external_ip::SourceError;
-use tokio::{fs::File, io::{AsyncWrite, BufReader, BufWriter}};
+use tokio::{fs::File, io::{AsyncRead, AsyncWrite, BufReader, BufWriter}};
 
 use crate::{domain::library::ServerLibrary, server::get_server_file_path_array};
 
-use super::{error::{SourcesError, SourcesResult}, FileStreamResult, Source};
+use super::{error::{SourcesError, SourcesResult}, AsyncReadPinBox, FileStreamResult, Source};
 
 pub struct VirtualProvider {
     root: PathBuf,
@@ -31,8 +31,11 @@ impl Source for VirtualProvider {
     async fn exists(&self, source: &str) -> bool {
         true
     }
+    async fn remove(&self, source: &str) -> SourcesResult<()> {
 
-    async fn get_file_read_stream(&self, source: &str) -> SourcesResult<FileStreamResult<BufReader<File>>> {
+        Ok(())
+    }
+    async fn get_file_read_stream(&self, source: &str) -> SourcesResult<FileStreamResult<AsyncReadPinBox>> {
         println!("Virtual {}", &source);
         let mut path = self.root.clone();
         path.push(source);
@@ -47,14 +50,14 @@ impl Source for VirtualProvider {
         let len = file.metadata().await?;
         let filereader = BufReader::new(file);
         Ok(FileStreamResult {
-            stream: filereader,
+            stream: Box::pin(filereader),
             size: Some(len.len()),
             mime: None,
             name: None
         })
     }
 
-    async fn get_file_write_stream(&self, name: &str) -> SourcesResult<Box<dyn AsyncWrite>> {
+    async fn get_file_write_stream(&self, name: &str) -> SourcesResult<Pin<Box<dyn AsyncWrite + Send>>> {
         let mut path = self.root.clone();
         let year = Utc::now().year().to_string();
         path.push(year);
@@ -62,7 +65,7 @@ impl Source for VirtualProvider {
         
         let file = BufWriter::new(File::create(path).await.map_err(|_| SourcesError::Error)?);
         
-        Ok(Box::new(file))
+        Ok(Box::pin(file))
     }
 
 }

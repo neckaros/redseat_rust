@@ -12,7 +12,7 @@ pub type SourcesResult<T> = core::result::Result<T, SourcesError>;
 pub enum SourcesError {
 
     Error,
-
+	Other(String),
 	NotFound(Option<String>),
 	
 	#[from]

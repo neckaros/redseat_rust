@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, pin::Pin};
 
 use axum::async_trait;
 use hyper::{header, HeaderMap};
@@ -12,15 +12,15 @@ pub mod path_provider;
 pub mod virtual_provider;
 pub mod error;
 
-
-pub struct FileStreamResult<T: Sized + AsyncRead> {
+pub type AsyncReadPinBox = Pin<Box<dyn AsyncRead + Send>>;
+pub struct FileStreamResult<T: Sized + AsyncRead + Send> {
     pub stream: T,
     pub size: Option<u64>,
     pub mime: Option<Mime>,
     pub name: Option<String>,
 }
 
-impl<T: Sized + AsyncRead> FileStreamResult<T> {
+impl<T: Sized + AsyncRead + Send> FileStreamResult<T> {
     pub fn hearders(&self) -> SourcesResult<HeaderMap> {
         let mut headers = HeaderMap::new();
         let mime = self.mime.clone();
@@ -42,8 +42,9 @@ pub trait Source: Send {
     
 
     async fn exists(&self, name: &str) -> bool;
-    async fn get_file_read_stream(&self, source: &str) -> SourcesResult<FileStreamResult<BufReader<File>>>;
-    async fn get_file_write_stream(&self, name: &str) -> SourcesResult<Box<dyn AsyncWrite>>;
+    async fn remove(&self, name: &str) -> SourcesResult<()>;
+    async fn get_file_read_stream(&self, source: &str) -> SourcesResult<FileStreamResult<AsyncReadPinBox>>;
+    async fn get_file_write_stream(&self, name: &str) -> SourcesResult<Pin<Box<dyn AsyncWrite + Send>>>;
     //async fn fill_file_information(&self, file: &mut ServerFile) -> SourcesResult<()>;
 }
 
