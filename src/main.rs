@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+#![cfg_attr(debug_assertions, allow(dead_code, unused_imports))]
 
 use std::{fs, net::{IpAddr, Ipv6Addr, SocketAddr}, path::PathBuf, str::FromStr};
 
@@ -13,7 +13,7 @@ use routes::{mw_auth, mw_range};
 
 
 use tokio::net::TcpListener;
-use tools::log::LogServiceType;
+use tools::{log::LogServiceType, prediction};
 use tower::ServiceBuilder;
 use tower_http::cors::{CorsLayer, Any};
 use crate::{server::{get_config, update_ip}, tools::{auth::get_or_init_keys, image_tools::resize_image_path, log::log_info}};
@@ -47,6 +47,7 @@ async fn main() ->  Result<()> {
         log_info(LogServiceType::Other, "start".into());
         resize_image_path(&source, &target, 500).await.unwrap();
         log_info(LogServiceType::Other, "done".into());*/
+        //prediction::predict();
     });
 
     let register_infos = register().await?;

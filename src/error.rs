@@ -25,6 +25,13 @@ pub enum Error {
 	InvalidRangeHeader,
 	NoRangeHeader,
 
+	
+
+	// Prediction Error 
+
+	NoModelFound,
+	ModelMappingNotFound,
+	ModelNotFound(String),
 	// -- Auth errors.
 
 	Forbiden,
@@ -64,6 +71,13 @@ pub enum Error {
 
 	#[from]
 	Serde(#[serde_as(as = "DisplayFromStr")] serde_json::Error),
+
+	
+	#[from]
+	ORT(#[serde_as(as = "DisplayFromStr")] ort::Error),
+
+	#[from]
+	Image(#[serde_as(as = "DisplayFromStr")] image::ImageError),
 }
 
 // region:    --- Error Boilerplate

@@ -60,7 +60,7 @@ impl VideoCommandBuilder {
         self
     }
 
-    pub async fn run<'a, W>(&mut self, source: &str, format: &str, writer: &'a mut W) -> Result<(), Error>
+    pub async fn run<'a, W>(&mut self, source: &str, format: &str, _writer: &'a mut W) -> Result<(), Error>
     where
         W: AsyncWrite + Unpin + ?Sized,
     {

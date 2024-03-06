@@ -55,8 +55,8 @@ async fn handler_image(Path((library_id, tag_id)): Path<(String, String)>, State
     Ok((headers, body).into_response())
 }
 
-async fn handler_post_image(Path((library_id, tag_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ImageRequestOptions>, mut multipart: Multipart) -> Result<Json<Value>> {
-	while let Some(mut field) = multipart.next_field().await.unwrap() {
+async fn handler_post_image(Path((library_id, tag_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, mut multipart: Multipart) -> Result<Json<Value>> {
+	while let Some(field) = multipart.next_field().await.unwrap() {
         let name = field.name().unwrap().to_string();
 		let filename = field.file_name().unwrap().to_string();
 		let mime: String = field.content_type().unwrap().to_string();

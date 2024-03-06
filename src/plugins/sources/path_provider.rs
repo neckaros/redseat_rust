@@ -95,8 +95,6 @@ impl Source for PathProvider {
             }
         }
 
-        
-        println!("range: {}", &range_response.header_value());
         Ok(FileStreamResult {
             stream: Box::pin(filereader),
             size: Some(size),

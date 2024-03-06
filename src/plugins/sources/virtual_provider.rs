@@ -28,14 +28,14 @@ impl Source for VirtualProvider {
         }
     }
 
-    async fn exists(&self, source: &str) -> bool {
+    async fn exists(&self, _source: &str) -> bool {
         true
     }
-    async fn remove(&self, source: &str) -> SourcesResult<()> {
+    async fn remove(&self, _source: &str) -> SourcesResult<()> {
 
         Ok(())
     }
-    async fn get_file_read_stream(&self, source: &str, range: Option<RangeDefinition>) -> SourcesResult<FileStreamResult<AsyncReadPinBox>> {
+    async fn get_file_read_stream(&self, source: &str, _range: Option<RangeDefinition>) -> SourcesResult<FileStreamResult<AsyncReadPinBox>> {
         println!("Virtual {}", &source);
         let mut path = self.root.clone();
         path.push(source);

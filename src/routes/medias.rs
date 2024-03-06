@@ -1,10 +1,10 @@
 
-use crate::{model::{medias::MediaQuery, series::{SerieForAdd, SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, Error, Result};
+use crate::{model::{medias::MediaQuery, series::{SerieForAdd, SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, tools::prediction::predict, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
 use futures::TryStreamExt;
 use hyper::{header::ACCEPT_RANGES, StatusCode};
 use serde_json::{json, Value};
-use tokio::io::AsyncRead;
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio_util::io::{ReaderStream, StreamReader};
 
 use super::{mw_range::RangeDefinition, ImageRequestOptions, ImageUploadOptions};
@@ -16,6 +16,7 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/", get(handler_list))
 		.route("/", post(handler_post))
 		.route("/:id/metadata", get(handler_get))
+		.route("/:id/predict", get(handler_predict))
 		.route("/:id", get(handler_get_file))
 		.route("/:id", patch(handler_patch))
 		.route("/:id", delete(handler_delete))
@@ -38,7 +39,17 @@ async fn handler_get(Path((library_id, media_id)): Path<(String, String)>, State
 	Ok(body)
 }
 
-async fn handler_get_file(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, range: Option<RangeDefinition>, Query(query): Query<ImageRequestOptions>) -> Result<Response> {
+async fn handler_predict(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	let mut reader_response = mc.media_image(&library_id, &media_id, None, &user).await?;
+
+	let mut buffer = Vec::new();
+    reader_response.stream.read_to_end(&mut buffer).await?;
+	let prediction = predict(buffer)?;
+	let body = Json(json!(prediction));
+	Ok(body)
+}
+
+async fn handler_get_file(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, range: Option<RangeDefinition>) -> Result<Response> {
 	let reader_response = mc.library_file(&library_id, &media_id, range.clone(), &user).await?;
 	let headers = reader_response.hearders().map_err(|_| Error::GenericRedseatError)?;
     let stream = ReaderStream::new(reader_response.stream);
@@ -78,7 +89,7 @@ async fn handler_image(Path((library_id, media_id)): Path<(String, String)>, Sta
 
 #[debug_handler]
 async fn handler_post_image(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ImageUploadOptions>, mut multipart: Multipart) -> Result<Json<Value>> {
-	while let Some(mut field) = multipart.next_field().await.unwrap() {
+	while let Some(field) = multipart.next_field().await.unwrap() {
         //let name = field.name().unwrap().to_string();
 		//let filename = field.file_name().unwrap().to_string();
 		//let mime: String = field.content_type().unwrap().to_string();
