@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub mod file;
+pub mod media;
 pub mod library;
 pub mod ffmpeg;
 pub mod credential;

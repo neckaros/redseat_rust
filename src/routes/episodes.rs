@@ -1,5 +1,5 @@
 
-use crate::{domain::serie, model::{episodes::{EpisodeForAdd, EpisodeForUpdate, EpisodeQuery}, series::{SerieForAdd, SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, Error, Result};
+use crate::{model::{episodes::{EpisodeForAdd, EpisodeForUpdate, EpisodeQuery}, users::ConnectedUser, ModelController}, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
 use futures::TryStreamExt;
 use serde_json::{json, ser, Value};

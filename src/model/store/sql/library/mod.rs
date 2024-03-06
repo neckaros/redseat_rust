@@ -8,6 +8,7 @@ pub mod tags;
 pub mod people;
 pub mod series;
 pub mod episodes;
+pub mod medias;
 
 pub struct SqliteLibraryStore {
 	connection: Connection,

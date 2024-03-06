@@ -14,7 +14,7 @@ pub type ImageResult<T> = core::result::Result<T, ImageError>;
 
 
 
-#[derive(Debug, Serialize, Deserialize, Clone, EnumIter)]
+#[derive(Debug, Serialize, Deserialize, Clone, EnumIter, PartialEq)]
 #[serde(rename_all = "snake_case")] 
 pub enum ImageSize {
     Thumb,

@@ -6,7 +6,7 @@ use chrono::{Datelike, Utc};
 use query_external_ip::SourceError;
 use tokio::{fs::File, io::{AsyncRead, AsyncWrite, BufReader, BufWriter}};
 
-use crate::{domain::library::ServerLibrary, server::get_server_file_path_array};
+use crate::{domain::library::ServerLibrary, routes::mw_range::RangeDefinition, server::get_server_file_path_array};
 
 use super::{error::{SourcesError, SourcesResult}, AsyncReadPinBox, FileStreamResult, Source};
 
@@ -35,7 +35,7 @@ impl Source for VirtualProvider {
 
         Ok(())
     }
-    async fn get_file_read_stream(&self, source: &str) -> SourcesResult<FileStreamResult<AsyncReadPinBox>> {
+    async fn get_file_read_stream(&self, source: &str, range: Option<RangeDefinition>) -> SourcesResult<FileStreamResult<AsyncReadPinBox>> {
         println!("Virtual {}", &source);
         let mut path = self.root.clone();
         path.push(source);
@@ -52,6 +52,7 @@ impl Source for VirtualProvider {
         Ok(FileStreamResult {
             stream: Box::pin(filereader),
             size: Some(len.len()),
+            range: None,
             mime: None,
             name: None
         })

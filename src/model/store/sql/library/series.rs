@@ -108,28 +108,28 @@ impl SqliteLibraryStore {
         Ok(())
     }
 
-    pub async fn add_serie(&self, person: SerieForInsert) -> Result<()> {
+    pub async fn add_serie(&self, serie: SerieForInsert) -> Result<()> {
         self.connection.call( move |conn| { 
 
             conn.execute("INSERT INTO series (id, name, type, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, year, imdb_rating, imdb_votes, trailer, trakt_rating, trakt_votes)
             VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params![
-                person.id,
-                person.name,
-                person.kind,
-                to_pipe_separated_optional(person.alt),
-                person.params,
-                person.imdb,
-                person.slug,
-                person.tmdb,
-                person.trakt,
-                person.tvdb,
-                person.otherids,
-                person.year,
-                person.imdb_rating,
-                person.imdb_votes,
-                person.trailer,
-                person.trakt_rating,
-                person.trakt_votes
+                serie.id,
+                serie.name,
+                serie.kind,
+                to_pipe_separated_optional(serie.alt),
+                serie.params,
+                serie.imdb,
+                serie.slug,
+                serie.tmdb,
+                serie.trakt,
+                serie.tvdb,
+                serie.otherids,
+                serie.year,
+                serie.imdb_rating,
+                serie.imdb_votes,
+                serie.trailer,
+                serie.trakt_rating,
+                serie.trakt_votes
             ])?;
             
             Ok(())
@@ -137,9 +137,9 @@ impl SqliteLibraryStore {
         Ok(())
     }
 
-    pub async fn remove_serie(&self, tag_id: String) -> Result<()> {
+    pub async fn remove_serie(&self, serie_id: String) -> Result<()> {
         self.connection.call( move |conn| { 
-            conn.execute("DELETE FROM series WHERE id = ?", &[&tag_id])?;
+            conn.execute("DELETE FROM series WHERE id = ?", &[&serie_id])?;
             Ok(())
         }).await?;
         Ok(())

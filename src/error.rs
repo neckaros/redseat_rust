@@ -19,6 +19,12 @@ pub enum Error {
 	LoginFail,
 	NotFound,
 
+
+	// Range Error 
+
+	InvalidRangeHeader,
+	NoRangeHeader,
+
 	// -- Auth errors.
 
 	Forbiden,

@@ -3,11 +3,11 @@ use std::{path::PathBuf, pin::Pin, str::FromStr};
 
 use axum::async_trait;
 use chrono::{Datelike, Utc};
-use tokio::{fs::{remove_file, File}, io::{AsyncRead, AsyncWrite, BufReader, BufWriter}};
+use tokio::{fs::{remove_file, File}, io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, BufReader, BufWriter}};
 
-use crate::domain::library::ServerLibrary;
+use crate::{domain::library::ServerLibrary, routes::mw_range::RangeDefinition};
 
-use super::{error::{SourcesError, SourcesResult}, AsyncReadPinBox, FileStreamResult, Source};
+use super::{error::{SourcesError, SourcesResult}, AsyncReadPinBox, FileStreamResult, RangeResponse, Source};
 
 pub struct PathProvider {
     root: PathBuf
@@ -46,24 +46,61 @@ impl Source for PathProvider {
         Ok(())
     }
 
-    async fn get_file_read_stream(&self, source: &str) -> SourcesResult<FileStreamResult<AsyncReadPinBox>> {
+    async fn get_file_read_stream(&self, source: &str, range: Option<RangeDefinition>) -> SourcesResult<FileStreamResult<AsyncReadPinBox>> {
         let path = self.get_gull_path(&source);
         let guess = mime_guess::from_path(&source);
         let filename = path.file_name().map(|f| f.to_string_lossy().into_owned());
 
-        let file = File::open(&path).await.map_err(|err| {
+        let mut file = File::open(&path).await.map_err(|err| {
             if err.kind() == std::io::ErrorKind::NotFound {
                 SourcesError::NotFound(path.to_str().map(|a| a.to_string()))
             } else {
                 SourcesError::Io(err)
             }
         })?;
+        let metadata = file.metadata().await?;
+        
+        let mut size = metadata.len();
 
-        let len = file.metadata().await?;
-        let filereader = BufReader::new(file);
+        let mut total_size = metadata.len();
+
+        let mut filereader = BufReader::new(file);
+
+        let mut range_response = RangeResponse { total_size: Some(total_size.clone()), size: None, start: None, end: None };
+        
+        if let Some(range) = &range {
+
+            if let Some(start) = range.start {
+                filereader.seek( std::io::SeekFrom::Start(start)).await?;
+                range_response.start = Some(start.clone());
+                size = size - start;
+                range_response.size = Some(size.clone());
+
+
+            }
+            if let Some(end) = range.end {
+                let start = range.start.unwrap_or(0);
+                let taken = filereader.take(end - start + 1);
+                size = end - start + 1;
+                range_response.end = Some(end.clone());
+                range_response.size = Some(size.clone());
+                //println!("range: {}", &range_response.header_value());
+                return Ok(FileStreamResult {
+                    stream: Box::pin(taken),
+                    size: Some(size),
+                    range: Some(range_response),
+                    mime: guess.first(),
+                    name: filename
+                })
+            }
+        }
+
+        
+        println!("range: {}", &range_response.header_value());
         Ok(FileStreamResult {
             stream: Box::pin(filereader),
-            size: Some(len.len()),
+            size: Some(size),
+            range: if range.is_some() { Some(range_response) } else {None},
             mime: guess.first(),
             name: filename
         })

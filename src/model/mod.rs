@@ -10,6 +10,7 @@ pub mod tags;
 pub mod people;
 pub mod series;
 pub mod episodes;
+pub mod medias;
 
 use std::{io::Read, path::PathBuf, pin::Pin, sync::Arc};
 use strum::IntoEnumIterator;
@@ -103,7 +104,7 @@ impl  ModelController {
 
         let m = self.library_source_for_library(&library_id).await?;
 		let source_filepath = format!("{}/{}{}{}.webp", folder, id, ImageType::optional_to_filename_element(&kind), ImageSize::optional_to_filename_element(&size));
-        let reader_response = m.get_file_read_stream(&source_filepath).await;
+        let reader_response = m.get_file_read_stream(&source_filepath, None).await;
 		if let Some(int_size) = size {
 			if let Err(error) = &reader_response {
 				if matches!(error, SourcesError::NotFound(_)) {
@@ -112,7 +113,7 @@ impl  ModelController {
 					if exist {
 						log_info(crate::tools::log::LogServiceType::Other, format!("Creating image size: {} {} {} {}", folder, id, ImageType::optional_to_filename_element(&kind), int_size));
 						resize_image_path(&m.get_gull_path(&original_filepath),  &m.get_gull_path(&source_filepath), int_size.to_size()).await?;
-						let reader_response = m.get_file_read_stream(&source_filepath).await?;
+						let reader_response = m.get_file_read_stream(&source_filepath, None).await?;
 						return Ok(reader_response);
 					}
 					
@@ -149,6 +150,7 @@ impl  ModelController {
 		copy(&mut reader, &mut writer).await?;
         Ok(())
 	}
+
 
 
 }

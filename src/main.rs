@@ -9,7 +9,7 @@ use axum_server::tls_rustls::RustlsConfig;
 
 use model::{store::SqliteStore, ModelController};
 use plugins::PluginManager;
-use routes::mw_auth;
+use routes::{mw_auth, mw_range};
 
 
 use tokio::net::TcpListener;
@@ -102,6 +102,7 @@ async fn app() -> Result<Router> {
     Ok(Router::new()
         .nest("/ping", routes::ping::routes())
         .nest("/libraries", routes::libraries::routes(mc.clone()))
+        .nest("/libraries/:libraryid/medias", routes::medias::routes(mc.clone()))
         .nest("/libraries/:libraryid/tags", routes::tags::routes(mc.clone()))
         .nest("/libraries/:libraryid/people", routes::people::routes(mc.clone()))
         .nest("/libraries/:libraryid/shows", routes::series::routes(mc.clone()))
@@ -109,6 +110,7 @@ async fn app() -> Result<Router> {
         .nest("/users", routes::users::routes(mc.clone()))
         .nest("/credentials", routes::credentials::routes(mc.clone()))
         .nest("/backups", routes::backups::routes(mc.clone()))
+        .layer(middleware::from_fn(mw_range::mw_range))
         //.layer(middleware::map_response(main_response_mapper))
         .layer(middleware::from_fn_with_state(mc.clone(), mw_auth::mw_token_resolver))
         .layer(DefaultBodyLimit::disable())

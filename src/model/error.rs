@@ -19,6 +19,7 @@ pub enum Error {
 	ServiceError(String, Option<String>),
 
 	NotFound,
+	UnableToGetFileStream,
 	FileNotFound(String),
 
 
