@@ -101,7 +101,9 @@ impl SqliteLibraryStore {
             let mut where_query = QueryBuilder::new();
             where_query.add_where(query.after, QueryWhereType::After("modified".to_string()));
             if query.after.is_some() {
-                where_query.add_oder(OrderBuilder::new("modified".to_string(), SqlOrder::ASC))
+                where_query.add_oder(OrderBuilder::new("m.modified".to_string(), SqlOrder::ASC))
+            } else {
+                where_query.add_oder(OrderBuilder::new("m.modified".to_string(), SqlOrder::DESC))
             }
 
 
@@ -122,8 +124,9 @@ impl SqliteLibraryStore {
                 LEFT JOIN media_people_mapping b on b.media_ref = m.id
                 LEFT JOIN media_serie_mapping c on c.media_ref = m.id
             
-             {}{} 
+             {}
              GROUP BY m.id
+             {}
              LIMIT 200", where_query.format(), where_query.format_order()))?;
             let rows = query.query_map(
             where_query.values(), Self::row_to_media,

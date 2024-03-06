@@ -60,10 +60,12 @@ pub enum FileType {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct Media {
     pub id: String,
     pub source: Option<String>,
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 
     #[serde(rename = "type")]
@@ -78,48 +80,83 @@ pub struct Media {
     pub modified: Option<u64>,
     pub created: Option<u64>,
 
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub rating: Option<f32>,
+    
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub md5: Option<String>,
 
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub width: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub height: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub phash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub thumbhash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub focal: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub iso: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub color_space: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub sspeed: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub orientation: Option<usize>,
 
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub duration: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub acodecs: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub achan: Option<Vec<usize>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub vcodecs: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub fps: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub bitrate: Option<usize>,
 
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub long: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub lat: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
 
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub pages: Option<usize>,
 
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub progress: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<MediaTagReference>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub series: Option<Vec<FileEpisode>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub people: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub thumb: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub thumbv: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub thumbsize: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub iv: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub origin: Option<RsLink>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub movie: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub lang: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub uploader: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub uploadkey: Option<String>,
 } 
 
-
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MediaForUpdate {
     name: Option<String>,
     description: Option<String>,
@@ -228,6 +265,26 @@ impl MediaForAdd {
         MediaForInsert {id : media_id, media: self}
     }
 }
+
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")] 
+pub struct GroupMediaDownload {
+    pub group: Option<bool>,
+    pub group_thumbnail_url: Option<String>,
+    pub group_filename: Option<String>,
+    pub group_mime: Option<String>,
+    pub files: Option<Vec<MediaForUpdate>>,
+
+    pub title: Option<String>,
+}
+
+pub struct MediaDownloadUrl {
+    pub url: String,
+    pub infos: Option<MediaForUpdate>
+}
+
+
 
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

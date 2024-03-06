@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use axum::{http::StatusCode, response::{IntoResponse, Response}, Json};
+use axum::{extract::multipart, http::StatusCode, response::{IntoResponse, Response}, Json};
 use serde::Serialize;
 use derive_more::From;
 use serde_json::json;
@@ -78,6 +78,10 @@ pub enum Error {
 
 	#[from]
 	Image(#[serde_as(as = "DisplayFromStr")] image::ImageError),
+
+	#[from]
+	Multipart(#[serde_as(as = "DisplayFromStr")] multipart::MultipartError),
+
 }
 
 // region:    --- Error Boilerplate

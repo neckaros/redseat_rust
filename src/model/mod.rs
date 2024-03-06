@@ -80,22 +80,22 @@ impl  ModelController {
 		Ok(source)
 	}
 	pub async fn library_source_for_library(&self, library_id: &str) -> Result<PathProvider> {
-		let mut library = self.store.get_library(library_id).await?.ok_or_else(|| Error::NotFound)?;
+		let library = self.store.get_library(library_id).await?.ok_or_else(|| Error::NotFound)?;
 
-		if library.source == "virtual" {
+		let path = if library.source == "virtual" {
 			let path = get_server_file_path_array(&mut vec!["libraries", &library.id]).await.map_err(|_| Error::FileNotFound("Unable to get virtual library local path".into()))?;
-			library.root = Some(path.into_os_string().into_string().map_err(|_| Error::ServiceError("Unable to get virtual library local path".into(), None))?);
+			path
 		} else {
-			library.root = if let Some(existing) = &library.root {
+			if let Some(existing) = &library.root {
 				let mut path = PathBuf::from(existing);
 				path.push(".redseat");
-				let new_path = Some(path.into_os_string().into_string().map_err(|_| Error::ServiceError("Unable to get virtual library local path".into(), None))?);
-				Ok(new_path)
+				let new_path = path;
+				new_path
 			} else {
-				Err(Error::ServiceError("Unable to get virtual library local path".into(), None))
-			}?;
-		}
-		let source = PathProvider::new(library).await?;
+				get_server_file_path_array(&mut vec!["libraries", &library.id]).await.map_err(|_| Error::FileNotFound("Unable to get virtual library local path".into()))?
+			}
+		};
+		let source = PathProvider::new_for_local(path);
 		Ok(source)
 	}
 

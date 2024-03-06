@@ -10,7 +10,8 @@ use crate::{domain::library::ServerLibrary, routes::mw_range::RangeDefinition};
 use super::{error::{SourcesError, SourcesResult}, AsyncReadPinBox, FileStreamResult, RangeResponse, Source};
 
 pub struct PathProvider {
-    root: PathBuf
+    root: PathBuf,
+    for_local: bool
 }
 
 impl PathProvider {
@@ -21,19 +22,28 @@ impl PathProvider {
     }
 }
 
+impl PathProvider {
+    
+    pub fn new_for_local(path: PathBuf) -> Self {
+        PathProvider {
+            root: path,
+            for_local: true
+        }
+    }
+}
 
 #[async_trait]
 impl Source for PathProvider {
     async fn new(library: ServerLibrary) -> SourcesResult<Self> {
         if let Some(root) = library.root {
             Ok(PathProvider {
-                root: PathBuf::from_str(&root).map_err(|_| SourcesError::Error)?
+                root: PathBuf::from_str(&root).map_err(|_| SourcesError::Error)?,
+                for_local: false
             })
         } else {
             Err(SourcesError::Error)
         }
     }
-
 
     async fn exists(&self, source: &str) -> bool {
         let path = self.get_gull_path(&source);
@@ -51,7 +61,7 @@ impl Source for PathProvider {
         let guess = mime_guess::from_path(&source);
         let filename = path.file_name().map(|f| f.to_string_lossy().into_owned());
 
-        let mut file = File::open(&path).await.map_err(|err| {
+        let file = File::open(&path).await.map_err(|err| {
             if err.kind() == std::io::ErrorKind::NotFound {
                 SourcesError::NotFound(path.to_str().map(|a| a.to_string()))
             } else {
@@ -62,7 +72,7 @@ impl Source for PathProvider {
         
         let mut size = metadata.len();
 
-        let mut total_size = metadata.len();
+        let total_size = metadata.len();
 
         let mut filereader = BufReader::new(file);
 
@@ -71,27 +81,32 @@ impl Source for PathProvider {
         if let Some(range) = &range {
 
             if let Some(start) = range.start {
-                filereader.seek( std::io::SeekFrom::Start(start)).await?;
-                range_response.start = Some(start.clone());
-                size = size - start;
-                range_response.size = Some(size.clone());
+                if start < size { 
+                    filereader.seek( std::io::SeekFrom::Start(start)).await?;
+                    range_response.start = Some(start.clone());
+                    println!("START {}, {}", start, size);
+                    size = size - start;
+                    range_response.size = Some(size.clone());
 
+                }
 
             }
             if let Some(end) = range.end {
-                let start = range.start.unwrap_or(0);
-                let taken = filereader.take(end - start + 1);
-                size = end - start + 1;
-                range_response.end = Some(end.clone());
-                range_response.size = Some(size.clone());
-                //println!("range: {}", &range_response.header_value());
-                return Ok(FileStreamResult {
-                    stream: Box::pin(taken),
-                    size: Some(size),
-                    range: Some(range_response),
-                    mime: guess.first(),
-                    name: filename
-                })
+                if end <= size {
+                    let start = range.start.unwrap_or(0);
+                    let taken = filereader.take(end - start + 1);
+                    size = end - start + 1;
+                    range_response.end = Some(end.clone());
+                    range_response.size = Some(size.clone());
+                    //println!("range: {}", &range_response.header_value());
+                    return Ok(FileStreamResult {
+                        stream: Box::pin(taken),
+                        size: Some(size),
+                        range: Some(range_response),
+                        mime: guess.first(),
+                        name: filename
+                    })
+                }
             }
         }
 
