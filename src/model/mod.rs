@@ -124,35 +124,42 @@ impl  ModelController {
         Ok(reader_response?)
 	}
 
-	pub async fn update_library_image<T: AsyncRead>(&self, library_id: &str, folder: &str, id: &str, kind: &ImageType, reader: T, requesting_user: &ConnectedUser) -> Result<()> {
+	pub async fn update_library_image<T: AsyncRead>(&self, library_id: &str, folder: &str, id: &str, kind: &Option<ImageType>, reader: T, requesting_user: &ConnectedUser) -> Result<()> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+
+		self.remove_library_image(library_id, folder, id, kind, requesting_user).await?;
 
         let m = self.library_source_for_library(&library_id).await?;
 
-		let source_filepath = format!("{}/{}{}.webp", folder, id, kind.to_filename_element());
-			let r = m.remove(&source_filepath).await;
-			if r.is_ok() {
-				log_info(crate::tools::log::LogServiceType::Other, format!("Deleted image {}", source_filepath));
-			}
+		let source_filepath = format!("{}/{}{}.webp", folder, id, ImageType::optional_to_filename_element(&kind));
 
-		for size in ImageSize::iter() {
-			let source_filepath = format!("{}/{}{}{}.webp", folder, id, kind.to_filename_element(), size.to_filename_element());
-			let r = m.remove(&source_filepath).await;
-			if r.is_ok() {
-				log_info(crate::tools::log::LogServiceType::Other, format!("Deleted image {}", source_filepath));
-			}
-		}
-		println!("1");
-		let writer = m.get_file_write_stream(&source_filepath).await?;
-		println!("2");
+		let (_, writer) = m.get_file_write_stream(&source_filepath).await?;
 		tokio::pin!(reader);
 		tokio::pin!(writer);
 		copy(&mut reader, &mut writer).await?;
         Ok(())
 	}
 
+	pub async fn remove_library_image(&self, library_id: &str, folder: &str, id: &str, kind: &Option<ImageType>, requesting_user: &ConnectedUser) -> Result<()> {
+        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
 
+        let m = self.library_source_for_library(&library_id).await?;
 
+		let source_filepath = format!("{}/{}{}.webp", folder, id, ImageType::optional_to_filename_element(&kind));
+			let r = m.remove(&source_filepath).await;
+			if r.is_ok() {
+				log_info(crate::tools::log::LogServiceType::Other, format!("Deleted image {}", source_filepath));
+			}
+
+		for size in ImageSize::iter() {
+			let source_filepath = format!("{}/{}{}{}.webp", folder, id, ImageType::optional_to_filename_element(&kind), size.to_filename_element());
+			let r = m.remove(&source_filepath).await;
+			if r.is_ok() {
+				log_info(crate::tools::log::LogServiceType::Other, format!("Deleted image {}", source_filepath));
+			}
+		}
+        Ok(())
+	}
 }
 
 

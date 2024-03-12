@@ -57,6 +57,14 @@ impl SqliteLibraryStore {
                     conn.pragma_update(None, "user_version", version)?;
                     log_info(LogServiceType::Database, format!("Update Library Database to version: {}", version));                   
                 }
+
+                if version < 31 {
+                    let initial = String::from_utf8_lossy(include_bytes!("031 - MEDIAS INDEX.sql"));
+                    conn.execute_batch(&initial)?;
+                    version = 31;
+                    conn.pragma_update(None, "user_version", version)?;
+                    log_info(LogServiceType::Database, format!("Update Library Database to version: {}", version));                   
+                }
                 
                 Ok((initial_version, version))
         }).await?;

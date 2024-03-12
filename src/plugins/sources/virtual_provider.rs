@@ -6,7 +6,7 @@ use chrono::{Datelike, Utc};
 use query_external_ip::SourceError;
 use tokio::{fs::File, io::{AsyncRead, AsyncWrite, BufReader, BufWriter}};
 
-use crate::{domain::library::ServerLibrary, routes::mw_range::RangeDefinition, server::get_server_file_path_array};
+use crate::{domain::{library::ServerLibrary, media::MediaForUpdate}, routes::mw_range::RangeDefinition, server::get_server_file_path_array};
 
 use super::{error::{SourcesError, SourcesResult}, AsyncReadPinBox, FileStreamResult, Source};
 
@@ -35,6 +35,12 @@ impl Source for VirtualProvider {
 
         Ok(())
     }
+
+
+    async fn fill_infos(&self, _source: &str, infos: &mut MediaForUpdate) -> SourcesResult<()> {
+
+        Ok(())
+    }
     async fn get_file_read_stream(&self, source: &str, _range: Option<RangeDefinition>) -> SourcesResult<FileStreamResult<AsyncReadPinBox>> {
         println!("Virtual {}", &source);
         let mut path = self.root.clone();
@@ -58,7 +64,7 @@ impl Source for VirtualProvider {
         })
     }
 
-    async fn get_file_write_stream(&self, name: &str) -> SourcesResult<Pin<Box<dyn AsyncWrite + Send>>> {
+    async fn get_file_write_stream(&self, name: &str) -> SourcesResult<(String, Pin<Box<dyn AsyncWrite + Send>>)> {
         let mut path = self.root.clone();
         let year = Utc::now().year().to_string();
         path.push(year);
@@ -66,7 +72,7 @@ impl Source for VirtualProvider {
         
         let file = BufWriter::new(File::create(path).await.map_err(|_| SourcesError::Error)?);
         
-        Ok(Box::pin(file))
+        Ok(("".to_string(), Box::pin(file)))
     }
 
 }

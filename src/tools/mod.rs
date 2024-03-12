@@ -5,6 +5,7 @@ pub mod log;
 pub mod array_tools;
 pub mod serialization;
 pub mod prediction;
+pub mod file_tools;
 
 #[cfg(test)]
 mod tests {
