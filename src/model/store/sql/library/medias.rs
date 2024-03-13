@@ -106,8 +106,11 @@ impl SqliteLibraryStore {
                 where_query.add_oder(OrderBuilder::new("m.modified".to_string(), SqlOrder::DESC))
             }
 
-
-            let mut query = conn.prepare(&format!("SELECT 
+            where_query.add_recursive("media_tag_mapping", "lZAchCyS3jePggVe0SlDN");
+            
+            let mut query = conn.prepare(&format!("
+            {}
+            SELECT 
             m.id, m.source, m.name, m.description, m.type, m.mimetype, m.size, avg(ratings.rating) as rating, m.md5, m.params, 
             m.width, m.height, m.phash, m.thumbhash, m.focal, m.iso, m.colorSpace, m.sspeed, m.orientation, m.duration, 
             m.acodecs, m.achan, m.vcodecs, m.fps, m.bitrate, m.long, m.lat, m.model, m.pages, m.progress, 
@@ -127,7 +130,10 @@ impl SqliteLibraryStore {
              {}
              GROUP BY m.id
              {}
-             LIMIT 200", where_query.format(), where_query.format_order()))?;
+             LIMIT 200", where_query.format_recursive(), where_query.format(), where_query.format_order()))?;
+
+             println!("query {}", query.expanded_sql().unwrap_or("default".into()));
+
             let rows = query.query_map(
             where_query.values(), Self::row_to_media,
             )?;

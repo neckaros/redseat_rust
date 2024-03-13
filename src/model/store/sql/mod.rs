@@ -100,6 +100,8 @@ impl OrderBuilder {
 }
 
 pub struct QueryBuilder<'a> {
+    columns_recursive: Vec<String>,
+    values_recursive: Vec<Box<dyn ToSql + 'a>>,
     columns_where: Vec<String>,
     values_where: Vec<Box<dyn ToSql + 'a>>,
     columns_update: Vec<String>,
@@ -111,12 +113,30 @@ pub struct QueryBuilder<'a> {
 impl <'a> QueryBuilder<'a> {
     pub fn new() -> Self {
         Self {
+            columns_recursive: Vec::new(),
+            values_recursive: Vec::new(),
             columns_where: Vec::new(),
             values_where: Vec::new(),
             columns_update: Vec::new(),
             values_update: Vec::new(),
             columns_orders: Vec::new()
         }
+    }
+
+    pub fn add_recursive(&mut self, table: &str, id: &str) {
+            let tableName = format!("{}_{}", table, id.replace("-", "_"));
+
+            let sql = format!("{}(n) AS (
+                VALUES(?)
+                UNION
+                SELECT id FROM tags, {}
+                 WHERE tags.parent={}.n)", tableName, tableName, tableName);
+            self.columns_recursive.push(sql);
+            self.values_recursive.push(Box::new(id.to_string()));
+
+            self.columns_where.push(format!("id IN (SELECT tm.media_ref FROM {} tm WHERE tag_ref IN {})", table, tableName))
+           
+        
     }
 
     pub fn add_update<T: ToSql + 'a,>(&mut self, optional: Option<T>, kind: QueryWhereType) {
@@ -176,12 +196,21 @@ impl <'a> QueryBuilder<'a> {
         }
     }
 
+    pub fn format_recursive(&self) -> String {
+        if self.columns_recursive.len() > 0 {
+            format!("WITH RECURSIVE {} ", self.columns_recursive.join(", "))
+        } else {
+            "".to_string()
+        }
+    }
+
     pub fn values(&mut self) -> ParamsFromIter<&Vec<Box<dyn ToSql + 'a>>> {
-        let all_values = &mut self.values_update;
+        let all_values = &mut self.values_recursive;
+        all_values.append(&mut self.values_update);
         all_values.append(&mut self.values_where);
-        /*for value in &mut *all_values {
+        for value in &mut *all_values {
             println!("{:?}", value.to_sql())
-        }*/
+        }
         params_from_iter(all_values)
     }
 }
