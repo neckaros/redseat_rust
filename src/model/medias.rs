@@ -18,15 +18,17 @@ use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MediaQuery {
-    pub after: Option<u64>
+    pub after: Option<u64>,
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 impl MediaQuery {
     pub fn new_empty() -> MediaQuery {
-        MediaQuery { after: None }
+        MediaQuery { after: None, tags: vec![] }
     }
     pub fn from_after(after: u64) -> MediaQuery {
-        MediaQuery { after: Some(after) }
+        MediaQuery { after: Some(after), tags: vec![] }
     }
 }
 

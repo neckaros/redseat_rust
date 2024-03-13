@@ -1,12 +1,12 @@
 
 use crate::{domain::media::MediaForUpdate, model::{medias::MediaQuery, series::{SerieForAdd, SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, tools::prediction::predict, Error, Result};
-use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
+use axum::{body::Body, debug_handler, extract::{Multipart, Path, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
 use futures::TryStreamExt;
 use hyper::{header::ACCEPT_RANGES, StatusCode};
 use serde_json::{json, Value};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio_util::io::{ReaderStream, StreamReader};
-
+use axum_extra::extract::Query;
 use super::{mw_range::RangeDefinition, ImageRequestOptions, ImageUploadOptions};
 
 

@@ -105,7 +105,10 @@ impl SqliteLibraryStore {
             } else {
                 where_query.add_oder(OrderBuilder::new("m.modified".to_string(), SqlOrder::DESC))
             }
-
+            for tag in query.tags {
+                where_query.add_recursive("tags", "media_tag_mapping", "media_ref", "tag_ref", &tag);
+            }
+            
 
             let mut query = conn.prepare(&format!("
             {}
@@ -126,7 +129,7 @@ impl SqliteLibraryStore {
              {}
              LIMIT 200", where_query.format_recursive(), where_query.format(), where_query.format_order()))?;
 
-             println!("query {}", query.expanded_sql().unwrap_or("default".into()));
+            // println!("query {}", query.expanded_sql().unwrap_or("default".into()));
 
             let rows = query.query_map(
             where_query.values(), Self::row_to_media,

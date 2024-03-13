@@ -4,6 +4,7 @@ pub mod credentials;
 pub mod backups;
 pub mod library;
 
+use rsa::pkcs8::der::TagNumber;
 use rusqlite::{params_from_iter, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, ParamsFromIter, Row, ToSql};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -123,18 +124,18 @@ impl <'a> QueryBuilder<'a> {
         }
     }
 
-    pub fn add_recursive(&mut self, table: &str, id: &str) {
-            let tableName = format!("{}_{}", table, id.replace("-", "_"));
+    pub fn add_recursive(&mut self, table: &str, mapping_table: &str, map_key: &str, map_field: &str, id: &str) {
+            let table_name = format!("{}_{}", table, id.replace("-", "_"));
 
             let sql = format!("{}(n) AS (
                 VALUES(?)
                 UNION
-                SELECT id FROM tags, {}
-                 WHERE tags.parent={}.n)", tableName, tableName, tableName);
+                SELECT id FROM {}, {}
+                 WHERE {}.parent={}.n)", table_name, table, table_name, table, table_name);
             self.columns_recursive.push(sql);
             self.values_recursive.push(Box::new(id.to_string()));
 
-            self.columns_where.push(format!("id IN (SELECT tm.media_ref FROM {} tm WHERE tag_ref IN {})", table, tableName))
+            self.columns_where.push(format!("id IN (SELECT tm.{} FROM {} tm WHERE {} IN {})", map_key, mapping_table, map_field, table_name))
            
         
     }
@@ -208,9 +209,9 @@ impl <'a> QueryBuilder<'a> {
         let all_values = &mut self.values_recursive;
         all_values.append(&mut self.values_update);
         all_values.append(&mut self.values_where);
-        for value in &mut *all_values {
+        /*for value in &mut *all_values {
             println!("{:?}", value.to_sql())
-        }
+        }*/
         params_from_iter(all_values)
     }
 }
