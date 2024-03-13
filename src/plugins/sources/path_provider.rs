@@ -3,9 +3,11 @@ use std::{path::PathBuf, pin::Pin, str::FromStr};
 
 use axum::async_trait;
 use chrono::{Datelike, Utc};
-use tokio::{fs::{remove_file, File}, io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, BufReader, BufWriter}};
+use query_external_ip::SourceError;
+use sha256::try_async_digest;
+use tokio::{fs::{create_dir_all, remove_file, File}, io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, BufReader, BufWriter}};
 
-use crate::{domain::library::ServerLibrary, routes::mw_range::RangeDefinition};
+use crate::{domain::{library::ServerLibrary, media::MediaForUpdate}, routes::mw_range::RangeDefinition, tools::file_tools::get_mime_from_filename};
 
 use super::{error::{SourcesError, SourcesResult}, AsyncReadPinBox, FileStreamResult, RangeResponse, Source};
 
@@ -53,6 +55,22 @@ impl Source for PathProvider {
     async fn remove(&self, source: &str) -> SourcesResult<()> {
         let path = self.get_gull_path(&source);
         remove_file(path).await?;
+        Ok(())
+    }
+
+    async fn fill_infos(&self, source: &str, infos: &mut MediaForUpdate) -> SourcesResult<()> {
+        let path = self.get_gull_path(&source);
+        let metadata = path.metadata()?;
+        infos.size = Some(metadata.len());
+
+        let md5 = try_async_digest(&path).await;
+        if let Ok(md5) = md5 {
+            infos.md5 = Some(md5);
+        } 
+        let mime = get_mime_from_filename(source);
+        if let Some(mime) = mime {
+            infos.mimetype = Some(mime);
+        }
         Ok(())
     }
 
@@ -119,15 +137,35 @@ impl Source for PathProvider {
         })
     }
 
-    async fn get_file_write_stream(&self, name: &str) -> SourcesResult<Pin<Box<dyn AsyncWrite + Send>>> {
+    async fn get_file_write_stream(&self, name: &str) -> SourcesResult<(String, Pin<Box<dyn AsyncWrite + Send>>)> {
         let mut path = self.root.clone();
-        //let year = Utc::now().year().to_string();
-        //path.push(year);
+        if !self.for_local {
+            let year = Utc::now().year().to_string();
+            path.push(year);
+            let month = Utc::now().month().to_string();
+            path.push(month);
+        }
+        create_dir_all(&path).await?;
+
+        let original_path = path.clone();
+        let original_name = name;
         path.push(name);
-        
-        let file = BufWriter::new(File::create(path).await?);
-        
-        Ok(Box::pin(file))
+        let mut i = 1;
+        while path.exists() {
+            i = i + 1;
+            let extension = path.extension().and_then(|r| r.to_str());
+            let new_name = if let Some(extension) = extension {
+                original_name.replace(&format!(".{}", extension), &format!("-{}.{}", i, extension))
+            } else {
+                format!("{}-{}", original_name, i)
+            };
+            path = original_path.clone();
+            path.push(new_name);
+        }
+    
+        let file = BufWriter::new(File::create(&path).await?);
+        let source = path.to_str().ok_or(SourcesError::Other("Unable to convert path to string".into()))?.to_string();
+        Ok((source, Box::pin(file)))
     }
 
 }

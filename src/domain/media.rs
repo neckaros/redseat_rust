@@ -28,10 +28,12 @@ impl FromStr for FileEpisode {
     }
 }
 
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MediaTagReference {
    id: String,
-   conf: u16
+   #[serde(skip_serializing_if = "Option::is_none")]
+   conf: Option<u16>
 }
 
 impl FromStr for MediaTagReference {
@@ -40,15 +42,15 @@ impl FromStr for MediaTagReference {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let splitted: Vec<&str> = s.split("|").collect();
         if splitted.len() == 2 {
-            Ok(MediaTagReference { id: splitted[0].to_string(), conf: splitted[1].parse::<u16>().unwrap_or(101) })
+            Ok(MediaTagReference { id: splitted[0].to_string(), conf: splitted[1].parse::<u16>().ok().and_then(|e| if e == 100 {None} else {Some(e)}) })
         } else {
-            Ok(MediaTagReference { id: splitted[0].to_string(), conf: 101 })
+            Ok(MediaTagReference { id: splitted[0].to_string(), conf: None })
         }
     }
 }
 
 
-#[derive(Debug, Serialize, Deserialize, Clone, strum_macros::Display,EnumString)]
+#[derive(Debug, Serialize, Deserialize, Clone, strum_macros::Display,EnumString, Default)]
 #[strum(serialize_all = "snake_case")]
 pub enum FileType {
     Directory,
@@ -56,6 +58,7 @@ pub enum FileType {
     Video,
     Archive,
     Album,
+    #[default]
     Other
 }
 
@@ -63,6 +66,7 @@ pub enum FileType {
 #[serde(rename_all = "camelCase")]
 pub struct Media {
     pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -156,47 +160,49 @@ pub struct Media {
     pub uploadkey: Option<String>,
 } 
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct MediaForUpdate {
-    name: Option<String>,
-    description: Option<String>,
-    mimetype: Option<String>,
-    size: Option<usize>,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub mimetype: Option<String>,
+    pub size: Option<u64>,
+
+    pub md5: Option<String>,
     
+    pub modified: Option<u64>,
+    pub created: Option<u64>,
 
-    modified: Option<u64>,
-    created: Option<u64>,
-
-    width: Option<usize>,
-    height: Option<usize>,
+    pub width: Option<usize>,
+    pub height: Option<usize>,
   
-    duration: Option<usize>,
+    pub duration: Option<usize>,
  
-    progress: Option<usize>,
+    pub progress: Option<usize>,
 
-    add_tags: Option<Vec<String>>,
-    remove_tags: Option<Vec<String>>,
+    pub add_tags: Option<Vec<String>>,
+    pub remove_tags: Option<Vec<String>>,
 
-    add_series: Option<Vec<FileEpisode>>,
-    remove_series: Option<Vec<FileEpisode>>,
+    pub add_series: Option<Vec<FileEpisode>>,
+    pub remove_series: Option<Vec<FileEpisode>>,
 
-    add_people: Option<Vec<String>>,
-    remove_people: Option<Vec<String>>,
+    pub add_people: Option<Vec<String>>,
+    pub remove_people: Option<Vec<String>>,
 
-    long: Option<usize>,
-    lat: Option<usize>,
+    pub long: Option<usize>,
+    pub lat: Option<usize>,
 
-    origin: Option<RsLink>,
-    movie: Option<String>,
+    pub origin: Option<RsLink>,
+    pub movie: Option<String>,
 
-    lang: Option<String>,
+    pub lang: Option<String>,
 
-    uploader: Option<String>,
-    uploadkey: Option<String>,
+    pub uploader: Option<String>,
+    pub uploadkey: Option<String>,
+
 } 
 
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct MediaForAdd {
     pub source: Option<String>,
     pub name: String,
@@ -249,7 +255,10 @@ pub struct MediaForAdd {
     pub lang: Option<String>,
     pub uploader: Option<String>,
     pub uploadkey: Option<String>,
+
+    pub created: Option<u64>,
 } 
+
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MediaForInsert {

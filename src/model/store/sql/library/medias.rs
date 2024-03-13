@@ -1,6 +1,6 @@
 use rusqlite::{params, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, Row, ToSql};
 
-use crate::{domain::media::{FileType, Media, MediaForInsert, MediaForUpdate}, model::{medias::{MediaQuery, MediaSource}, store::{from_comma_separated_optional, from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}}}};
+use crate::{domain::media::{FileType, Media, MediaForInsert, MediaForUpdate}, model::{medias::{MediaQuery, MediaSource}, store::{from_comma_separated_optional, from_pipe_separated_optional, to_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}}}};
 use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
 
@@ -106,29 +106,23 @@ impl SqliteLibraryStore {
                 where_query.add_oder(OrderBuilder::new("m.modified".to_string(), SqlOrder::DESC))
             }
 
-            where_query.add_recursive("media_tag_mapping", "lZAchCyS3jePggVe0SlDN");
-            
+
             let mut query = conn.prepare(&format!("
             {}
             SELECT 
-            m.id, m.source, m.name, m.description, m.type, m.mimetype, m.size, avg(ratings.rating) as rating, m.md5, m.params, 
+            m.id, m.source, m.name, m.description, m.type, m.mimetype, m.size,
+            (select avg(rating ) from ratings where media_ref = m.id) as rating,
+            m.md5, m.params, 
             m.width, m.height, m.phash, m.thumbhash, m.focal, m.iso, m.colorSpace, m.sspeed, m.orientation, m.duration, 
             m.acodecs, m.achan, m.vcodecs, m.fps, m.bitrate, m.long, m.lat, m.model, m.pages, m.progress, 
             m.thumb, m.thumbv, m.thumbsize, m.iv, m.origin, m.movie, m.lang, m.uploader, m.uploadkey, m.modified, 
-            m.added, m.created,
-            
-            GROUP_CONCAT(distinct a.tag_ref || '|' || IFNULL(a.confidence, 101)) tags,
-            GROUP_CONCAT(distinct b.people_ref) people,
-            GROUP_CONCAT(distinct c.serie_ref || '|' || ifnull(c.season,'') || '|' || ifnull(printf('%04d', c.episode),'') ) series
-            
+            m.added, m.created
+			,(select GROUP_CONCAT(tag_ref || '|' || IFNULL(confidence, 101)) from media_tag_mapping where media_ref = m.id and (confidence != -1 or confidence IS NULL)) as tags
+			,(select GROUP_CONCAT(people_ref ) from media_people_mapping where media_ref = m.id) as people
+			,(select GROUP_CONCAT(serie_ref || '|' || ifnull(season,'') || '|' || ifnull(printf('%04d', episode),'') ) from media_serie_mapping where media_ref = m.id) as series
+			
             FROM medias as m
-                LEFT JOIN ratings on ratings.media_ref = m.id
-                LEFT JOIN media_tag_mapping a on a.media_ref = m.id and (a.confidence != -1 or a.confidence IS NULL)
-                LEFT JOIN media_people_mapping b on b.media_ref = m.id
-                LEFT JOIN media_serie_mapping c on c.media_ref = m.id
-            
              {}
-             GROUP BY m.id
              {}
              LIMIT 200", where_query.format_recursive(), where_query.format(), where_query.format_order()))?;
 
@@ -193,27 +187,43 @@ impl SqliteLibraryStore {
         let existing = self.get_media(media_id).await?.ok_or_else( || Error::NotFound)?;
         self.connection.call( move |conn| { 
             let mut where_query = QueryBuilder::new();
-            /*where_query.add_update(update.name.clone(), QueryWhereType::Equal("name".to_string()));
-            where_query.add_update(update.kind, QueryWhereType::Equal("type".to_string()));
-            where_query.add_update(update.imdb, QueryWhereType::Equal("imdb".to_string()));
-            where_query.add_update(update.slug, QueryWhereType::Equal("slug".to_string()));
-            where_query.add_update(update.tmdb, QueryWhereType::Equal("tmdb".to_string()));
-            where_query.add_update(update.trakt, QueryWhereType::Equal("trakt".to_string()));
-            where_query.add_update(update.tvdb, QueryWhereType::Equal("tvdb".to_string()));
-            where_query.add_update(update.otherids, QueryWhereType::Equal("otherids".to_string()));
-            where_query.add_update(update.imdb_rating, QueryWhereType::Equal("imdb_rating".to_string()));
-            where_query.add_update(update.imdb_votes, QueryWhereType::Equal("imdb_votes".to_string()));
-            where_query.add_update(update.trakt_rating, QueryWhereType::Equal("trakt_rating".to_string()));
-            where_query.add_update(update.trakt_votes, QueryWhereType::Equal("trakt_votes".to_string()));
-            where_query.add_update(update.year, QueryWhereType::Equal("year".to_string()));
-            where_query.add_update(update.max_created, QueryWhereType::Equal("maxCreated".to_string()));
+            where_query.add_update(update.name.clone(), QueryWhereType::Equal("name".to_string()));
+            where_query.add_update(update.description, QueryWhereType::Equal("description".to_string()));
+            where_query.add_update(update.mimetype, QueryWhereType::Equal("mimetype".to_string()));
+            where_query.add_update(update.size, QueryWhereType::Equal("size".to_string()));
+            where_query.add_update(update.md5, QueryWhereType::Equal("md5".to_string()));
+            where_query.add_update(update.created, QueryWhereType::Equal("created".to_string()));
 
-            let alts = replace_add_remove_from_array(existing.alt, update.alt, update.add_alts, update.remove_alts);
-            where_query.add_update(to_pipe_separated_optional(alts), QueryWhereType::Equal("alt".to_string()));
+            where_query.add_update(update.width, QueryWhereType::Equal("width".to_string()));
+            where_query.add_update(update.height, QueryWhereType::Equal("height".to_string()));
+
+            where_query.add_update(update.duration, QueryWhereType::Equal("duration".to_string()));
+
+            where_query.add_update(update.progress, QueryWhereType::Equal("progress".to_string()));
+
+            where_query.add_update(update.long, QueryWhereType::Equal("long".to_string()));
+            where_query.add_update(update.lat, QueryWhereType::Equal("lat".to_string()));
+
+            where_query.add_update(update.long, QueryWhereType::Equal("origin".to_string()));
+            where_query.add_update(update.lat, QueryWhereType::Equal("movie".to_string()));
+
+            where_query.add_update(update.lang, QueryWhereType::Equal("lang".to_string()));
+
+            where_query.add_update(update.uploader, QueryWhereType::Equal("uploader".to_string()));
+            where_query.add_update(update.uploadkey, QueryWhereType::Equal("uploaderkey".to_string()));
+     
+     /*
+            pub add_tags: Option<Vec<String>>,
+            pub remove_tags: Option<Vec<String>>,
+        
+            pub add_series: Option<Vec<FileEpisode>>,
+            pub remove_series: Option<Vec<FileEpisode>>,
+        
+            pub add_people: Option<Vec<String>>,
+            pub remove_people: Option<Vec<String>>,
+    */
 
 
-
-*/
 
 
             where_query.add_where(Some(id), QueryWhereType::Equal("id".to_string()));
@@ -228,28 +238,61 @@ impl SqliteLibraryStore {
         Ok(())
     }
 
-    pub async fn add_media(&self, media: MediaForInsert) -> Result<()> {
+    pub async fn add_media(&self, insert: MediaForInsert) -> Result<()> {
         self.connection.call( move |conn| { 
 
-            conn.execute("INSERT INTO medias (id, name, type, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, year, imdb_rating, imdb_votes, trailer, trakt_rating, trakt_votes)
-            VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params![
-                media.id,
-                media.media.name,
-                media.media.kind,
-                //to_pipe_separated_optional(media.alt),
-                media.media.params,
-                /*media.imdb,
-                media.slug,
-                media.tmdb,
-                media.trakt,
-                media.tvdb,
-                media.otherids,
-                media.year,
-                media.imdb_rating,
-                media.imdb_votes,
-                media.trailer,
-                media.trakt_rating,
-                media.trakt_votes*/
+            conn.execute("INSERT INTO medias (
+            id, source, name, description, type, mimetype, size, md5, params, width, 
+            height, phash, thumbhash, focal, iso, colorSpace, sspeed, orientation, duration, acodecs, 
+            achan, vcodecs, fps, bitrate, long, lat, model, pages, progress, thumb, 
+            thumbv, thumbsize, iv, origin, movie, lang, uploader, uploadkey
+
+            )
+            VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, 
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
+                ?, ?, ?, ?, ?, ?, ?, ?)", params![
+                insert.id,
+                insert.media.source,
+                insert.media.name,
+                insert.media.description,
+                insert.media.kind,
+                insert.media.mimetype,
+                insert.media.size,
+                insert.media.md5,
+                insert.media.params,
+                insert.media.width,
+
+                insert.media.height,
+                insert.media.phash,
+                insert.media.thumbhash,
+                insert.media.focal,
+                insert.media.iso,
+                insert.media.color_space,
+                insert.media.sspeed,
+                insert.media.orientation,
+                insert.media.duration,
+                to_pipe_separated_optional(insert.media.acodecs),
+                
+                to_pipe_separated_optional(insert.media.achan),
+                to_pipe_separated_optional(insert.media.vcodecs),
+                insert.media.fps,
+                insert.media.bitrate,
+                insert.media.long,
+                insert.media.lat,
+                insert.media.model,
+                insert.media.pages,
+                insert.media.progress,
+                insert.media.thumb,
+
+                insert.media.thumbv,
+                insert.media.thumbsize,
+                insert.media.iv,
+                insert.media.origin,
+                insert.media.movie,
+                insert.media.lang,
+                insert.media.uploader,
+                insert.media.uploadkey,
             ])?;
             
             Ok(())

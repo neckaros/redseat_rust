@@ -1,5 +1,5 @@
 
-use crate::{domain::media::GroupMediaDownload, model::{medias::MediaQuery, series::{SerieForAdd, SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, tools::prediction::predict, Error, Result};
+use crate::{domain::media::MediaForUpdate, model::{medias::MediaQuery, series::{SerieForAdd, SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, tools::prediction::predict, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
 use futures::TryStreamExt;
 use hyper::{header::ACCEPT_RANGES, StatusCode};
@@ -65,21 +65,26 @@ async fn handler_patch(Path((library_id, media_id)): Path<(String, String)>, Sta
 }
 
 async fn handler_delete(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
-	let library = mc.remove_serie(&library_id, &media_id, &user).await?;
+	let library = mc.remove_media(&library_id, &media_id, &user).await?;
 	let body = Json(json!(library));
 	Ok(body)
 }
 
 async fn handler_post(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, mut multipart: Multipart) -> Result<Json<Value>> {
 
+	let mut info:Option<MediaForUpdate> = None;
 	while let Some(field) = multipart.next_field().await.unwrap() {
         let name = field.name().unwrap().to_string();
-		println!("name: {} ",name);
 		if name == "info" {
-			let info: GroupMediaDownload = serde_json::from_str(&field.text().await?)?;
-			println!("INFO: {:?}", info);
+			info = serde_json::from_str(&field.text().await?)?;
+		} else if name == "file" {
+			let filename = field.file_name().unwrap().to_string();
+			let reader = StreamReader::new(field.map_err(|multipart_error| {
+				std::io::Error::new(std::io::ErrorKind::Other, multipart_error)
+			}));
+			let media = mc.add_library_file(&library_id, &filename, info, reader, &user).await?;
+			return Ok(Json(json!(media)))
 		}
-		//let filename = field.file_name().unwrap().to_string();
 		//let mime: String = field.content_type().unwrap().to_string();
         //let data = field.bytes().await.unwrap();
 
@@ -91,7 +96,7 @@ async fn handler_post(Path(library_id): Path<String>, State(mc): State<ModelCont
         //println!("Length of `{}` {}  {} is {} bytes", name, filename, mime, data.len());
 			mc.update_serie_image(&library_id, &media_id, &query.kind, reader, &user).await?;*/
     }
-	Ok(Json(json!({"data": "ok"})))
+	Ok(Json(json!({"message": "No media found"})))
 }
 
 

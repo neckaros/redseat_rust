@@ -157,8 +157,7 @@ impl ModelController {
 	}
 
     pub async fn update_episode_image<T: AsyncRead>(&self, library_id: &str, serie_id: &str, season: &usize, episode: usize, reader: T, requesting_user: &ConnectedUser) -> Result<()> {
-
-        self.update_library_image(library_id, &format!(".series/{}", serie_id), &format!("{}.{}", season, episode), &ImageType::Still, reader, requesting_user).await
+        self.update_library_image(library_id, &format!(".series/{}", serie_id), &format!("{}.{}", season, episode), &Some(ImageType::Still), reader, requesting_user).await
 	}
     
 }

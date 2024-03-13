@@ -203,7 +203,7 @@ impl ModelController {
 	}
 
     pub async fn update_serie_image<T: AsyncRead>(&self, library_id: &str, serie_id: &str, kind: &ImageType, reader: T, requesting_user: &ConnectedUser) -> Result<()> {
-        self.update_library_image(library_id, ".series", serie_id, kind, reader, requesting_user).await
+        self.update_library_image(library_id, ".series", serie_id, &Some(kind.clone()), reader, requesting_user).await
 	}
     
 }

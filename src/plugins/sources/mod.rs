@@ -5,7 +5,7 @@ use hyper::{header, HeaderMap};
 use mime::{Mime, APPLICATION_OCTET_STREAM};
 use serde::{Deserialize, Serialize};
 use tokio::{fs::File, io::{AsyncRead, AsyncWrite, BufReader}};
-use crate::{domain::library::ServerLibrary, routes::mw_range::RangeDefinition};
+use crate::{domain::{library::ServerLibrary, media::MediaForUpdate}, routes::mw_range::RangeDefinition};
 
 use self::error::{SourcesError, SourcesResult};
 
@@ -64,8 +64,9 @@ pub trait Source: Send {
 
     async fn exists(&self, name: &str) -> bool;
     async fn remove(&self, name: &str) -> SourcesResult<()>;
+    async fn fill_infos(&self, source: &str, infos: &mut MediaForUpdate) -> SourcesResult<()>;
     async fn get_file_read_stream(&self, source: &str, range: Option<RangeDefinition>) -> SourcesResult<FileStreamResult<AsyncReadPinBox>>;
-    async fn get_file_write_stream(&self, name: &str) -> SourcesResult<Pin<Box<dyn AsyncWrite + Send>>>;
+    async fn get_file_write_stream(&self, name: &str) -> SourcesResult<(String, Pin<Box<dyn AsyncWrite + Send>>)>;
     //async fn fill_file_information(&self, file: &mut ServerFile) -> SourcesResult<()>;
 }
 
