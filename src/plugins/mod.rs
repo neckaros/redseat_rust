@@ -4,6 +4,7 @@ use self::sources::{error::SourcesResult, path_provider::PathProvider, virtual_p
 
 pub mod sources;
 pub mod error;
+pub mod medias;
 
 
 

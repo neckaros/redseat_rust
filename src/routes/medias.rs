@@ -1,5 +1,5 @@
 
-use crate::{domain::media::MediaForUpdate, model::{medias::MediaQuery, series::{SerieForAdd, SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, tools::prediction::predict, Error, Result};
+use crate::{domain::media::{GroupMediaDownload, MediaDownloadUrl, MediaForUpdate}, model::{medias::MediaQuery, series::{SerieForAdd, SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, tools::prediction::predict, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
 use futures::TryStreamExt;
 use hyper::{header::ACCEPT_RANGES, StatusCode};
@@ -15,6 +15,7 @@ pub fn routes(mc: ModelController) -> Router {
 	Router::new()
 		.route("/", get(handler_list))
 		.route("/", post(handler_post))
+		.route("/download", post(handler_post))
 		.route("/:id/metadata", get(handler_get))
 		.route("/:id/predict", get(handler_predict))
 		.route("/:id", get(handler_get_file))
@@ -71,7 +72,6 @@ async fn handler_delete(Path((library_id, media_id)): Path<(String, String)>, St
 }
 
 async fn handler_post(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, mut multipart: Multipart) -> Result<Json<Value>> {
-
 	let mut info:Option<MediaForUpdate> = None;
 	while let Some(field) = multipart.next_field().await.unwrap() {
         let name = field.name().unwrap().to_string();
@@ -85,20 +85,13 @@ async fn handler_post(Path(library_id): Path<String>, State(mc): State<ModelCont
 			let media = mc.add_library_file(&library_id, &filename, info, reader, &user).await?;
 			return Ok(Json(json!(media)))
 		}
-		//let mime: String = field.content_type().unwrap().to_string();
-        //let data = field.bytes().await.unwrap();
-
-		/*let reader = StreamReader::new(field.map_err(|multipart_error| {
-			std::io::Error::new(std::io::ErrorKind::Other, multipart_error)
-		}));
-
-		
-        //println!("Length of `{}` {}  {} is {} bytes", name, filename, mime, data.len());
-			mc.update_serie_image(&library_id, &media_id, &query.kind, reader, &user).await?;*/
     }
 	Ok(Json(json!({"message": "No media found"})))
 }
-
+async fn handler_download(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Json(download): Json<GroupMediaDownload<MediaDownloadUrl>>) -> Result<Json<Value>> {
+	
+	Ok(Json(json!({"message": "No media found"})))
+}
 
 async fn handler_image(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ImageRequestOptions>) -> Result<Response> {
 	let reader_response = mc.media_image(&library_id, &media_id, query.size, &user).await?;

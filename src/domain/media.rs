@@ -275,24 +275,36 @@ impl MediaForAdd {
     }
 }
 
+pub trait GroupMediaDownloadContent {
+    fn infos(&self) -> Option<MediaForUpdate>;
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")] 
-pub struct GroupMediaDownload {
+pub struct GroupMediaDownload<T>
+where T: GroupMediaDownloadContent {
     pub group: Option<bool>,
     pub group_thumbnail_url: Option<String>,
     pub group_filename: Option<String>,
     pub group_mime: Option<String>,
-    pub files: Option<Vec<MediaForUpdate>>,
+    pub files: Option<Vec<T>>,
 
     pub title: Option<String>,
 }
 
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")] 
 pub struct MediaDownloadUrl {
     pub url: String,
     pub infos: Option<MediaForUpdate>
 }
 
+impl GroupMediaDownloadContent for MediaDownloadUrl {
+    fn infos(&self) -> Option<MediaForUpdate> {
+        self.infos.clone()
+    }
+}
 
 
 
