@@ -196,10 +196,9 @@ impl ImageCommandBuilder {
         self
     }
 
-    pub async fn run<'a, R, W>(&mut self, format: &str, reader: &'a mut R, writer: &'a mut W) -> ImageResult<usize>
+    pub async fn run<'a, R>(&mut self, format: &str, reader: &'a mut R) -> ImageResult<Vec<u8>>
     where
-        R: AsyncRead + Unpin + ?Sized,
-        W: AsyncWrite + Unpin + ?Sized,
+        R: AsyncRead + Unpin + ?Sized
     {
         let mut cmd = self.cmd
         .arg(format!("{}:-", format))
@@ -213,8 +212,8 @@ impl ImageCommandBuilder {
         }
         let output = cmd.wait_with_output().await?;
         
-        writer.write_all(&output.stdout).await?;
-        Ok(output.stdout.len())
+        //writer.write_all(&output.stdout).await?;
+        Ok(output.stdout)
     }
 }
 
@@ -226,11 +225,19 @@ pub async fn resize_image_path(path: &PathBuf, to: &PathBuf, size: u32) -> Image
     let mut builder = ImageCommandBuilder::new();
     builder.set_quality(80);
     builder.set_size(&format!("{}x{}^", size, size));
-    builder.run("webp",&mut source, &mut file).await?;
-    
+    let data = builder.run("webp",&mut source).await?;
+    file.write_all(&data).await?;
     Ok(())
 }
-
+pub async fn resize_image_reader<R>(reader: &mut R, size: u32) -> ImageResult<Vec<u8>>where
+    R: AsyncRead + Unpin + ?Sized,   {
+    let mut builder = ImageCommandBuilder::new();
+    builder.set_quality(80);
+    builder.set_size(&format!("{}x{}^", size, size));
+    let data = builder.run("webp",reader).await?;
+    
+    Ok(data)
+}
 
 
 pub async fn resize_image_path_native(path: &PathBuf, to: &PathBuf, size: u32) -> ImageResult<()> {

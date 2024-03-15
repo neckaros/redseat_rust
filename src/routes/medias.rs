@@ -1,8 +1,11 @@
 
-use crate::{domain::media::{GroupMediaDownload, MediaDownloadUrl, MediaForUpdate}, model::{medias::MediaQuery, series::{SerieForAdd, SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, tools::prediction::predict, Error, Result};
+use std::{path::PathBuf, str::FromStr};
+
+use crate::{domain::media::{GroupMediaDownload, MediaDownloadUrl, MediaForUpdate, MediaTagReference}, model::{medias::MediaQuery, series::{SerieForAdd, SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, tools::prediction::predict_net, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
 use futures::TryStreamExt;
 use hyper::{header::ACCEPT_RANGES, StatusCode};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio_util::io::{ReaderStream, StreamReader};
@@ -15,7 +18,7 @@ pub fn routes(mc: ModelController) -> Router {
 	Router::new()
 		.route("/", get(handler_list))
 		.route("/", post(handler_post))
-		.route("/download", post(handler_post))
+		.route("/download", post(handler_download))
 		.route("/:id/metadata", get(handler_get))
 		.route("/:id/predict", get(handler_predict))
 		.route("/:id", get(handler_get_file))
@@ -40,13 +43,28 @@ async fn handler_get(Path((library_id, media_id)): Path<(String, String)>, State
 	Ok(body)
 }
 
-async fn handler_predict(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+struct PredictOption {
+	#[serde(default)]
+	pub tag: bool
+}
+
+async fn handler_predict(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<PredictOption>) -> Result<Json<Value>> {
 	let mut reader_response = mc.media_image(&library_id, &media_id, None, &user).await?;
 
 	let mut buffer = Vec::new();
     reader_response.stream.read_to_end(&mut buffer).await?;
-	let prediction = predict(buffer)?;
+	let mut prediction = predict_net(PathBuf::from_str("models/wd-v1-4-tags.onnx").unwrap(), true, false, buffer)?;
+	prediction.sort_by(|a, b| b.probability.partial_cmp(&a.probability).unwrap());
+	if query.tag {
+		for tag in &prediction {
+			let db_tag = mc.get_ai_tag(&library_id, tag.tag.clone(), &user).await?;
+			mc.update_media(&library_id, media_id.clone(), MediaForUpdate { add_tags: Some(vec![MediaTagReference { id: db_tag.id, conf: Some(tag.probability as u16) }]), ..Default::default() }, &user).await?;
+		}
+	}
+
 	let body = Json(json!(prediction));
+
 	Ok(body)
 }
 
@@ -60,8 +78,9 @@ async fn handler_get_file(Path((library_id, media_id)): Path<(String, String)>, 
     Ok((status, headers, body).into_response())
 }
 
-async fn handler_patch(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(update): Json<SerieForUpdate>) -> Result<Json<Value>> {
-	let new_credential = mc.update_serie(&library_id, media_id, update, &user).await?;
+async fn handler_patch(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(update): Json<MediaForUpdate>) -> Result<Json<Value>> {
+	println!("{:?}", update);
+	let new_credential = mc.update_media(&library_id, media_id, update, &user).await?;
 	Ok(Json(json!(new_credential)))
 }
 
@@ -89,8 +108,8 @@ async fn handler_post(Path(library_id): Path<String>, State(mc): State<ModelCont
 	Ok(Json(json!({"message": "No media found"})))
 }
 async fn handler_download(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Json(download): Json<GroupMediaDownload<MediaDownloadUrl>>) -> Result<Json<Value>> {
-	
-	Ok(Json(json!({"message": "No media found"})))
+	let files = mc.download_library_url(&library_id,  download, &user).await?;
+	Ok(Json(json!({"files": files})))
 }
 
 async fn handler_image(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ImageRequestOptions>) -> Result<Response> {

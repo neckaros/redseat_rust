@@ -4,6 +4,7 @@ pub enum LogServiceType {
     Register,
     Database,
     Scoket,
+    Source,
     Other
 }
 impl LogServiceType {
@@ -12,6 +13,7 @@ impl LogServiceType {
             LogServiceType::Register => "REGISTER",
             LogServiceType::Database => "DATABASE",
             LogServiceType::Scoket => "SOCKET",
+            LogServiceType::Source => "SOURCE",
             LogServiceType::Other => "OTHER"
         }
     }

@@ -41,6 +41,8 @@ pub struct ServerLibrarySettings {
     face_threshold: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     ignore_groups: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    preduction_model: Option<String>,
 }
 
 

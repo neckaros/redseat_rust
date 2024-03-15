@@ -31,9 +31,9 @@ impl FromStr for FileEpisode {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MediaTagReference {
-   id: String,
+   pub id: String,
    #[serde(skip_serializing_if = "Option::is_none")]
-   conf: Option<u16>
+   pub conf: Option<u16>
 }
 
 impl FromStr for MediaTagReference {
@@ -51,7 +51,8 @@ impl FromStr for MediaTagReference {
 
 
 #[derive(Debug, Serialize, Deserialize, Clone, strum_macros::Display,EnumString, Default)]
-#[strum(serialize_all = "snake_case")]
+#[strum(serialize_all = "camelCase")]
+#[serde(rename_all = "camelCase")]
 pub enum FileType {
     Directory,
     Photo,
@@ -161,6 +162,7 @@ pub struct Media {
 } 
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct MediaForUpdate {
     pub name: Option<String>,
     pub description: Option<String>,
@@ -179,7 +181,7 @@ pub struct MediaForUpdate {
  
     pub progress: Option<usize>,
 
-    pub add_tags: Option<Vec<String>>,
+    pub add_tags: Option<Vec<MediaTagReference>>,
     pub remove_tags: Option<Vec<String>>,
 
     pub add_series: Option<Vec<FileEpisode>>,
@@ -187,6 +189,7 @@ pub struct MediaForUpdate {
 
     pub add_people: Option<Vec<String>>,
     pub remove_people: Option<Vec<String>>,
+    pub people_lookup: Option<Vec<String>>,
 
     pub long: Option<usize>,
     pub lat: Option<usize>,
@@ -287,7 +290,10 @@ where T: GroupMediaDownloadContent {
     pub group_thumbnail_url: Option<String>,
     pub group_filename: Option<String>,
     pub group_mime: Option<String>,
-    pub files: Option<Vec<T>>,
+    pub files: Vec<T>,
+
+    pub referer: Option<String>,
+    pub cookies: Option<Vec<String>>,
 
     pub title: Option<String>,
 }
@@ -297,6 +303,8 @@ where T: GroupMediaDownloadContent {
 #[serde(rename_all = "camelCase")] 
 pub struct MediaDownloadUrl {
     pub url: String,
+    pub parse: bool,
+    pub upload_id: Option<String>,
     pub infos: Option<MediaForUpdate>
 }
 

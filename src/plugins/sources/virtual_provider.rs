@@ -36,6 +36,9 @@ impl Source for VirtualProvider {
         Ok(())
     }
 
+    async fn thumb(&self, source: &str) -> SourcesResult<Vec<u8>> {
+        Err(SourcesError::NotImplemented)
+    }
 
     async fn fill_infos(&self, _source: &str, infos: &mut MediaForUpdate) -> SourcesResult<()> {
 

@@ -26,13 +26,15 @@ impl SqliteLibraryStore {
     pub async fn get_tags(&self, query: TagQuery) -> Result<Vec<Tag>> {
         let row = self.connection.call( move |conn| { 
             let mut where_query = QueryBuilder::new();
+            
+            where_query.add_where(query.parent, QueryWhereType::Like("parent".to_string()));
             where_query.add_where(query.path, QueryWhereType::Like("path".to_string()));
             where_query.add_where(query.after, QueryWhereType::After("modified".to_string()));
             if query.after.is_some() {
                 where_query.add_oder(OrderBuilder::new("modified".to_string(), SqlOrder::ASC))
             }
-
-
+            where_query.add_where(query.name, QueryWhereType::EqualWithAlt("name".to_string(), "alt".into(), "|".into()));
+            //println!("sql: {}", where_query.format());
             let mut query = conn.prepare(&format!("SELECT id, name, parent, type, alt, thumb, params, modified, added, generated, path  FROM tags {}{}", where_query.format(), where_query.format_order()))?;
             let rows = query.query_map(
             where_query.values(), Self::row_to_tag,

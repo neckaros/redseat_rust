@@ -171,6 +171,7 @@ pub(super) fn map_library_for_user(library: ServerLibrary, user: &ConnectedUser)
             }
         },
         ConnectedUser::Anonymous => None,
+        ConnectedUser::ServerAdmin => Some(ServerLibraryForRead::from(library)),
     }
 
 

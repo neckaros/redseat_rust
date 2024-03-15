@@ -4,14 +4,15 @@
 use nanoid::nanoid;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use x509_parser::nom::branch::alt;
 
 
-use crate::domain::{library::LibraryRole, tag::{Tag, TagMessage}, ElementAction};
+use crate::{domain::{library::LibraryRole, tag::{Tag, TagMessage}, ElementAction}, tools::prediction::PredictionTag};
 
 use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
 
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct TagForAdd {
 	pub name: String,
     pub parent: Option<String>,
@@ -36,21 +37,32 @@ pub struct TagForInsert {
 }
 
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct TagQuery {
+    pub name: Option<String>,
+    pub parent: Option<String>,
     pub path: Option<String>,
     pub after: Option<u64>
 }
 
 impl TagQuery {
     pub fn new_empty() -> TagQuery {
-        TagQuery { path: None, after: None }
+        TagQuery::default()
     }
     pub fn new_with_path(path: String) -> TagQuery {
-        TagQuery { path: Some(path), after: None }
+        TagQuery { path: Some(path), ..Default::default()  }
     }
     pub fn from_after(after: u64) -> TagQuery {
-        TagQuery { path: None, after: Some(after) }
+        TagQuery { after: Some(after), ..Default::default()  }
+    }
+
+    
+    pub fn new_with_name(name: &str) -> TagQuery {
+        TagQuery { name: Some(name.to_string()), ..Default::default()  }
+    }
+
+    pub fn new_with_name_and_parent(name: &str, parent: Option<String>) -> TagQuery {
+        TagQuery { name: Some(name.to_string()), parent, ..Default::default()  }
     }
 }
 
@@ -77,6 +89,74 @@ impl ModelController {
 		Ok(tags)
 	}
 
+    pub async fn get_ai_tag(&self, library_id: &str, tag: PredictionTag, requesting_user: &ConnectedUser) -> Result<Tag> {
+        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        let existing_tag = self.get_tag_by_names(&library_id, tag.all_names(), &requesting_user).await?;
+        if let Some(existing_tag) = existing_tag {
+            return Ok(existing_tag);
+        }
+        let tag = self.get_or_create_path(&library_id, vec!["ai", &tag.name], Some(tag.alts), &requesting_user).await?;
+
+		Ok(tag)
+	}
+
+    pub async fn get_tag_by_names(&self, library_id: &str, names: Vec<String>, requesting_user: &ConnectedUser) -> Result<Option<Tag>> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        for name in names {
+            let tag = store.get_tags(TagQuery::new_with_name(&name)).await?.into_iter().nth(0);
+            if let Some(tag) = tag {
+                return Ok(Some(tag));
+            }
+        }
+		
+		Ok(None)
+	}
+
+    pub async fn get_tag_by_name(&self, library_id: &str, name: &str, requesting_user: &ConnectedUser) -> Result<Option<Tag>> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+		let tag = store.get_tags(TagQuery::new_with_name(name)).await?.into_iter().nth(0);
+		Ok(tag)
+	}
+
+    pub async fn get_or_create_path(&self, library_id: &str, mut path: Vec<&str>, alts: Option<Vec<String>>, requesting_user: &ConnectedUser) -> Result<Tag> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        let path_string = path.join("/");
+        let tag_by_path = self.get_tags(&library_id, TagQuery::new_with_path(path_string), &requesting_user).await?.into_iter().nth(0);
+        if let Some(tag) = tag_by_path {
+            return Ok(tag);
+        }
+        let mut parent: Option<Tag> = None;
+
+        let last_element = path.pop().ok_or(Error::ServiceError("Empty path".into(), None))?;
+
+        for element in path {
+            let previous_parent = parent.as_ref().and_then(|t| Some(t.id.clone()));
+
+            let tag_by_name_and_parent = self.get_tags(&library_id, TagQuery::new_with_name_and_parent(element, previous_parent.clone()), &requesting_user).await?.into_iter().nth(0);
+            parent = if let Some(parent) = tag_by_name_and_parent {
+                Some(parent.clone())
+            } else {
+                let new_tag = self.add_tag(&library_id, TagForAdd { name: element.to_string(), parent: previous_parent, ..Default::default() } , &requesting_user).await?;
+                Some(new_tag)
+            }
+        }
+
+        let mut all_names = alts.clone().unwrap_or(vec![]);
+        all_names.insert(0, last_element.to_string());
+
+        for name in all_names {
+            let tag_by_name_and_parent = self.get_tags(&library_id, TagQuery::new_with_name_and_parent(&name, parent.as_ref().and_then(|t| Some(t.id.clone()))), &requesting_user).await?.into_iter().nth(0);
+            if let Some(tag) = tag_by_name_and_parent {
+                return Ok(tag);
+            }
+        }
+        
+        let result_tag = self.add_tag(&library_id, TagForAdd { name: last_element.to_string(), parent: parent.and_then(|t| Some(t.id.clone())), alt: alts, ..Default::default() } , &requesting_user).await?;
+
+        Ok(result_tag)
+	}
 
     pub fn fill_tags_paths(current_parent: Option<String>, current_path: &str, list: &Vec<Tag>) -> Vec<Tag> {
         let mut output: Vec<Tag> = Vec::new();

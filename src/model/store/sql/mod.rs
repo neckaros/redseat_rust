@@ -3,6 +3,7 @@ pub mod users;
 pub mod credentials;
 pub mod backups;
 pub mod library;
+pub mod plugins;
 
 use rsa::pkcs8::der::TagNumber;
 use rusqlite::{params_from_iter, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, ParamsFromIter, Row, ToSql};
@@ -31,6 +32,13 @@ pub async fn migrate_database(connection: &Connection) -> Result<usize> {
                 
                 conn.pragma_update(None, "user_version", 2)?;
                 println!("Update SQL to verison 2")
+            }
+            if version < 3 {
+                let update = String::from_utf8_lossy(include_bytes!("003 - AI MODELS.sql"));
+                conn.execute_batch(&update)?;
+                
+                conn.pragma_update(None, "user_version", 3)?;
+                println!("Update SQL to verison 3")
             }
             
             Ok(version)
@@ -76,6 +84,7 @@ pub enum QueryWhereType {
     After(String),
     Before(String),
     Custom(String),
+    EqualWithAlt(String, String, String),
 }
 
 pub enum SqlOrder {
@@ -144,17 +153,14 @@ impl <'a> QueryBuilder<'a> {
         if let Some(value) = optional {
             let column = match kind {
                 QueryWhereType::Equal(name) => format!("{} = ?", name),
-                QueryWhereType::Like(name) => format!("{} like ?", name),
-                QueryWhereType::Custom(custom) => custom,
-                QueryWhereType::After(name) => format!("{} > ?", name),
-                QueryWhereType::Before(name) => format!("{} < ?", name),
+                _ => format!("nope = ?")
             };
             self.columns_update.push(column);
             self.values_update.push(Box::new(value));
         } 
     }
 
-    pub fn add_where<T: ToSql + 'a,>(&mut self, optional: Option<T>, kind: QueryWhereType) {
+    pub fn add_where<T: ToSql + Clone + 'a,>(&mut self, optional: Option<T>, kind: QueryWhereType) {
         if let Some(value) = optional {
             let column = match kind {
                 QueryWhereType::Equal(name) => format!("{} = ?", name),
@@ -162,6 +168,11 @@ impl <'a> QueryBuilder<'a> {
                 QueryWhereType::Custom(custom) => custom,
                 QueryWhereType::After(name) => format!("{} > ?", name),
                 QueryWhereType::Before(name) => format!("{} < ?", name),
+                QueryWhereType::EqualWithAlt(name, alt, separator) => {
+
+                    self.values_where.push(Box::new(value.clone()));
+                    format!("( {} = ? or  '{}' || {} || '{}' LIKE '%{}' || ? || '{}%')", name, separator, alt, separator, separator, separator)
+                },
             };
             self.columns_where.push(column);
             self.values_where.push(Box::new(value));

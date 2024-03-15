@@ -1,3 +1,5 @@
+use mime_guess::get_mime_extensions_str;
+
 use crate::domain::media::FileType;
 
 pub fn get_mime_from_filename(path: &str) -> Option<String> {
@@ -9,6 +11,19 @@ pub fn get_mime_from_filename(path: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+pub fn get_extension_from_mime(mime: &str) -> String {
+
+    if mime == "image/heic" {
+        return "heic".to_string();
+    }
+    let suffix = get_mime_extensions_str(mime).and_then(|f| f.first()).unwrap_or(&"bin").to_string();
+
+    match suffix.as_str() {
+        "jpe" => "jpeg",
+        _ => &suffix
+    }.to_string()
 }
 
 pub fn file_type_from_mime(mime: &str) -> FileType {

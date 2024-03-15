@@ -13,7 +13,8 @@ use super::error::{Error, Result};
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum ConnectedUser {
     Server(ServerUser),
-    Anonymous
+    Anonymous,
+    ServerAdmin
 }
 
 impl ConnectedUser {
@@ -35,7 +36,9 @@ impl ConnectedUser {
         }
     }
     pub fn check_role(&self, role: &UserRole) -> Result<()> {
-        if let ConnectedUser::Server(user) = &self {
+        if let ConnectedUser::ServerAdmin = &self {
+            Ok(())
+        } else if let ConnectedUser::Server(user) = &self {
             if user.has_role(role) {
                 Ok(())
             } else {
@@ -46,7 +49,9 @@ impl ConnectedUser {
         }
     }
     pub fn check_library_role(&self, library_id: &str, role: LibraryRole) -> Result<()> {
-        if let ConnectedUser::Server(user) = &self {
+        if let ConnectedUser::ServerAdmin = &self {
+            Ok(())
+        } else if let ConnectedUser::Server(user) = &self {
             if user.has_library_role(&library_id, &role) {
                 Ok(())
             } else {

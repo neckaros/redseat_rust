@@ -65,6 +65,7 @@ pub trait Source: Send {
     async fn exists(&self, name: &str) -> bool;
     async fn remove(&self, name: &str) -> SourcesResult<()>;
     async fn fill_infos(&self, source: &str, infos: &mut MediaForUpdate) -> SourcesResult<()>;
+    async fn thumb(&self, source: &str) -> SourcesResult<Vec<u8>>;
     async fn get_file_read_stream(&self, source: &str, range: Option<RangeDefinition>) -> SourcesResult<FileStreamResult<AsyncReadPinBox>>;
     async fn get_file_write_stream(&self, name: &str) -> SourcesResult<(String, Pin<Box<dyn AsyncWrite + Send>>)>;
     //async fn fill_file_information(&self, file: &mut ServerFile) -> SourcesResult<()>;

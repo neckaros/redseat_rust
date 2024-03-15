@@ -54,6 +54,15 @@ pub enum Error {
 	#[from]
 	Image(#[serde_as(as = "DisplayFromStr")] ImageError),
 
+	
+	#[from]
+	Reqwest(#[serde_as(as = "DisplayFromStr")] reqwest::Error),
+
+	
+	
+	#[from]
+	HeaderToStrError(#[serde_as(as = "DisplayFromStr")] http::header::ToStrError),
+
 }
 
 // region:    --- Error Boilerplate

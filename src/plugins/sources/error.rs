@@ -3,7 +3,7 @@ use hyper::StatusCode;
 use serde::Serialize;
 use serde_with::{serde_as, DisplayFromStr};
 
-use crate::error::ClientError;
+use crate::{error::ClientError, tools::image_tools::ImageError};
 
 pub type SourcesResult<T> = core::result::Result<T, SourcesError>;
 
@@ -11,6 +11,7 @@ pub type SourcesResult<T> = core::result::Result<T, SourcesError>;
 #[derive(Debug, Serialize, From, strum_macros::AsRefStr)]
 pub enum SourcesError {
 
+	NotImplemented,
     Error,
 	Other(String),
 	NotFound(Option<String>),
@@ -18,6 +19,8 @@ pub enum SourcesError {
 	#[from]
 	Io(#[serde_as(as = "DisplayFromStr")] std::io::Error),
 
+	#[from]
+	Image(#[serde_as(as = "DisplayFromStr")] ImageError),
 
 }
 

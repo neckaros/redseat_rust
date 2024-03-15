@@ -21,6 +21,7 @@ pub async fn on_connect(socket: SocketRef, State(mc): State<ModelController>, Tr
                     }
                 },
                 crate::model::users::ConnectedUser::Anonymous => {},
+                crate::model::users::ConnectedUser::ServerAdmin => {},
             }    
             socket.emit("auth", auth.clone()).ok();
 

@@ -1,34 +1,41 @@
 
 
 
-use std::{io::Read, pin::Pin};
+use std::{io::{self, Read}, pin::Pin};
 
 use chrono::{Datelike, Utc};
+use futures::TryStreamExt;
+use http::header::CONTENT_TYPE;
+use mime::{Mime, APPLICATION_OCTET_STREAM};
+use mime_guess::get_mime_extensions_str;
 use nanoid::nanoid;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value};
 use tokio::io::{copy, AsyncRead};
+use tokio_util::io::StreamReader;
 
 
-use crate::{domain::{library::LibraryRole, media::{Media, MediaForAdd, MediaForInsert, MediaForUpdate, MediasMessage}, ElementAction}, plugins::sources::{AsyncReadPinBox, FileStreamResult}, routes::mw_range::RangeDefinition, tools::{file_tools::file_type_from_mime, image_tools::{ImageSize, ImageType}}};
+use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediasMessage}, ElementAction}, plugins::sources::{AsyncReadPinBox, FileStreamResult}, routes::mw_range::RangeDefinition, tools::{file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{ImageSize, ImageType}, log::log_info}};
 
 use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
 
 
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct MediaQuery {
     pub after: Option<u64>,
     #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(rename = "type")]
+    pub kind: Option<FileType>,
 }
 
 impl MediaQuery {
     pub fn new_empty() -> MediaQuery {
-        MediaQuery { after: None, tags: vec![] }
+        MediaQuery { tags: vec![], ..Default::default() }
     }
     pub fn from_after(after: u64) -> MediaQuery {
-        MediaQuery { after: Some(after), tags: vec![] }
+        MediaQuery { after: Some(after), ..Default::default() }
     }
 }
 
@@ -95,7 +102,7 @@ impl ModelController {
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         let existing = store.get_media(&media_id).await?;
         if let Some(existing) = existing { 
-            store.remove_media(media_id.to_string()).await?;
+            self.remove_library_file(&library_id, &media_id, &requesting_user).await?;
             self.send_media(MediasMessage { library: library_id.to_string(), action: ElementAction::Removed, medias: vec![existing.clone()] });
             Ok(existing)
         } else {
@@ -179,6 +186,88 @@ impl ModelController {
         Ok(media)
 	}
 
+
+    pub async fn download_library_url(&self, library_id: &str, files: GroupMediaDownload<MediaDownloadUrl>, requesting_user: &ConnectedUser) -> Result<Vec<Media>> {
+        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+
+        let m = self.source_for_library(&library_id).await?;
+        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let mut medias: Vec<Media> = vec![];
+        //let infos = infos.unwrap_or_else(|| MediaForUpdate::default());
+        for file in files.files {
+            let mut infos = file.infos.unwrap_or_else(|| MediaForUpdate::default());
+            let body = reqwest::get(file.url).await?;
+            let headers = body.headers();
+
+            let name = infos.name.clone();
+            let mut filename = name.unwrap_or(nanoid!());
+            if infos.mimetype.is_none() && headers.contains_key(CONTENT_TYPE) {
+                infos.mimetype = headers.get(CONTENT_TYPE).and_then(|e| Some(e.to_str().and_then(|e| Ok(e.to_string())))).transpose()?;
+            }
+
+            if let Some(mimetype) = &infos.mimetype {
+                let suffix = get_extension_from_mime(mimetype);
+                filename = format!("{}.{}", filename, suffix);
+   
+                
+            }
+
+
+            let stream = body.bytes_stream();
+
+            let body_with_io_error = stream.map_err(|err| io::Error::new(io::ErrorKind::Other, err));
+            let body_reader = StreamReader::new(body_with_io_error);
+
+            
+            let (source, writer) = m.get_file_write_stream(&filename).await?;
+            println!("Adding: {}", source);
+
+            tokio::pin!(body_reader);
+            tokio::pin!(writer);
+            copy(&mut body_reader, &mut writer).await?;
+
+
+            
+            let _ = m.fill_infos(&source, &mut infos).await;
+            println!("new infos {:?}", infos);
+
+            let mut new_file = MediaForAdd::default();
+            new_file.name = filename.to_string();
+            new_file.source = Some(source.to_string());
+            new_file.mimetype = infos.mimetype.clone();
+            new_file.created = Some(infos.created.unwrap_or_else(|| Utc::now().timestamp_millis() as u64));
+            
+            if let Some(ref mime) = new_file.mimetype {
+                new_file.kind = file_type_from_mime(&mime);
+            }
+
+            println!("new file {:?}", new_file);
+
+            let id = nanoid!();
+            store.add_media(MediaForInsert { id: id.clone(), media: new_file }).await?;
+            
+            store.update_media(&id, infos).await?;
+
+            self.generate_thumb(&library_id, &id, &requesting_user).await?;
+            let media = store.get_media(&id).await?.ok_or(Error::NotFound)?;
+            medias.push(media)
+
+
+        }
+        Ok(medias)
+	}
+
+    pub async fn generate_thumb(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> Result<()> {
+        let m = self.source_for_library(&library_id).await?; 
+        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let source = store.get_media_source(&media_id).await?.ok_or(Error::NotFound)?;
+        let thumb = m.thumb(&source.source).await?;
+
+        self.update_library_image(&library_id, ".thumbs", &media_id, &None, thumb.as_slice(), requesting_user).await?;
+
+        Ok(())
+    }
+
     pub async fn remove_library_file(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> Result<()> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
@@ -186,7 +275,10 @@ impl ModelController {
 
         if let Some(existing) = existing {
             let m = self.source_for_library(&library_id).await?;
-            m.remove(&existing.source).await?;
+            let r = m.remove(&existing.source).await;
+            if r.is_ok() {
+				log_info(crate::tools::log::LogServiceType::Source, format!("Deleted file {}", existing.source));
+			}
             store.remove_media(media_id.to_string()).await?;
         }
         self.remove_library_image(library_id, ".thumbs", media_id, &None, requesting_user).await?;

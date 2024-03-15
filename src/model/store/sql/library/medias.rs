@@ -100,6 +100,9 @@ impl SqliteLibraryStore {
         let row = self.connection.call( move |conn| { 
             let mut where_query = QueryBuilder::new();
             where_query.add_where(query.after, QueryWhereType::After("modified".to_string()));
+            where_query.add_where(query.kind, QueryWhereType::Equal("type".to_string()));
+
+
             if query.after.is_some() {
                 where_query.add_oder(OrderBuilder::new("m.modified".to_string(), SqlOrder::ASC))
             } else {
@@ -226,15 +229,27 @@ impl SqliteLibraryStore {
             pub remove_people: Option<Vec<String>>,
     */
 
+            where_query.add_where(Some(id.clone()), QueryWhereType::Equal("id".to_string()));
+            if where_query.columns_update.len() > 0 {
+                let update_sql = format!("UPDATE medias SET {} {}", where_query.format_update(), where_query.format());
+                conn.execute(&update_sql, where_query.values())?;
+            }
 
-
-
-            where_query.add_where(Some(id), QueryWhereType::Equal("id".to_string()));
+            let all_tags: Vec<String> = existing.tags.clone().unwrap_or(vec![]).into_iter().map(|t| t.id).collect();
+            if let Some(add_tags) = update.add_tags {
+                for tag in add_tags {
+                    if !all_tags.contains(&tag.id) {
+                        conn.execute("INSERT INTO media_tag_mapping (media_ref, tag_ref, confidence) VALUES (? ,? , ?) ", params![id, tag.id, tag.conf])?;
+                    }
+                }
+            }
+            if let Some(add_tags) = update.remove_tags {
+                for tag in add_tags {
+                    conn.execute("DELETE FROM media_tag_mapping WHERE media_ref = ? and tag_ref = ?", params![id, tag])?;
+                }
+            }
             
 
-            let update_sql = format!("UPDATE medias SET {} {}", where_query.format_update(), where_query.format());
-
-            conn.execute(&update_sql, where_query.values())?;
             Ok(())
         }).await?;
 

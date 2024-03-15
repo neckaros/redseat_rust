@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use axum::{extract::multipart, http::StatusCode, response::{IntoResponse, Response}, Json};
+use ndarray::ShapeError;
 use serde::Serialize;
 use derive_more::From;
 use serde_json::json;
@@ -81,6 +82,10 @@ pub enum Error {
 
 	#[from]
 	Multipart(#[serde_as(as = "DisplayFromStr")] multipart::MultipartError),
+
+	
+	#[from]
+	NdShapeError(#[serde_as(as = "DisplayFromStr")] ShapeError),
 
 }
 

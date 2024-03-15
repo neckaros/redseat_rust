@@ -30,6 +30,7 @@ pub async fn mw_must_be_admin(user: ConnectedUser, req: Request, next: Next) -> 
             return Err(Error::Forbiden)
         },
         ConnectedUser::Anonymous => return Err(Error::Forbiden),
+        ConnectedUser::ServerAdmin => {},
     }
     Ok(next.run(req).await)
 }

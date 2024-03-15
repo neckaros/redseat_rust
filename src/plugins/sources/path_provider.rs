@@ -7,7 +7,7 @@ use query_external_ip::SourceError;
 use sha256::try_async_digest;
 use tokio::{fs::{create_dir_all, remove_file, File}, io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, BufReader, BufWriter}};
 
-use crate::{domain::{library::ServerLibrary, media::MediaForUpdate}, routes::mw_range::RangeDefinition, tools::file_tools::get_mime_from_filename};
+use crate::{domain::{library::ServerLibrary, media::MediaForUpdate}, routes::mw_range::RangeDefinition, tools::{file_tools::get_mime_from_filename, image_tools::resize_image_reader, log::log_info}};
 
 use super::{error::{SourcesError, SourcesResult}, AsyncReadPinBox, FileStreamResult, RangeResponse, Source};
 
@@ -56,6 +56,12 @@ impl Source for PathProvider {
         let path = self.get_gull_path(&source);
         remove_file(path).await?;
         Ok(())
+    }
+
+    async fn thumb(&self, source: &str) -> SourcesResult<Vec<u8>> {
+        let mut reader = self.get_file_read_stream(source, None).await?;
+        let image = resize_image_reader(&mut reader.stream, 512).await?;
+        Ok(image)
     }
 
     async fn fill_infos(&self, source: &str, infos: &mut MediaForUpdate) -> SourcesResult<()> {
@@ -139,19 +145,26 @@ impl Source for PathProvider {
 
     async fn get_file_write_stream(&self, name: &str) -> SourcesResult<(String, Pin<Box<dyn AsyncWrite + Send>>)> {
         let mut path = self.root.clone();
+        let mut sourcepath = PathBuf::new();
+
         if !self.for_local {
             let year = Utc::now().year().to_string();
-            path.push(year);
+            sourcepath.push(year);
             let month = Utc::now().month().to_string();
-            path.push(month);
+            sourcepath.push(month);
         }
-        create_dir_all(&path).await?;
+        let mut folder = path.clone();
+        folder.push(&sourcepath);
+        create_dir_all(&folder).await?;
+        
 
-        let original_path = path.clone();
+        let mut file_path = path.clone();
+        let original_source = sourcepath.clone();
+        sourcepath.push(&name);
+        file_path.push(&sourcepath);
         let original_name = name;
-        path.push(name);
         let mut i = 1;
-        while path.exists() {
+        while file_path.exists() {
             i = i + 1;
             let extension = path.extension().and_then(|r| r.to_str());
             let new_name = if let Some(extension) = extension {
@@ -159,13 +172,16 @@ impl Source for PathProvider {
             } else {
                 format!("{}-{}", original_name, i)
             };
-            path = original_path.clone();
-            path.push(new_name);
+            file_path = path.clone();
+            sourcepath = original_source.clone();
+            sourcepath.push(new_name);
+            file_path.push(&sourcepath);
         }
     
-        let file = BufWriter::new(File::create(&path).await?);
-        let source = path.to_str().ok_or(SourcesError::Other("Unable to convert path to string".into()))?.to_string();
-        Ok((source, Box::pin(file)))
+    
+        let file = BufWriter::new(File::create(&file_path).await?);
+        let source = sourcepath.to_str().ok_or(SourcesError::Other("Unable to convert path to string".into()))?.to_string();
+        Ok((source.to_string(), Box::pin(file)))
     }
 
 }
