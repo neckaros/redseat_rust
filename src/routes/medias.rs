@@ -50,19 +50,7 @@ struct PredictOption {
 }
 
 async fn handler_predict(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<PredictOption>) -> Result<Json<Value>> {
-	let mut reader_response = mc.media_image(&library_id, &media_id, None, &user).await?;
-
-	let mut buffer = Vec::new();
-    reader_response.stream.read_to_end(&mut buffer).await?;
-	let mut prediction = predict_net(PathBuf::from_str("models/wd-v1-4-tags.onnx").unwrap(), true, false, buffer)?;
-	prediction.sort_by(|a, b| b.probability.partial_cmp(&a.probability).unwrap());
-	if query.tag {
-		for tag in &prediction {
-			let db_tag = mc.get_ai_tag(&library_id, tag.tag.clone(), &user).await?;
-			mc.update_media(&library_id, media_id.clone(), MediaForUpdate { add_tags: Some(vec![MediaTagReference { id: db_tag.id, conf: Some(tag.probability as u16) }]), ..Default::default() }, &user).await?;
-		}
-	}
-
+	let prediction = mc.prediction(&library_id, &media_id, query.tag, &user).await?;
 	let body = Json(json!(prediction));
 
 	Ok(body)

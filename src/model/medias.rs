@@ -1,7 +1,7 @@
 
 
 
-use std::{io::{self, Read}, pin::Pin};
+use std::{io::{self, Read}, path::PathBuf, pin::Pin, str::FromStr};
 
 use chrono::{Datelike, Utc};
 use futures::TryStreamExt;
@@ -10,14 +10,13 @@ use mime::{Mime, APPLICATION_OCTET_STREAM};
 use mime_guess::get_mime_extensions_str;
 use nanoid::nanoid;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value};
-use tokio::io::{copy, AsyncRead};
+use tokio::io::{copy, AsyncRead, AsyncReadExt};
 use tokio_util::io::StreamReader;
 
 
-use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediasMessage}, ElementAction}, plugins::sources::{AsyncReadPinBox, FileStreamResult}, routes::mw_range::RangeDefinition, tools::{file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{ImageSize, ImageType}, log::log_info}};
+use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaTagReference, MediasMessage}, plugin::PluginType, ElementAction}, plugins::sources::{AsyncReadPinBox, FileStreamResult}, routes::mw_range::RangeDefinition, tools::{file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{ImageSize, ImageType}, log::log_info, prediction::{predict_net, PredictionTagResult}}};
 
-use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
+use super::{error::{Error, Result}, plugins::PluginQuery, users::ConnectedUser, ModelController};
 
 
 
@@ -153,7 +152,6 @@ impl ModelController {
 
 
 		let (source, writer) = m.get_file_write_stream(filename).await?;
-        println!("Adding: {}", source);
 
 		tokio::pin!(reader);
 		tokio::pin!(writer);
@@ -162,7 +160,6 @@ impl ModelController {
 
         let mut infos = infos.unwrap_or_else(|| MediaForUpdate::default());
         let _ = m.fill_infos(&source, &mut infos).await;
-        println!("new infos {:?}", infos);
 
         let mut new_file = MediaForAdd::default();
         new_file.name = filename.to_string();
@@ -181,6 +178,9 @@ impl ModelController {
         store.add_media(MediaForInsert { id: id.clone(), media: new_file }).await?;
         
         store.update_media(&id, infos).await?;
+
+        self.generate_thumb(&library_id, &id, &requesting_user).await?;
+
 
         let media = store.get_media(&id).await?.ok_or(Error::NotFound)?;
         Ok(media)
@@ -268,6 +268,35 @@ impl ModelController {
         Ok(())
     }
 
+
+    pub async fn prediction(&self, library_id: &str, media_id: &str, insert_tags: bool, requesting_user: &ConnectedUser) -> crate::Result<Vec<PredictionTagResult>> {
+
+        let plugins = self.get_plugins(PluginQuery { kind: Some(PluginType::ImageClassification), library: Some(library_id.to_string()), ..Default::default() }, requesting_user).await?;
+
+        if plugins.len() > 0 {
+            let mut all_predictions: Vec<PredictionTagResult> = vec![];
+            let mut reader_response = self.media_image(&library_id, &media_id, None, &requesting_user).await?;
+
+            for plugin in plugins {
+                let mut buffer = Vec::new();
+                reader_response.stream.read_to_end(&mut buffer).await?;
+                let mut prediction = predict_net(PathBuf::from_str(&plugin.path).unwrap(), plugin.settings.bgr.unwrap_or(false), plugin.settings.normalize.unwrap_or(false), buffer)?;
+                prediction.sort_by(|a, b| b.probability.partial_cmp(&a.probability).unwrap());
+                if insert_tags {
+                    for tag in &prediction {
+                        let db_tag = self.get_ai_tag(&library_id, tag.tag.clone(), &requesting_user).await?;
+                        self.update_media(&library_id, media_id.to_string(), MediaForUpdate { add_tags: Some(vec![MediaTagReference { id: db_tag.id, conf: Some(tag.probability as u16) }]), ..Default::default() }, &requesting_user).await?;
+                    }
+                }
+                all_predictions.append(&mut prediction);
+            }
+
+            Ok(all_predictions)
+        } else {
+            Err(crate::Error::NoModelFound)
+        }
+    }
+    
     pub async fn remove_library_file(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> Result<()> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;

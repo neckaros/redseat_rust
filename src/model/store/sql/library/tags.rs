@@ -1,6 +1,6 @@
 use rusqlite::{params, OptionalExtension, Row};
 
-use crate::{domain::tag::Tag, model::{store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_pipe_separated_optional}, tags::{TagForInsert, TagForUpdate, TagQuery}}};
+use crate::{domain::tag::Tag, model::{store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_pipe_separated_optional}, tags::{TagForInsert, TagForUpdate, TagQuery}}, tools::array_tools::replace_add_remove_from_array};
 use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
 
@@ -27,13 +27,24 @@ impl SqliteLibraryStore {
         let row = self.connection.call( move |conn| { 
             let mut where_query = QueryBuilder::new();
             
-            where_query.add_where(query.parent, QueryWhereType::Like("parent".to_string()));
-            where_query.add_where(query.path, QueryWhereType::Like("path".to_string()));
-            where_query.add_where(query.after, QueryWhereType::After("modified".to_string()));
+            if let Some(q) = &query.parent {
+                where_query.add_where(QueryWhereType::Equal("parent", q));
+            }
+            if let Some(q) = &query.path {
+                where_query.add_where(QueryWhereType::Equal("path", q));
+            }
+            if let Some(q) = &query.after {
+                where_query.add_where(QueryWhereType::After("modified", q));
+            }
+
             if query.after.is_some() {
                 where_query.add_oder(OrderBuilder::new("modified".to_string(), SqlOrder::ASC))
             }
-            where_query.add_where(query.name, QueryWhereType::EqualWithAlt("name".to_string(), "alt".into(), "|".into()));
+
+
+            if let Some(q) = &query.name {
+                where_query.add_where(QueryWhereType::EqualWithAlt("name", "alt", "|", q));
+            }
             //println!("sql: {}", where_query.format());
             let mut query = conn.prepare(&format!("SELECT id, name, parent, type, alt, thumb, params, modified, added, generated, path  FROM tags {}{}", where_query.format(), where_query.format_order()))?;
             let rows = query.query_map(
@@ -63,15 +74,20 @@ impl SqliteLibraryStore {
         self.connection.call( move |conn| { 
             let tx = conn.transaction()?;
             let mut where_query = QueryBuilder::new();
-            where_query.add_update(update.name.clone(), QueryWhereType::Equal("name".to_string()));
-            where_query.add_update(update.parent.clone(), QueryWhereType::Equal("parent".to_string()));
-            where_query.add_update(update.kind, QueryWhereType::Equal("type".to_string()));
-            where_query.add_update(to_pipe_separated_optional(update.alt), QueryWhereType::Equal("alt".to_string()));
-            where_query.add_update(update.thumb, QueryWhereType::Equal("thumb".to_string()));
-            where_query.add_update(update.params, QueryWhereType::Equal("params".to_string()));
-            where_query.add_update(update.generated, QueryWhereType::Equal("generated".to_string()));
+            where_query.add_update(&update.name, "name");
+            where_query.add_update(&update.parent, "parent");
+            where_query.add_update(&update.kind, "type");
 
-            where_query.add_where(Some(id), QueryWhereType::Equal("id".to_string()));
+            let alts = replace_add_remove_from_array(existing_tag.alt.clone(), update.alt, update.add_alts, update.remove_alts);
+            let v = to_pipe_separated_optional(alts);
+            where_query.add_update(&v, "alt");
+
+            where_query.add_update(&update.thumb, "thumb");
+            where_query.add_update(&update.params, "params");
+            where_query.add_update(&update.generated, "generated");
+
+
+            where_query.add_where(QueryWhereType::Equal("id", &id));
             
 
             let update_sql = format!("UPDATE Tags SET {} {}", where_query.format_update(), where_query.format());

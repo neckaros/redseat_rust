@@ -72,7 +72,11 @@ pub struct TagForUpdate {
     pub parent: Option<String>,
     #[serde(rename = "type")]
     pub kind: Option<String>,
+    
     pub alt: Option<Vec<String>>,
+    pub add_alts: Option<Vec<String>>,
+    pub remove_alts: Option<Vec<String>>,
+
     pub thumb: Option<String>,
     pub params: Option<Value>,
     pub generated: Option<bool>,

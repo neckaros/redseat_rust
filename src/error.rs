@@ -147,7 +147,8 @@ impl Error {
 			Self::TicketDeleteFailIdNotFound { .. } => {
 				(StatusCode::BAD_REQUEST, ClientError::INVALID_PARAMS)
 			},
-
+			// -- Prediction
+			Self::NoModelFound => (StatusCode::NOT_FOUND, ClientError::NOT_FOUND),
 			// -- Fallback.
 			_ => (
 				StatusCode::INTERNAL_SERVER_ERROR,

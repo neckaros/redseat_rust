@@ -115,9 +115,9 @@ pub fn predict_net(path: PathBuf, bgr: bool, normalize: bool, buffer_image: Vec<
     let binding = outputs[output_info.name.clone()].extract_tensor::<f32>()?;
     let output = binding.view();
     let a = output.axis_iter(Axis(0)).next().ok_or(crate::Error::NotFound)?;
-    println!("{:?}", a);
+    //println!("{:?}", a);
         let row: Vec<_> = a.iter().copied().enumerate().filter(|(i, p)| p > &(0.3 as f32)).map(|(index, proba)| {
-            println!("{:?}", index);
+            //println!("{:?}", index);
             let element = tags.get(index);
             if let Some(element) = element {
                 let tag = PredictionTagResult {

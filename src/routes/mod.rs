@@ -10,6 +10,7 @@ pub mod mw_range;
 pub mod socket;
 pub mod credentials;
 pub mod backups;
+pub mod plugins;
 
 pub mod tags;
 pub mod people;

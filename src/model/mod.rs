@@ -5,6 +5,7 @@ pub mod libraries;
 pub mod server;
 pub mod credentials;
 pub mod backups;
+pub mod plugins;
 
 pub mod tags;
 pub mod people;
@@ -126,17 +127,21 @@ impl  ModelController {
 
 	pub async fn update_library_image<T: AsyncRead>(&self, library_id: &str, folder: &str, id: &str, kind: &Option<ImageType>, reader: T, requesting_user: &ConnectedUser) -> Result<()> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
-
+		println!("library");
 		self.remove_library_image(library_id, folder, id, kind, requesting_user).await?;
+		println!("image");
 
         let m = self.library_source_for_library(&library_id).await?;
 
 		let source_filepath = format!("{}/{}{}.webp", folder, id, ImageType::optional_to_filename_element(&kind));
+		println!("image2");
 
 		let (_, writer) = m.get_file_write_stream(&source_filepath).await?;
 		tokio::pin!(reader);
 		tokio::pin!(writer);
 		copy(&mut reader, &mut writer).await?;
+		println!("image3");
+
         Ok(())
 	}
 

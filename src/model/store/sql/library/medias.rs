@@ -99,17 +99,21 @@ impl SqliteLibraryStore {
     pub async fn get_medias(&self, query: MediaQuery) -> Result<Vec<Media>> {
         let row = self.connection.call( move |conn| { 
             let mut where_query = QueryBuilder::new();
-            where_query.add_where(query.after, QueryWhereType::After("modified".to_string()));
-            where_query.add_where(query.kind, QueryWhereType::Equal("type".to_string()));
 
+            if let Some(q) = &query.after {
+                where_query.add_where(QueryWhereType::After("modified", q));
+            }
+            if let Some(q) = &query.kind {
+                where_query.add_where(QueryWhereType::Equal("type", q));
+            }
 
             if query.after.is_some() {
                 where_query.add_oder(OrderBuilder::new("m.modified".to_string(), SqlOrder::ASC))
             } else {
                 where_query.add_oder(OrderBuilder::new("m.modified".to_string(), SqlOrder::DESC))
             }
-            for tag in query.tags {
-                where_query.add_recursive("tags", "media_tag_mapping", "media_ref", "tag_ref", &tag);
+            for tag in &query.tags {
+                where_query.add_recursive("tags", "media_tag_mapping", "media_ref", "tag_ref", tag);
             }
             
 
@@ -132,7 +136,8 @@ impl SqliteLibraryStore {
              {}
              LIMIT 200", where_query.format_recursive(), where_query.format(), where_query.format_order()))?;
 
-            // println!("query {}", query.expanded_sql().unwrap_or("default".into()));
+             //println!("query {:?}", query.expanded_sql());
+
 
             let rows = query.query_map(
             where_query.values(), Self::row_to_media,
@@ -193,30 +198,33 @@ impl SqliteLibraryStore {
         let existing = self.get_media(media_id).await?.ok_or_else( || Error::NotFound)?;
         self.connection.call( move |conn| { 
             let mut where_query = QueryBuilder::new();
-            where_query.add_update(update.name.clone(), QueryWhereType::Equal("name".to_string()));
-            where_query.add_update(update.description, QueryWhereType::Equal("description".to_string()));
-            where_query.add_update(update.mimetype, QueryWhereType::Equal("mimetype".to_string()));
-            where_query.add_update(update.size, QueryWhereType::Equal("size".to_string()));
-            where_query.add_update(update.md5, QueryWhereType::Equal("md5".to_string()));
-            where_query.add_update(update.created, QueryWhereType::Equal("created".to_string()));
+            
 
-            where_query.add_update(update.width, QueryWhereType::Equal("width".to_string()));
-            where_query.add_update(update.height, QueryWhereType::Equal("height".to_string()));
+            where_query.add_update(&update.name, "name");
+            where_query.add_update(&update.description, "description");
+            where_query.add_update(&update.mimetype, "mimetype");
+            where_query.add_update(&update.size, "size");
+            where_query.add_update(&update.md5, "md5");
+            where_query.add_update(&update.created, "created");
 
-            where_query.add_update(update.duration, QueryWhereType::Equal("duration".to_string()));
+            where_query.add_update(&update.width, "width");
+            where_query.add_update(&update.height, "height");
 
-            where_query.add_update(update.progress, QueryWhereType::Equal("progress".to_string()));
+            where_query.add_update(&update.duration, "duration");
 
-            where_query.add_update(update.long, QueryWhereType::Equal("long".to_string()));
-            where_query.add_update(update.lat, QueryWhereType::Equal("lat".to_string()));
+            where_query.add_update(&update.progress, "progress");
 
-            where_query.add_update(update.long, QueryWhereType::Equal("origin".to_string()));
-            where_query.add_update(update.lat, QueryWhereType::Equal("movie".to_string()));
 
-            where_query.add_update(update.lang, QueryWhereType::Equal("lang".to_string()));
+            where_query.add_update(&update.long, "long");
+            where_query.add_update(&update.lat, "lat");
 
-            where_query.add_update(update.uploader, QueryWhereType::Equal("uploader".to_string()));
-            where_query.add_update(update.uploadkey, QueryWhereType::Equal("uploaderkey".to_string()));
+            where_query.add_update(&update.origin, "origin");
+            where_query.add_update(&update.movie, "movie");
+
+            where_query.add_update(&update.lang, "lang");
+
+            where_query.add_update(&update.uploader, "uploader");
+            where_query.add_update(&update.uploadkey, "uploaderkey");
      
      /*
             pub add_tags: Option<Vec<String>>,
@@ -229,7 +237,7 @@ impl SqliteLibraryStore {
             pub remove_people: Option<Vec<String>>,
     */
 
-            where_query.add_where(Some(id.clone()), QueryWhereType::Equal("id".to_string()));
+            where_query.add_where(QueryWhereType::Equal("id", &id));
             if where_query.columns_update.len() > 0 {
                 let update_sql = format!("UPDATE medias SET {} {}", where_query.format_update(), where_query.format());
                 conn.execute(&update_sql, where_query.values())?;

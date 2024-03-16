@@ -1,8 +1,8 @@
 use std::str::FromStr;
 
-use crate::{domain::{library::{LibraryType, ServerLibrary, ServerLibrarySettings}, plugin::{Plugin, PluginSettings, PluginType}}, model::{libraries::{ServerLibraryForUpdate, ServerLibraryInvitation}, store::{from_comma_separated, to_comma_separated, SqliteStore}}};
-use super::Result;
-use crate::domain::library::LibraryRole;
+use crate::{domain::plugin::{Plugin, PluginForInsert, PluginForUpdate, PluginSettings, PluginType}, model::{error::Error, plugins::PluginQuery, store::{from_comma_separated, to_comma_separated, to_comma_separated_optional, SqliteStore}}, tools::array_tools::replace_add_remove_from_array};
+
+use super::{QueryBuilder, QueryWhereType, Result};
 use rusqlite::{params, params_from_iter, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, Row, ToSql};
 
 
@@ -29,7 +29,7 @@ impl ToSql for PluginType {
 
 
 
-// region:    --- Library Settings
+// region:    --- plugin Settings
 
 impl FromSql for PluginSettings {
     fn column_result(value: ValueRef) -> FromSqlResult<Self> {
@@ -63,13 +63,12 @@ impl SqliteStore {
             libraries: from_comma_separated(row.get(5)?)
         })
     }
-    // region:    --- Libraries
-    pub async fn get_plugins(&self, library_id: &str) -> Result<Option<Plugin>> {
-        let library_id = library_id.to_string();
+    pub async fn get_plugin(&self, plugin_id: &str) -> Result<Option<Plugin>> {
+        let plugin_id = plugin_id.to_string();
             let row = self.server_store.call( move |conn| { 
                 let row = conn.query_row(
-                "SELECT id, name, path, kind, settings, libraries FROM models WHERE id = ?1",
-                [&library_id],
+                "SELECT id, name, path, kind, settings, libraries FROM plugins WHERE id = ?1",
+                [&plugin_id],
                 Self::row_to_plugin,
                 ).optional()?;
     
@@ -77,111 +76,80 @@ impl SqliteStore {
         }).await?;
         Ok(row)
     }
-    /* 
-    pub async fn get_libraries(&self) -> Result<Vec<ServerLibrary>> {
+    
+    pub async fn get_plugins(&self, query: PluginQuery) -> Result<Vec<Plugin>> {
         let row = self.server_store.call( move |conn| { 
-            let mut query = conn.prepare("SELECT id, name, source, root, type, crypt, settings  FROM Libraries")?;
+
+            let mut where_query = QueryBuilder::new();
+            if let Some(q) = &query.kind {
+                where_query.add_where(super::QueryWhereType::Equal("kind", q));
+            }
+            if let Some(q) = &query.library {
+                where_query.add_where(super::QueryWhereType::SeparatedContain("libraries", ",".to_string(), q));
+            }
+
+            let mut query = conn.prepare(&format!("SELECT id, name, path, kind, settings, libraries FROM plugins 
+            {}", where_query.format()))?;
             let rows = query.query_map(
-            [],
-            |row| {
-                Ok(ServerLibrary {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    source:  row.get(2)?,
-                    root:  row.get(3)?,
-                    kind:  row.get(4)?,
-                    crypt:  row.get(5)?,
-                    settings:  row.get(6)?,
-                })
-            },
+            where_query.values(),
+            Self::row_to_plugin,
             )?;
-            let libraries:Vec<ServerLibrary> = rows.collect::<std::result::Result<Vec<ServerLibrary>, rusqlite::Error>>()?; 
+            let libraries:Vec<Plugin> = rows.collect::<std::result::Result<Vec<Plugin>, rusqlite::Error>>()?; 
             Ok(libraries)
         }).await?;
         Ok(row)
     }
 
-    pub async fn remove_library(&self, library_id: String) -> Result<()> {
+    pub async fn remove_plugin(&self, plugin_id: String) -> Result<()> {
         self.server_store.call( move |conn| { 
-            conn.execute("DELETE FROM Libraries WHERE id = ?", &[&library_id])?;
-            conn.execute("DELETE FROM Libraries_Users_Rights WHERE library_ref = ?", &[&library_id])?;
-            conn.execute("DELETE FROM Backups_Files WHERE library = ?", &[&library_id])?;
-            conn.execute("DELETE FROM Invitation WHERE library = ?", &[&library_id])?;
+            conn.execute("DELETE FROM plugins WHERE id = ?", &[&plugin_id])?;
             Ok(())
         }).await?;
         Ok(())
     }
 
-    pub async fn add_library(&self, library: ServerLibrary) -> Result<()> {
+    pub async fn add_plugin(&self, plugin: PluginForInsert) -> Result<()> {
         self.server_store.call( move |conn| { 
 
-            conn.execute("INSERT INTO Libraries (id, name, type, source, root, settings, crypt)
-            VALUES (?, ?, ? ,?, ?, ?, ?)", params![
-                library.id,
-                library.name,
-                library.kind,
-                library.source,
-                library.root,
-                library.settings,
-                library.crypt
+            conn.execute("INSERT INTO plugins (id, name, path, kind, settings, libraries)
+            VALUES (?, ?, ? ,?, ?, ?)", params![
+                plugin.id,
+                plugin.plugin.name,
+                plugin.plugin.path,
+                plugin.plugin.kind,
+                plugin.plugin.settings,
+                to_comma_separated(plugin.plugin.libraries),
             ])?;
             
-            Ok(())
-        }).await?;
-        Ok(())
-    }
-    pub async fn add_library_rights(&self, library_id: String, user_id: String, role: Vec<LibraryRole>) -> Result<()> {
-        self.server_store.call( move |conn| { 
-
-            conn.execute("INSERT INTO Libraries_Users_Rights (user_ref, library_ref, roles)
-            VALUES (?, ?, ?)", params![
-                &user_id,
-                &library_id,
-                to_comma_separated(role)
-            ])?;
-            
-            Ok(())
-        }).await?;
-        Ok(())
-    }
-
-    pub async fn update_library(&self, library_id: &str, update: ServerLibraryForUpdate) -> Result<()> {
-        let library_id = library_id.to_string();
-        self.server_store.call( move |conn| { 
-            let mut columns: Vec<String> = Vec::new();
-            let mut values: Vec<Box<dyn ToSql>> = Vec::new();
-
-            super::add_for_sql_update(update.name, "name", &mut columns, &mut values);
-            super::add_for_sql_update(update.source, "source", &mut columns, &mut values);
-            super::add_for_sql_update(update.root, "root", &mut columns, &mut values);
-            super::add_for_sql_update(update.settings, "settings", &mut columns, &mut values);
-
-            if columns.len() > 0 {
-                values.push(Box::new(library_id));
-                let update_sql = format!("UPDATE Libraries SET {} WHERE id = ?", columns.join(", "));
-                conn.execute(&update_sql, params_from_iter(values))?;
-            }
             Ok(())
         }).await?;
         Ok(())
     }
     
-    pub async fn add_library_invitation(&self, invitation: ServerLibraryInvitation) -> Result<()> {
+    pub async fn update_plugin(&self, plugin_id: &str, update: PluginForUpdate) -> Result<()> {
+        let plugin_id = plugin_id.to_string();
+        let existing = self.get_plugin(&plugin_id).await?.ok_or_else( || Error::NotFound)?;
         self.server_store.call( move |conn| { 
-
-            conn.execute("INSERT INTO Invitation (code, role, expires, library)
-            VALUES (?, ?, ?, ?)", params![
-                &invitation.code,
-                to_comma_separated(invitation.roles),
-                &invitation.expires,
-                &invitation.library
-            ])?;
+            let mut where_query = QueryBuilder::new();
             
+            where_query.add_update(&update.name, "name");
+            where_query.add_update(&update.path, "path");
+            where_query.add_update(&update.settings, "settings");
+
+            //println!("{:?}", update);
+            let libraries = replace_add_remove_from_array(Some(existing.libraries.clone()), update.libraries, update.add_libraries, update.remove_libraries);
+            let v = to_comma_separated_optional(libraries);
+            where_query.add_update(&v, "libraries");
+
+            where_query.add_where(QueryWhereType::Equal("id", &plugin_id));
+            if where_query.columns_update.len() > 0 {
+                let update_sql = format!("UPDATE plugins SET {} {}", where_query.format_update(), where_query.format());
+                conn.execute(&update_sql, where_query.values())?;
+            }
             Ok(())
         }).await?;
         Ok(())
     }
-*/
-    // endregion:    --- Libraries
+
     
     }

@@ -108,7 +108,6 @@ impl Source for PathProvider {
                 if start < size { 
                     filereader.seek( std::io::SeekFrom::Start(start)).await?;
                     range_response.start = Some(start.clone());
-                    println!("START {}, {}", start, size);
                     size = size - start;
                     range_response.size = Some(size.clone());
 
@@ -155,18 +154,23 @@ impl Source for PathProvider {
         }
         let mut folder = path.clone();
         folder.push(&sourcepath);
-        create_dir_all(&folder).await?;
-        
+       
 
         let mut file_path = path.clone();
         let original_source = sourcepath.clone();
         sourcepath.push(&name);
         file_path.push(&sourcepath);
+        
+        if let Some(p) = file_path.parent() {
+            create_dir_all(&p).await?;
+        }
+        
+
         let original_name = name;
         let mut i = 1;
         while file_path.exists() {
             i = i + 1;
-            let extension = path.extension().and_then(|r| r.to_str());
+            let extension = file_path.extension().and_then(|r| r.to_str());
             let new_name = if let Some(extension) = extension {
                 original_name.replace(&format!(".{}", extension), &format!("-{}.{}", i, extension))
             } else {

@@ -29,7 +29,9 @@ impl SqliteLibraryStore {
     pub async fn get_people(&self, query: PeopleQuery) -> Result<Vec<Person>> {
         let row = self.connection.call( move |conn| { 
             let mut where_query = QueryBuilder::new();
-            where_query.add_where(query.after, QueryWhereType::After("modified".to_string()));
+            if let Some(q) = &query.after {
+                where_query.add_where(QueryWhereType::After("modified", q));
+            }
             if query.after.is_some() {
                 where_query.add_oder(OrderBuilder::new("modified".to_string(), SqlOrder::ASC))
             }
@@ -65,21 +67,22 @@ impl SqliteLibraryStore {
 
         self.connection.call( move |conn| { 
             let mut where_query = QueryBuilder::new();
-            where_query.add_update(update.name.clone(), QueryWhereType::Equal("name".to_string()));
 
-            where_query.add_update(update.kind, QueryWhereType::Equal("type".to_string()));
-            where_query.add_update(update.portrait, QueryWhereType::Equal("portrait".to_string()));
-            where_query.add_update(update.params, QueryWhereType::Equal("params".to_string()));
-            where_query.add_update(update.birthday, QueryWhereType::Equal("birthday".to_string()));
+            where_query.add_update(&update.name, "name");
+            where_query.add_update(&update.kind, "type");
+            where_query.add_update(&update.portrait, "portrait");
+            where_query.add_update(&update.params, "params");
+            where_query.add_update(&update.birthday, "birthday");
 
             let alts = replace_add_remove_from_array(existing.alt, update.alt, update.add_alts, update.remove_alts);
-            where_query.add_update(to_pipe_separated_optional(alts), QueryWhereType::Equal("alt".to_string()));
+            let v = to_pipe_separated_optional(alts);
+            where_query.add_update(&v, "alt");
 
             let socials = replace_add_remove_from_array(existing.socials, update.socials, update.add_socials, update.remove_socials);
             let socials = optional_serde_to_string(socials).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-            where_query.add_update(socials, QueryWhereType::Equal("socials".to_string()));
+            where_query.add_update(&socials, "socials");
 
-            where_query.add_where(Some(id), QueryWhereType::Equal("id".to_string()));
+            where_query.add_where(QueryWhereType::Equal("id", &id));
             
 
             let update_sql = format!("UPDATE people SET {} {}", where_query.format_update(), where_query.format());

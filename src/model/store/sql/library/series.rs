@@ -40,7 +40,9 @@ impl SqliteLibraryStore {
     pub async fn get_series(&self, query: SerieQuery) -> Result<Vec<Serie>> {
         let row = self.connection.call( move |conn| { 
             let mut where_query = QueryBuilder::new();
-            where_query.add_where(query.after, QueryWhereType::After("modified".to_string()));
+            if let Some(q) = &query.after {
+                where_query.add_where(QueryWhereType::After("modified", q));
+            }
             if query.after.is_some() {
                 where_query.add_oder(OrderBuilder::new("modified".to_string(), SqlOrder::ASC))
             }
@@ -73,30 +75,30 @@ impl SqliteLibraryStore {
         let existing = self.get_serie(serie_id).await?.ok_or_else( || Error::NotFound)?;
         self.connection.call( move |conn| { 
             let mut where_query = QueryBuilder::new();
-            where_query.add_update(update.name.clone(), QueryWhereType::Equal("name".to_string()));
-            where_query.add_update(update.kind, QueryWhereType::Equal("type".to_string()));
-            where_query.add_update(update.imdb, QueryWhereType::Equal("imdb".to_string()));
-            where_query.add_update(update.slug, QueryWhereType::Equal("slug".to_string()));
-            where_query.add_update(update.tmdb, QueryWhereType::Equal("tmdb".to_string()));
-            where_query.add_update(update.trakt, QueryWhereType::Equal("trakt".to_string()));
-            where_query.add_update(update.tvdb, QueryWhereType::Equal("tvdb".to_string()));
-            where_query.add_update(update.otherids, QueryWhereType::Equal("otherids".to_string()));
-            where_query.add_update(update.imdb_rating, QueryWhereType::Equal("imdb_rating".to_string()));
-            where_query.add_update(update.imdb_votes, QueryWhereType::Equal("imdb_votes".to_string()));
-            where_query.add_update(update.trakt_rating, QueryWhereType::Equal("trakt_rating".to_string()));
-            where_query.add_update(update.trakt_votes, QueryWhereType::Equal("trakt_votes".to_string()));
-            where_query.add_update(update.year, QueryWhereType::Equal("year".to_string()));
-            where_query.add_update(update.max_created, QueryWhereType::Equal("maxCreated".to_string()));
+
+            where_query.add_update(&update.name, "name");
+            where_query.add_update(&update.kind, "type");
+            
+            where_query.add_update(&update.imdb, "imdb");
+            where_query.add_update(&update.slug, "slug");
+            where_query.add_update(&update.tmdb, "tmdb");
+            where_query.add_update(&update.trakt, "trakt");
+            where_query.add_update(&update.tvdb, "tvdb");
+            where_query.add_update(&update.otherids, "otherids");
+            where_query.add_update(&update.imdb_rating, "imdb_rating");
+            where_query.add_update(&update.imdb_votes, "imdb_votes");
+            where_query.add_update(&update.trakt_rating, "trakt_rating");
+            where_query.add_update(&update.trakt_votes, "trakt_votes");
+
+
+            where_query.add_update(&update.year, "year");
+            where_query.add_update(&update.max_created, "max_created");
 
             let alts = replace_add_remove_from_array(existing.alt, update.alt, update.add_alts, update.remove_alts);
-            where_query.add_update(to_pipe_separated_optional(alts), QueryWhereType::Equal("alt".to_string()));
+            let alts = to_pipe_separated_optional(alts);
+            where_query.add_update(&alts, "alt");
 
-
-
-
-
-
-            where_query.add_where(Some(id), QueryWhereType::Equal("id".to_string()));
+            where_query.add_where(QueryWhereType::Equal("id", &id));
             
 
             let update_sql = format!("UPDATE series SET {} {}", where_query.format_update(), where_query.format());

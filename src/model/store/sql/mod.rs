@@ -5,7 +5,9 @@ pub mod backups;
 pub mod library;
 pub mod plugins;
 
-use rsa::pkcs8::der::TagNumber;
+use std::fmt::Display;
+
+use rsa::{pkcs8::der::TagNumber, rand_core::le};
 use rusqlite::{params_from_iter, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, ParamsFromIter, Row, ToSql};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -76,15 +78,69 @@ impl ToSql for RsLink {
 }
 
 
+pub enum QueryWhereType<'a> {
+    Like(&'a str, &'a dyn ToSql),
+    Equal(&'a str, &'a dyn ToSql),
+    After(&'a str, &'a dyn ToSql),
+    Before(&'a str, &'a dyn ToSql),
+    Custom(&'a str, &'a dyn ToSql),
+    Static(String),
+    SeparatedContain(&'a str, String, &'a dyn ToSql),
+    EqualWithAlt(&'a str, &'a str, &'a str, &'a dyn ToSql),
+    Or(Vec<QueryWhereType<'a>>),
+}
 
+impl<'a> QueryWhereType<'a> {
+    pub fn expand(&'a self) -> Result<(String, Vec<&'a dyn ToSql>)> {
+        let mut values: Vec<&'a dyn ToSql> = vec![];
+        let text = match self {
+            QueryWhereType::Equal(name, value) => {
+                values.push(value);
+                format!("{} = ?", name)
+            },
+            QueryWhereType::Like(name, value) => {
+                values.push(value);
+                format!("{} like ?", name)
+            },
+            QueryWhereType::Custom(custom, value) => {
+                values.push(value);
+                custom.to_string()
+            },
+            QueryWhereType::After(name, value) => {
+                values.push(value);
+                format!("{} > ?", name)
+            },
+            QueryWhereType::Before(name, value) => {
+                values.push(value);
+                format!("{} < ?", name)
+            },
+            QueryWhereType::EqualWithAlt(name, alt, separator, value) => {
 
-pub enum QueryWhereType {
-    Like(String),
-    Equal(String),
-    After(String),
-    Before(String),
-    Custom(String),
-    EqualWithAlt(String, String, String),
+                values.push(value);
+                values.push(value);
+
+                format!("( {} = ? or  '{}' || {} || '{}' LIKE '%{}' || ? || '{}%')", name, separator, alt, separator, separator, separator)
+            },
+            QueryWhereType::SeparatedContain(name, separator, value) => {
+                values.push(value);
+
+                format!("'{}' || {} || '{}' LIKE '%{}' || ? || '{}%'", separator, name, separator, separator, separator)
+            },
+            QueryWhereType::Static(s) => {
+                s.to_string()
+            },
+            QueryWhereType::Or(sub_queries) => {
+                let mut texts: Vec<String> = vec![];
+                for query in sub_queries {
+                    let (t, mut v) = query.expand()?;
+                    texts.push(t);
+                    values.append(&mut v);
+                }
+                format!("({})", texts.join(" or "))
+            },
+        };
+        Ok((text, values))
+    }
 }
 
 pub enum SqlOrder {
@@ -110,12 +166,13 @@ impl OrderBuilder {
 }
 
 pub struct QueryBuilder<'a> {
+
+    wheres: Vec<QueryWhereType<'a>>,
+
     columns_recursive: Vec<String>,
-    values_recursive: Vec<Box<dyn ToSql + 'a>>,
-    columns_where: Vec<String>,
-    values_where: Vec<Box<dyn ToSql + 'a>>,
+    values_recursive: Vec<&'a (dyn ToSql + 'a)>,
     columns_update: Vec<String>,
-    values_update: Vec<Box<dyn ToSql + 'a>>,
+    values_update: Vec<&'a dyn ToSql>,
     
     columns_orders: Vec<OrderBuilder>,
 }
@@ -123,18 +180,17 @@ pub struct QueryBuilder<'a> {
 impl <'a> QueryBuilder<'a> {
     pub fn new() -> Self {
         Self {
+            wheres: Vec::new(),
             columns_recursive: Vec::new(),
             values_recursive: Vec::new(),
-            columns_where: Vec::new(),
-            values_where: Vec::new(),
             columns_update: Vec::new(),
             values_update: Vec::new(),
             columns_orders: Vec::new()
         }
     }
 
-    pub fn add_recursive(&mut self, table: &str, mapping_table: &str, map_key: &str, map_field: &str, id: &str) {
-            let table_name = format!("{}_{}", table, id.replace("-", "_"));
+    pub fn add_recursive<T: ToSql + Display>(&mut self, table: &str, mapping_table: &str, map_key: &str, map_field: &str, id: &'a T) {
+            let table_name = format!("{}_{}", table, id.to_string().replace("-", "_"));
 
             let sql = format!("{}(n) AS (
                 VALUES(?)
@@ -142,41 +198,22 @@ impl <'a> QueryBuilder<'a> {
                 SELECT id FROM {}, {}
                  WHERE {}.parent={}.n)", table_name, table, table_name, table, table_name);
             self.columns_recursive.push(sql);
-            self.values_recursive.push(Box::new(id.to_string()));
-
-            self.columns_where.push(format!("id IN (SELECT tm.{} FROM {} tm WHERE {} IN {})", map_key, mapping_table, map_field, table_name))
+            self.values_recursive.push(id);
+            self.wheres.push(QueryWhereType::Static(format!("id IN (SELECT tm.{} FROM {} tm WHERE {} IN {})", map_key, mapping_table, map_field, table_name)));
+            //self.columns_where.push(format!("id IN (SELECT tm.{} FROM {} tm WHERE {} IN {})", map_key, mapping_table, map_field, table_name))
            
         
     }
 
-    pub fn add_update<T: ToSql + 'a,>(&mut self, optional: Option<T>, kind: QueryWhereType) {
+    pub fn add_update<T: ToSql>(&mut self, optional: &'a Option<T>, column: &str)  {
         if let Some(value) = optional {
-            let column = match kind {
-                QueryWhereType::Equal(name) => format!("{} = ?", name),
-                _ => format!("nope = ?")
-            };
-            self.columns_update.push(column);
-            self.values_update.push(Box::new(value));
-        } 
+            self.columns_update.push(format!("{} = ?", column));
+            self.values_update.push(value);
+        }
     }
 
-    pub fn add_where<T: ToSql + Clone + 'a,>(&mut self, optional: Option<T>, kind: QueryWhereType) {
-        if let Some(value) = optional {
-            let column = match kind {
-                QueryWhereType::Equal(name) => format!("{} = ?", name),
-                QueryWhereType::Like(name) => format!("{} like ?", name),
-                QueryWhereType::Custom(custom) => custom,
-                QueryWhereType::After(name) => format!("{} > ?", name),
-                QueryWhereType::Before(name) => format!("{} < ?", name),
-                QueryWhereType::EqualWithAlt(name, alt, separator) => {
-
-                    self.values_where.push(Box::new(value.clone()));
-                    format!("( {} = ? or  '{}' || {} || '{}' LIKE '%{}' || ? || '{}%')", name, separator, alt, separator, separator, separator)
-                },
-            };
-            self.columns_where.push(column);
-            self.values_where.push(Box::new(value));
-        } 
+    pub fn add_where(&mut self, kind: QueryWhereType<'a>) {
+        self.wheres.push(kind);
     }
 
 
@@ -189,8 +226,13 @@ impl <'a> QueryBuilder<'a> {
     }
     
     pub fn format(&self) -> String {
-        if self.columns_where.len() > 0 {
-            format!("WHERE {}", self.columns_where.join(" and "))
+        if self.wheres.len() > 0 {
+            let mut columns = vec![];
+            for w in &self.wheres {
+                let (t, _) = w.expand().unwrap();
+                columns.push(t);
+            }
+            format!("WHERE {}", columns.join(" and "))
         } else {
             "".to_string()
         }
@@ -216,10 +258,15 @@ impl <'a> QueryBuilder<'a> {
         }
     }
 
-    pub fn values(&mut self) -> ParamsFromIter<&Vec<Box<dyn ToSql + 'a>>> {
+    pub fn values(&'a mut self) -> ParamsFromIter<&Vec<&'a (dyn ToSql + 'a)>> {
         let all_values = &mut self.values_recursive;
         all_values.append(&mut self.values_update);
-        all_values.append(&mut self.values_where);
+
+        for w in &self.wheres {
+            let r = w.expand();
+            let (_, mut v) = r.unwrap();
+            all_values.append(&mut v);
+        }
         /*for value in &mut *all_values {
             println!("{:?}", value.to_sql())
         }*/
