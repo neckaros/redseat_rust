@@ -1,4 +1,4 @@
-use std::{io, path::PathBuf, pin::Pin, str::FromStr};
+use std::{io, path::PathBuf, pin::Pin, str::FromStr, sync::Arc};
 
 
 use axum::async_trait;
@@ -6,22 +6,25 @@ use chrono::{Datelike, Utc};
 use query_external_ip::SourceError;
 use tokio::{fs::File, io::{AsyncRead, AsyncWrite, BufReader, BufWriter}};
 
-use crate::{domain::{library::ServerLibrary, media::MediaForUpdate}, routes::mw_range::RangeDefinition, server::get_server_file_path_array};
+use crate::{domain::{library::ServerLibrary, media::MediaForUpdate}, model::ModelController, plugins::PluginManager, routes::mw_range::RangeDefinition, server::get_server_file_path_array};
 
 use super::{error::{SourcesError, SourcesResult}, AsyncReadPinBox, FileStreamResult, Source};
 
 pub struct VirtualProvider {
     root: PathBuf,
-    library: ServerLibrary
+    library: ServerLibrary,
+    plugin_manager: Arc<PluginManager>
 }
+
 
 #[async_trait]
 impl Source for VirtualProvider {
-    async fn new(library: ServerLibrary) -> SourcesResult<Self> {
+    async fn new(library: ServerLibrary, controller: ModelController) -> SourcesResult<Self> {
         if let Some(root) = &library.root {
             Ok(VirtualProvider {
                 root: PathBuf::from_str(&root).map_err(|_| SourcesError::Error)?,
-                library
+                library,
+                plugin_manager: controller.plugin_manager.clone()
             })
         } else {
             Err(SourcesError::Error)

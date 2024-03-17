@@ -1,31 +1,14 @@
 use std::str::FromStr;
 
-use crate::{domain::plugin::{Plugin, PluginForInsert, PluginForUpdate, PluginSettings, PluginType}, model::{error::Error, plugins::PluginQuery, store::{from_comma_separated, to_comma_separated, to_comma_separated_optional, SqliteStore}}, tools::array_tools::replace_add_remove_from_array};
+use crate::{domain::plugin::{Plugin, PluginForInsert, PluginForUpdate, PluginSettings}, model::{error::Error, plugins::PluginQuery, store::{from_comma_separated, to_comma_separated, to_comma_separated_optional, SqliteStore}}, tools::array_tools::replace_add_remove_from_array};
 
 use super::{QueryBuilder, QueryWhereType, Result};
 use rusqlite::{params, params_from_iter, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, Row, ToSql};
 
+use rs_plugin_common_interfaces::PluginType;
 
 
 // endregion: ---
-
-impl FromSql for PluginType {
-    fn column_result(value: ValueRef) -> FromSqlResult<Self> {
-        String::column_result(value).and_then(|as_string| {
-            let r = PluginType::from_str(&as_string).map_err(|_| FromSqlError::InvalidType);
-            r
-        })
-    }
-}
-
-
-impl ToSql for PluginType {
-    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
-        let l = &self.clone();
-        let r = l.to_string();
-        Ok(ToSqlOutput::from(r))
-    }
-}
 
 
 

@@ -5,7 +5,7 @@ use hyper::{header, HeaderMap};
 use mime::{Mime, APPLICATION_OCTET_STREAM};
 use serde::{Deserialize, Serialize};
 use tokio::{fs::File, io::{AsyncRead, AsyncWrite, BufReader}};
-use crate::{domain::{library::ServerLibrary, media::MediaForUpdate}, routes::mw_range::RangeDefinition};
+use crate::{domain::{library::ServerLibrary, media::MediaForUpdate}, model::ModelController, routes::mw_range::RangeDefinition};
 
 use self::error::{SourcesError, SourcesResult};
 
@@ -59,7 +59,7 @@ impl<T: Sized + AsyncRead + Send> FileStreamResult<T> {
 
 #[async_trait]
 pub trait Source: Send {
-    async fn new(root: ServerLibrary) -> SourcesResult<Self> where Self: Sized;
+    async fn new(root: ServerLibrary, controller: ModelController) -> SourcesResult<Self> where Self: Sized;
     
 
     async fn exists(&self, name: &str) -> bool;

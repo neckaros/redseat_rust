@@ -153,6 +153,15 @@ pub async fn get_server_file_path_array(names: &mut Vec<&str>) -> Result<PathBuf
     }
     return Ok(dir_path);
 }
+pub async fn get_server_folder_path_array(names: Vec<&str>) -> Result<PathBuf> {
+    let mut dir_path: PathBuf = get_server_local_path().await?;
+    for name in names {
+        dir_path.push(name);
+    }
+    create_dir_all(&dir_path).await?;
+    return Ok(dir_path);
+}
+
 
 pub async fn has_server_file(name: &str) -> bool {
     if let Ok(path) = get_server_file_path(name).await {

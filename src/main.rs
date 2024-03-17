@@ -58,7 +58,7 @@ async fn main() ->  Result<()> {
         
         let tls_config = RustlsConfig::from_pem_chain_file(certs.0, certs.1).await.unwrap();
 
-        let addr = SocketAddr::new(IpAddr::from(Ipv6Addr::UNSPECIFIED), 6970);
+        let addr = SocketAddr::new(IpAddr::from(Ipv6Addr::UNSPECIFIED), 6971);
         log_info(tools::log::LogServiceType::Register, format!("->> LISTENING HTTP/HTTPS on {:?}\n", addr));
 
         axum_server_dual_protocol::bind_dual_protocol(addr, tls_config)
@@ -88,7 +88,7 @@ async fn main() ->  Result<()> {
 
 async fn app() -> Result<Router> {
     let store = SqliteStore::new().await.unwrap();
-    let plugin_manager = PluginManager::new();
+    let plugin_manager = PluginManager::new().await?;
     let mut mc = ModelController::new(store, plugin_manager).await?;
 
     let cors: CorsLayer = CorsLayer::new()

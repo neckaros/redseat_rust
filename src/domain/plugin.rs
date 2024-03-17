@@ -1,8 +1,17 @@
+use std::{path::PathBuf, sync::Mutex};
+
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
-
+use rs_plugin_common_interfaces::{PluginInformation, PluginType};
+use extism::Plugin as ExtismPlugin;
 use super::ElementAction;
 
+#[derive(Debug)]
+pub struct PluginWasm {
+    pub path: PathBuf,
+	pub infos: PluginInformation,
+    pub plugin: Mutex<ExtismPlugin>,
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Plugin {
@@ -42,14 +51,6 @@ pub struct PluginForUpdate{
     pub remove_libraries: Option<Vec<String>>,
 }
 
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, strum_macros::Display,EnumString)]
-#[serde(rename_all = "camelCase")] 
-#[strum(serialize_all = "camelCase")]
-pub enum PluginType {
-	ImageClassification,
-    UrlParser,
-}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")] 

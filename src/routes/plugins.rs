@@ -1,6 +1,7 @@
 
-use crate::{domain::plugin::{PluginForAdd, PluginForUpdate}, model::{plugins::PluginQuery, users::ConnectedUser}, ModelController, Result};
+use crate::{domain::{plugin::{PluginForAdd, PluginForUpdate}, rs_link::RsLink}, model::{plugins::PluginQuery, users::ConnectedUser}, ModelController, Result};
 use axum::{extract::{Path, Query, State}, routing::{delete, get, patch, post}, Json, Router};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 
@@ -8,6 +9,9 @@ use serde_json::{json, Value};
 pub fn routes(mc: ModelController) -> Router {
 	Router::new()
 		.route("/", get(handler_list))
+		.route("/wasm", get(handler_listwasm))
+		.route("/parse", get(handler_parse))
+		.route("/expand", post(handler_expand))
 		.route("/", post(handler_post))
 		.route("/:id", get(handler_get))
 		.route("/:id", patch(handler_patch))
@@ -20,6 +24,33 @@ async fn handler_list(State(mc): State<ModelController>, user: ConnectedUser, Qu
 	let libraries = mc.get_plugins(query, &user).await?;
 	let body = Json(json!(libraries));
 	Ok(body)
+}
+
+async fn handler_listwasm(State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<PluginQuery>) -> Result<Json<Value>> {
+	let wasm = mc.get_wasm(query, &user).await?;
+	let body = Json(json!(wasm));
+	Ok(body)
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct ExpandQuery {
+	pub url: String,
+}
+
+
+async fn handler_parse(State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ExpandQuery>) -> Result<Json<Value>> {
+	let wasm = mc.plugin_manager.parse(query.url);
+	let body = Json(json!(wasm));
+	Ok(body)
+}
+async fn handler_expand(State(mc): State<ModelController>, user: ConnectedUser, Json(link): Json<RsLink>) -> Result<Json<Value>> {
+	let wasm = mc.plugin_manager.expand(link);
+	if let Some(link) = wasm {
+		let body = Json(json!(link));
+		Ok(body)
+	} else {
+		Err(crate::Error::NotFound)
+	}
 }
 
 async fn handler_get(Path(plugin_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {

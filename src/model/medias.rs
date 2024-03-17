@@ -9,12 +9,13 @@ use http::header::CONTENT_TYPE;
 use mime::{Mime, APPLICATION_OCTET_STREAM};
 use mime_guess::get_mime_extensions_str;
 use nanoid::nanoid;
+use rs_plugin_common_interfaces::PluginType;
 use serde::{Deserialize, Serialize};
 use tokio::io::{copy, AsyncRead, AsyncReadExt};
 use tokio_util::io::StreamReader;
 
 
-use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaTagReference, MediasMessage}, plugin::PluginType, ElementAction}, plugins::sources::{AsyncReadPinBox, FileStreamResult}, routes::mw_range::RangeDefinition, tools::{file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{ImageSize, ImageType}, log::log_info, prediction::{predict_net, PredictionTagResult}}};
+use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaTagReference, MediasMessage}, ElementAction}, plugins::sources::{AsyncReadPinBox, FileStreamResult}, routes::mw_range::RangeDefinition, tools::{file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{ImageSize, ImageType}, log::log_info, prediction::{predict_net, PredictionTagResult}}};
 
 use super::{error::{Error, Result}, plugins::PluginQuery, users::ConnectedUser, ModelController};
 

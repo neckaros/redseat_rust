@@ -7,7 +7,7 @@ use query_external_ip::SourceError;
 use sha256::try_async_digest;
 use tokio::{fs::{create_dir_all, remove_file, File}, io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, BufReader, BufWriter}};
 
-use crate::{domain::{library::ServerLibrary, media::MediaForUpdate}, routes::mw_range::RangeDefinition, tools::{file_tools::get_mime_from_filename, image_tools::resize_image_reader, log::log_info}};
+use crate::{domain::{library::ServerLibrary, media::MediaForUpdate}, model::ModelController, routes::mw_range::RangeDefinition, tools::{file_tools::get_mime_from_filename, image_tools::resize_image_reader, log::log_info}};
 
 use super::{error::{SourcesError, SourcesResult}, AsyncReadPinBox, FileStreamResult, RangeResponse, Source};
 
@@ -36,7 +36,7 @@ impl PathProvider {
 
 #[async_trait]
 impl Source for PathProvider {
-    async fn new(library: ServerLibrary) -> SourcesResult<Self> {
+    async fn new(library: ServerLibrary, _: ModelController) -> SourcesResult<Self> {
         if let Some(root) = library.root {
             Ok(PathProvider {
                 root: PathBuf::from_str(&root).map_err(|_| SourcesError::Error)?,

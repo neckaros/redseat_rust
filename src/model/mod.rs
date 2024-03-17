@@ -16,7 +16,7 @@ pub mod medias;
 use std::{io::Read, path::PathBuf, pin::Pin, sync::Arc};
 use strum::IntoEnumIterator;
 
-use crate::{domain::library::{LibraryMessage, LibraryRole}, plugins::{sources::{error::SourcesError, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, LocalSource, Source}, PluginManager}, server::get_server_file_path_array, tools::{image_tools::{resize_image_path, ImageSize, ImageSizeIter, ImageType}, log::log_info}};
+use crate::{domain::{library::{LibraryMessage, LibraryRole}, rs_link::RsLink}, plugins::{sources::{error::SourcesError, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, LocalSource, Source}, PluginManager}, server::get_server_file_path_array, tools::{image_tools::{resize_image_path, ImageSize, ImageSizeIter, ImageType}, log::log_info}};
 
 use self::{store::SqliteStore, users::{ConnectedUser, UserRole}};
 use error::{Result, Error};
@@ -27,7 +27,7 @@ use tokio::{fs::{self, remove_file, File}, io::{copy, AsyncRead, BufReader}};
 pub struct ModelController {
 	store: Arc<SqliteStore>,
 	io: Option<SocketIo>,
-	plugin_manager: Arc<PluginManager>
+	pub plugin_manager: Arc<PluginManager>
 }
 
 
@@ -46,6 +46,10 @@ impl ModelController {
 
 
 impl  ModelController {
+
+	pub fn parse(&self, url: String) {
+		self.plugin_manager.parse(url);
+	}
 
 	pub async fn get_user_unchecked(&self, user_id: &str) -> Result<users::ServerUser> {
 		self.store.get_user(&user_id).await
@@ -77,7 +81,7 @@ impl  ModelController {
 
 	pub async fn source_for_library(&self, library_id: &str) -> Result<Box<dyn Source>> {
 		let library = self.store.get_library(library_id).await?.ok_or_else(|| Error::NotFound)?;
-		let source = self.plugin_manager.source_for_library(library).await?;
+		let source = self.plugin_manager.source_for_library(library, self.clone()).await?;
 		Ok(source)
 	}
 	pub async fn library_source_for_library(&self, library_id: &str) -> Result<PathProvider> {

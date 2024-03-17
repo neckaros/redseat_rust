@@ -2,11 +2,12 @@
 
 
 use nanoid::nanoid;
+use rs_plugin_common_interfaces::{PluginInformation, PluginType};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 
-use crate::domain::{backup::Backup, plugin::{Plugin, PluginForAdd, PluginForInsert, PluginForUpdate, PluginType}};
+use crate::domain::{backup::Backup, plugin::{Plugin, PluginForAdd, PluginForInsert, PluginForUpdate}};
 
 use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
 
@@ -24,6 +25,12 @@ impl ModelController {
         requesting_user.check_role(&UserRole::Admin)?;
 		let credentials = self.store.get_plugins(query).await?;
 		Ok(credentials)
+	}
+
+    pub async fn get_wasm(&self, query: PluginQuery, requesting_user: &ConnectedUser) -> Result<Vec<&PluginInformation>> {
+        requesting_user.check_role(&UserRole::Admin)?;
+		let wasm: Vec<&PluginInformation> = self.plugin_manager.plugins.iter().map(|p| &p.infos).collect();
+		Ok(wasm)
 	}
 
 
