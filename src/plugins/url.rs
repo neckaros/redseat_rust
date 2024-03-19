@@ -3,7 +3,7 @@ use http::header::{CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE};
 use plugin_request_interfaces::{RsRequest, RsRequestWithCredential};
 use rs_plugin_common_interfaces::{PluginCredential, PluginType};
 
-use crate::{domain::plugin::PluginWithCredential, tools::{http_tools::{extract_header, guess_filename, parse_content_disposition}, log::log_error}};
+use crate::{domain::plugin::PluginWithCredential, tools::{file_tools::get_mime_from_filename, http_tools::{extract_header, guess_filename, parse_content_disposition}, log::log_error}};
 
 use super::PluginManager;
 
@@ -74,7 +74,11 @@ impl PluginManager {
                         credential: plugin_with_cred.credential.clone().and_then(|p| Some(PluginCredential::from(p)))
                     };
                     let res = plugin_m.call_get_error_code::<Json<RsRequestWithCredential>, Json<RsRequest>>("process", Json(req));
-                    if let Ok(Json(res)) = res {
+                    if let Ok(Json(mut res)) = res {
+
+                        if res.mime.is_none() {
+                            res.mime = get_mime_from_filename(&res.url);
+                        }
                         return Some(res);
                     } else if let Err((error, code)) = res {
                         if code != 404 {
