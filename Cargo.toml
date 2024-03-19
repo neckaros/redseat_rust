@@ -57,7 +57,7 @@ trakt-rs = "0.2.0"
 http = "0.2.0"
 extism = "1.2.0"
 rs-plugin-common-interfaces = { version = "0.4.2", features = ["rusqlite",] }
-rs-plugin-url-interfaces = { version = "0.1.1", features = ["rusqlite"] }
+rs-plugin-url-interfaces = { version = "0.1.2", features = ["rusqlite"] }
 plugin-request-interfaces = { version = "0.4.1", features = ["rusqlite"] }
 
 [dev-dependencies]

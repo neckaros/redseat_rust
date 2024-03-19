@@ -133,7 +133,7 @@ impl SqliteLibraryStore {
 			
             FROM medias as m
              {}
-             {}
+                          {}
              LIMIT {}", where_query.format_recursive(), where_query.format(), where_query.format_order(), query.limit.unwrap_or(200)))?;
 
              //println!("query {:?}", query.expanded_sql());

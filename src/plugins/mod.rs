@@ -5,7 +5,7 @@ use rs_plugin_common_interfaces::{PluginInformation, PluginType};
 
 use extism::Plugin as ExtismPlugin;
 
-use crate::{domain::{library::ServerLibrary, plugin::{self, PluginWasm}}, model::ModelController, server::get_server_folder_path_array, tools::log::log_info, Result};
+use crate::{domain::{library::ServerLibrary, plugin::{self, PluginWasm}}, model::ModelController, server::get_server_folder_path_array, tools::log::{log_error, log_info}, Result};
 
 use self::sources::{error::SourcesResult, path_provider::PathProvider, virtual_provider::VirtualProvider, Source};
 
@@ -45,7 +45,8 @@ pub async fn list_plugins() -> crate::Result<impl Iterator<Item = PluginWasm>> {
                 .build();
             
             if let Ok(mut plugin) = plugin {
-                if let Ok(Json(res)) = plugin.call::<&str, Json<PluginInformation>>("infos", "") {
+                let infos = plugin.call::<&str, Json<PluginInformation>>("infos", "");
+                if let Ok(Json(res)) = infos {
                     let filename = path.file_name().unwrap().to_str().unwrap();
                     log_info(crate::tools::log::LogServiceType::Plugin, format!("Loaded plugin {} ({}) -> {:?}", res.name, res.kind, path));
                     let p = PluginWasm {
@@ -56,13 +57,17 @@ pub async fn list_plugins() -> crate::Result<impl Iterator<Item = PluginWasm>> {
                     };
                     Some(p)
                 } else {
+                    log_error(crate::tools::log::LogServiceType::Other, format!("Error getting plugin informations: {:?} {:?}", &path, infos.err()));
                     None
                 }
             } else {
+                log_error(crate::tools::log::LogServiceType::Other, format!("Error loading plugin: {:?}", &path));
                 None
             }
                 
         }))
+
+       
 }
 
 
