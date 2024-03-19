@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{rs_link::RsLink, ElementAction};
+use super::ElementAction;
+use rs_plugin_url_interfaces::RsLink;
 
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

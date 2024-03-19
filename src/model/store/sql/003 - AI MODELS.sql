@@ -5,5 +5,6 @@ CREATE TABLE plugins (
   path TEXT    NOT NULL,
   settings TEXT    NOT NULL,
   libraries TEXT    NOT NULL,
-  version INTEGER DEFAULT 1
+  version INTEGER DEFAULT 1,
+  credential TEXT,
 );

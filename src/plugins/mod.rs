@@ -5,7 +5,7 @@ use rs_plugin_common_interfaces::{PluginInformation, PluginType};
 
 use extism::Plugin as ExtismPlugin;
 
-use crate::{domain::{library::ServerLibrary, plugin::{self, PluginWasm}, rs_link::RsLink}, model::ModelController, server::get_server_folder_path_array, Result};
+use crate::{domain::{library::ServerLibrary, plugin::{self, PluginWasm}}, model::ModelController, server::get_server_folder_path_array, tools::log::log_info, Result};
 
 use self::sources::{error::SourcesResult, path_provider::PathProvider, virtual_provider::VirtualProvider, Source};
 
@@ -39,13 +39,17 @@ pub async fn list_plugins() -> crate::Result<impl Iterator<Item = PluginWasm>> {
             }
         })
         .filter_map(|path| {
-            let manifest = Manifest::new([path.clone()]);
+            let manifest = Manifest::new([path.clone()]).with_allowed_host("*");
             let plugin = PluginBuilder::new(manifest)
                 .with_wasi(true)
                 .build();
+            
             if let Ok(mut plugin) = plugin {
                 if let Ok(Json(res)) = plugin.call::<&str, Json<PluginInformation>>("infos", "") {
+                    let filename = path.file_name().unwrap().to_str().unwrap();
+                    log_info(crate::tools::log::LogServiceType::Plugin, format!("Loaded plugin {} ({}) -> {:?}", res.name, res.kind, path));
                     let p = PluginWasm {
+                        filename: filename.to_string(),
                         path,
                         infos: res,
                         plugin:Mutex::new(plugin),

@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use strum_macros::EnumString;
 
-use super::{rs_link::RsLink, ElementAction};
+use rs_plugin_url_interfaces::RsLink;
+use super::ElementAction;
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FileEpisode {
    id: String,

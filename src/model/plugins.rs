@@ -2,12 +2,13 @@
 
 
 use nanoid::nanoid;
+use plugin_request_interfaces::RsRequest;
 use rs_plugin_common_interfaces::{PluginInformation, PluginType};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 
-use crate::domain::{backup::Backup, plugin::{Plugin, PluginForAdd, PluginForInsert, PluginForUpdate}};
+use crate::domain::{backup::Backup, plugin::{Plugin, PluginForAdd, PluginForInsert, PluginForUpdate, PluginWithCredential}};
 
 use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
 
@@ -25,6 +26,17 @@ impl ModelController {
         requesting_user.check_role(&UserRole::Admin)?;
 		let credentials = self.store.get_plugins(query).await?;
 		Ok(credentials)
+	}
+
+    pub async fn get_plugins_with_credential(&self, query: PluginQuery, requesting_user: &ConnectedUser) -> Result<impl Iterator<Item = PluginWithCredential>> {
+        requesting_user.check_role(&UserRole::Admin)?;
+		let plugins = self.store.get_plugins(query).await?.into_iter();
+		let credentials = self.store.get_credentials().await?;
+        let iter = plugins.map(move |p| {
+            let credential = credentials.iter().find(|c| Some(&c.id) == p.credential.as_ref()).cloned();
+            PluginWithCredential { plugin: p.clone(), credential }
+        });
+		Ok(iter)
 	}
 
     pub async fn get_wasm(&self, query: PluginQuery, requesting_user: &ConnectedUser) -> Result<Vec<&PluginInformation>> {
@@ -56,7 +68,7 @@ impl ModelController {
         requesting_user.check_role(&UserRole::Admin)?;
         let plugin = PluginForInsert {
             id: nanoid!(),
-            plugin: plugin
+            plugin
         };
 		self.store.add_plugin(plugin.clone()).await?;
         let plugin = self.get_plugin(plugin.id, &requesting_user).await?.ok_or(Error::NotFound)?;
@@ -74,4 +86,10 @@ impl ModelController {
             Err(Error::NotFound)
         }
 	}
+    pub async fn exec_request(&self, request: RsRequest, library_id: Option<String>, requesting_user: &ConnectedUser) -> Result<Option<RsRequest>> {
+        requesting_user.check_role(&UserRole::Read)?;
+        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::Request), ..Default::default() }, &requesting_user).await?;
+        Ok(self.plugin_manager.request(request, plugins).await)
+        
+    }
 }

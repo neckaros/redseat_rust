@@ -2,24 +2,10 @@ use std::str::FromStr;
 
 use rusqlite::{params, params_from_iter, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, ToSql};
 
-use crate::{domain::credential::{Credential, CredentialType}, model::{credentials::CredentialForUpdate, store::SqliteStore}};
+use crate::{domain::credential::Credential, model::{credentials::CredentialForUpdate, store::SqliteStore}};
 use super::Result;
 
-impl FromSql for CredentialType {
-    fn column_result(value: ValueRef) -> FromSqlResult<Self> {
-        String::column_result(value).and_then(|as_string| {
-            let r = CredentialType::from_str(&as_string).map_err(|_| FromSqlError::InvalidType);
-            r
-        })
-    }
-}
 
-impl ToSql for CredentialType {
-    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
-        let r = self.clone();
-        Ok(ToSqlOutput::from(r.to_string()))
-    }
-}
 
 
 

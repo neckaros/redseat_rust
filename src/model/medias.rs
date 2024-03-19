@@ -26,6 +26,7 @@ pub struct MediaQuery {
     pub after: Option<u64>,
     #[serde(default)]
     pub tags: Vec<String>,
+    pub limit: Option<usize>,
     #[serde(rename = "type")]
     pub kind: Option<FileType>,
 }

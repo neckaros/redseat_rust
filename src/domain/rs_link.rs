@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, PartialOrd)]
 #[serde(rename_all = "snake_case")] 
-pub struct RsLink {
+pub struct RsLinko {
 	pub platform: String,
     #[serde(rename = "type")]
     pub kind: Option<String>,

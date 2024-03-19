@@ -2,10 +2,11 @@ use std::str::FromStr;
 
 
 use nanoid::nanoid;
+use rs_plugin_common_interfaces::CredentialType;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::domain::credential::{Credential, CredentialType};
+use crate::domain::credential::Credential;
 
 use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
 
@@ -33,29 +34,6 @@ pub struct CredentialForUpdate {
     pub user_ref: Option<String>,
     pub refresh_token: Option<String>,
     pub expires: Option<u64>,
-}
-
-
-impl FromStr for CredentialType {
-    type Err = Error;
-    fn from_str(input: &str) -> Result<CredentialType> {
-        match input {
-            "oauth"  => Ok(CredentialType::OAuth),
-            "token"  => Ok(CredentialType::Token),
-            "password"  => Ok(CredentialType::Password),
-            _      => Err(Error::UnableToParseEnum),
-        }
-    }
-}
-
-impl core::fmt::Display for CredentialType {
-    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-        match self {
-            CredentialType::OAuth  => write!(f, "oauth"),
-            CredentialType::Token =>  write!(f, "token"),
-            CredentialType::Password =>  write!(f, "password"),
-        }
-    }
 }
 
 

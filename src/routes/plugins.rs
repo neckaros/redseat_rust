@@ -1,8 +1,11 @@
 
-use crate::{domain::{plugin::{PluginForAdd, PluginForUpdate}, rs_link::RsLink}, model::{plugins::PluginQuery, users::ConnectedUser}, ModelController, Result};
+use crate::{domain::{plugin::{PluginForAdd, PluginForUpdate}}, model::{plugins::PluginQuery, users::ConnectedUser}, ModelController, Result};
 use axum::{extract::{Path, Query, State}, routing::{delete, get, patch, post}, Json, Router};
+use plugin_request_interfaces::RsRequest;
+use rs_plugin_common_interfaces::PluginType;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use rs_plugin_url_interfaces::RsLink;
 
 
 
@@ -12,6 +15,8 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/wasm", get(handler_listwasm))
 		.route("/parse", get(handler_parse))
 		.route("/expand", post(handler_expand))
+
+		.route("/urlrequest", get(handler_urlrequest))
 		.route("/", post(handler_post))
 		.route("/:id", get(handler_get))
 		.route("/:id", patch(handler_patch))
@@ -51,6 +56,16 @@ async fn handler_expand(State(mc): State<ModelController>, user: ConnectedUser, 
 	} else {
 		Err(crate::Error::NotFound)
 	}
+}
+
+async fn handler_urlrequest(State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ExpandQuery>) -> Result<Json<Value>> {
+	let request = RsRequest {
+		url: query.url,
+		..Default::default()
+	};
+	let wasm = mc.exec_request(request, None, &user).await?;
+	let body = Json(json!(wasm));
+	Ok(body)
 }
 
 async fn handler_get(Path(plugin_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {

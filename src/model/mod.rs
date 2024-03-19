@@ -15,8 +15,8 @@ pub mod medias;
 
 use std::{io::Read, path::PathBuf, pin::Pin, sync::Arc};
 use strum::IntoEnumIterator;
-
-use crate::{domain::{library::{LibraryMessage, LibraryRole}, rs_link::RsLink}, plugins::{sources::{error::SourcesError, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, LocalSource, Source}, PluginManager}, server::get_server_file_path_array, tools::{image_tools::{resize_image_path, ImageSize, ImageSizeIter, ImageType}, log::log_info}};
+use rs_plugin_url_interfaces::RsLink;
+use crate::{domain::{library::{LibraryMessage, LibraryRole}}, plugins::{sources::{error::SourcesError, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, LocalSource, Source}, PluginManager}, server::get_server_file_path_array, tools::{image_tools::{resize_image_path, ImageSize, ImageSizeIter, ImageType}, log::log_info}};
 
 use self::{store::SqliteStore, users::{ConnectedUser, UserRole}};
 use error::{Result, Error};

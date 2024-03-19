@@ -13,7 +13,6 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tokio_rusqlite::Connection;
 
-use crate::domain::rs_link::RsLink;
 
 use super::Result;
 
@@ -58,24 +57,6 @@ pub fn add_for_sql_update<'a, T: ToSql + 'a,>(optional: Option<T>, name: &str, c
     } 
 }
 
-
-
-
-impl FromSql for RsLink {
-    fn column_result(value: ValueRef) -> FromSqlResult<Self> {
-        String::column_result(value).and_then(|as_string| {
-            let r = serde_json::from_str(&as_string).map_err(|_| FromSqlError::InvalidType);
-            r
-        })
-    }
-}
-
-impl ToSql for RsLink {
-    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
-        let r = serde_json::to_string(self).map_err(|_| FromSqlError::InvalidType)?;
-        Ok(ToSqlOutput::from(r))
-    }
-}
 
 
 pub enum QueryWhereType<'a> {

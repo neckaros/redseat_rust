@@ -1,3 +1,4 @@
+use rs_plugin_common_interfaces::{CredentialType, PluginCredential};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -18,10 +19,16 @@ pub struct Credential {
     pub expires: Option<u64>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-#[serde(rename_all = "snake_case")] 
-pub enum CredentialType {
-	Token,
-	Password,
-	OAuth,
+impl From<Credential> for PluginCredential {
+    fn from(credential: Credential) -> Self {
+        PluginCredential {
+            kind: credential.kind,
+            login: credential.login,
+            password: credential.password,
+            settings: credential.settings,
+            user_ref: credential.user_ref,
+            refresh_token: credential.refresh_token,
+            expires: credential.expires,
+        } 
+    }
 }
