@@ -10,7 +10,7 @@ use crate::model::server::AuthMessage;
 use crate::model::users::{ConnectedUser, UserRole};
 use crate::model::ModelController;
 use crate::server::get_server_id;
-use crate::tools::auth::{verify, ClaimsLocalType};
+use crate::tools::auth::{verify, verify_local, ClaimsLocalType};
 use crate::{error::Error, Result};
 
 const BEARER: &str = "Bearer ";
@@ -64,6 +64,11 @@ pub async fn parse_auth_message(auth: &AuthMessage, mc: &ModelController) -> Res
         let user = mc.get_user_unchecked(&claims.sub).await?;
         
         Ok(ConnectedUser::Server(user))
+
+    } else if let Some(share_token) = &auth.share_token {
+      let claims = verify_local(&share_token).await?;
+        
+        Ok(ConnectedUser::Share(claims))
 
     } else {
         Ok(ConnectedUser::Anonymous)

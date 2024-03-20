@@ -131,6 +131,18 @@ pub async fn update_config(config: ServerConfig) -> Result<()> {
     }
 }
 
+pub async fn write_server_file_string(name: &str ) -> Result<String> {
+    //let mut dir_path: PathBuf = get_server_local_path().await?;
+    //dir_path.push(name);
+    //let Ok(mut file) = File::create(dir_path).await else { return Err(Error::ServerUnableToAccessServerLocalFolder); };
+    /*if file.write_all(data.as_bytes()).await.is_err() {
+        return Err(Error::ServerNoServerId);
+    } else {
+        return Ok(())
+    }*/
+    Ok("()".to_string())
+}
+
 pub async fn write_server_file(name: &str, data: &[u8]) -> Result<()> {
     let mut dir_path: PathBuf = get_server_local_path().await?;
     dir_path.push(name);

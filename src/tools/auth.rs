@@ -111,6 +111,7 @@ pub async fn get_or_init_keys() -> Result<(String, Zeroizing<String>)> {
         return  Ok((pubkeystring, prvkeystring));
     }
 
+    let (pubkeystring, prvkeystring) = {
     let mut rng = rand::thread_rng();
     let bits = 2048;
     let priv_key = RsaPrivateKey::new(&mut rng, bits).expect("failed to generate a key");
@@ -119,7 +120,8 @@ pub async fn get_or_init_keys() -> Result<(String, Zeroizing<String>)> {
     let pubkeystring = pub_key.to_public_key_pem(rsa::pkcs8::LineEnding::CRLF).unwrap();
 
     let prvkeystring = priv_key.to_pkcs8_pem(rsa::pkcs8::LineEnding::CRLF).unwrap();
-
+        (pubkeystring, prvkeystring)
+    };
     write_server_file("pubkey.pem", pubkeystring.as_bytes()).await?;
     write_server_file("private.pem", prvkeystring.as_bytes()).await?;
 
