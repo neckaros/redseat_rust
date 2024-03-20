@@ -3,12 +3,13 @@ use std::{io, path::PathBuf, pin::Pin, str::FromStr, sync::Arc};
 
 use axum::async_trait;
 use chrono::{Datelike, Utc};
+use plugin_request_interfaces::RsRequest;
 use query_external_ip::SourceError;
 use tokio::{fs::File, io::{AsyncRead, AsyncWrite, BufReader, BufWriter}};
 
 use crate::{domain::{library::ServerLibrary, media::MediaForUpdate}, model::ModelController, plugins::PluginManager, routes::mw_range::RangeDefinition, server::get_server_file_path_array};
 
-use super::{error::{SourcesError, SourcesResult}, AsyncReadPinBox, FileStreamResult, Source};
+use super::{error::{SourcesError, SourcesResult}, AsyncReadPinBox, FileStreamResult, Source, SourceRead};
 
 pub struct VirtualProvider {
     root: PathBuf,
@@ -47,27 +48,13 @@ impl Source for VirtualProvider {
 
         Ok(())
     }
-    async fn get_file_read_stream(&self, source: &str, _range: Option<RangeDefinition>) -> SourcesResult<FileStreamResult<AsyncReadPinBox>> {
+    async fn get_file(&self, source: &str, _range: Option<RangeDefinition>) -> SourcesResult<SourceRead> {
         println!("Virtual {}", &source);
-        let mut path = self.root.clone();
-        path.push(source);
-        
-        let file = File::open(&path).await.map_err(|err| {
-            if err.kind() == std::io::ErrorKind::NotFound {
-                SourcesError::NotFound(path.to_str().map(|a| a.to_string()))
-            } else {
-                SourcesError::Io(err)
-            }
-        })?;
-        let len = file.metadata().await?;
-        let filereader = BufReader::new(file);
-        Ok(FileStreamResult {
-            stream: Box::pin(filereader),
-            size: Some(len.len()),
-            range: None,
-            mime: None,
-            name: None
-        })
+       
+        Ok(SourceRead::Request( RsRequest {
+            url: source.to_string(),
+            ..Default::default()
+        }))
     }
 
     async fn get_file_write_stream(&self, name: &str) -> SourcesResult<(String, Pin<Box<dyn AsyncWrite + Send>>)> {

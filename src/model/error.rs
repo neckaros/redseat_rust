@@ -1,5 +1,6 @@
 use derive_more::From;
 use hyper::StatusCode;
+use plugin_request_interfaces::RsRequestStatus;
 use serde::Serialize;
 use serde_with::{serde_as, DisplayFromStr};
 
@@ -19,8 +20,13 @@ pub enum Error {
 	ServiceError(String, Option<String>),
 
 	NotFound,
+	HeaderParseFail,
 	UnableToGetFileStream,
 	FileNotFound(String),
+
+	//RsRequest
+	UnableToFormatHeaders,
+	InvalidRsRequestStatus(RsRequestStatus),
 
 
     CannotOpenDatabase,

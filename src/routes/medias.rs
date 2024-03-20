@@ -1,7 +1,7 @@
 
 use std::{path::PathBuf, str::FromStr};
 
-use crate::{domain::media::{GroupMediaDownload, MediaDownloadUrl, MediaForUpdate, MediaTagReference}, model::{medias::MediaQuery, series::{SerieForAdd, SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, tools::prediction::predict_net, Error, Result};
+use crate::{domain::media::{GroupMediaDownload, MediaDownloadUrl, MediaForUpdate, MediaTagReference}, model::{medias::MediaQuery, series::{SerieForAdd, SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, plugins::sources::SourceRead, tools::prediction::predict_net, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
 use futures::TryStreamExt;
 use hyper::{header::ACCEPT_RANGES, StatusCode};
@@ -57,13 +57,8 @@ async fn handler_predict(Path((library_id, media_id)): Path<(String, String)>, S
 }
 
 async fn handler_get_file(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, range: Option<RangeDefinition>) -> Result<Response> {
-	let reader_response = mc.library_file(&library_id, &media_id, range.clone(), &user).await?;
-	let headers = reader_response.hearders().map_err(|_| Error::GenericRedseatError)?;
-    let stream = ReaderStream::new(reader_response.stream);
-    let body = Body::from_stream(stream);
-	//println!("range req: {:?}", range);
-	let status = if range.is_some() { StatusCode::PARTIAL_CONTENT } else { StatusCode::OK };
-    Ok((status, headers, body).into_response())
+	let reader = mc.library_file(&library_id, &media_id, range.clone(), &user).await?;
+	Ok(reader.into_response(range, Some((mc.clone(), &user))).await?)
 }
 
 async fn handler_patch(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(update): Json<MediaForUpdate>) -> Result<Json<Value>> {

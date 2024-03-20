@@ -9,7 +9,7 @@ use tokio::{fs::{create_dir_all, remove_file, File}, io::{AsyncRead, AsyncReadEx
 
 use crate::{domain::{library::ServerLibrary, media::MediaForUpdate}, model::ModelController, routes::mw_range::RangeDefinition, tools::{file_tools::get_mime_from_filename, image_tools::resize_image_reader, log::log_info}};
 
-use super::{error::{SourcesError, SourcesResult}, AsyncReadPinBox, FileStreamResult, RangeResponse, Source};
+use super::{error::{SourcesError, SourcesResult}, AsyncReadPinBox, FileStreamResult, RangeResponse, Source, SourceRead};
 
 pub struct PathProvider {
     root: PathBuf,
@@ -59,9 +59,13 @@ impl Source for PathProvider {
     }
 
     async fn thumb(&self, source: &str) -> SourcesResult<Vec<u8>> {
-        let mut reader = self.get_file_read_stream(source, None).await?;
+        let reader = self.get_file(source, None).await?;
+        if let SourceRead::Stream(mut reader) = reader {
         let image = resize_image_reader(&mut reader.stream, 512).await?;
         Ok(image)
+        } else {
+            Err(SourcesError::Error)
+        }
     }
 
     async fn fill_infos(&self, source: &str, infos: &mut MediaForUpdate) -> SourcesResult<()> {
@@ -80,7 +84,7 @@ impl Source for PathProvider {
         Ok(())
     }
 
-    async fn get_file_read_stream(&self, source: &str, range: Option<RangeDefinition>) -> SourcesResult<FileStreamResult<AsyncReadPinBox>> {
+    async fn get_file(&self, source: &str, range: Option<RangeDefinition>) -> SourcesResult<SourceRead> {
         let path = self.get_gull_path(&source);
         let guess = mime_guess::from_path(&source);
         let filename = path.file_name().map(|f| f.to_string_lossy().into_owned());
@@ -122,24 +126,24 @@ impl Source for PathProvider {
                     range_response.end = Some(end.clone());
                     range_response.size = Some(size.clone());
                     //println!("range: {}", &range_response.header_value());
-                    return Ok(FileStreamResult {
+                    return Ok(SourceRead::Stream(FileStreamResult {
                         stream: Box::pin(taken),
                         size: Some(size),
                         range: Some(range_response),
                         mime: guess.first(),
                         name: filename
-                    })
+                    }))
                 }
             }
         }
 
-        Ok(FileStreamResult {
+        Ok(SourceRead::Stream(FileStreamResult {
             stream: Box::pin(filereader),
             size: Some(size),
             range: if range.is_some() { Some(range_response) } else {None},
             mime: guess.first(),
             name: filename
-        })
+        }))
     }
 
     async fn get_file_write_stream(&self, name: &str) -> SourcesResult<(String, Pin<Box<dyn AsyncWrite + Send>>)> {

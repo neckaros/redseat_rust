@@ -17,6 +17,7 @@ pub type Result<T> = core::result::Result<T, Error>;
 #[serde(tag = "type", content = "data")]
 pub enum Error {
 	Error { message: String},
+	Message(String),
 	LoginFail,
 	NotFound,
 

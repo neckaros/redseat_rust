@@ -54,7 +54,7 @@ impl PluginManager {
             if let Some(mime) = extract_header(headers, CONTENT_TYPE) {
                 request.mime = Some(mime.to_string())
             }
-            if let Some(size) = extract_header(headers, CONTENT_LENGTH).and_then(|c| c.parse::<usize>().ok()) {
+            if let Some(size) = extract_header(headers, CONTENT_LENGTH).and_then(|c| c.parse::<u64>().ok()) {
                 request.size = Some(size);
             }
             if let Some(filename) = extract_header(headers, CONTENT_DISPOSITION).and_then(parse_content_disposition) {
@@ -64,7 +64,6 @@ impl PluginManager {
                 println!("filename {}", filename);
             }
         }
-        println!("INITIAL {:?}", request);
         for plugin_with_cred in plugins {
             if let Some(plugin) = self.plugins.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
                 let mut plugin_m = plugin.plugin.lock().unwrap();

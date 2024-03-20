@@ -16,7 +16,7 @@ pub mod medias;
 use std::{io::Read, path::PathBuf, pin::Pin, sync::Arc};
 use strum::IntoEnumIterator;
 use rs_plugin_url_interfaces::RsLink;
-use crate::{domain::{library::{LibraryMessage, LibraryRole}}, plugins::{sources::{error::SourcesError, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, LocalSource, Source}, PluginManager}, server::get_server_file_path_array, tools::{image_tools::{resize_image_path, ImageSize, ImageSizeIter, ImageType}, log::log_info}};
+use crate::{domain::library::{LibraryMessage, LibraryRole}, plugins::{sources::{error::SourcesError, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, LocalSource, Source, SourceRead}, PluginManager}, server::get_server_file_path_array, tools::{image_tools::{resize_image_path, ImageSize, ImageSizeIter, ImageType}, log::log_info}};
 
 use self::{store::SqliteStore, users::{ConnectedUser, UserRole}};
 use error::{Result, Error};
@@ -109,7 +109,7 @@ impl  ModelController {
 
         let m = self.library_source_for_library(&library_id).await?;
 		let source_filepath = format!("{}/{}{}{}.webp", folder, id, ImageType::optional_to_filename_element(&kind), ImageSize::optional_to_filename_element(&size));
-        let reader_response = m.get_file_read_stream(&source_filepath, None).await;
+        let reader_response = m.get_file(&source_filepath, None).await;
 		if let Some(int_size) = size {
 			if let Err(error) = &reader_response {
 				if matches!(error, SourcesError::NotFound(_)) {
@@ -118,15 +118,23 @@ impl  ModelController {
 					if exist {
 						log_info(crate::tools::log::LogServiceType::Other, format!("Creating image size: {} {} {} {}", folder, id, ImageType::optional_to_filename_element(&kind), int_size));
 						resize_image_path(&m.get_gull_path(&original_filepath),  &m.get_gull_path(&source_filepath), int_size.to_size()).await?;
-						let reader_response = m.get_file_read_stream(&source_filepath, None).await?;
-						return Ok(reader_response);
+						let reader = m.get_file(&source_filepath, None).await?;
+						if let SourceRead::Stream(reader) = reader {
+							return Ok(reader);
+						} else {
+							return Err(Error::NotFound)
+						}
 					}
 					
 				}
 			}
 		}
-
-        Ok(reader_response?)
+		let reader = reader_response?;
+		if let SourceRead::Stream(reader) = reader {
+			return Ok(reader);
+		} else {
+			return Err(Error::NotFound)
+		}
 	}
 
 	pub async fn update_library_image<T: AsyncRead>(&self, library_id: &str, folder: &str, id: &str, kind: &Option<ImageType>, reader: T, requesting_user: &ConnectedUser) -> Result<()> {

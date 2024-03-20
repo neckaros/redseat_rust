@@ -15,7 +15,7 @@ use tokio::io::{copy, AsyncRead, AsyncReadExt};
 use tokio_util::io::StreamReader;
 
 
-use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaTagReference, MediasMessage}, ElementAction}, plugins::sources::{AsyncReadPinBox, FileStreamResult}, routes::mw_range::RangeDefinition, tools::{file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{ImageSize, ImageType}, log::log_info, prediction::{predict_net, PredictionTagResult}}};
+use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaTagReference, MediasMessage}, ElementAction}, plugins::sources::{AsyncReadPinBox, FileStreamResult, SourceRead}, routes::mw_range::RangeDefinition, tools::{file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{ImageSize, ImageType}, log::log_info, prediction::{predict_net, PredictionTagResult}}};
 
 use super::{error::{Error, Result}, plugins::PluginQuery, users::ConnectedUser, ModelController};
 
@@ -131,17 +131,15 @@ impl ModelController {
 	}
 
     
-	pub async fn library_file(&self, library_id: &str, media_id: &str, range: Option<RangeDefinition>, requesting_user: &ConnectedUser) -> Result<FileStreamResult<AsyncReadPinBox>> {
+	pub async fn library_file(&self, library_id: &str, media_id: &str, range: Option<RangeDefinition>, requesting_user: &ConnectedUser) -> Result<SourceRead> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         let existing = store.get_media_source(&media_id).await?;
 
         if let Some(existing) = existing {
             let m = self.source_for_library(&library_id).await?;
-            let reader_response = m.get_file_read_stream(&existing.source, range).await;
-
-
-            Ok(reader_response?)
+            let reader_response = m.get_file(&existing.source, range).await?;
+            Ok(reader_response)
         } else {
             Err(Error::NotFound)
         }

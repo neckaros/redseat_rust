@@ -58,7 +58,8 @@ http = "0.2.0"
 extism = "1.2.0"
 rs-plugin-common-interfaces = { version = "0.4.2", features = ["rusqlite",] }
 rs-plugin-url-interfaces = { version = "0.1.2", features = ["rusqlite"] }
-plugin-request-interfaces = { version = "0.4.1", features = ["rusqlite"] }
+plugin-request-interfaces = { version = "0.5.0", features = ["rusqlite"] }
+async-recursion = "1.1.0"
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }

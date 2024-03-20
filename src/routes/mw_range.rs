@@ -23,6 +23,12 @@ pub struct RangeDefinition {
     pub end: Option<u64>
 }
 
+impl RangeDefinition {
+    pub fn header(&self) -> (reqwest::header::HeaderName, reqwest::header::HeaderValue) {
+        let value = format!("bytes={}-{}", self.start.and_then(|s| Some(s.to_string())).unwrap_or("".to_string()), self.end.and_then(|s| Some(s.to_string())).unwrap_or("".to_string()));
+        (reqwest::header::RANGE, reqwest::header::HeaderValue::from_str(&value).unwrap())
+    }
+}
 
 
 pub async fn mw_range(headers: HeaderMap, query: Query<RangeParam>, mut req: Request, next: Next) -> Result<Response> {

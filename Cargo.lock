@@ -197,6 +197,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-recursion"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "30c5ef0ede93efbf733c1a727f3b6b5a1060bbedd5600183e66f6e4be4af0ec5"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.48",
+]
+
+[[package]]
 name = "async-trait"
 version = "0.1.77"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2783,9 +2794,9 @@ checksum = "2900ede94e305130c13ddd391e0ab7cbaeb783945ae07a279c268cb05109c6cb"
 
 [[package]]
 name = "plugin-request-interfaces"
-version = "0.4.1"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5482d8702e24599134e8ad2a4ce45eac9c359ed4e18c12e4cdcd5ee41b59f966"
+checksum = "4178af53ac3790db8679fe0184b929df49cabd9321c9f191b5c894d1db93a104"
 dependencies = [
  "rs-plugin-common-interfaces",
  "rusqlite",
@@ -3120,6 +3131,7 @@ dependencies = [
 name = "redseat-rust"
 version = "0.1.0"
 dependencies = [
+ "async-recursion",
  "async-trait",
  "axum",
  "axum-extra",
