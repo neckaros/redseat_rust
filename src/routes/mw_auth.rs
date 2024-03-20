@@ -10,7 +10,7 @@ use crate::model::server::AuthMessage;
 use crate::model::users::{ConnectedUser, UserRole};
 use crate::model::ModelController;
 use crate::server::get_server_id;
-use crate::tools::auth::verify;
+use crate::tools::auth::{verify, ClaimsLocalType};
 use crate::{error::Error, Result};
 
 const BEARER: &str = "Bearer ";
@@ -31,6 +31,11 @@ pub async fn mw_must_be_admin(user: ConnectedUser, req: Request, next: Next) -> 
         },
         ConnectedUser::Anonymous => return Err(Error::Forbiden),
         ConnectedUser::ServerAdmin => {},
+        ConnectedUser::Share(share) => {
+            if share.kind != ClaimsLocalType::Admin {
+                return Err(Error::Forbiden)
+            }
+        },
     }
     Ok(next.run(req).await)
 }

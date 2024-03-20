@@ -36,6 +36,7 @@ pub enum Error {
 
 	
 	NotServerConnected,
+	ShareTokenInsufficient,
 	InsufficientUserRole {user: ConnectedUser, role: UserRole},
 	InsufficientLibraryRole {user: ConnectedUser, library_id: String, role: LibraryRole},
 	UserGetNotAuth { user: ConnectedUser, requested_user: String },

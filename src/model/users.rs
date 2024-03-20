@@ -5,14 +5,16 @@ use rusqlite::{
     ToSql,
 };
 use serde::{Deserialize, Serialize};
+use strum_macros::EnumString;
 
-use crate::domain::library::{LibraryRole, LibraryType};
+use crate::{domain::library::{LibraryRole, LibraryType}, tools::auth::{ClaimsLocal, ClaimsLocalType}};
 
-use super::error::{Error, Result};
+use super::{error::{Error, Result}, libraries::ServerLibraryForRead};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum ConnectedUser {
     Server(ServerUser),
+    Share(ClaimsLocal),
     Anonymous,
     ServerAdmin
 }
@@ -24,6 +26,14 @@ impl ConnectedUser {
     pub fn is_admin(&self) -> bool {
         if let ConnectedUser::Server(user) = &self {
             user.is_admin()
+        } else if let ConnectedUser::Share(claims) = &self {
+            if claims.kind == ClaimsLocalType::Admin {
+                true
+            } else if let ClaimsLocalType::UserRole(role) = &claims.kind {
+                role == &UserRole::Admin
+            } else {
+                false
+            }
         } else {
             false
         }
@@ -36,7 +46,7 @@ impl ConnectedUser {
         }
     }
     pub fn check_role(&self, role: &UserRole) -> Result<()> {
-        if let ConnectedUser::ServerAdmin = &self {
+        if self.is_admin() {
             Ok(())
         } else if let ConnectedUser::Server(user) = &self {
             if user.has_role(role) {
@@ -49,7 +59,7 @@ impl ConnectedUser {
         }
     }
     pub fn check_library_role(&self, library_id: &str, role: LibraryRole) -> Result<()> {
-        if let ConnectedUser::ServerAdmin = &self {
+        if self.is_admin() {
             Ok(())
         } else if let ConnectedUser::Server(user) = &self {
             if user.has_library_role(&library_id, &role) {
@@ -64,12 +74,14 @@ impl ConnectedUser {
 }
 
 // region:    --- User Role
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, EnumString, Default)]
+#[serde(rename_all = "camelCase")]
+#[strum(serialize_all = "camelCase")]
 pub enum UserRole {
     Admin,
     Read,
     Write,
+    #[default]
     None,
 }
 impl From<u8> for &UserRole {
@@ -104,7 +116,7 @@ impl PartialOrd for UserRole {
         Some(a.cmp(&b))
     }
 }
-
+/*
 impl FromStr for UserRole {
     type Err = Error;
 
@@ -116,7 +128,7 @@ impl FromStr for UserRole {
             _ => Ok(UserRole::None),
         }
     }
-}
+}*/
 impl FromSql for UserRole {
     fn column_result(value: ValueRef) -> FromSqlResult<Self> {
         String::column_result(value).and_then(|as_string| {

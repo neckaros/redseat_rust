@@ -21,9 +21,11 @@ pub enum Error {
 	LoginFail,
 	NotFound,
 
+	// Server Error
+	InvalidPublicKey,
+	InvalidPrivateKey,
 
 	// Range Error 
-
 	InvalidRangeHeader,
 	NoRangeHeader,
 

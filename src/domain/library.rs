@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use strum_macros::EnumString;
 
 use super::ElementAction;
 
@@ -16,12 +17,14 @@ pub struct ServerLibrary {
 }
 
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-#[serde(rename_all = "snake_case")] 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, EnumString, Default)]
+#[serde(rename_all = "camelCase")] 
+#[strum(serialize_all = "camelCase")]
 pub enum LibraryRole {
 	Admin,
 	Read,
 	Write,
+    #[default]
 	None,
 }
 

@@ -10,10 +10,12 @@ use crate::{error::Error, tools::log::{log_info, LogServiceType}, Result};
 static CONFIG: OnceLock<Mutex<ServerConfig>> = OnceLock::new();
 
 const ENV_SERVERID: &str = "REDSEAT_SERVERID";
+const ENV_PORT: &str = "REDSEAT_PORT";
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ServerConfig {
     #[serde(default = "default_serverid")]
     pub id: String,
+    pub port: Option<String>,
     pub domain: Option<String>,
     pub duck_dns: Option<String>,
 }
@@ -43,6 +45,10 @@ pub async fn get_server_local_path() -> Result<PathBuf> {
     return Ok(dir_path);
 }
 
+pub async fn get_server_port() -> u16 {
+    let config_port = get_config().await.port;
+    env::var(ENV_PORT).ok().or_else(|| config_port).unwrap_or("8080".to_string()).parse().expect("Invalid port value") 
+}
 
 fn default_serverid() -> String {
     let new_id = nanoid!();
@@ -52,7 +58,6 @@ fn default_serverid() -> String {
         return new_id;
     } 
 } 
-
 fn get_config_override_serverid() -> Option<String> {
     if let Ok(val) =env::var(ENV_SERVERID) {
         return Some(val);

@@ -1,6 +1,6 @@
 #![cfg_attr(debug_assertions, allow(dead_code, unused_imports))]
 
-use std::{fs, net::{IpAddr, Ipv6Addr, SocketAddr}, path::PathBuf, str::FromStr};
+use std::{fs, net::{IpAddr, Ipv6Addr, SocketAddr}, path::PathBuf, str::FromStr, time::{SystemTime, UNIX_EPOCH}};
 
 use axum::{
     extract::DefaultBodyLimit, http::Method, middleware, Router
@@ -12,11 +12,12 @@ use plugins::PluginManager;
 use routes::{mw_auth, mw_range};
 
 
+use server::get_server_port;
 use tokio::net::TcpListener;
-use tools::{log::LogServiceType, prediction};
+use tools::{auth::{sign_local, Claims}, log::LogServiceType, prediction};
 use tower::ServiceBuilder;
 use tower_http::cors::{CorsLayer, Any};
-use crate::{server::{get_config, update_ip}, tools::{auth::get_or_init_keys, image_tools::resize_image_path, log::log_info}};
+use crate::{server::{get_config, update_ip}, tools::{auth::{get_or_init_keys, verify_local, ClaimsLocal}, image_tools::resize_image_path, log::log_info}};
 use socketioxide::SocketIo;
 pub use self::error::{Result, Error};
 
@@ -52,22 +53,23 @@ async fn main() ->  Result<()> {
 
     let register_infos = register().await?;
     let app = app();
+    let local_port = get_server_port().await;
     if let Some(certs) = register_infos.cert_paths {
 
         log_info(tools::log::LogServiceType::Register, format!("Starting HTTP/HTTPS server"));
         
         let tls_config = RustlsConfig::from_pem_chain_file(certs.0, certs.1).await.unwrap();
 
-        let addr = SocketAddr::new(IpAddr::from(Ipv6Addr::UNSPECIFIED), 6971);
+        let addr = SocketAddr::new(IpAddr::from(Ipv6Addr::UNSPECIFIED), local_port);
         log_info(tools::log::LogServiceType::Register, format!("->> LISTENING HTTP/HTTPS on {:?}\n", addr));
 
         axum_server_dual_protocol::bind_dual_protocol(addr, tls_config)
-	.serve(app.await?.into_make_service())
-	.await.unwrap();
+            .serve(app.await?.into_make_service())
+            .await.unwrap();
         
 
     } else {
-        let listener = TcpListener::bind("127.0.0.1:8080").await.unwrap();
+        let listener = TcpListener::bind(format!("127.0.0.1:{}", local_port)).await.unwrap();
         log_info(LogServiceType::Register, format!("->> LISTENING on {:?}\n", listener.local_addr()));
         
         axum::serve(listener, app.await?)
@@ -141,7 +143,24 @@ async fn register() -> Result<RegisterInfo>{
     let config = get_config().await;
     log_info(tools::log::LogServiceType::Register, format!("Server ID: {}", config.id));   
     let _ = get_or_init_keys().await;
+
+    /* 
+    let exp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+    let claims = ClaimsLocal {
+        cr: "test".to_string(),
+        kind: tools::auth::ClaimsLocalType::Admin,
+        exp: exp.as_secs() + 60,
+    };
+
+    let token = sign_local(claims).await?;
+    println!("TOJEN {}", token);
+
+    let claims = verify_local(&token).await?;
     
+    println!("verified {:?}", claims);
+    */
+
+
     let domain = config.domain.clone();
     let duck_dns = config.duck_dns.clone();
     let mut register_info = RegisterInfo {cert_paths: None, ips: None};

@@ -3,7 +3,7 @@ use std::{cmp::Ordering, str::FromStr};
 use nanoid::nanoid;
 use serde::{Deserialize, Serialize};
 
-use crate::domain::{library::{LibraryMessage, LibraryRole, LibraryType, ServerLibrary, ServerLibrarySettings}, ElementAction};
+use crate::{domain::{library::{LibraryMessage, LibraryRole, LibraryType, ServerLibrary, ServerLibrarySettings}, ElementAction}, tools::auth::ClaimsLocalType};
 
 use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
 
@@ -70,18 +70,6 @@ impl PartialOrd for LibraryRole {
         let a = u8::from(self);
         let b = u8::from(other);
         Some(a.cmp(&b))
-    }
-}
-
-impl FromStr for LibraryRole {
-    type Err = Error;
-    fn from_str(input: &str) -> Result<LibraryRole> {
-        match input {
-            "admin"  => Ok(LibraryRole::Admin),
-            "read"  => Ok(LibraryRole::Read),
-            "write"  => Ok(LibraryRole::Write),
-            _      => Ok(LibraryRole::None),
-        }
     }
 }
 
@@ -172,6 +160,13 @@ pub(super) fn map_library_for_user(library: ServerLibrary, user: &ConnectedUser)
         },
         ConnectedUser::Anonymous => None,
         ConnectedUser::ServerAdmin => Some(ServerLibraryForRead::from(library)),
+        ConnectedUser::Share(claims) => {
+            if claims.kind == ClaimsLocalType::Admin {
+                Some(ServerLibraryForRead::from(library))
+            } else {
+                None
+            }
+        },
     }
 
 
