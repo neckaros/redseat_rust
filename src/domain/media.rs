@@ -51,7 +51,7 @@ impl FromStr for MediaTagReference {
 }
 
 
-#[derive(Debug, Serialize, Deserialize, Clone, strum_macros::Display,EnumString, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, strum_macros::Display,EnumString, Default)]
 #[strum(serialize_all = "camelCase")]
 #[serde(rename_all = "camelCase")]
 pub enum FileType {

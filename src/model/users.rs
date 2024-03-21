@@ -71,6 +71,32 @@ impl ConnectedUser {
             Err(Error::NotServerConnected)
         }
     }
+    
+    pub fn check_file_role(&self, library_id: &str, file_id: &str, role: LibraryRole) -> Result<()> {
+        if self.is_admin() {
+            Ok(())
+        } else if let ConnectedUser::Server(user) = &self {
+            if user.has_library_role(&library_id, &role) {
+                Ok(())
+            } else {
+                Err(Error::InsufficientLibraryRole { user: self.clone(), library_id: library_id.to_string(), role: role.clone() })
+            }
+        } else if let ConnectedUser::Share(claims) = &self {
+            match &claims.kind {
+                ClaimsLocalType::File(id) => {
+                    if id == file_id { 
+                        Ok(()) 
+                    } else {
+                        Err(Error::ShareTokenInsufficient)
+                    }
+                },
+                ClaimsLocalType::UserRole(_) => Err(Error::ShareTokenInsufficient),
+                ClaimsLocalType::Admin => Err(Error::ShareTokenInsufficient),
+            }
+        } else {
+            Err(Error::NotServerConnected)
+        }
+    }
 }
 
 // region:    --- User Role

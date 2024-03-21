@@ -15,6 +15,12 @@ pub type Result<T> = core::result::Result<T, Error>;
 #[derive(Debug, Serialize, From, strum_macros::AsRefStr)]
 pub enum Error {
 
+	//media
+	NoSourceForMedia,
+	UnsupportedTypeForThumb,
+	
+	UnableToSignShareToken,
+
     UnableToParseEnum,
 
 	ServiceError(String, Option<String>),

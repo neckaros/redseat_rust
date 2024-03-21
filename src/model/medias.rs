@@ -15,7 +15,7 @@ use tokio::io::{copy, AsyncRead, AsyncReadExt};
 use tokio_util::io::StreamReader;
 
 
-use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaTagReference, MediasMessage}, ElementAction}, plugins::sources::{AsyncReadPinBox, FileStreamResult, SourceRead}, routes::mw_range::RangeDefinition, tools::{file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{ImageSize, ImageType}, log::log_info, prediction::{predict_net, PredictionTagResult}}};
+use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaTagReference, MediasMessage}, ElementAction}, plugins::sources::{AsyncReadPinBox, FileStreamResult, SourceRead}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{resize_image, resize_image_reader, ImageSize, ImageType}, log::{log_error, log_info}, prediction::{predict_net, PredictionTagResult}, video_tools}};
 
 use super::{error::{Error, Result}, plugins::PluginQuery, users::ConnectedUser, ModelController};
 
@@ -43,6 +43,16 @@ impl MediaQuery {
 pub struct MediaSource {
     pub id: String,
     pub source: String
+}
+impl TryFrom<Media> for MediaSource {
+    type Error = crate::model::error::Error;
+    fn try_from(value: Media) -> std::prelude::v1::Result<Self, Self::Error> {
+        let source = value.source.ok_or(crate::model::error::Error::NoSourceForMedia)?;
+        Ok(MediaSource {
+            id: value.id,
+            source
+        })
+    }
 }
 
 impl ModelController {
@@ -132,7 +142,7 @@ impl ModelController {
 
     
 	pub async fn library_file(&self, library_id: &str, media_id: &str, range: Option<RangeDefinition>, requesting_user: &ConnectedUser) -> Result<SourceRead> {
-        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        requesting_user.check_file_role(library_id, media_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         let existing = store.get_media_source(&media_id).await?;
 
@@ -179,7 +189,7 @@ impl ModelController {
         
         store.update_media(&id, infos).await?;
 
-        self.generate_thumb(&library_id, &id, &requesting_user).await?;
+        let _ = self.generate_thumb(&library_id, &id, &requesting_user).await;
 
 
         let media = store.get_media(&id).await?.ok_or(Error::NotFound)?;
@@ -248,7 +258,10 @@ impl ModelController {
             
             store.update_media(&id, infos).await?;
 
-            self.generate_thumb(&library_id, &id, &requesting_user).await?;
+            let r = self.generate_thumb(&library_id, &id, &requesting_user).await;
+            if let Err(r) = r {
+                log_error(crate::tools::log::LogServiceType::Source, format!("Unable to generate thumb {:#}", r));
+            }
             let media = store.get_media(&id).await?.ok_or(Error::NotFound)?;
             medias.push(media)
 
@@ -257,17 +270,52 @@ impl ModelController {
         Ok(medias)
 	}
 
-    pub async fn generate_thumb(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> Result<()> {
+    pub async fn generate_thumb(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> crate::error::Result<()> {
         let m = self.source_for_library(&library_id).await?; 
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
-        let source = store.get_media_source(&media_id).await?.ok_or(Error::NotFound)?;
-        let thumb = m.thumb(&source.source).await?;
-
+        let media = store.get_media(&media_id).await?.ok_or(Error::NotFound)?;
+        
+        let thumb = match media.kind {
+            FileType::Photo => { 
+                let media_source: MediaSource = media.try_into()?;
+                let th = m.thumb(&media_source.source).await?;
+                Ok(th)
+            },
+            FileType::Video => { 
+                let th = ModelController::get_video_thumb(library_id, media_id, requesting_user).await?;
+                Ok(th)
+            },
+            _ => Err(crate::model::error::Error::UnsupportedTypeForThumb),
+        }?;
+        
         self.update_library_image(&library_id, ".thumbs", &media_id, &None, thumb.as_slice(), requesting_user).await?;
 
         Ok(())
     }
 
+    pub async fn get_video_thumb(library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> crate::error::Result<Vec<u8>> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        let uri = ModelController::get_temporary_local_read_url(library_id, media_id).await?;
+        println!("video path: {}", uri );
+        let thumb = video_tools::thumb_video(&uri, 10.0).await?;
+        let mut cursor = std::io::Cursor::new(thumb);
+        let thumb = resize_image_reader(&mut cursor, 512).await?;
+        Ok(thumb)
+    }
+
+    pub async  fn get_temporary_local_read_url(library_id: &str, media_id: &str) -> Result<String> {
+        let exp = ClaimsLocal::generate_seconds(240);
+        let claims = ClaimsLocal {
+            cr: "service::get_video_thumb".to_string(),
+            kind: crate::tools::auth::ClaimsLocalType::File(media_id.to_string()),
+            exp,
+        };
+    
+        let local_port = get_server_port().await;
+        let token = sign_local(claims).await.map_err(|_| Error::UnableToSignShareToken)?;
+        let uri = format!("http://localhost:{}/libraries/{}/medias/{}?share_token={}", local_port, library_id, media_id, token);
+        Ok(uri)
+    }
 
     pub async fn prediction(&self, library_id: &str, media_id: &str, insert_tags: bool, requesting_user: &ConnectedUser) -> crate::Result<Vec<PredictionTagResult>> {
 

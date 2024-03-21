@@ -17,7 +17,8 @@ const BEARER: &str = "Bearer ";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TokenParams {
-    token: Option<String>
+    token: Option<String>,
+    share_token: Option<String>
 }
 
 
@@ -50,7 +51,14 @@ pub async fn mw_token_resolver(mc: State<ModelController>, headers: HeaderMap, q
             None => None,
         },
     };
-    let auth_message = AuthMessage { token: token, share_token: None};
+    let share_token: Option<String> = match headers.get("SHARETOKEN").and_then(|t| t.to_str().ok()) {
+        Some(token) => Some(token.replace(BEARER, "")),
+        None => match &query.share_token {
+            Some(token) => Some(token.clone()),
+            None => None,
+        },
+    };
+    let auth_message = AuthMessage { token, share_token};
     let connected_user = parse_auth_message(&auth_message, &mc.0).await?;
     req.extensions_mut().insert(connected_user);
 

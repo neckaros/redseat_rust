@@ -8,7 +8,7 @@ use serde_json::json;
 use serde_with::{serde_as, DisplayFromStr};
 use nanoid::nanoid;
 
-use crate::{plugins::sources::error::SourcesError, tools::log::{log_error, LogServiceType}};
+use crate::{plugins::sources::error::SourcesError, tools::{image_tools, log::{log_error, LogServiceType}}};
 
 pub type Result<T> = core::result::Result<T, Error>;
 
@@ -82,6 +82,11 @@ pub enum Error {
 
 	#[from]
 	Image(#[serde_as(as = "DisplayFromStr")] image::ImageError),
+
+	
+	#[from]
+	RsImage(#[serde_as(as = "DisplayFromStr")] image_tools::ImageError),
+
 
 	#[from]
 	Multipart(#[serde_as(as = "DisplayFromStr")] multipart::MultipartError),
