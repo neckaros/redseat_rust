@@ -41,53 +41,19 @@ pub struct SerieForAdd {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SerieForInsert {
     pub id: String,
-	pub name: String,
-    #[serde(rename = "type")]
-    pub kind: Option<String>,
-    pub alt: Option<Vec<String>>,
-    pub params: Option<Value>,
-    pub imdb: Option<String>,
-    pub slug: Option<String>,
-    pub tmdb: Option<u64>,
-    pub trakt: Option<u64>,
-    pub tvdb: Option<u64>,
-    pub otherids: Option<String>,
-    
-    pub imdb_rating: Option<f32>,
-    pub imdb_votes: Option<u64>,
-    pub trakt_rating: Option<u64>,
-    pub trakt_votes: Option<f32>,
-
-    pub trailer: Option<String>,
-
-
-    pub year: Option<u16>,
+    pub serie: SerieForAdd,
 }
+
+
 
 impl From<SerieForAdd> for SerieForInsert {
     fn from(new_serie: SerieForAdd) -> Self {
         SerieForInsert {
             id: nanoid!(),
-            name: new_serie.name,
-            kind: new_serie.kind,
-            alt: new_serie.alt,
-            params: new_serie.params,
-            imdb: new_serie.imdb,
-            slug: new_serie.slug,
-            tmdb: new_serie.tmdb,
-            trakt: new_serie.trakt,
-            tvdb: new_serie.tvdb,
-            otherids: new_serie.otherids,
-            imdb_rating: new_serie.imdb_rating,
-            imdb_votes: new_serie.imdb_votes,
-            trakt_rating: new_serie.trakt_rating,
-            trakt_votes: new_serie.trakt_votes,
-            trailer: new_serie.trailer,
-            year: new_serie.year
+            serie: new_serie
         }
     }
 }
-
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SerieQuery {

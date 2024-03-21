@@ -116,22 +116,22 @@ impl SqliteLibraryStore {
             conn.execute("INSERT INTO series (id, name, type, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, year, imdb_rating, imdb_votes, trailer, trakt_rating, trakt_votes)
             VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params![
                 serie.id,
-                serie.name,
-                serie.kind,
-                to_pipe_separated_optional(serie.alt),
-                serie.params,
-                serie.imdb,
-                serie.slug,
-                serie.tmdb,
-                serie.trakt,
-                serie.tvdb,
-                serie.otherids,
-                serie.year,
-                serie.imdb_rating,
-                serie.imdb_votes,
-                serie.trailer,
-                serie.trakt_rating,
-                serie.trakt_votes
+                serie.serie.name,
+                serie.serie.kind,
+                to_pipe_separated_optional(serie.serie.alt),
+                serie.serie.params,
+                serie.serie.imdb,
+                serie.serie.slug,
+                serie.serie.tmdb,
+                serie.serie.trakt,
+                serie.serie.tvdb,
+                serie.serie.otherids,
+                serie.serie.year,
+                serie.serie.imdb_rating,
+                serie.serie.imdb_votes,
+                serie.serie.trailer,
+                serie.serie.trakt_rating,
+                serie.serie.trakt_votes
             ])?;
             
             Ok(())
