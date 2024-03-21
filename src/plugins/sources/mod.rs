@@ -72,7 +72,7 @@ impl SourceRead {
 
     
     #[async_recursion]
-    pub async fn into_response(self, range: Option<RangeDefinition>, mc: Option<(ModelController, &ConnectedUser)>) -> Result<axum::response::Response, Error> {
+    pub async fn into_response(self, library_id: &str, range: Option<RangeDefinition>, mc: Option<(ModelController, &ConnectedUser)>) -> Result<axum::response::Response, Error> {
         match self {
             SourceRead::Stream(reader) => {
                 let headers = reader.hearders().map_err(|_| Error::UnableToFormatHeaders)?;
@@ -87,9 +87,9 @@ impl SourceRead {
                 match request.status {
                     plugin_request_interfaces::RsRequestStatus::Unprocessed => {
                         if let Some((mc, user)) = mc {
-                            let new_request = mc.exec_request(request.clone(), None, user).await?.ok_or(Error::InvalidRsRequestStatus(request.status))?;
+                            let new_request = mc.exec_request(request.clone(), Some(library_id.to_string()), user).await?.ok_or(Error::InvalidRsRequestStatus(request.status))?;
                             let read = SourceRead::Request(new_request);
-                            read.into_response(range.clone(), Some((mc, user))).await
+                            read.into_response(library_id, range.clone(), Some((mc, user))).await
                         } else {
                             Err(Error::InvalidRsRequestStatus(request.status))
                         }
@@ -162,6 +162,7 @@ pub trait Source: Send {
     async fn remove(&self, name: &str) -> SourcesResult<()>;
     async fn fill_infos(&self, source: &str, infos: &mut MediaForUpdate) -> SourcesResult<()>;
     async fn thumb(&self, source: &str) -> SourcesResult<Vec<u8>>;
+    fn local_path(&self, source: &str) -> Option<PathBuf>;
     async fn get_file(&self, source: &str, range: Option<RangeDefinition>) -> SourcesResult<SourceRead>;
     async fn get_file_write_stream(&self, name: &str) -> SourcesResult<(String, Pin<Box<dyn AsyncWrite + Send>>)>;
     //async fn fill_file_information(&self, file: &mut ServerFile) -> SourcesResult<()>;

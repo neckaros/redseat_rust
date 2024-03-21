@@ -87,8 +87,13 @@ impl ModelController {
         }
 	}
     pub async fn exec_request(&self, request: RsRequest, library_id: Option<String>, requesting_user: &ConnectedUser) -> Result<Option<RsRequest>> {
-        requesting_user.check_role(&UserRole::Read)?;
+        if let Some(library_id) = library_id {
+            requesting_user.check_library_role(&library_id, crate::domain::library::LibraryRole::Read)?;
+        } else {
+            requesting_user.check_role(&UserRole::Read)?;
+        }
         let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::Request), ..Default::default() }, &requesting_user).await?;
+
         Ok(self.plugin_manager.request(request, plugins).await)
         
     }

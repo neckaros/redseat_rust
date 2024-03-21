@@ -64,15 +64,35 @@ pub fn rgb_to_bgr(image: DynamicImage) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
     img_bgr
 }
 
-pub fn predict_net(path: PathBuf, bgr: bool, normalize: bool, buffer_image: Vec<u8>) -> Result<Vec<PredictionTagResult>> {
+pub fn preload_model(path: &PathBuf) -> Result<Session> {
+    Ok(Session::builder()?
+            .with_optimization_level(GraphOptimizationLevel::Level3)?
+            .with_intra_threads(4)?
+            .with_model_from_file(path)?)
+}
+
+pub fn predict_net(path: PathBuf, bgr: bool, normalize: bool, buffer_image: Vec<u8>, model: Option<&Session>) -> Result<Vec<PredictionTagResult>> {
     let mut mapping_path = path.clone();
     mapping_path.set_extension("csv");
     let tags = mapping(mapping_path)?;
     
-    let model = Session::builder()?
-    .with_optimization_level(GraphOptimizationLevel::Level3)?
-    .with_intra_threads(4)?
-    .with_model_from_file(path)?;
+
+    let loaded_session = if model.is_none() {
+        Some(Session::builder()?
+        .with_optimization_level(GraphOptimizationLevel::Level3)?
+        .with_intra_threads(4)?
+        .with_model_from_file(path)?)
+    } else {
+        None
+    };
+    let ref_session = loaded_session.as_ref();
+
+    let model = match model {
+        Some(m) => m,
+        None => {
+            ref_session.unwrap()
+        },
+    };
 
     let output_info = model.outputs.first().ok_or(Error::Error { message: "Prediction model does not have outputs".into() })?;
 

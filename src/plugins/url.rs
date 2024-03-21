@@ -61,7 +61,7 @@ impl PluginManager {
                 println!("dispo {}", filename);
             } else {
                 let filename = guess_filename(&request.url, &request.mime);
-                println!("filename {}", filename);
+                //println!("filename {}", filename);
             }
         }
         for plugin_with_cred in plugins {

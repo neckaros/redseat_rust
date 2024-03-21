@@ -1,6 +1,6 @@
 use std::{path::Path, process::Stdio};
 use std::str;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tokio::{io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader}, process::Command};
 
@@ -126,10 +126,35 @@ pub async fn probe_video(uri: &str) -> Result<FfprobeResult, Error> {
     
 }
 
-pub async fn thumb_video(uri: &str, at_time: f64) -> Result<Vec<u8>, Error> {
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, strum_macros::Display)]
+#[strum(serialize_all = "camelCase")]
+#[serde(rename_all = "camelCase")]
+pub enum VideoTime {
+    Seconds(f64),
+    Percent(u32)
+}
+
+impl VideoTime {
+    pub fn position(&self, duration: f64) -> f64 {
+        match self {
+            VideoTime::Seconds(s) => {
+                if s > &duration {
+                    duration
+                } else {
+                    *s
+                }
+            },
+            VideoTime::Percent(p) => duration * (*p as f64 / 100.0),
+        }
+    }
+}
+
+pub async fn thumb_video(uri: &str, at_time: VideoTime) -> Result<Vec<u8>, Error> {
+    let duration = get_duration(uri).await.ok_or(Error::GenericRedseatError)?;
+    let ss = at_time.position(duration);
     let output = Command::new("ffmpeg")
     .arg("-ss")
-    .arg(at_time.to_string())
+    .arg(ss.to_string())
     .arg("-i")
     .arg(uri)
     .arg("-vframes")

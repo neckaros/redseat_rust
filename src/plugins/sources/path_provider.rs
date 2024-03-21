@@ -68,6 +68,10 @@ impl Source for PathProvider {
         }
     }
 
+    fn local_path(&self, source: &str) -> Option<PathBuf> {
+        Some(self.get_gull_path(&source))
+    }
+
     async fn fill_infos(&self, source: &str, infos: &mut MediaForUpdate) -> SourcesResult<()> {
         let path = self.get_gull_path(&source);
         let metadata = path.metadata()?;

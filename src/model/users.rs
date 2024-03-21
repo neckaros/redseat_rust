@@ -11,7 +11,7 @@ use crate::{domain::library::{LibraryRole, LibraryType}, tools::auth::{ClaimsLoc
 
 use super::{error::{Error, Result}, libraries::ServerLibraryForRead};
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 pub enum ConnectedUser {
     Server(ServerUser),
     Share(ClaimsLocal),
@@ -24,7 +24,9 @@ impl ConnectedUser {
         matches!(&self, ConnectedUser::Server(_)) 
     }
     pub fn is_admin(&self) -> bool {
-        if let ConnectedUser::Server(user) = &self {
+        if self == &ConnectedUser::ServerAdmin {
+            true
+        } else if let ConnectedUser::Server(user) = &self {
             user.is_admin()
         } else if let ConnectedUser::Share(claims) = &self {
             if claims.kind == ClaimsLocalType::Admin {
@@ -48,6 +50,14 @@ impl ConnectedUser {
     pub fn check_role(&self, role: &UserRole) -> Result<()> {
         if self.is_admin() {
             Ok(())
+        } else if let ConnectedUser::Share(claims) = &self {
+            match &claims.kind {
+                ClaimsLocalType::File(_, _) => {
+                    Ok(()) 
+                },
+                ClaimsLocalType::UserRole(_) => Err(Error::ShareTokenInsufficient),
+                ClaimsLocalType::Admin => Ok(()),
+            }
         } else if let ConnectedUser::Server(user) = &self {
             if user.has_role(role) {
                 Ok(())
@@ -67,6 +77,18 @@ impl ConnectedUser {
             } else {
                 Err(Error::InsufficientLibraryRole { user: self.clone(), library_id: library_id.to_string(), role: role.clone() })
             }
+        } else if let ConnectedUser::Share(claims) = &self {
+            match &claims.kind {
+                ClaimsLocalType::File(library, _) => {
+                    if library == library_id { 
+                        Ok(()) 
+                    } else {
+                        Err(Error::ShareTokenInsufficient)
+                    }
+                },
+                ClaimsLocalType::UserRole(_) => Err(Error::ShareTokenInsufficient),
+                ClaimsLocalType::Admin => Err(Error::ShareTokenInsufficient),
+            }
         } else {
             Err(Error::NotServerConnected)
         }
@@ -83,7 +105,7 @@ impl ConnectedUser {
             }
         } else if let ConnectedUser::Share(claims) = &self {
             match &claims.kind {
-                ClaimsLocalType::File(id) => {
+                ClaimsLocalType::File(_, id) => {
                     if id == file_id { 
                         Ok(()) 
                     } else {
@@ -177,7 +199,7 @@ impl ToSql for UserRole {
 // endregion: --- User Role
 
 // region:    --- Preferences
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerUserPreferences {
     #[serde(default = "default_hidden_libraries")]
@@ -189,7 +211,7 @@ fn default_hidden_libraries() -> Vec<String> {
 // endregion:    --- Preferences
 
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct ServerUserLibrariesRights {
     pub id: String,
     pub name: String,
@@ -225,7 +247,7 @@ pub struct ServerLibrariesRightsForAdd {
 
 
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct ServerUser {
     pub id: String,
     pub name: String,

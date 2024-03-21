@@ -1,7 +1,7 @@
 
 
 
-use std::{io::{self, Read}, path::PathBuf, pin::Pin, str::FromStr};
+use std::{io::{self, Read}, path::PathBuf, pin::Pin, result, str::FromStr};
 
 use chrono::{Datelike, Utc};
 use futures::TryStreamExt;
@@ -9,15 +9,16 @@ use http::header::CONTENT_TYPE;
 use mime::{Mime, APPLICATION_OCTET_STREAM};
 use mime_guess::get_mime_extensions_str;
 use nanoid::nanoid;
+use query_external_ip::SourceError;
 use rs_plugin_common_interfaces::PluginType;
 use serde::{Deserialize, Serialize};
 use tokio::io::{copy, AsyncRead, AsyncReadExt};
 use tokio_util::io::StreamReader;
 
 
-use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaTagReference, MediasMessage}, ElementAction}, plugins::sources::{AsyncReadPinBox, FileStreamResult, SourceRead}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{resize_image, resize_image_reader, ImageSize, ImageType}, log::{log_error, log_info}, prediction::{predict_net, PredictionTagResult}, video_tools}};
+use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaTagReference, MediasMessage}, ElementAction}, plugins::{get_plugin_fodler, sources::{error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{resize_image, resize_image_reader, ImageSize, ImageType}, log::{log_error, log_info}, prediction::{predict_net, preload_model, PredictionTagResult}, video_tools::{self, VideoTime}}};
 
-use super::{error::{Error, Result}, plugins::PluginQuery, users::ConnectedUser, ModelController};
+use super::{error::{Error, Result}, plugins::PluginQuery, store, users::ConnectedUser, ModelController};
 
 
 
@@ -42,7 +43,8 @@ impl MediaQuery {
 
 pub struct MediaSource {
     pub id: String,
-    pub source: String
+    pub source: String,
+    pub kind: FileType
 }
 impl TryFrom<Media> for MediaSource {
     type Error = crate::model::error::Error;
@@ -50,7 +52,8 @@ impl TryFrom<Media> for MediaSource {
         let source = value.source.ok_or(crate::model::error::Error::NoSourceForMedia)?;
         Ok(MediaSource {
             id: value.id,
-            source
+            source,
+            kind: value.kind
         })
     }
 }
@@ -122,6 +125,7 @@ impl ModelController {
 	}
 
 	pub async fn media_image(&self, library_id: &str, media_id: &str, size: Option<ImageSize>, requesting_user: &ConnectedUser) -> Result<FileStreamResult<AsyncReadPinBox>> {
+        println!("media image");
         let size = if let Some(s) = size {
                 if s == ImageSize::Large {
                     None
@@ -133,7 +137,27 @@ impl ModelController {
             } else {
                 None
             };
-        self.library_image(library_id, ".thumbs", media_id, None, size, requesting_user).await
+            println!("trying to get");
+        let result = self.library_image(library_id, ".thumbs", media_id, None, size.clone(), requesting_user).await;
+        println!("next");
+        if let Err(error) = result {
+            if let Error::Source(s) = &error {
+                if let SourcesError::NotFound(_) = s {
+                    println!("regen");
+                    self.generate_thumb(library_id, media_id, requesting_user).await.map_err(|_| Error::NotFound)?;
+                    println!("regened");
+                    let result = self.library_image(library_id, ".thumbs", media_id, None, size, requesting_user).await;
+                    result
+                } else {
+                    Err(error)
+                }
+            } else {
+                Err(error)
+            }
+        } else {
+            result
+        }
+        
 	}
 
     pub async fn update_media_image<T: AsyncRead>(&self, library_id: &str, media_id: &str, reader: T, requesting_user: &ConnectedUser) -> Result<()> {
@@ -154,7 +178,16 @@ impl ModelController {
             Err(Error::NotFound)
         }
 	}
-
+    pub fn process_media_spawn(&self, library_id: String, media_id: String, requesting_user: ConnectedUser){
+        let mc = self.clone();
+        tokio::spawn(async move {
+            mc.process_media(&library_id, &media_id, &requesting_user).await;
+        });
+    }
+    pub async fn process_media(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> Result<()>{
+        let _ = self.prediction(library_id, media_id, true, requesting_user).await;
+        Ok(())
+    }
     pub async fn add_library_file<T: AsyncRead>(&self, library_id: &str, filename: &str, infos: Option<MediaForUpdate>, reader: T, requesting_user: &ConnectedUser) -> Result<Media> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
 
@@ -190,6 +223,7 @@ impl ModelController {
         store.update_media(&id, infos).await?;
 
         let _ = self.generate_thumb(&library_id, &id, &requesting_user).await;
+        self.process_media_spawn(library_id.to_string(), id.clone(), requesting_user.clone());
 
 
         let media = store.get_media(&id).await?.ok_or(Error::NotFound)?;
@@ -259,6 +293,8 @@ impl ModelController {
             store.update_media(&id, infos).await?;
 
             let r = self.generate_thumb(&library_id, &id, &requesting_user).await;
+            self.process_media_spawn(library_id.to_string(), id.clone(), requesting_user.clone());
+            
             if let Err(r) = r {
                 log_error(crate::tools::log::LogServiceType::Source, format!("Unable to generate thumb {:#}", r));
             }
@@ -282,7 +318,7 @@ impl ModelController {
                 Ok(th)
             },
             FileType::Video => { 
-                let th = ModelController::get_video_thumb(library_id, media_id, requesting_user).await?;
+                let th = self.get_video_thumb(library_id, media_id, VideoTime::Percent(5), requesting_user).await?;
                 Ok(th)
             },
             _ => Err(crate::model::error::Error::UnsupportedTypeForThumb),
@@ -293,11 +329,21 @@ impl ModelController {
         Ok(())
     }
 
-    pub async fn get_video_thumb(library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> crate::error::Result<Vec<u8>> {
-        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
-        let uri = ModelController::get_temporary_local_read_url(library_id, media_id).await?;
-        println!("video path: {}", uri );
-        let thumb = video_tools::thumb_video(&uri, 10.0).await?;
+    pub async fn get_video_thumb(&self, library_id: &str, media_id: &str, time: VideoTime, requesting_user: &ConnectedUser) -> crate::error::Result<Vec<u8>> {
+        requesting_user.check_file_role(library_id, media_id, LibraryRole::Read)?;
+
+        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let source = store.get_media_source(&media_id).await?.ok_or(Error::NotFound)?;
+
+        let m = self.source_for_library(&library_id).await?; 
+        let local_path = m.local_path(&source.source);
+        let uri = if let Some(local_path) = local_path {
+            local_path.to_str().unwrap().to_string()
+        } else {
+            ModelController::get_temporary_local_read_url(library_id, media_id).await?
+        };
+        println!("video path {}", uri);
+        let thumb = video_tools::thumb_video(&uri, time).await?;
         let mut cursor = std::io::Cursor::new(thumb);
         let thumb = resize_image_reader(&mut cursor, 512).await?;
         Ok(thumb)
@@ -307,7 +353,7 @@ impl ModelController {
         let exp = ClaimsLocal::generate_seconds(240);
         let claims = ClaimsLocal {
             cr: "service::get_video_thumb".to_string(),
-            kind: crate::tools::auth::ClaimsLocalType::File(media_id.to_string()),
+            kind: crate::tools::auth::ClaimsLocalType::File(library_id.to_string(), media_id.to_string()),
             exp,
         };
     
@@ -320,23 +366,39 @@ impl ModelController {
     pub async fn prediction(&self, library_id: &str, media_id: &str, insert_tags: bool, requesting_user: &ConnectedUser) -> crate::Result<Vec<PredictionTagResult>> {
 
         let plugins = self.get_plugins(PluginQuery { kind: Some(PluginType::ImageClassification), library: Some(library_id.to_string()), ..Default::default() }, requesting_user).await?;
-
         if plugins.len() > 0 {
             let mut all_predictions: Vec<PredictionTagResult> = vec![];
-            let mut reader_response = self.media_image(&library_id, &media_id, None, &requesting_user).await?;
+            let media = self.get_media(library_id, media_id.to_string(), requesting_user).await?.ok_or(Error::NotFound)?;
 
-            for plugin in plugins {
-                let mut buffer = Vec::new();
-                reader_response.stream.read_to_end(&mut buffer).await?;
-                let mut prediction = predict_net(PathBuf::from_str(&plugin.path).unwrap(), plugin.settings.bgr.unwrap_or(false), plugin.settings.normalize.unwrap_or(false), buffer)?;
-                prediction.sort_by(|a, b| b.probability.partial_cmp(&a.probability).unwrap());
-                if insert_tags {
-                    for tag in &prediction {
-                        let db_tag = self.get_ai_tag(&library_id, tag.tag.clone(), &requesting_user).await?;
-                        self.update_media(&library_id, media_id.to_string(), MediaForUpdate { add_tags: Some(vec![MediaTagReference { id: db_tag.id, conf: Some(tag.probability as u16) }]), ..Default::default() }, &requesting_user).await?;
-                    }
+            let mut reader_response = self.media_image(&library_id, &media_id, None, &requesting_user).await?;
+            let mut buffer = Vec::new();
+            reader_response.stream.read_to_end(&mut buffer).await?;
+
+            let mut images = vec![buffer];
+            if media.kind == FileType::Video {
+                let percents = vec![15, 30, 45, 60, 75, 95];
+                for percent in percents {
+                    let thumb = self.get_video_thumb(library_id, media_id, VideoTime::Percent(percent), requesting_user).await?;
+                    images.push(thumb);
                 }
-                all_predictions.append(&mut prediction);
+            }
+            
+            for plugin in plugins.clone() {
+                let mut path = get_plugin_fodler().await?;
+                    path.push(&plugin.path);
+                let model: ort::Session = preload_model(&path)?;
+                for buffer in &images {
+                    
+                    let mut prediction = predict_net(path.clone(), plugin.settings.bgr.unwrap_or(false), plugin.settings.normalize.unwrap_or(false), buffer.clone(), Some(&model))?;
+                    prediction.sort_by(|a, b| b.probability.partial_cmp(&a.probability).unwrap());
+                    if insert_tags {
+                        for tag in &prediction {
+                            let db_tag = self.get_ai_tag(&library_id, tag.tag.clone(), &requesting_user).await?;
+                            self.update_media(&library_id, media_id.to_string(), MediaForUpdate { add_tags: Some(vec![MediaTagReference { id: db_tag.id, conf: Some(tag.probability as u16) }]), ..Default::default() }, &requesting_user).await?;
+                        }
+                    }
+                    all_predictions.append(&mut prediction);
+                }
             }
 
             Ok(all_predictions)

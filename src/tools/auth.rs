@@ -21,7 +21,7 @@ pub struct Claims {
     pub(crate) exp: u64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ClaimsLocal {
     pub(crate) cr: String,
     pub(crate) kind: ClaimsLocalType,
@@ -31,7 +31,7 @@ pub struct ClaimsLocal {
 #[strum(serialize_all = "camelCase")]
 #[serde(rename_all = "camelCase")]
 pub enum ClaimsLocalType {
-    File(String),
+    File(String, String),
     UserRole(UserRole),
     Admin,
 }

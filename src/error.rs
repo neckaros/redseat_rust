@@ -8,7 +8,7 @@ use serde_json::json;
 use serde_with::{serde_as, DisplayFromStr};
 use nanoid::nanoid;
 
-use crate::{plugins::sources::error::SourcesError, tools::{image_tools, log::{log_error, LogServiceType}}};
+use crate::{domain::MediasIds, plugins::sources::error::SourcesError, tools::{image_tools, log::{log_error, LogServiceType}}};
 
 pub type Result<T> = core::result::Result<T, Error>;
 
@@ -30,6 +30,7 @@ pub enum Error {
 	NoRangeHeader,
 
 	
+	NoMediaIdRequired(MediasIds),
 
 	// Prediction Error 
 
@@ -90,6 +91,8 @@ pub enum Error {
 
 	#[from]
 	Multipart(#[serde_as(as = "DisplayFromStr")] multipart::MultipartError),
+	#[from]
+	Reqwest(#[serde_as(as = "DisplayFromStr")] reqwest::Error),
 
 	
 	#[from]

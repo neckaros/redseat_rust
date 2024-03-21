@@ -1,0 +1,53 @@
+use reqwest::{Client, Url};
+use tower::Service;
+use trakt_rs::{smo::Id, Request, Response};
+use crate::{domain::{serie::Serie, MediasIds}, model::series::SerieForAdd, plugins::medias::trakt::trakt_show::TraktFullShow, Error, Result};
+// Context required for all requests
+
+mod trakt_show;
+mod trakt_episode;
+
+#[derive(Debug, Clone)]
+pub struct TraktContext {
+    base_url: Url,
+    client_id: String,
+    client: Client
+}
+
+impl TraktContext {
+    pub fn new(client_id: String) -> Self {
+        let base_url = reqwest::Url::parse("https://api.trakt.tv").unwrap();
+        TraktContext {
+            base_url, //"https://api.trakt.tv".to_string(),
+            client_id,
+            client: reqwest::Client::new()
+        }
+    }
+}
+
+impl TraktContext {
+    pub async fn get_serie(&self, id: &MediasIds) -> crate::Result<()> {
+
+        let id = if let Some(imdb) = &id.imdb {
+            Ok(imdb.to_string())
+        } else if let Some(trakt) = &id.trakt {
+            Ok(trakt.to_string())
+        } else {
+            Err(Error::NoMediaIdRequired(id.clone()))
+        }?;
+
+        let url = self.base_url.join(&format!("shows/{}?extended=full", id)).unwrap();
+        let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
+        let show = r.json::<TraktFullShow>().await.unwrap();
+        let show_nous: SerieForAdd = show.into();
+        println!("reponse {:?}", show_nous);
+        Ok(())
+    }
+}
+
+async fn get_movie() -> Result<()> {
+    // Create a request and convert it into an HTTP request
+
+    Ok(())
+
+}

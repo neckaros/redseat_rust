@@ -7,8 +7,9 @@ use axum::{
 };
 use axum_server::tls_rustls::RustlsConfig;
 
+use domain::MediasIds;
 use model::{store::SqliteStore, ModelController};
-use plugins::PluginManager;
+use plugins::{medias::trakt::TraktContext, PluginManager};
 use routes::{mw_auth, mw_range};
 
 
@@ -38,6 +39,8 @@ async fn main() ->  Result<()> {
     server::initialize_config().await;
 
     tokio::spawn(async move {
+        let trakt = TraktContext::new("455f81b3409a8dd140a941e9250ff22b2ed92d68003491c3976363fe752a9024".to_string());
+        trakt.get_serie(&MediasIds { imdb: Some("tt0944947".to_string()), ..Default::default()}).await;
         //resize_image_path("test_data/image.jpg", "test_data/image-thumb.jpg", 500, ImageOutputFormat::Jpeg(80)).await.unwrap()
         //tools::video_tools::convert_to_pipe("C:/Users/arnau/Downloads/IMG_5020.mov", None).await;
         /*let source = PathBuf::from_str("test_data/image.heic").expect("unable to set path");

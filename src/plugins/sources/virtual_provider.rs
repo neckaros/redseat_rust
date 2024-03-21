@@ -43,14 +43,16 @@ impl Source for VirtualProvider {
     async fn thumb(&self, source: &str) -> SourcesResult<Vec<u8>> {
         Err(SourcesError::NotImplemented)
     }
+    fn local_path(&self, source: &str) -> Option<PathBuf> {
+        None
+    }
 
     async fn fill_infos(&self, _source: &str, infos: &mut MediaForUpdate) -> SourcesResult<()> {
 
         Ok(())
     }
     async fn get_file(&self, source: &str, _range: Option<RangeDefinition>) -> SourcesResult<SourceRead> {
-        println!("Virtual {}", &source);
-       
+      
         Ok(SourceRead::Request( RsRequest {
             url: source.to_string(),
             ..Default::default()

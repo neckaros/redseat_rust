@@ -20,3 +20,19 @@ pub enum ElementAction {
     Added,
     Updated
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, Ord, PartialOrd, Eq, PartialEq, Default)]
+pub struct MediasIds {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trakt: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tvdb: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub imdb: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tmdb: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tvrage: Option<u64>,
+}
