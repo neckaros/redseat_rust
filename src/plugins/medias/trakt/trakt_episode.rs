@@ -1,7 +1,14 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::model::episodes::EpisodeForAdd;
+
 use super::trakt_show::TraktIds;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TraktSeasonWithEpisodes {
+    pub episodes: Vec<TraktFullEpisode>
+}
 
 /// An [episode] with full [extended info]
 ///
@@ -23,3 +30,31 @@ pub struct TraktFullEpisode {
     pub available_translations: Vec<String>,
     pub runtime: u32,
 }
+
+impl TraktFullEpisode {
+    pub fn into_trakt(self, serie_ref: String) -> EpisodeForAdd {
+        EpisodeForAdd {
+            serie_ref,
+            season: self.season as usize,
+            number: self.number as usize,
+            abs: self.number_abs.and_then(|f| Some(f as usize)),
+            name: self.title,
+            overview: self.overview,
+            alt: None,
+            airdate: self.first_aired.and_then(|t| Some(t.timestamp() as u64)),
+            duration: Some(self.runtime as u64),
+            params: None,
+            imdb: self.ids.imdb,
+            slug: self.ids.slug,
+            tmdb: self.ids.tmdb,
+            trakt: self.ids.trakt,
+            tvdb: self.ids.tvdb,
+            otherids: None,
+            imdb_rating: None,
+            imdb_votes: None,
+            trakt_rating: Some(self.rating),
+            trakt_votes: Some(self.votes.into()),
+        }
+    }
+}
+

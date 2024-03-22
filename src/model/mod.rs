@@ -16,7 +16,7 @@ pub mod medias;
 use std::{io::Read, path::PathBuf, pin::Pin, sync::Arc};
 use strum::IntoEnumIterator;
 use rs_plugin_url_interfaces::RsLink;
-use crate::{domain::library::{LibraryMessage, LibraryRole}, plugins::{sources::{error::SourcesError, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, LocalSource, Source, SourceRead}, PluginManager}, server::get_server_file_path_array, tools::{image_tools::{resize_image_path, ImageSize, ImageSizeIter, ImageType}, log::log_info}};
+use crate::{domain::library::{LibraryMessage, LibraryRole}, plugins::{medias::trakt::TraktContext, sources::{error::SourcesError, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, LocalSource, Source, SourceRead}, PluginManager}, server::get_server_file_path_array, tools::{image_tools::{resize_image_path, ImageSize, ImageSizeIter, ImageType}, log::log_info}};
 
 use self::{store::SqliteStore, users::{ConnectedUser, UserRole}};
 use error::{Result, Error};
@@ -27,7 +27,8 @@ use tokio::{fs::{self, remove_file, File}, io::{copy, AsyncRead, BufReader}};
 pub struct ModelController {
 	store: Arc<SqliteStore>,
 	io: Option<SocketIo>,
-	pub plugin_manager: Arc<PluginManager>
+	pub plugin_manager: Arc<PluginManager>,
+	pub trakt: TraktContext
 }
 
 
@@ -37,7 +38,8 @@ impl ModelController {
 		Ok(Self {
 			store: Arc::new(store),
 			io: None,
-			plugin_manager: Arc::new(plugin_manager)
+			plugin_manager: Arc::new(plugin_manager),
+			trakt: TraktContext::new("455f81b3409a8dd140a941e9250ff22b2ed92d68003491c3976363fe752a9024".to_string())
 		})
 	}
 }
