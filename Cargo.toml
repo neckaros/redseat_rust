@@ -28,7 +28,7 @@ instant-acme = "0.4.2"
 rcgen = "0.12.1"
 x509-parser = "0.15.1"
 chrono = { version = "0.4.33", features = ["serde"]}
-reqwest = { version = "0.11.23", features = ["stream"]}
+reqwest = { version = "0.11.23", features = ["stream", "gzip"]}
 query_external_ip = "0.1.1"
 axum-server-dual-protocol = "0.6.0"
 
@@ -60,6 +60,7 @@ rs-plugin-common-interfaces = { version = "0.4.2", features = ["rusqlite",] }
 rs-plugin-url-interfaces = { version = "0.1.2", features = ["rusqlite"] }
 plugin-request-interfaces = { version = "0.5.0", features = ["rusqlite"] }
 async-recursion = "1.1.0"
+async-compression = { version = "0.4.6", features = ["tokio"] }
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }

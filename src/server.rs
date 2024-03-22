@@ -131,17 +131,6 @@ pub async fn update_config(config: ServerConfig) -> Result<()> {
     }
 }
 
-pub async fn write_server_file_string(name: &str ) -> Result<String> {
-    //let mut dir_path: PathBuf = get_server_local_path().await?;
-    //dir_path.push(name);
-    //let Ok(mut file) = File::create(dir_path).await else { return Err(Error::ServerUnableToAccessServerLocalFolder); };
-    /*if file.write_all(data.as_bytes()).await.is_err() {
-        return Err(Error::ServerNoServerId);
-    } else {
-        return Ok(())
-    }*/
-    Ok("()".to_string())
-}
 
 pub async fn write_server_file(name: &str, data: &[u8]) -> Result<()> {
     let mut dir_path: PathBuf = get_server_local_path().await?;
@@ -159,7 +148,7 @@ pub async fn get_server_file_path(name: &str) -> Result<PathBuf> {
     return Ok(dir_path);
 }
 
-pub async fn get_server_file_path_array(names: &mut Vec<&str>) -> Result<PathBuf> {
+pub async fn get_server_file_path_array(mut names: Vec<&str>) -> Result<PathBuf> {
     let mut dir_path: PathBuf = get_server_local_path().await?;
     if let Some(last) = names.pop() {
         for name in names {

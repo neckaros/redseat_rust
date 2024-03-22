@@ -1,3 +1,5 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use serde::{Serialize, Deserialize};
 use chrono::{DateTime, Utc};
 
@@ -88,9 +90,11 @@ pub struct TraktFullShow {
     pub aired_episodes: u32,
 }
 
-impl From<TraktFullShow> for SerieForAdd {
+impl From<TraktFullShow> for Serie {
     fn from(value: TraktFullShow) -> Self {
-        SerieForAdd {
+        let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        Serie {
+            id: format!("trakt:{}", value.ids.trakt.unwrap()),
             name: value.title,
             kind: None,
             alt: None,
@@ -102,11 +106,26 @@ impl From<TraktFullShow> for SerieForAdd {
             tvdb: value.ids.tvdb,
             otherids: None,
             imdb_rating: None,
-            imdb_votes: Some(value.rating as u64),
-            trakt_votes: Some(value.votes as f32),
+            imdb_votes: None,
+            trakt_votes: Some(value.votes as u64),
+            trakt_rating: Some(value.rating as f32),
             trailer: value.trailer,
             year: value.year,
-            trakt_rating: None,
+            max_created: None,
+            modified: t,
+            added: t,
+        }
+    }
+}
+
+impl MediasIds {
+    pub fn as_id_for_trakt(&self) -> Option<String> {
+        if let Some(trakt) = self.trakt {
+            Some(trakt.to_string())
+        } else if let Some(imdb) = &self.imdb {
+            Some(imdb.to_string())
+        } else {
+            None
         }
     }
 }

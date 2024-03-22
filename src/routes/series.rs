@@ -30,19 +30,19 @@ async fn handler_list(Path(library_id): Path<String>, State(mc): State<ModelCont
 	Ok(body)
 }
 
-async fn handler_get(Path((library_id, tag_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
-	let library = mc.get_serie(&library_id, tag_id, &user).await?;
+async fn handler_get(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	let library = mc.get_serie(&library_id, serie_id, &user).await?;
 	let body = Json(json!(library));
 	Ok(body)
 }
 
-async fn handler_patch(Path((library_id, tag_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(update): Json<SerieForUpdate>) -> Result<Json<Value>> {
-	let new_credential = mc.update_serie(&library_id, tag_id, update, &user).await?;
+async fn handler_patch(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(update): Json<SerieForUpdate>) -> Result<Json<Value>> {
+	let new_credential = mc.update_serie(&library_id, serie_id, update, &user).await?;
 	Ok(Json(json!(new_credential)))
 }
 
-async fn handler_delete(Path((library_id, tag_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
-	let library = mc.remove_serie(&library_id, &tag_id, &user).await?;
+async fn handler_delete(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	let library = mc.remove_serie(&library_id, &serie_id, &user).await?;
 	let body = Json(json!(library));
 	Ok(body)
 }
@@ -54,8 +54,8 @@ async fn handler_post(Path(library_id): Path<String>, State(mc): State<ModelCont
 }
 
 
-async fn handler_image(Path((library_id, tag_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ImageRequestOptions>) -> Result<Response> {
-	let reader_response = mc.serie_image(&library_id, &tag_id, query.kind, query.size, &user).await?;
+async fn handler_image(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ImageRequestOptions>) -> Result<Response> {
+	let reader_response = mc.serie_image(&library_id, &serie_id, query.kind, query.size, &user).await?;
 
 	let headers = reader_response.hearders().map_err(|_| Error::GenericRedseatError)?;
     let stream = ReaderStream::new(reader_response.stream);
@@ -65,7 +65,7 @@ async fn handler_image(Path((library_id, tag_id)): Path<(String, String)>, State
 }
 
 #[debug_handler]
-async fn handler_post_image(Path((library_id, tag_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ImageUploadOptions>, mut multipart: Multipart) -> Result<Json<Value>> {
+async fn handler_post_image(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ImageUploadOptions>, mut multipart: Multipart) -> Result<Json<Value>> {
 	while let Some(field) = multipart.next_field().await.unwrap() {
         //let name = field.name().unwrap().to_string();
 		//let filename = field.file_name().unwrap().to_string();
@@ -78,7 +78,7 @@ async fn handler_post_image(Path((library_id, tag_id)): Path<(String, String)>, 
 
 		
         //println!("Length of `{}` {}  {} is {} bytes", name, filename, mime, data.len());
-			mc.update_serie_image(&library_id, &tag_id, &query.kind, reader, &user).await?;
+			mc.update_serie_image(&library_id, &serie_id, &query.kind, reader, &user).await?;
     }
 	
     Ok(Json(json!({"data": "ok"})))

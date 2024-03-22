@@ -24,7 +24,7 @@ pub struct SqliteStore {
 // Constructor
 impl SqliteStore {
 	pub async fn new() -> Result<Self> {
-        let server_db_path = get_server_file_path_array(&mut vec![&"dbs", &"database.db"]).await.map_err(|_| Error::CannotOpenDatabase)?;
+        let server_db_path = get_server_file_path_array(vec![&"dbs", &"database.db"]).await.map_err(|_| Error::CannotOpenDatabase)?;
         let connection = Connection::open(server_db_path).await?;
         
         let version = migrate_database(&connection).await?;
@@ -39,7 +39,7 @@ impl SqliteStore {
         let libraries = new.get_libraries().await?;
         for library in libraries {
             log_info(LogServiceType::Database, format!("Loading database: {}", &library.name));
-            let server_db_path = get_server_file_path_array(&mut vec![&"dbs", &format!("{}.db", &library.id)]).await.map_err(|_| Error::CannotOpenDatabase)?;
+            let server_db_path = get_server_file_path_array(vec![&"dbs", &format!("{}.db", &library.id)]).await.map_err(|_| Error::CannotOpenDatabase)?;
             let library_connection = Connection::open(server_db_path).await?;
             let library_store = SqliteLibraryStore::new(library_connection).await?;
             new.libraries_stores.insert(library.id.to_string(), library_store);

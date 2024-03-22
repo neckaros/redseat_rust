@@ -1,3 +1,5 @@
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
 pub mod auth;
 pub mod video_tools;
 pub mod image_tools;
@@ -7,6 +9,11 @@ pub mod serialization;
 pub mod prediction;
 pub mod file_tools;
 pub mod http_tools;
+
+
+pub fn get_time() -> Duration {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap()
+}
 
 #[cfg(test)]
 mod tests {

@@ -72,7 +72,7 @@ impl SqliteLibraryStore {
         }).await?;
         Ok(row)
     }
-    pub async fn get_episode(&self, serie_id: &str, season: usize, number: usize) -> Result<Option<Episode>> {
+    pub async fn get_episode(&self, serie_id: &str, season: u32, number: u32) -> Result<Option<Episode>> {
         let serie_id = serie_id.to_string();
         let row = self.connection.call( move |conn| { 
             let mut query = conn.prepare("SELECT serie_ref, season, number, abs, name, overview, airdate, duration, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, modified, added, imdb_rating, imdb_votes, trakt_rating, trakt_votes FROM episodes WHERE serie_ref = ? and season = ? and number = ?")?;
@@ -85,7 +85,7 @@ impl SqliteLibraryStore {
 
 
 
-    pub async fn update_episode(&self, serie_id: &str, season: usize, number: usize, update: EpisodeForUpdate) -> Result<()> {
+    pub async fn update_episode(&self, serie_id: &str, season: u32, number: u32, update: EpisodeForUpdate) -> Result<()> {
         let id = serie_id.to_string();
         let existing = self.get_episode(serie_id, season, number).await?.ok_or_else( || Error::NotFound)?;
         self.connection.call( move |conn| { 
@@ -161,7 +161,7 @@ impl SqliteLibraryStore {
         Ok(())
     }
 
-    pub async fn remove_episode(&self, episode_id: String, season: usize, number: usize) -> Result<()> {
+    pub async fn remove_episode(&self, episode_id: String, season: u32, number: u32) -> Result<()> {
         self.connection.call( move |conn| { 
             conn.execute("DELETE FROM episodes WHERE serie_ref = ? and season = ? and number = ?", params![episode_id, season, number])?;
             Ok(())

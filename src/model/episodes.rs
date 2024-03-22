@@ -17,9 +17,9 @@ use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct EpisodeForAdd {
     pub serie_ref: String,
-    pub season: usize,
-    pub number: usize,
-    pub abs: Option<usize>,
+    pub season: u32,
+    pub number: u32,
+    pub abs: Option<u32>,
 
 	pub name: Option<String>,
 	pub overview: Option<String>,
@@ -47,7 +47,7 @@ pub struct EpisodeForAdd {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct EpisodeQuery {
     pub serie_ref: Option<String>,
-    pub season: Option<usize>,
+    pub season: Option<u32>,
     pub after: Option<u64>
 }
 
@@ -62,7 +62,7 @@ impl EpisodeQuery {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct EpisodeForUpdate {
-    pub abs: Option<usize>,
+    pub abs: Option<u32>,
 
 	pub name: Option<String>,
 	pub overview: Option<String>,
@@ -100,14 +100,14 @@ impl ModelController {
 		Ok(episodes)
 	}
 
-    pub async fn get_episode(&self, library_id: &str, serie_id: String, season: usize, number: usize, requesting_user: &ConnectedUser) -> Result<Option<Episode>> {
+    pub async fn get_episode(&self, library_id: &str, serie_id: String, season: u32, number: u32, requesting_user: &ConnectedUser) -> Result<Option<Episode>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
 		let episode = store.get_episode(&serie_id, season, number).await?;
 		Ok(episode)
 	}
 
-    pub async fn update_episode(&self, library_id: &str, serie_id: String, season: usize, number: usize, update: EpisodeForUpdate, requesting_user: &ConnectedUser) -> Result<Episode> {
+    pub async fn update_episode(&self, library_id: &str, serie_id: String, season: u32, number: u32, update: EpisodeForUpdate, requesting_user: &ConnectedUser) -> Result<Episode> {
         requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
 		store.update_episode(&serie_id, season, number, update).await?;
@@ -137,7 +137,7 @@ impl ModelController {
 	}
 
 
-    pub async fn remove_episode(&self, library_id: &str, serie_id: &str, season: usize, number: usize, requesting_user: &ConnectedUser) -> Result<Episode> {
+    pub async fn remove_episode(&self, library_id: &str, serie_id: &str, season: u32, number: u32, requesting_user: &ConnectedUser) -> Result<Episode> {
         requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         let existing = store.get_episode(serie_id, season, number).await?;
@@ -152,7 +152,7 @@ impl ModelController {
 
 
     
-	pub async fn episode_image(&self, library_id: &str, serie_id: &str, season: &usize, episode: usize, size: Option<ImageSize>, requesting_user: &ConnectedUser) -> Result<FileStreamResult<AsyncReadPinBox>> {
+	pub async fn episode_image(&self, library_id: &str, serie_id: &str, season: &u32, episode: u32, size: Option<ImageSize>, requesting_user: &ConnectedUser) -> Result<FileStreamResult<AsyncReadPinBox>> {
         self.library_image(library_id, &format!(".series/{}", serie_id), &format!("{}.{}", season, episode), None, size, requesting_user).await
 	}
 

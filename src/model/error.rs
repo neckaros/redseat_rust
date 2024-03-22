@@ -16,6 +16,7 @@ pub type Result<T> = core::result::Result<T, Error>;
 pub enum Error {
 
 	//media
+	InvalidIdForAction(String, String),
 	NoSourceForMedia,
 	UnsupportedTypeForThumb,
 	
@@ -100,6 +101,7 @@ impl Error {
 			Error::NotFound => (StatusCode::NOT_FOUND, ClientError::NOT_FOUND),
 			Error::FileNotFound(_) => (StatusCode::NOT_FOUND, ClientError::NOT_FOUND),
 
+			Error::InvalidIdForAction(action, id)  => (StatusCode::BAD_REQUEST, ClientError::Custom(format!("Invalid id {} for {}", id, action)) ),
 			
 			Error::ServiceError(_, _) => (StatusCode::INTERNAL_SERVER_ERROR, ClientError::SERVICE_ERROR),
 			Error::UnableToParseEnum => (StatusCode::INTERNAL_SERVER_ERROR, ClientError::SERVICE_ERROR),

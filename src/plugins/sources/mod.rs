@@ -8,7 +8,7 @@ use plugin_request_interfaces::RsRequest;
 use serde::{Deserialize, Serialize};
 use tokio::{fs::File, io::{AsyncRead, AsyncWrite, BufReader}};
 use tokio_util::io::ReaderStream;
-use crate::{domain::{library::ServerLibrary, media::MediaForUpdate}, model::{error::Error, users::ConnectedUser, ModelController}, routes::mw_range::RangeDefinition};
+use crate::{domain::{library::ServerLibrary, media::MediaForUpdate}, error::RsResult, model::{error::Error, users::ConnectedUser, ModelController}, routes::mw_range::RangeDefinition};
 
 use self::error::{SourcesError, SourcesResult};
 
@@ -37,6 +37,20 @@ pub struct FileStreamResult<T: Sized + AsyncRead + Send> {
     pub mime: Option<Mime>,
     pub name: Option<String>,
 }
+
+// impl<T: Sized + AsyncRead + Send> FileStreamResult<T> {
+//     pub async fn from_path(path: &PathBuf) -> RsResult<Self> {
+//         let source = tokio::fs::File::open(&path).await?;
+
+//         Ok(FileStreamResult {
+//             stream: source,
+//             size: todo!(),
+//             range: todo!(),
+//             mime: todo!(),
+//             name: todo!(),
+//         })
+//     }
+// }
 
 impl<T: Sized + AsyncRead + Send> FileStreamResult<T> {
     pub fn hearders(&self) -> SourcesResult<HeaderMap> {

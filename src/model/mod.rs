@@ -16,7 +16,7 @@ pub mod medias;
 use std::{io::Read, path::PathBuf, pin::Pin, sync::Arc};
 use strum::IntoEnumIterator;
 use rs_plugin_url_interfaces::RsLink;
-use crate::{domain::library::{LibraryMessage, LibraryRole}, plugins::{medias::trakt::TraktContext, sources::{error::SourcesError, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, LocalSource, Source, SourceRead}, PluginManager}, server::get_server_file_path_array, tools::{image_tools::{resize_image_path, ImageSize, ImageSizeIter, ImageType}, log::log_info}};
+use crate::{domain::library::{LibraryMessage, LibraryRole}, plugins::{medias::{imdb::ImdbContext, tmdb::TmdbContext, trakt::TraktContext}, sources::{error::SourcesError, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, LocalSource, Source, SourceRead}, PluginManager}, server::get_server_file_path_array, tools::{image_tools::{resize_image_path, ImageSize, ImageSizeIter, ImageType}, log::log_info}};
 
 use self::{store::SqliteStore, users::{ConnectedUser, UserRole}};
 use error::{Result, Error};
@@ -28,18 +28,23 @@ pub struct ModelController {
 	store: Arc<SqliteStore>,
 	io: Option<SocketIo>,
 	pub plugin_manager: Arc<PluginManager>,
-	pub trakt: TraktContext
+	pub trakt: TraktContext,
+	pub tmdb: TmdbContext,
+	pub imdb: ImdbContext
 }
 
 
 // Constructor
 impl ModelController {
-	pub async fn new(store: SqliteStore, plugin_manager: PluginManager) -> Result<Self> {
+	pub async fn new(store: SqliteStore, plugin_manager: PluginManager) -> crate::Result<Self> {
+		let tmdb = TmdbContext::new("4a01db3a73eed5cf17e9c7c27fd9d008".to_string()).await?;
 		Ok(Self {
 			store: Arc::new(store),
 			io: None,
 			plugin_manager: Arc::new(plugin_manager),
-			trakt: TraktContext::new("455f81b3409a8dd140a941e9250ff22b2ed92d68003491c3976363fe752a9024".to_string())
+			trakt: TraktContext::new("455f81b3409a8dd140a941e9250ff22b2ed92d68003491c3976363fe752a9024".to_string()),
+			tmdb,
+			imdb: ImdbContext::new()
 		})
 	}
 }
@@ -90,7 +95,7 @@ impl  ModelController {
 		let library = self.store.get_library(library_id).await?.ok_or_else(|| Error::NotFound)?;
 
 		let path = if library.source == "virtual" {
-			let path = get_server_file_path_array(&mut vec!["libraries", &library.id]).await.map_err(|_| Error::FileNotFound("Unable to get virtual library local path".into()))?;
+			let path = get_server_file_path_array(vec!["libraries", &library.id]).await.map_err(|_| Error::FileNotFound("Unable to get virtual library local path".into()))?;
 			path
 		} else {
 			if let Some(existing) = &library.root {
@@ -99,7 +104,7 @@ impl  ModelController {
 				let new_path = path;
 				new_path
 			} else {
-				get_server_file_path_array(&mut vec!["libraries", &library.id]).await.map_err(|_| Error::FileNotFound("Unable to get virtual library local path".into()))?
+				get_server_file_path_array(vec!["libraries", &library.id]).await.map_err(|_| Error::FileNotFound("Unable to get virtual library local path".into()))?
 			}
 		};
 		let source = PathProvider::new_for_local(path);

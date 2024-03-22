@@ -9,7 +9,7 @@ use axum_server::tls_rustls::RustlsConfig;
 
 use domain::MediasIds;
 use model::{store::SqliteStore, ModelController};
-use plugins::{medias::trakt::TraktContext, PluginManager};
+use plugins::{medias::{imdb::ImdbContext, tmdb::{tmdb_configuration::TmdbConfiguration, TmdbContext}, trakt::TraktContext}, PluginManager};
 use routes::{mw_auth, mw_range};
 
 
@@ -39,7 +39,8 @@ async fn main() ->  Result<()> {
     server::initialize_config().await;
 
     tokio::spawn(async move {
-        let trakt = TraktContext::new("455f81b3409a8dd140a941e9250ff22b2ed92d68003491c3976363fe752a9024".to_string());
+        //let tmdb = TmdbContext::new("4a01db3a73eed5cf17e9c7c27fd9d008".to_string()).await.unwrap();
+        //tmdb.serie_image(MediasIds::from_tmdb(236235)).await.unwrap();
         //trakt.get_serie(&MediasIds { imdb: Some("tt0944947".to_string()), ..Default::default()}).await;
         //trakt.all_episodes(&MediasIds { imdb: Some("tt0944947".to_string()), ..Default::default()}).await;
 

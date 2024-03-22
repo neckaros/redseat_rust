@@ -31,7 +31,7 @@ async fn handler_list(Path((library_id, serie_id)): Path<(String, String)>, Stat
 	Ok(body)
 }
 
-async fn handler_list_season(Path((library_id, serie_id, season)): Path<(String, String, usize)>, State(mc): State<ModelController>, user: ConnectedUser, Query(mut query): Query<EpisodeQuery>) -> Result<Json<Value>> {
+async fn handler_list_season(Path((library_id, serie_id, season)): Path<(String, String, u32)>, State(mc): State<ModelController>, user: ConnectedUser, Query(mut query): Query<EpisodeQuery>) -> Result<Json<Value>> {
 	query.serie_ref = Some(serie_id);
 	query.season = Some(season);
 	let libraries = mc.get_episodes(&library_id, query, &user).await?;
@@ -39,18 +39,18 @@ async fn handler_list_season(Path((library_id, serie_id, season)): Path<(String,
 	Ok(body)
 }
 
-async fn handler_get(Path((library_id, serie_id, season, number)): Path<(String, String, usize, usize)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+async fn handler_get(Path((library_id, serie_id, season, number)): Path<(String, String, u32, u32)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
 	let library = mc.get_episode(&library_id, serie_id, season, number, &user).await?;
 	let body = Json(json!(library));
 	Ok(body)
 }
 
-async fn handler_patch(Path((library_id, serie_id, season, number)): Path<(String, String, usize, usize)>, State(mc): State<ModelController>, user: ConnectedUser, Json(update): Json<EpisodeForUpdate>) -> Result<Json<Value>> {
+async fn handler_patch(Path((library_id, serie_id, season, number)): Path<(String, String, u32, u32)>, State(mc): State<ModelController>, user: ConnectedUser, Json(update): Json<EpisodeForUpdate>) -> Result<Json<Value>> {
 	let new_credential = mc.update_episode(&library_id, serie_id, season, number, update, &user).await?;
 	Ok(Json(json!(new_credential)))
 }
 
-async fn handler_delete(Path((library_id, serie_id, season, number)): Path<(String, String, usize, usize)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+async fn handler_delete(Path((library_id, serie_id, season, number)): Path<(String, String, u32, u32)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
 	let library = mc.remove_episode(&library_id, &serie_id, season, number, &user).await?;
 	let body = Json(json!(library));
 	Ok(body)
@@ -63,7 +63,7 @@ async fn handler_post(Path((library_id, _)): Path<(String, String)>, State(mc): 
 }
 
 
-async fn handler_image(Path((library_id, serie_id, season, number)): Path<(String, String, usize, usize)>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ImageRequestOptions>) -> Result<Response> {
+async fn handler_image(Path((library_id, serie_id, season, number)): Path<(String, String, u32, u32)>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ImageRequestOptions>) -> Result<Response> {
 	let reader_response = mc.episode_image(&library_id, &serie_id, &season, number, query.size, &user).await?;
 
 	let headers = reader_response.hearders().map_err(|_| Error::GenericRedseatError)?;

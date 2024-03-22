@@ -1,16 +1,17 @@
-use std::sync::Arc;
+use std::{sync::{Arc, PoisonError}, time::SystemTimeError};
 
 use axum::{extract::multipart, http::StatusCode, response::{IntoResponse, Response}, Json};
 use ndarray::ShapeError;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use derive_more::From;
 use serde_json::json;
 use serde_with::{serde_as, DisplayFromStr};
 use nanoid::nanoid;
-
 use crate::{domain::MediasIds, plugins::sources::error::SourcesError, tools::{image_tools, log::{log_error, LogServiceType}}};
 
+
 pub type Result<T> = core::result::Result<T, Error>;
+pub type RsResult<T> = Result<T>;
 
 #[serde_as]
 #[derive(Debug, Serialize, From, strum_macros::AsRefStr)]
@@ -29,7 +30,7 @@ pub enum Error {
 	InvalidRangeHeader,
 	NoRangeHeader,
 
-	
+	NotAMediaId(String),
 	NoMediaIdRequired(MediasIds),
 
 	// Prediction Error 
@@ -98,6 +99,12 @@ pub enum Error {
 	#[from]
 	NdShapeError(#[serde_as(as = "DisplayFromStr")] ShapeError),
 
+
+	
+	
+	#[from]
+	SystemnTime(#[serde_as(as = "DisplayFromStr")] SystemTimeError),
+
 }
 
 // region:    --- Error Boilerplate
@@ -122,6 +129,7 @@ impl IntoResponse for Error {
 		let error_json = json!({
 						"error": {
 							"type": client_error.as_ref(),
+							"value": client_error,
 							"req_uuid": nanoid.to_string(),
 						}
 					});
@@ -170,7 +178,7 @@ impl Error {
 }
 
 
-#[derive(Debug, strum_macros::AsRefStr)]
+#[derive(Debug, Serialize, Deserialize, strum_macros::AsRefStr)]
 #[allow(non_camel_case_types)]
 pub enum ClientError {
 	LOGIN_FAIL,
@@ -180,4 +188,5 @@ pub enum ClientError {
 	NOT_FOUND,
 	INVALID_PARAMS,
 	SERVICE_ERROR,
+	Custom(String)
 }

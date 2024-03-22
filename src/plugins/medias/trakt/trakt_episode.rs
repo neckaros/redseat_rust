@@ -35,9 +35,9 @@ impl TraktFullEpisode {
     pub fn into_trakt(self, serie_ref: String) -> EpisodeForAdd {
         EpisodeForAdd {
             serie_ref,
-            season: self.season as usize,
-            number: self.number as usize,
-            abs: self.number_abs.and_then(|f| Some(f as usize)),
+            season: self.season,
+            number: self.number,
+            abs: self.number_abs,
             name: self.title,
             overview: self.overview,
             alt: None,

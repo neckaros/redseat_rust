@@ -1,6 +1,6 @@
 use rusqlite::{params, OptionalExtension, Row};
 
-use crate::{domain::serie::Serie, model::{series::{SerieForInsert, SerieForUpdate, SerieQuery}, store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_pipe_separated_optional}}, tools::array_tools::replace_add_remove_from_array};
+use crate::{domain::{serie::Serie, MediasIds}, model::{series::{SerieForInsert, SerieForUpdate, SerieQuery}, store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_pipe_separated_optional}}, tools::array_tools::replace_add_remove_from_array};
 use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
 
@@ -68,7 +68,21 @@ impl SqliteLibraryStore {
         Ok(row)
     }
 
-
+    pub async fn get_serie_by_external_id(&self, ids: MediasIds) -> Result<Option<Serie>> {
+        let i = ids.clone();
+        //println!("{}, {}, {}, {}, {}",i.imdb.unwrap_or("zz".to_string()), i.slug.unwrap_or("zz".to_string()), i.tmdb.unwrap_or(0), i.trakt.unwrap_or(0), i.tvdb.unwrap_or(0));
+        let row = self.connection.call( move |conn| { 
+            let mut query = conn.prepare("SELECT 
+            id, name, type, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, year, modified, added, imdb_rating, imdb_votes, trailer, maxCreated, trakt_rating, trakt_votes 
+            FROM series 
+            WHERE 
+            imdb = ? or slug = ? or tmdb = ? or trakt = ? or tvdb = ?")?;
+            let row = query.query_row(
+            params![ids.imdb.unwrap_or("zz".to_string()), ids.slug.unwrap_or("zz".to_string()), ids.tmdb.unwrap_or(0), ids.trakt.unwrap_or(0), ids.tvdb.unwrap_or(0)],Self::row_to_serie).optional()?;
+            Ok(row)
+        }).await?;
+        Ok(row)
+    }
 
     pub async fn update_serie(&self, serie_id: &str, update: SerieForUpdate) -> Result<()> {
         let id = serie_id.to_string();
