@@ -3,7 +3,7 @@ use tower::Service;
 use trakt_rs::{smo::Id, Request, Response};
 use crate::{domain::{serie::Serie, MediasIds}, model::{episodes::EpisodeForAdd, series::SerieForAdd}, plugins::medias::trakt::{trakt_episode::TraktSeasonWithEpisodes, trakt_show::TraktFullShow}, Error, Result};
 
-use self::trakt_episode::TraktFullEpisode;
+use self::{trakt_episode::TraktFullEpisode, trakt_show::TraktTrendingShowResult};
 // Context required for all requests
 
 mod trakt_show;
@@ -37,6 +37,13 @@ impl TraktContext {
         let show = r.json::<TraktFullShow>().await?;
         let show_nous: Serie = show.into();
         Ok(show_nous)
+    }
+
+    pub async fn trending_shows(&self) -> crate::Result<Vec<Serie>> {
+        let url = self.base_url.join("shows/trending?extended=full").unwrap();
+        let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
+        let shows: Vec<Serie> = r.json::<Vec<TraktTrendingShowResult>>().await?.into_iter().map(|s| s.show).map(Serie::from).collect();
+        Ok(shows)
     }
 
     pub async fn all_episodes(&self, id: &MediasIds) -> crate::Result<()> {

@@ -61,6 +61,12 @@ impl From<MediasIds> for TraktIds {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TraktTrendingShowResult {
+    pub watchers: u64,
+    pub show: TraktFullShow
+}
+
 /// A [show] with full [extended info]
 ///
 /// [show]: https://trakt.docs.apiary.io/#reference/shows

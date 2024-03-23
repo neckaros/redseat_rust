@@ -11,7 +11,7 @@ use tokio::{fs::File, io::{AsyncRead, AsyncWriteExt, BufReader}};
 use tokio_util::io::StreamReader;
 
 
-use crate::{domain::{library::LibraryRole, people::{PeopleMessage, Person}, serie::{Serie, SeriesMessage}, ElementAction, MediasIds}, plugins::sources::{path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source}, server::get_server_folder_path_array, tools::image_tools::{resize_image_reader, ImageSize, ImageType}};
+use crate::{domain::{library::LibraryRole, people::{PeopleMessage, Person}, serie::{Serie, SeriesMessage}, ElementAction, MediasIds}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source}}, server::get_server_folder_path_array, tools::image_tools::{resize_image_reader, ImageSize, ImageType}};
 
 use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
 
@@ -123,6 +123,18 @@ impl ExternalSerieImages {
     }
 }
 
+impl Serie {
+    pub async fn fill_imdb_ratings(&mut self, imdb_context: &ImdbContext) {
+        if let Some(imdb) = &self.imdb {
+            let rating = imdb_context.get_rating(&imdb).await.unwrap_or(None);
+            if let Some(rating) = rating {
+                self.imdb_rating = Some(rating.0);
+                self.imdb_votes = Some(rating.1);
+            }
+        }
+    } 
+}
+
 
 impl ModelController {
 
@@ -144,13 +156,7 @@ impl ModelController {
                 Ok(Some(serie))
             } else {
                 let mut trakt_show = self.trakt.get_serie(&id).await.map_err(|_| Error::NotFound)?;
-                if let Some(imdb) = &trakt_show.imdb {
-                    let rating = &self.imdb.get_rating(&imdb).await.unwrap_or(None);
-                    if let Some(rating) = rating {
-                        trakt_show.imdb_rating = Some(rating.0);
-                        trakt_show.imdb_votes = Some(rating.1);
-                    }
-                }
+                trakt_show.fill_imdb_ratings(&self.imdb).await;
                 Ok(Some(trakt_show))
             }
         } else {
@@ -158,6 +164,10 @@ impl ModelController {
             Ok(serie)
         }
 	}
+
+    pub async fn trending_shows(&self)  -> RsResult<Vec<Serie>> {
+        self.trakt.trending_shows().await
+    }
 
 
 

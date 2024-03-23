@@ -13,6 +13,7 @@ use super::{ImageRequestOptions, ImageUploadOptions};
 pub fn routes(mc: ModelController) -> Router {
 	Router::new()
 		.route("/", get(handler_list))
+		.route("/trending", get(handler_trending))
 		.route("/", post(handler_post))
 		.route("/:id", get(handler_get))
 		.route("/:id", patch(handler_patch))
@@ -26,6 +27,12 @@ pub fn routes(mc: ModelController) -> Router {
 
 async fn handler_list(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<SerieQuery>) -> Result<Json<Value>> {
 	let libraries = mc.get_series(&library_id, query, &user).await?;
+	let body = Json(json!(libraries));
+	Ok(body)
+}
+
+async fn handler_trending(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	let libraries = mc.trending_shows().await?;
 	let body = Json(json!(libraries));
 	Ok(body)
 }
