@@ -14,6 +14,7 @@ pub mod plugins;
 
 pub mod tags;
 pub mod people;
+pub mod movies;
 pub mod series;
 pub mod episodes;
 pub mod medias;

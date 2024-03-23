@@ -17,48 +17,6 @@ use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
 
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct SerieForAdd {
-	pub name: String,
-    #[serde(rename = "type")]
-    pub kind: Option<String>,
-    pub status: Option<String>,
-    pub alt: Option<Vec<String>>,
-    pub params: Option<Value>,
-    pub imdb: Option<String>,
-    pub slug: Option<String>,
-    pub tmdb: Option<u64>,
-    pub trakt: Option<u64>,
-    pub tvdb: Option<u64>,
-    pub otherids: Option<String>,
-    
-    pub imdb_rating: Option<f32>,
-    pub imdb_votes: Option<u64>,
-    pub trakt_rating: Option<u64>,
-    pub trakt_votes: Option<f32>,
-
-    pub trailer: Option<String>,
-
-
-    pub year: Option<u16>,
-}
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct SerieForInsert {
-    pub id: String,
-    pub serie: SerieForAdd,
-}
-
-
-
-impl From<SerieForAdd> for SerieForInsert {
-    fn from(new_serie: SerieForAdd) -> Self {
-        SerieForInsert {
-            id: nanoid!(),
-            serie: new_serie
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SerieQuery {
     pub after: Option<u64>
 }
@@ -175,6 +133,20 @@ impl ModelController {
         }
 	}
 
+    pub async fn get_serie_by_external_id(&self, library_id: &str, ids: MediasIds, requesting_user: &ConnectedUser) -> RsResult<Option<Serie>> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let serie = store.get_serie_by_external_id(ids).await?;
+        Ok(serie)
+    }
+
+
+    pub async fn get_serie_ids(&self, library_id: &str, serie_id: &str, requesting_user: &ConnectedUser) -> RsResult<MediasIds> {
+        let serie = self.get_serie(library_id, serie_id.to_string(), requesting_user).await?.ok_or(Error::NotFound)?;
+        let ids: MediasIds = serie.into();
+        Ok(ids)
+    }
+
     pub async fn trending_shows(&self)  -> RsResult<Vec<Serie>> {
         self.trakt.trending_shows().await
     }
@@ -210,12 +182,18 @@ impl ModelController {
 	}
 
 
-    pub async fn add_serie(&self, library_id: &str, new_serie: SerieForAdd, requesting_user: &ConnectedUser) -> Result<Serie> {
+    pub async fn add_serie(&self, library_id: &str, mut new_serie: Serie, requesting_user: &ConnectedUser) -> RsResult<Serie> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        let ids: MediasIds = new_serie.clone().into();
+        let existing = self.get_serie_by_external_id(library_id, ids, requesting_user).await?;
+        if let Some(existing) = existing {
+            return Err(Error::Duplicate(existing.id.into(), "Serie".into()).into())
+        }
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
-        let backup: SerieForInsert = new_serie.into();
-		store.add_serie(backup.clone()).await?;
-        let new_person = self.get_serie(library_id, backup.id, requesting_user).await?.ok_or(Error::NotFound)?;
+        let id = nanoid!();
+        new_serie.id = id.clone();
+		store.add_serie(new_serie).await?;
+        let new_person = self.get_serie(library_id, id, requesting_user).await?.ok_or(Error::NotFound)?;
         self.send_serie(SeriesMessage { library: library_id.to_string(), action: ElementAction::Added, series: vec![new_person.clone()] });
 		Ok(new_person)
 	}
@@ -267,6 +245,24 @@ impl ModelController {
         Ok(new_serie)        
 	}
 
+
+    pub async fn import_serie(&self, library_id: &str, serie_id: &str, requesting_user: &ConnectedUser) -> RsResult<Serie> {
+        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        if let Ok(ids) = MediasIds::try_from(serie_id.to_string()) {
+            let existing = self.get_serie_by_external_id(library_id, ids.clone(), requesting_user).await?;
+            if let Some(existing) = existing {
+                Err(Error::Duplicate(existing.id.into(), "Serie".into()).into())
+            } else { 
+                let new_serie = self.trakt.get_serie(&ids).await?;
+                let imported_serie = self.add_serie(library_id, new_serie, requesting_user).await?;
+                Ok(imported_serie)
+            }
+        } else {
+            
+            Err(Error::InvalidIdForAction("import".to_string(), serie_id.to_string()).into())
+        }
+    
+	}
     
 	pub async fn serie_image(&self, library_id: &str, serie_id: &str, kind: Option<ImageType>, size: Option<ImageSize>, requesting_user: &ConnectedUser) -> crate::Result<FileStreamResult<AsyncReadPinBox>> {
         let kind = kind.unwrap_or(ImageType::Poster);

@@ -7,7 +7,10 @@ use super::ElementAction;
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "snake_case")] 
 pub struct Serie {
+
+    #[serde(default)]
     pub id: String,
+    
 	pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "type")]
@@ -35,10 +38,13 @@ pub struct Serie {
 
     pub year: Option<u16>,
 
-        
+    
     pub max_created: Option<u64>,
 
+
+    #[serde(default)]
     pub modified: u64,
+    #[serde(default)]
     pub added: u64
 }
 

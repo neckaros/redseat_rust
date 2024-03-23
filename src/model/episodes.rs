@@ -135,12 +135,6 @@ impl ModelController {
         }
 	}
 
-    pub async fn get_serie_ids(&self, library_id: &str, serie_id: &str, requesting_user: &ConnectedUser) -> RsResult<MediasIds> {
-        let serie = self.get_serie(library_id, serie_id.to_string(), requesting_user).await?.ok_or(Error::NotFound)?;
-        let ids: MediasIds = serie.into();
-        Ok(ids)
-    }
-
     pub async fn refresh_episodes(&self, library_id: &str, serie_id: &str, requesting_user: &ConnectedUser) -> RsResult<Vec<Episode>> {
         let ids = self.get_serie_ids(library_id, serie_id, requesting_user).await?;
         let all_episodes = self.trakt.all_episodes(&ids).await?;

@@ -1,6 +1,6 @@
 CREATE TRIGGER inserted_episode AFTER INSERT ON episodes
             BEGIN
-             update episodes SET modified = round((julianday('now') - 2440587.5)*86400.0 * 1000), added = round((julianday('now') - 2440587.5)*86400.0 * 1000) WHERE serie_ref = NEW.serie_ref and season = NEW.season and number = NEW.number and abs = NEW.abs;
+             update episodes SET modified = round((julianday('now') - 2440587.5)*86400.0 * 1000), added = round((julianday('now') - 2440587.5)*86400.0 * 1000) WHERE serie_ref = NEW.serie_ref and season = NEW.season and number = NEW.number;
             END;
 
 
@@ -24,7 +24,7 @@ CREATE TRIGGER inserted_medias AFTER INSERT ON medias
              update medias SET modified = round((julianday('now') - 2440587.5)*86400.0 * 1000), added = round((julianday('now') - 2440587.5)*86400.0 * 1000), created = ifnull(created, round((julianday('now') - 2440587.5)*86400.0 * 1000)) WHERE id = NEW.id;
             END;
 
-CREATE TRIGGER inserted_episodes AFTER INSERT ON episodes
+CREATE TRIGGER inserted_movie AFTER INSERT ON movies
             BEGIN
-             update episodes SET modified = round((julianday('now') - 2440587.5)*86400.0 * 1000), added = round((julianday('now') - 2440587.5)*86400.0 * 1000) WHERE id = NEW.id;
+             update movies SET modified = round((julianday('now') - 2440587.5)*86400.0 * 1000), added = round((julianday('now') - 2440587.5)*86400.0 * 1000) WHERE id = NEW.id;
             END;

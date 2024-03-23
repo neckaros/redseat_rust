@@ -148,6 +148,7 @@ impl Error {
 		#[allow(unreachable_patterns)]
 		match self {
 			Self::NotFound => (StatusCode::NOT_FOUND, ClientError::NOT_FOUND),
+			
 
 			Self::LoginFail => (StatusCode::FORBIDDEN, ClientError::LOGIN_FAIL),
 			Self::Model(err) => err.client_status_and_error(),
@@ -188,5 +189,13 @@ pub enum ClientError {
 	NOT_FOUND,
 	INVALID_PARAMS,
 	SERVICE_ERROR,
-	Custom(String)
+	Custom(String),
+	DUPLICATE(DuplicateClientError),
+}
+
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DuplicateClientError {
+	pub id: String,
+	pub kind: String
 }

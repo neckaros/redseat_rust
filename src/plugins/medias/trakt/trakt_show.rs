@@ -4,7 +4,7 @@ use serde::{Serialize, Deserialize};
 use chrono::{DateTime, Utc};
 use strum_macros::{Display, EnumString};
 
-use crate::{domain::{serie::Serie, MediasIds}, model::series::SerieForAdd};
+use crate::domain::{serie::Serie, MediasIds};
 
 #[derive(Debug, Serialize, Deserialize, EnumString, Display)]
 pub enum TraktShowStatus {

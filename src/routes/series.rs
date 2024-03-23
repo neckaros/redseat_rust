@@ -1,6 +1,6 @@
 
-use crate::{model::{episodes::EpisodeQuery, series::{SerieForAdd, SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, Error, Result};
-use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
+use crate::{domain::serie::Serie, model::{episodes::EpisodeQuery, series::{SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, Error, Result};
+use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post, put}, Json, Router};
 use futures::TryStreamExt;
 use serde_json::{json, Value};
 use tokio::io::AsyncRead;
@@ -19,6 +19,7 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/:id", get(handler_get))
 		.route("/:id", patch(handler_patch))
 		.route("/:id/refresh", get(handler_refresh))
+		.route("/:id/import", put(handler_import))
 		.route("/:id", delete(handler_delete))
 		.route("/:id/image", get(handler_image))
 		.route("/:id/image", post(handler_post_image))
@@ -57,6 +58,13 @@ async fn handler_refresh(Path((library_id, serie_id)): Path<(String, String)>, S
 	Ok(body)
 }
 
+
+async fn handler_import(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	let library = mc.import_serie(&library_id, &serie_id, &user).await?;
+	let body = Json(json!(library));
+	Ok(body)
+}
+
 async fn handler_patch(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(update): Json<SerieForUpdate>) -> Result<Json<Value>> {
 	let new_credential = mc.update_serie(&library_id, serie_id, update, &user).await?;
 	Ok(Json(json!(new_credential)))
@@ -68,7 +76,7 @@ async fn handler_delete(Path((library_id, serie_id)): Path<(String, String)>, St
 	Ok(body)
 }
 
-async fn handler_post(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Json(tag): Json<SerieForAdd>) -> Result<Json<Value>> {
+async fn handler_post(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Json(tag): Json<Serie>) -> Result<Json<Value>> {
 	let credential = mc.add_serie(&library_id, tag, &user).await?;
 	let body = Json(json!(credential));
 	Ok(body)

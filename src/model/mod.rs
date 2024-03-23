@@ -12,6 +12,7 @@ pub mod people;
 pub mod series;
 pub mod episodes;
 pub mod medias;
+pub mod movies;
 
 use std::{io::Read, path::PathBuf, pin::Pin, sync::Arc};
 use strum::IntoEnumIterator;

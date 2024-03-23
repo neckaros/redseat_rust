@@ -1,7 +1,7 @@
 
 use std::{path::PathBuf, str::FromStr};
 
-use crate::{domain::media::{GroupMediaDownload, MediaDownloadUrl, MediaForUpdate, MediaTagReference}, model::{medias::MediaQuery, series::{SerieForAdd, SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, plugins::sources::SourceRead, tools::prediction::predict_net, Error, Result};
+use crate::{domain::media::{GroupMediaDownload, MediaDownloadUrl, MediaForUpdate, MediaTagReference}, model::{medias::MediaQuery, series::{SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, plugins::sources::SourceRead, tools::prediction::predict_net, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
 use futures::TryStreamExt;
 use hyper::{header::ACCEPT_RANGES, StatusCode};

@@ -9,6 +9,7 @@ pub mod people;
 pub mod series;
 pub mod episodes;
 pub mod medias;
+pub mod movie;
 
 pub struct SqliteLibraryStore {
 	connection: Connection,
@@ -68,6 +69,14 @@ impl SqliteLibraryStore {
                 
                 Ok((initial_version, version))
         }).await?;
+
+        /*self.connection.call( |conn| {
+            conn.execute("CREATE TRIGGER inserted_movie AFTER INSERT ON movies
+            BEGIN
+             update movies SET modified = round((julianday('now') - 2440587.5)*86400.0 * 1000), added = round((julianday('now') - 2440587.5)*86400.0 * 1000) WHERE id = NEW.id;
+            END;", params![])?;
+            Ok(())
+        }).await?;*/
 
         if initial_version < 29 {
             log_info(LogServiceType::Database, format!("Update Library Database adding tag paths"));                   

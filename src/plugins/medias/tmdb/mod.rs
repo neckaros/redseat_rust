@@ -72,4 +72,14 @@ impl TmdbContext {
         let bests = images.into_external(&self.configuration);
         Ok(bests)
     }
+
+    pub async fn movie_image(&self, ids: MediasIds) -> crate::Result<ExternalSerieImages> {
+        let id = ids.try_tmdb()?;
+        let request = self.get_request_builder(&format!("movie/{}/images", id));
+
+        let response = request.query(&[("include_image_language", "en,fr")]).send().await?;
+        let images = response.json::<TmdbImageResponse>().await?;
+        let bests = images.into_external(&self.configuration);
+        Ok(bests)
+    }
 }

@@ -10,7 +10,7 @@ CREATE TABLE "migrations" (
   up   TEXT    NOT NULL,
   down TEXT    NOT NULL
 );
-CREATE TABLE movies (id TEXT PRIMARY KEY, name TEXT, year INTEGER, airdate INTEGER, digitalairdate INTEGER, duration INTEGER, overview TEXT, country TEXT,  status TEXT, type TEXT, params TEXT, imdb TEXT, slug TEXT, tmdb INTEGER, trakt INTEGER, otherids TEXT, modified INTEGER, created INTEGER, added INTEGER, lang TEXT, original TEXT, imdb_rating REAL, imdb_votes INTEGER, trailer TEXT, trakt_rating REAL, trakt_votes INTEGER) WITHOUT ROWID;
+CREATE TABLE movies (id TEXT PRIMARY KEY, name TEXT, year INTEGER, airdate INTEGER, digitalairdate INTEGER, duration INTEGER, overview TEXT, country TEXT,  status TEXT, type TEXT, params TEXT, imdb TEXT, slug TEXT, tmdb INTEGER, trakt INTEGER, otherids TEXT, modified INTEGER, added INTEGER, lang TEXT, original TEXT, imdb_rating REAL, imdb_votes INTEGER, trailer TEXT, trakt_rating REAL, trakt_votes INTEGER) WITHOUT ROWID;
 CREATE TABLE people (id TEXT PRIMARY KEY, name TEXT, socials TEXT, type TEXT, alt TEXT, birthday INTEGER, portrait TEXT, params TEXT, modified INTEGER, added INTEGER) WITHOUT ROWID;
 CREATE TABLE people_faces (
                 id   TEXT PRIMARY KEY,

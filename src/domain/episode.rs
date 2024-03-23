@@ -41,6 +41,12 @@ pub struct Episode {
     pub imdb_votes: Option<u64>,
     pub trakt_rating: Option<f32>,
     pub trakt_votes: Option<u64>,
+
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub watched: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<u64>,
        
     #[serde(default)]
     pub modified: u64,

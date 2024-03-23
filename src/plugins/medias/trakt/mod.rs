@@ -1,12 +1,13 @@
 use reqwest::{Client, Url};
 use tower::Service;
-use crate::{domain::{episode::Episode, serie::Serie, MediasIds}, model::series::SerieForAdd, plugins::medias::trakt::{trakt_episode::TraktSeasonWithEpisodes, trakt_show::TraktFullShow}, Error, Result};
+use crate::{domain::{episode::Episode, movie::Movie, serie::Serie, MediasIds}, plugins::medias::trakt::{trakt_episode::TraktSeasonWithEpisodes, trakt_show::TraktFullShow}, Error, Result};
 
-use self::{trakt_episode::TraktFullEpisode, trakt_show::TraktTrendingShowResult};
+use self::{trakt_episode::TraktFullEpisode, trakt_movie::{TraktFullMovie, TraktTrendingMoviesResult}, trakt_show::TraktTrendingShowResult};
 // Context required for all requests
 
 mod trakt_show;
 mod trakt_episode;
+mod trakt_movie;
 
 #[derive(Debug, Clone)]
 pub struct TraktContext {
@@ -80,5 +81,30 @@ async fn get_movie() -> Result<()> {
     // Create a request and convert it into an HTTP request
 
     Ok(())
+
+}
+
+
+impl TraktContext {
+    pub async fn get_movie(&self, id: &MediasIds) -> crate::Result<Movie> {
+
+        let id = id.as_id_for_trakt().ok_or(Error::NoMediaIdRequired(id.clone()))?;
+
+        let url = self.base_url.join(&format!("movies/{}?extended=full", id)).unwrap();
+        println!("url {}", url);
+        let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
+        let movie = r.json::<TraktFullMovie>().await?;
+        let movie_nous: Movie = movie.into();
+        Ok(movie_nous)
+    }
+
+
+
+    pub async fn trending_movies(&self) -> crate::Result<Vec<Movie>> {
+        let url = self.base_url.join("movies/trending?extended=full").unwrap();
+        let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
+        let shows: Vec<Movie> = r.json::<Vec<TraktTrendingMoviesResult>>().await?.into_iter().map(|s| s.movie).map(Movie::from).collect();
+        Ok(shows)
+    }
 
 }

@@ -41,6 +41,8 @@ impl SqliteLibraryStore {
             trakt_votes: row.get(21)?,
 
             serie_name: row.get(22)?,
+
+            ..Default::default()
         })
     }
 

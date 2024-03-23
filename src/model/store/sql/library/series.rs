@@ -1,6 +1,6 @@
 use rusqlite::{params, OptionalExtension, Row};
 
-use crate::{domain::{serie::Serie, MediasIds}, model::{series::{SerieForInsert, SerieForUpdate, SerieQuery}, store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_pipe_separated_optional}}, tools::array_tools::replace_add_remove_from_array};
+use crate::{domain::{serie::Serie, MediasIds}, model::{series::{SerieForUpdate, SerieQuery}, store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_pipe_separated_optional}}, tools::array_tools::replace_add_remove_from_array};
 use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
 
@@ -129,29 +129,29 @@ impl SqliteLibraryStore {
         Ok(())
     }
 
-    pub async fn add_serie(&self, serie: SerieForInsert) -> Result<()> {
+    pub async fn add_serie(&self, serie: Serie) -> Result<()> {
         self.connection.call( move |conn| { 
 
             conn.execute("INSERT INTO series (id, name, type, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, year, imdb_rating, imdb_votes, trailer, trakt_rating, trakt_votes, status)
-            VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params![
+            VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params![
                 serie.id,
-                serie.serie.name,
-                serie.serie.kind,
-                to_pipe_separated_optional(serie.serie.alt),
-                serie.serie.params,
-                serie.serie.imdb,
-                serie.serie.slug,
-                serie.serie.tmdb,
-                serie.serie.trakt,
-                serie.serie.tvdb,
-                serie.serie.otherids,
-                serie.serie.year,
-                serie.serie.imdb_rating,
-                serie.serie.imdb_votes,
-                serie.serie.trailer,
-                serie.serie.trakt_rating,
-                serie.serie.trakt_votes,
-                serie.serie.status
+                serie.name,
+                serie.kind,
+                to_pipe_separated_optional(serie.alt),
+                serie.params,
+                serie.imdb,
+                serie.slug,
+                serie.tmdb,
+                serie.trakt,
+                serie.tvdb,
+                serie.otherids,
+                serie.year,
+                serie.imdb_rating,
+                serie.imdb_votes,
+                serie.trailer,
+                serie.trakt_rating,
+                serie.trakt_votes,
+                serie.status
             ])?;
             
             Ok(())
