@@ -98,7 +98,7 @@ pub struct TraktFullShow {
 
 impl From<TraktFullShow> for Serie {
     fn from(value: TraktFullShow) -> Self {
-        let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
         Serie {
             id: format!("trakt:{}", value.ids.trakt.unwrap()),
             name: value.title,

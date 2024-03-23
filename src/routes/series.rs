@@ -1,5 +1,5 @@
 
-use crate::{model::{series::{SerieForAdd, SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, Error, Result};
+use crate::{model::{episodes::EpisodeQuery, series::{SerieForAdd, SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
 use futures::TryStreamExt;
 use serde_json::{json, Value};
@@ -14,6 +14,7 @@ pub fn routes(mc: ModelController) -> Router {
 	Router::new()
 		.route("/", get(handler_list))
 		.route("/trending", get(handler_trending))
+		.route("/upcoming", get(handler_upcoming))
 		.route("/", post(handler_post))
 		.route("/:id", get(handler_get))
 		.route("/:id", patch(handler_patch))
@@ -33,6 +34,12 @@ async fn handler_list(Path(library_id): Path<String>, State(mc): State<ModelCont
 
 async fn handler_trending(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
 	let libraries = mc.trending_shows().await?;
+	let body = Json(json!(libraries));
+	Ok(body)
+}
+
+async fn handler_upcoming(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<EpisodeQuery>) -> Result<Json<Value>> {
+	let libraries = mc.get_episodes_upcoming(&library_id, query, &user).await?;
 	let body = Json(json!(libraries));
 	Ok(body)
 }

@@ -11,7 +11,7 @@ use tokio::{fs::File, io::{AsyncRead, AsyncWriteExt, BufReader}};
 use tokio_util::io::StreamReader;
 
 
-use crate::{domain::{library::LibraryRole, people::{PeopleMessage, Person}, serie::{Serie, SeriesMessage}, ElementAction, MediasIds}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source}}, server::get_server_folder_path_array, tools::image_tools::{resize_image_reader, ImageSize, ImageType}};
+use crate::{domain::{library::LibraryRole, people::{PeopleMessage, Person}, serie::{Serie, SeriesMessage}, ElementAction, MediasIds}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source}}, server::get_server_folder_path_array, tools::{image_tools::{resize_image_reader, ImageSize, ImageType}, log::log_info}};
 
 use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
 
@@ -107,6 +107,7 @@ pub struct ExternalSerieImages {
     pub backdrop: Option<String>,
     pub logo: Option<String>,
     pub poster: Option<String>,
+    pub still: Option<String>,
 }
 
 impl ExternalSerieImages {
@@ -114,7 +115,7 @@ impl ExternalSerieImages {
         match kind {
             ImageType::Poster => self.poster,
             ImageType::Background => self.backdrop,
-            ImageType::Still => None,
+            ImageType::Still => self.still,
             ImageType::Card => None,
             ImageType::ClearLogo => self.logo,
             ImageType::ClearArt => None,
@@ -263,10 +264,32 @@ impl ModelController {
                 }
             }
         } else {
-           let image = self.library_image(library_id, ".series", serie_id, Some(kind), size, requesting_user).await?;
+            if !self.has_library_image(library_id, ".series", serie_id, Some(kind.clone()), requesting_user).await? {
+                log_info(crate::tools::log::LogServiceType::Source, format!("Updating serie image: {}", serie_id));
+                self.refresh_serie_image(library_id, serie_id, &kind, requesting_user).await?;
+            }
+            
+            let image = self.library_image(library_id, ".series", serie_id, Some(kind), size, requesting_user).await?;
             Ok(image)
         }
 	}
+
+    /// download and update image
+    pub async fn refresh_serie_image(&self, library_id: &str, serie_id: &str, kind: &ImageType, requesting_user: &ConnectedUser) -> RsResult<()> {
+        let serie = self.get_serie(library_id, serie_id.to_string(), requesting_user).await?.ok_or(Error::NotFound)?;
+        let ids: MediasIds = serie.into();
+        let reader = self.download_serie_image(&ids, kind).await?;
+        self.update_serie_image(library_id, serie_id, kind, reader, requesting_user).await?;
+        Ok(())
+	}
+    pub async fn download_serie_image(&self, ids: &MediasIds, kind: &ImageType) -> crate::Result<AsyncReadPinBox> {
+        let images = self.tmdb.serie_image(ids.clone()).await?.into_kind(kind.clone()).ok_or(crate::Error::NotFound)?;
+        let image_reader = reqwest::get(images).await?;
+        let stream = image_reader.bytes_stream();
+        let body_with_io_error = stream.map_err(|err| io::Error::new(io::ErrorKind::Other, err));
+        let mut body_reader = StreamReader::new(body_with_io_error);
+        Ok(Box::pin(body_reader))
+    }
 
     pub async fn update_serie_image<T: AsyncRead>(&self, library_id: &str, serie_id: &str, kind: &ImageType, reader: T, requesting_user: &ConnectedUser) -> Result<()> {
         if MediasIds::is_id(&serie_id) {

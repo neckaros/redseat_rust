@@ -116,7 +116,7 @@ impl  ModelController {
 
         let m = self.library_source_for_library(&library_id).await?;
 		let source_filepath = format!("{}/{}{}{}.webp", folder, id, ImageType::optional_to_filename_element(&kind), ImageSize::optional_to_filename_element(&size));
-        let reader_response = m.get_file(&source_filepath, None).await;
+		let reader_response = m.get_file(&source_filepath, None).await;
 		if let Some(int_size) = size {
 			if let Err(error) = &reader_response {
 				if matches!(error, SourcesError::NotFound(_)) {
@@ -143,23 +143,26 @@ impl  ModelController {
 			return Err(Error::NotFound)
 		}
 	}
+	pub async fn has_library_image(&self, library_id: &str, folder: &str, id: &str, kind: Option<ImageType>, requesting_user: &ConnectedUser) -> Result<bool> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
 
+        let m = self.library_source_for_library(&library_id).await?;
+		let source_filepath = format!("{}/{}{}.webp", folder, id, ImageType::optional_to_filename_element(&kind));
+        let exist = m.exists(&source_filepath).await;
+		Ok(exist)
+	}
 	pub async fn update_library_image<T: AsyncRead>(&self, library_id: &str, folder: &str, id: &str, kind: &Option<ImageType>, reader: T, requesting_user: &ConnectedUser) -> Result<()> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
-		println!("library");
 		self.remove_library_image(library_id, folder, id, kind, requesting_user).await?;
-		println!("image");
 
         let m = self.library_source_for_library(&library_id).await?;
 
 		let source_filepath = format!("{}/{}{}.webp", folder, id, ImageType::optional_to_filename_element(&kind));
-		println!("image2");
-
+		
 		let (_, writer) = m.get_file_write_stream(&source_filepath).await?;
 		tokio::pin!(reader);
 		tokio::pin!(writer);
 		copy(&mut reader, &mut writer).await?;
-		println!("image3");
 
         Ok(())
 	}

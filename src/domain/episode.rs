@@ -44,7 +44,16 @@ pub struct Episode {
        
 
     pub modified: u64,
-    pub added: u64
+    pub added: u64,
+    
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub serie_name: Option<String>
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct EpisodeWithShow {
+    pub name: String,
+    pub episode: Episode
 }
 
 

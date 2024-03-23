@@ -62,4 +62,14 @@ impl TmdbContext {
         let bests = images.into_external(&self.configuration);
         Ok(bests)
     }
+
+    pub async fn episode_image(&self, ids: MediasIds, season: &u32, episode: &u32) -> crate::Result<ExternalSerieImages> {
+        let id = ids.try_tmdb()?;
+        let request = self.get_request_builder(&format!("tv/{}/season/{}/episode/{}/images", id, season, episode));
+        let response = request.send().await?;
+        let images = response.json::<TmdbImageResponse>().await?;
+        //println!("images: {:?}", images);
+        let bests = images.into_external(&self.configuration);
+        Ok(bests)
+    }
 }

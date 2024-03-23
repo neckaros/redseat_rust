@@ -14,7 +14,7 @@ pub fn routes(mc: ModelController) -> Router {
 	Router::new()
 		.route("/episodes", get(handler_list))
 		.route("/episodes", post(handler_post))
-		.route("/seasons/:season", get(handler_list_season))
+		.route("/seasons/:season/episodes", get(handler_list_season_episodes))
 		.route("/seasons/:season/episodes/:number", get(handler_get))
 		.route("/seasons/:season/episodes/:number", patch(handler_patch))
 		.route("/seasons/:season/episodes/:number", delete(handler_delete))
@@ -31,7 +31,7 @@ async fn handler_list(Path((library_id, serie_id)): Path<(String, String)>, Stat
 	Ok(body)
 }
 
-async fn handler_list_season(Path((library_id, serie_id, season)): Path<(String, String, u32)>, State(mc): State<ModelController>, user: ConnectedUser, Query(mut query): Query<EpisodeQuery>) -> Result<Json<Value>> {
+async fn handler_list_season_episodes(Path((library_id, serie_id, season)): Path<(String, String, u32)>, State(mc): State<ModelController>, user: ConnectedUser, Query(mut query): Query<EpisodeQuery>) -> Result<Json<Value>> {
 	query.serie_ref = Some(serie_id);
 	query.season = Some(season);
 	let libraries = mc.get_episodes(&library_id, query, &user).await?;
@@ -64,7 +64,7 @@ async fn handler_post(Path((library_id, _)): Path<(String, String)>, State(mc): 
 
 
 async fn handler_image(Path((library_id, serie_id, season, number)): Path<(String, String, u32, u32)>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ImageRequestOptions>) -> Result<Response> {
-	let reader_response = mc.episode_image(&library_id, &serie_id, &season, number, query.size, &user).await?;
+	let reader_response = mc.episode_image(&library_id, &serie_id, &season, &number, query.size, &user).await?;
 
 	let headers = reader_response.hearders().map_err(|_| Error::GenericRedseatError)?;
     let stream = ReaderStream::new(reader_response.stream);

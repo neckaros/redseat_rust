@@ -1,6 +1,6 @@
 use rusqlite::{params, OptionalExtension, Row};
 
-use crate::{domain::episode::{self, Episode}, model::{episodes::{EpisodeForAdd, EpisodeForUpdate, EpisodeQuery}, store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_pipe_separated_optional}}, tools::array_tools::replace_add_remove_from_array};
+use crate::{domain::episode::{self, Episode, EpisodeWithShow}, model::{episodes::{EpisodeForAdd, EpisodeForUpdate, EpisodeQuery}, store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_pipe_separated_optional}}, tools::array_tools::replace_add_remove_from_array};
 use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
 
@@ -39,6 +39,15 @@ impl SqliteLibraryStore {
             
             trakt_rating: row.get(20)?,
             trakt_votes: row.get(21)?,
+
+            serie_name: row.get(22)?,
+        })
+    }
+
+    fn row_to_show_episode(row: &Row) -> rusqlite::Result<EpisodeWithShow> {
+        Ok(EpisodeWithShow {
+            name: row.get(22)?,
+            episode: SqliteLibraryStore::row_to_episode(&row)?
         })
     }
 
@@ -63,7 +72,7 @@ impl SqliteLibraryStore {
             }
 
 
-            let mut query = conn.prepare(&format!("SELECT serie_ref, season, number, abs, name, overview, airdate, duration, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, modified, added, imdb_rating, imdb_votes, trakt_rating, trakt_votes  FROM episodes {}{}", where_query.format(), where_query.format_order()))?;
+            let mut query = conn.prepare(&format!("SELECT serie_ref, season, number, abs, name, overview, airdate, duration, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, modified, added, imdb_rating, imdb_votes, trakt_rating, trakt_votes, null as serie_name  FROM episodes {}{}", where_query.format(), where_query.format_order()))?;
             let rows = query.query_map(
             where_query.values(), Self::row_to_episode,
             )?;
@@ -72,18 +81,39 @@ impl SqliteLibraryStore {
         }).await?;
         Ok(row)
     }
+
+    pub async fn get_episodes_upcoming(&self, query: EpisodeQuery) -> Result<Vec<Episode>> {
+        let row = self.connection.call( move |conn| { 
+            let mut stm = conn.prepare("SELECT 
+            ep.serie_ref, ep.season, ep.number, ep.abs, ep.name, ep.overview, ep.airdate, ep.duration, ep.alt, ep.params, ep.imdb, ep.slug, ep.tmdb, ep.trakt, ep.tvdb, ep.otherids, ep.modified, ep.added, ep.imdb_rating, ep.imdb_votes, ep.trakt_rating, ep.trakt_votes,
+            series.name  
+            FROM 
+            episodes as ep
+            LEFT JOIN series ON ep.serie_ref = series.id
+            WHERE 
+            airdate > round((julianday('now') - 2440587.5)*86400.0 * 1000)
+            ORDER BY airdate ASC
+            LIMIT ?
+            ")?;
+            let rows = stm.query_map(
+            &[&query.limit.unwrap_or(10)], Self::row_to_episode,
+            )?;
+            let backups:Vec<Episode> = rows.collect::<std::result::Result<Vec<Episode>, rusqlite::Error>>()?; 
+            Ok(backups)
+        }).await?;
+        Ok(row)
+    }
+
     pub async fn get_episode(&self, serie_id: &str, season: u32, number: u32) -> Result<Option<Episode>> {
         let serie_id = serie_id.to_string();
         let row = self.connection.call( move |conn| { 
-            let mut query = conn.prepare("SELECT serie_ref, season, number, abs, name, overview, airdate, duration, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, modified, added, imdb_rating, imdb_votes, trakt_rating, trakt_votes FROM episodes WHERE serie_ref = ? and season = ? and number = ?")?;
+            let mut query = conn.prepare("SELECT serie_ref, season, number, abs, name, overview, airdate, duration, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, modified, added, imdb_rating, imdb_votes, trakt_rating, trakt_votes, null as serie_name FROM episodes WHERE serie_ref = ? and season = ? and number = ?")?;
             let row = query.query_row(
             params![serie_id, season, number],Self::row_to_episode).optional()?;
             Ok(row)
         }).await?;
         Ok(row)
     }
-
-
 
     pub async fn update_episode(&self, serie_id: &str, season: u32, number: u32, update: EpisodeForUpdate) -> Result<()> {
         let id = serie_id.to_string();

@@ -11,7 +11,7 @@ pub struct TmdbImage {
     pub aspect_ratio: f64,
     pub height: i64,
     #[serde(rename = "iso_639_1")]
-    pub iso_639_1: String,
+    pub iso_639_1: Option<String>,
     #[serde(rename = "file_path")]
     pub file_path: String,
     #[serde(rename = "vote_average")]
@@ -41,18 +41,20 @@ impl TmdbImage {
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TmdbImageResponse {
-    pub backdrops: Vec<TmdbImage>,
+    pub backdrops: Option<Vec<TmdbImage>>,
     pub id: i64,
-    pub logos: Vec<TmdbImage>,
-    pub posters: Vec<TmdbImage>,
+    pub logos: Option<Vec<TmdbImage>>,
+    pub posters: Option<Vec<TmdbImage>>,
+    pub stills: Option<Vec<TmdbImage>>,
 }
 
 impl TmdbImageResponse {
     pub fn into_external(self, configuration: &TmdbConfiguration) -> ExternalSerieImages {
         ExternalSerieImages {
-            backdrop: self.backdrops.into_best().and_then(|p| Some(p.full_path(&configuration.images.secure_base_url))),
-            logo: self.logos.into_best().and_then(|p| Some(p.full_path(&configuration.images.secure_base_url))),
-            poster:  self.posters.into_best().and_then(|p| Some(p.full_path(&configuration.images.secure_base_url))),
+            backdrop: self.backdrops.and_then(|l| l.into_best()).and_then(|p| Some(p.full_path(&configuration.images.secure_base_url))),
+            logo: self.logos.and_then(|l| l.into_best()).and_then(|p| Some(p.full_path(&configuration.images.secure_base_url))),
+            poster:  self.posters.and_then(|l| l.into_best()).and_then(|p| Some(p.full_path(&configuration.images.secure_base_url))),
+            still: self.stills.and_then(|l| l.into_best()).and_then(|p| Some(p.full_path(&configuration.images.secure_base_url))),
         }
     }
 }
