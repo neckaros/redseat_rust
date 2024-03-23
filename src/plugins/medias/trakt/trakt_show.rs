@@ -2,10 +2,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Serialize, Deserialize};
 use chrono::{DateTime, Utc};
+use strum_macros::{Display, EnumString};
 
 use crate::{domain::{serie::Serie, MediasIds}, model::series::SerieForAdd};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, EnumString, Display)]
 pub enum TraktShowStatus {
     #[serde(rename = "returning series")]
     Returning,
@@ -103,6 +104,7 @@ impl From<TraktFullShow> for Serie {
             id: format!("trakt:{}", value.ids.trakt.unwrap()),
             name: value.title,
             kind: None,
+            status: value.status.and_then(|f| Some(f.to_string())),
             alt: None,
             params: None,
             imdb: value.ids.imdb,

@@ -23,3 +23,8 @@ CREATE TRIGGER inserted_medias AFTER INSERT ON medias
             BEGIN
              update medias SET modified = round((julianday('now') - 2440587.5)*86400.0 * 1000), added = round((julianday('now') - 2440587.5)*86400.0 * 1000), created = ifnull(created, round((julianday('now') - 2440587.5)*86400.0 * 1000)) WHERE id = NEW.id;
             END;
+
+CREATE TRIGGER inserted_episodes AFTER INSERT ON episodes
+            BEGIN
+             update episodes SET modified = round((julianday('now') - 2440587.5)*86400.0 * 1000), added = round((julianday('now') - 2440587.5)*86400.0 * 1000) WHERE id = NEW.id;
+            END;

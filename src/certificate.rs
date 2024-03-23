@@ -111,10 +111,10 @@ pub async fn dns_certify(domain: &str, duck_dns: &str) -> Result<(PathBuf, PathB
         let duck_url = format!("https://www.duckdns.org/update?domains={}&token={}&txt={}&verbose=true", domain.replace(".duckdns.org", ""), duck_dns, order.key_authorization(challenge).dns_value());
      
         let _ = reqwest::get(duck_url)
-            .await.or_else(|_| Err(Error::Error { message: "Unable to update duckdns".to_string() }))?
+            .await.or_else(|_| Err(Error::Error("Unable to update duckdns".to_string())))?
             .text()
             .await
-            .or_else(|_| Err(Error::Error { message: "Unable to read duckdns response".to_string() }))?;
+            .or_else(|_| Err(Error::Error("Unable to read duckdns response".to_string())))?;
         
 /* 
         println!("Please set the following DNS record then press the Return key:");
@@ -150,14 +150,14 @@ pub async fn dns_certify(domain: &str, duck_dns: &str) -> Result<(PathBuf, PathB
             true => log_info(LogServiceType::Register, format!("order is not ready, waiting {:?}", tries)),
             false => {
                 //println!("order is not ready: {:#?}", state);
-                return Err(Error::Error { message: "order is not ready".to_string()});
+                return Err(Error::Error("order is not ready".to_string()));
             }
         }
     }
 
     let state = order.state();
     if state.status != OrderStatus::Ready {
-        return Err(Error::Error { message: "unexpected order status:".to_string() });
+        return Err(Error::Error("unexpected order status:".to_string()));
     }
                 
         

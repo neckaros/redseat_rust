@@ -34,6 +34,8 @@ impl SqliteLibraryStore {
             max_created: row.get(17)?,
             trakt_rating: row.get(18)?,
             trakt_votes: row.get(19)?,
+
+            status:  row.get(20)?,
         })
     }
 
@@ -48,7 +50,7 @@ impl SqliteLibraryStore {
             }
 
 
-            let mut query = conn.prepare(&format!("SELECT id, name, type, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, year, modified, added, imdb_rating, imdb_votes, trailer, maxCreated, trakt_rating, trakt_votes  FROM series {}{}", where_query.format(), where_query.format_order()))?;
+            let mut query = conn.prepare(&format!("SELECT id, name, type, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, year, modified, added, imdb_rating, imdb_votes, trailer, maxCreated, trakt_rating, trakt_votes, status  FROM series {}{}", where_query.format(), where_query.format_order()))?;
             let rows = query.query_map(
             where_query.values(), Self::row_to_serie,
             )?;
@@ -60,7 +62,7 @@ impl SqliteLibraryStore {
     pub async fn get_serie(&self, credential_id: &str) -> Result<Option<Serie>> {
         let credential_id = credential_id.to_string();
         let row = self.connection.call( move |conn| { 
-            let mut query = conn.prepare("SELECT id, name, type, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, year, modified, added, imdb_rating, imdb_votes, trailer, maxCreated, trakt_rating, trakt_votes FROM series WHERE id = ?")?;
+            let mut query = conn.prepare("SELECT id, name, type, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, year, modified, added, imdb_rating, imdb_votes, trailer, maxCreated, trakt_rating, trakt_votes, status FROM series WHERE id = ?")?;
             let row = query.query_row(
             [credential_id],Self::row_to_serie).optional()?;
             Ok(row)
@@ -73,7 +75,7 @@ impl SqliteLibraryStore {
         //println!("{}, {}, {}, {}, {}",i.imdb.unwrap_or("zz".to_string()), i.slug.unwrap_or("zz".to_string()), i.tmdb.unwrap_or(0), i.trakt.unwrap_or(0), i.tvdb.unwrap_or(0));
         let row = self.connection.call( move |conn| { 
             let mut query = conn.prepare("SELECT 
-            id, name, type, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, year, modified, added, imdb_rating, imdb_votes, trailer, maxCreated, trakt_rating, trakt_votes 
+            id, name, type, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, year, modified, added, imdb_rating, imdb_votes, trailer, maxCreated, trakt_rating, trakt_votes, status 
             FROM series 
             WHERE 
             imdb = ? or slug = ? or tmdb = ? or trakt = ? or tvdb = ?")?;
@@ -92,6 +94,9 @@ impl SqliteLibraryStore {
 
             where_query.add_update(&update.name, "name");
             where_query.add_update(&update.kind, "type");
+
+            where_query.add_update(&update.status, "status");
+            where_query.add_update(&update.trailer, "trailer");
             
             where_query.add_update(&update.imdb, "imdb");
             where_query.add_update(&update.slug, "slug");
@@ -127,7 +132,7 @@ impl SqliteLibraryStore {
     pub async fn add_serie(&self, serie: SerieForInsert) -> Result<()> {
         self.connection.call( move |conn| { 
 
-            conn.execute("INSERT INTO series (id, name, type, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, year, imdb_rating, imdb_votes, trailer, trakt_rating, trakt_votes)
+            conn.execute("INSERT INTO series (id, name, type, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, year, imdb_rating, imdb_votes, trailer, trakt_rating, trakt_votes, status)
             VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params![
                 serie.id,
                 serie.serie.name,
@@ -145,7 +150,8 @@ impl SqliteLibraryStore {
                 serie.serie.imdb_votes,
                 serie.serie.trailer,
                 serie.serie.trakt_rating,
-                serie.serie.trakt_votes
+                serie.serie.trakt_votes,
+                serie.serie.status
             ])?;
             
             Ok(())

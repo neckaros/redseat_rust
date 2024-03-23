@@ -15,6 +15,7 @@ pub struct Serie {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alt: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
     pub params: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub imdb: Option<String>,

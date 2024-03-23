@@ -1,7 +1,6 @@
 use reqwest::{Client, Url};
 use tower::Service;
-use trakt_rs::{smo::Id, Request, Response};
-use crate::{domain::{serie::Serie, MediasIds}, model::{episodes::EpisodeForAdd, series::SerieForAdd}, plugins::medias::trakt::{trakt_episode::TraktSeasonWithEpisodes, trakt_show::TraktFullShow}, Error, Result};
+use crate::{domain::{episode::Episode, serie::Serie, MediasIds}, model::series::SerieForAdd, plugins::medias::trakt::{trakt_episode::TraktSeasonWithEpisodes, trakt_show::TraktFullShow}, Error, Result};
 
 use self::{trakt_episode::TraktFullEpisode, trakt_show::TraktTrendingShowResult};
 // Context required for all requests
@@ -46,8 +45,8 @@ impl TraktContext {
         Ok(shows)
     }
 
-    pub async fn all_episodes(&self, id: &MediasIds) -> crate::Result<()> {
-
+    pub async fn all_episodes(&self, id: &MediasIds) -> crate::Result<Vec<Episode>> {
+        let serie_id = id.redseat.as_ref().ok_or(Error::NotFound)?;
         let id = if let Some(imdb) = &id.imdb {
             Ok(imdb.to_string())
         } else if let Some(trakt) = &id.trakt {
@@ -57,11 +56,11 @@ impl TraktContext {
         }?;
         let url = self.base_url.join(&format!("shows/{}/seasons?extended=full,episodes", id)).unwrap();
         let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
-        let episodes = r.json::<Vec<TraktSeasonWithEpisodes>>().await?.into_iter().flat_map(|s| s.episodes).map(|e| e.into_trakt("serie_ref".into())).collect::<Vec<_>>();
-        Ok(())
+        let episodes = r.json::<Vec<TraktSeasonWithEpisodes>>().await?.into_iter().flat_map(|s| s.episodes).map(|e| e.into_trakt(serie_id.clone())).collect::<Vec<_>>();
+        Ok(episodes)
     }
 
-    pub async fn episode(&self, id: &MediasIds, season: u32, episode: u32) -> crate::Result<EpisodeForAdd> {
+    pub async fn episode(&self, id: &MediasIds, season: u32, episode: u32) -> crate::Result<Episode> {
 
         let id = if let Some(imdb) = &id.imdb {
             Ok(imdb.to_string())

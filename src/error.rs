@@ -17,7 +17,7 @@ pub type RsResult<T> = Result<T>;
 #[derive(Debug, Serialize, From, strum_macros::AsRefStr)]
 #[serde(tag = "type", content = "data")]
 pub enum Error {
-	Error { message: String},
+	Error(String),
 	Message(String),
 	LoginFail,
 	NotFound,

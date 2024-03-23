@@ -109,7 +109,7 @@ pub async fn probe_video(uri: &str) -> Result<FfprobeResult, Error> {
     ;
     if let Ok(val) = str::from_utf8(&output.stderr) {
         if val != "" {
-            return Err(Error::Error { message: val.to_string() })
+            return Err(Error::Error(val.to_string()))
         }
     }
     if let Ok(val) = str::from_utf8(&output.stdout) {

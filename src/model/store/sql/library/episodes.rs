@@ -1,6 +1,6 @@
 use rusqlite::{params, OptionalExtension, Row};
 
-use crate::{domain::episode::{self, Episode, EpisodeWithShow}, model::{episodes::{EpisodeForAdd, EpisodeForUpdate, EpisodeQuery}, store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_pipe_separated_optional}}, tools::array_tools::replace_add_remove_from_array};
+use crate::{domain::episode::{self, Episode, EpisodeWithShow}, model::{episodes::{EpisodeForUpdate, EpisodeQuery}, store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_pipe_separated_optional}}, tools::array_tools::replace_add_remove_from_array};
 use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
 
@@ -159,9 +159,9 @@ impl SqliteLibraryStore {
         Ok(())
     }
 
-    pub async fn add_episode(&self, episode: EpisodeForAdd) -> Result<()> {
+    pub async fn add_episode(&self, episode: Episode) -> Result<()> {
         self.connection.call( move |conn| { 
-
+            //println!("oo {} {} {}", episode.serie_ref, episode.season, episode.number);
             conn.execute("INSERT INTO episodes (serie_ref, season, number, abs, name, overview, airdate, duration, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, imdb_rating, imdb_votes, trakt_rating, trakt_votes)
             VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params![
                 episode.serie_ref,
@@ -185,15 +185,20 @@ impl SqliteLibraryStore {
                 episode.trakt_rating,
                 episode.trakt_votes
             ])?;
-            
             Ok(())
         }).await?;
         Ok(())
     }
-
-    pub async fn remove_episode(&self, episode_id: String, season: u32, number: u32) -> Result<()> {
+    pub async fn remove_all_serie_episodes(&self, serie_ref: String) -> Result<()> {
         self.connection.call( move |conn| { 
-            conn.execute("DELETE FROM episodes WHERE serie_ref = ? and season = ? and number = ?", params![episode_id, season, number])?;
+            conn.execute("DELETE FROM episodes WHERE serie_ref = ?", params![serie_ref])?;
+            Ok(())
+        }).await?;
+        Ok(())
+    }
+    pub async fn remove_episode(&self, serie_ref: String, season: u32, number: u32) -> Result<()> {
+        self.connection.call( move |conn| { 
+            conn.execute("DELETE FROM episodes WHERE serie_ref = ? and season = ? and number = ?", params![serie_ref, season, number])?;
             Ok(())
         }).await?;
         Ok(())

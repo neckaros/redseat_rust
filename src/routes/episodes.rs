@@ -1,5 +1,5 @@
 
-use crate::{model::{episodes::{EpisodeForAdd, EpisodeForUpdate, EpisodeQuery}, users::ConnectedUser, ModelController}, Error, Result};
+use crate::{domain::episode::Episode, model::{episodes::{EpisodeForUpdate, EpisodeQuery}, users::ConnectedUser, ModelController}, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
 use futures::TryStreamExt;
 use serde_json::{json, ser, Value};
@@ -14,6 +14,7 @@ pub fn routes(mc: ModelController) -> Router {
 	Router::new()
 		.route("/episodes", get(handler_list))
 		.route("/episodes", post(handler_post))
+		.route("/episodes/refresh", get(handler_refresh))
 		.route("/seasons/:season/episodes", get(handler_list_season_episodes))
 		.route("/seasons/:season/episodes/:number", get(handler_get))
 		.route("/seasons/:season/episodes/:number", patch(handler_patch))
@@ -27,6 +28,11 @@ pub fn routes(mc: ModelController) -> Router {
 async fn handler_list(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(mut query): Query<EpisodeQuery>) -> Result<Json<Value>> {
 	query.serie_ref = Some(serie_id);
 	let libraries = mc.get_episodes(&library_id, query, &user).await?;
+	let body = Json(json!(libraries));
+	Ok(body)
+}
+async fn handler_refresh(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(mut query): Query<EpisodeQuery>) -> Result<Json<Value>> {
+	let libraries = mc.refresh_episodes(&library_id, &serie_id, &user).await?;
 	let body = Json(json!(libraries));
 	Ok(body)
 }
@@ -56,7 +62,7 @@ async fn handler_delete(Path((library_id, serie_id, season, number)): Path<(Stri
 	Ok(body)
 }
 
-async fn handler_post(Path((library_id, _)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(new_serie): Json<EpisodeForAdd>) -> Result<Json<Value>> {
+async fn handler_post(Path((library_id, _)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(new_serie): Json<Episode>) -> Result<Json<Value>> {
 	let credential = mc.add_episode(&library_id, new_serie, &user).await?;
 	let body = Json(json!(credential));
 	Ok(body)

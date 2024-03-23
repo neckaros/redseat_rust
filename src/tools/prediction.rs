@@ -94,9 +94,9 @@ pub fn predict_net(path: PathBuf, bgr: bool, normalize: bool, buffer_image: Vec<
         },
     };
 
-    let output_info = model.outputs.first().ok_or(Error::Error { message: "Prediction model does not have outputs".into() })?;
+    let output_info = model.outputs.first().ok_or(Error::Error("Prediction model does not have outputs".into()))?;
 
-    let input_info = model.inputs.first().ok_or(Error::Error { message: "Prediction model does not have outputs".into() })?;
+    let input_info = model.inputs.first().ok_or(Error::Error("Prediction model does not have outputs".into()))?;
 
        let size = match &input_info.input_type {
 
@@ -104,7 +104,7 @@ pub fn predict_net(path: PathBuf, bgr: bool, normalize: bool, buffer_image: Vec<
         ValueType::Sequence(_) => None,
         ValueType::Map { key: _, value: _ } => None,
     };
-    let size = size.ok_or(Error::Error { message: "Unable to get dimensions".into() })?;
+    let size = size.ok_or(Error::Error("Unable to get dimensions".into()))?;
     let resized = prepare_image(buffer_image, size, size)?;
 
     let image_rgb = if bgr {

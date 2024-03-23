@@ -12,39 +12,9 @@ use tokio::{fs::File, io::{AsyncRead, AsyncWriteExt, BufReader}};
 use tokio_util::io::StreamReader;
 
 
-use crate::{domain::{episode::{self, Episode, EpisodeWithShow, EpisodesMessage}, library::LibraryRole, people::{PeopleMessage, Person}, serie::{Serie, SeriesMessage}, ElementAction, MediasIds}, error::RsResult, plugins::sources::{AsyncReadPinBox, FileStreamResult, Source}, tools::{image_tools::{resize_image_reader, ImageSize, ImageType}, log::log_info}};
+use crate::{domain::{episode::{self, Episode, EpisodeWithShow, EpisodesMessage}, library::LibraryRole, people::{PeopleMessage, Person}, serie::{self, Serie, SeriesMessage}, ElementAction, MediasIds}, error::RsResult, plugins::sources::{AsyncReadPinBox, FileStreamResult, Source}, tools::{image_tools::{resize_image_reader, ImageSize, ImageType}, log::log_info}};
 
 use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
-
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct EpisodeForAdd {
-    pub serie_ref: String,
-    pub season: u32,
-    pub number: u32,
-    pub abs: Option<u32>,
-
-	pub name: Option<String>,
-	pub overview: Option<String>,
-    pub alt: Option<Vec<String>>,
-
-    
-    pub airdate: Option<u64>,
-    pub duration: Option<u64>,
-
-    pub params: Option<Value>,
-    pub imdb: Option<String>,
-    pub slug: Option<String>,
-    pub tmdb: Option<u64>,
-    pub trakt: Option<u64>,
-    pub tvdb: Option<u64>,
-    pub otherids: Option<String>,
-    
-    pub imdb_rating: Option<f32>,
-    pub imdb_votes: Option<u64>,
-    pub trakt_rating: Option<f32>,
-    pub trakt_votes: Option<u64>,
-}
 
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -142,7 +112,7 @@ impl ModelController {
 	}
 
 
-    pub async fn add_episode(&self, library_id: &str, new_serie: EpisodeForAdd, requesting_user: &ConnectedUser) -> Result<Episode> {
+    pub async fn add_episode(&self, library_id: &str, new_serie: Episode, requesting_user: &ConnectedUser) -> Result<Episode> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
 		store.add_episode(new_serie.clone()).await?;
@@ -164,6 +134,25 @@ impl ModelController {
             Err(Error::NotFound)
         }
 	}
+
+    pub async fn get_serie_ids(&self, library_id: &str, serie_id: &str, requesting_user: &ConnectedUser) -> RsResult<MediasIds> {
+        let serie = self.get_serie(library_id, serie_id.to_string(), requesting_user).await?.ok_or(Error::NotFound)?;
+        let ids: MediasIds = serie.into();
+        Ok(ids)
+    }
+
+    pub async fn refresh_episodes(&self, library_id: &str, serie_id: &str, requesting_user: &ConnectedUser) -> RsResult<Vec<Episode>> {
+        let ids = self.get_serie_ids(library_id, serie_id, requesting_user).await?;
+        let all_episodes = self.trakt.all_episodes(&ids).await?;
+        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        store.remove_all_serie_episodes(serie_id.to_string()).await?;
+        let mut new_episodes: Vec<Episode> = vec![];
+        for episode in all_episodes {
+            let episode = self.add_episode(library_id, episode, requesting_user).await?;
+            new_episodes.push(episode)
+        }
+        Ok(new_episodes)
+    }
 
 
     #[async_recursion]
@@ -217,8 +206,7 @@ impl ModelController {
 
     /// download and update image
     pub async fn refresh_episode_image(&self, library_id: &str, serie_id: &str, season: &u32, episode: &u32, requesting_user: &ConnectedUser) -> RsResult<()> {
-        let serie = self.get_serie(library_id, serie_id.to_string(), requesting_user).await?.ok_or(Error::NotFound)?;
-        let ids: MediasIds = serie.into();
+        let ids: MediasIds = self.get_serie_ids(library_id, serie_id, requesting_user).await?;
         let reader = self.download_episode_image(&ids, season, episode).await?;
         self.update_episode_image(library_id, serie_id, season, episode, reader, requesting_user).await?;
         Ok(())

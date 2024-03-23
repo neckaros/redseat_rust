@@ -21,6 +21,7 @@ pub struct SerieForAdd {
 	pub name: String,
     #[serde(rename = "type")]
     pub kind: Option<String>,
+    pub status: Option<String>,
     pub alt: Option<Vec<String>>,
     pub params: Option<Value>,
     pub imdb: Option<String>,
@@ -71,12 +72,12 @@ impl SerieQuery {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct SerieForUpdate {
 	pub name: Option<String>,
     #[serde(rename = "type")]
     pub kind: Option<String>,
-
+    pub status: Option<String>,
     pub alt: Option<Vec<String>>,
     pub add_alts: Option<Vec<String>>,
     pub remove_alts: Option<Vec<String>>,
@@ -91,16 +92,24 @@ pub struct SerieForUpdate {
     
     pub imdb_rating: Option<f32>,
     pub imdb_votes: Option<u64>,
-    pub trakt_rating: Option<u64>,
-    pub trakt_votes: Option<f32>,
+    pub trakt_rating: Option<f32>,
+    pub trakt_votes: Option<u64>,
 
     pub trailer: Option<String>,
 
     pub year: Option<u16>,
-
-    
     pub max_created: Option<u64>,
 }
+
+impl SerieForUpdate {
+    pub fn has_update(&self) -> bool {
+        self.name.is_some() || self.kind.is_some() || self.status.is_some() || self.alt.is_some() || self.add_alts.is_some() || self.remove_alts.is_some()
+        || self.params.is_some() || self.imdb.is_some() || self.slug.is_some() || self.tmdb.is_some() || self.trakt.is_some() || self.tvdb.is_some() || self.otherids.is_some()
+        || self.imdb_rating.is_some() || self.imdb_votes.is_some() || self.trakt_rating.is_some() || self.trakt_votes.is_some()
+        || self.trailer.is_some() || self.year.is_some() || self.max_created.is_some()
+    } 
+}
+
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ExternalSerieImages {
@@ -178,11 +187,16 @@ impl ModelController {
         if MediasIds::is_id(&serie_id) {
             return Err(Error::InvalidIdForAction("udpate".to_string(), serie_id))
         }
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
-		store.update_serie(&serie_id, update).await?;
-        let person = store.get_serie(&serie_id).await?.ok_or(Error::NotFound)?;
-        self.send_serie(SeriesMessage { library: library_id.to_string(), action: ElementAction::Updated, series: vec![person.clone()] });
-        Ok(person)
+        if update.has_update() {
+            let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+            store.update_serie(&serie_id, update).await?;
+            let person = store.get_serie(&serie_id).await?.ok_or(Error::NotFound)?;
+            self.send_serie(SeriesMessage { library: library_id.to_string(), action: ElementAction::Updated, series: vec![person.clone()] });
+            Ok(person)
+        } else {
+            let serie = self.get_serie(library_id, serie_id, requesting_user).await?.ok_or(Error::NotFound)?;
+            Ok(serie)
+        }  
 	}
 
 
@@ -208,7 +222,7 @@ impl ModelController {
 
 
     pub async fn remove_serie(&self, library_id: &str, serie_id: &str, requesting_user: &ConnectedUser) -> Result<Serie> {
-        requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
+        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         if MediasIds::is_id(&serie_id) {
             return Err(Error::InvalidIdForAction("remove".to_string(), serie_id.to_string()))
         }
@@ -223,6 +237,35 @@ impl ModelController {
         }
 	}
 
+    pub async fn refresh_serie(&self, library_id: &str, serie_id: &str, requesting_user: &ConnectedUser) -> RsResult<Serie> {
+        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        let ids = self.get_serie_ids(library_id, serie_id, requesting_user).await?;
+        let serie = self.get_serie(library_id, serie_id.to_string(), requesting_user).await?.ok_or(Error::NotFound)?;
+        let new_serie = self.trakt.get_serie(&ids).await?;
+        let mut updates = SerieForUpdate {..Default::default()};
+
+        if serie.status != new_serie.status {
+            updates.status = new_serie.status;
+        }
+        if serie.trakt_rating != new_serie.trakt_rating {
+            updates.trakt_rating = new_serie.trakt_rating;
+        }
+        if serie.trakt_votes != new_serie.trakt_votes {
+            updates.trakt_votes = new_serie.trakt_votes;
+        }
+        if serie.trailer != new_serie.trailer {
+            updates.trailer = new_serie.trailer;
+        }
+        if serie.imdb != new_serie.imdb {
+            updates.imdb = new_serie.imdb;
+        }
+        if serie.tmdb != new_serie.tmdb {
+            updates.tmdb = new_serie.tmdb;
+        }
+
+        let new_serie = self.update_serie(library_id, serie_id.to_string(), updates, requesting_user).await?;
+        Ok(new_serie)        
+	}
 
     
 	pub async fn serie_image(&self, library_id: &str, serie_id: &str, kind: Option<ImageType>, size: Option<ImageSize>, requesting_user: &ConnectedUser) -> crate::Result<FileStreamResult<AsyncReadPinBox>> {

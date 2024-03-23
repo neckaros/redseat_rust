@@ -26,6 +26,8 @@ pub enum ElementAction {
 #[derive(Debug, Clone, Serialize, Deserialize, Ord, PartialOrd, Eq, PartialEq, Default)]
 pub struct MediasIds {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub redseat: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub trakt: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub slug: Option<String>,
@@ -40,6 +42,10 @@ pub struct MediasIds {
 }
 
 impl MediasIds {
+    pub fn into_best(self) -> Option<String> {
+        self.redseat.or(self.trakt.and_then(|r| Some(r.to_string()))).or(self.imdb)
+    }
+
     pub fn from_imdb(imdb: String) -> Self {
         MediasIds {
             imdb: Some(imdb),
@@ -86,7 +92,7 @@ impl MediasIds {
 
 impl From<Serie> for MediasIds {
     fn from(value: Serie) -> Self {
-        MediasIds { trakt: value.trakt, slug: value.slug, tvdb: value.tvdb, imdb: value.imdb, tmdb: value.tmdb, tvrage: None }
+        MediasIds { redseat: Some(value.id), trakt: value.trakt, slug: value.slug, tvdb: value.tvdb, imdb: value.imdb, tmdb: value.tmdb, tvrage: None }
     }
 }
 

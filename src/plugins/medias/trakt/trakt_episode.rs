@@ -1,7 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-
-use crate::model::episodes::EpisodeForAdd;
+use crate::domain::episode::Episode;
 
 use super::trakt_show::TraktIds;
 
@@ -32,8 +31,8 @@ pub struct TraktFullEpisode {
 }
 
 impl TraktFullEpisode {
-    pub fn into_trakt(self, serie_ref: String) -> EpisodeForAdd {
-        EpisodeForAdd {
+    pub fn into_trakt(self, serie_ref: String) -> Episode {
+        Episode {
             serie_ref,
             season: self.season,
             number: self.number,
@@ -41,7 +40,7 @@ impl TraktFullEpisode {
             name: self.title,
             overview: self.overview,
             alt: None,
-            airdate: self.first_aired.and_then(|t| Some(t.timestamp() as u64)),
+            airdate: self.first_aired.and_then(|t| Some(t.timestamp_millis() as u64)),
             duration: Some(self.runtime as u64),
             params: None,
             imdb: self.ids.imdb,
@@ -54,6 +53,8 @@ impl TraktFullEpisode {
             imdb_votes: None,
             trakt_rating: Some(self.rating),
             trakt_votes: Some(self.votes.into()),
+
+            ..Default::default()     
         }
     }
 }

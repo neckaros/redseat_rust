@@ -211,7 +211,7 @@ pub async fn update_ip() -> Result<Option<(String, String)>> {
 
     if let Some(duck_dns) = config.duck_dns {
         log_info(LogServiceType::Register, "Updating public ip for duckdns".to_string());
-        let ips = Consensus::get().await.or_else(|_| Err(Error::Error { message: "Unable to get external IPs".to_string() }))?;
+        let ips = Consensus::get().await.or_else(|_| Err(Error::Error("Unable to get external IPs".to_string())))?;
     
         let ipv4 = {
             if let Some(ip) = ips.v4() {
@@ -232,10 +232,10 @@ pub async fn update_ip() -> Result<Option<(String, String)>> {
         let duck_url = format!("https://www.duckdns.org/update?domains={}&token={}&ip={}&ipv6={}&verbose=true", domain.replace(".duckdns.org", ""), duck_dns, ipv4, ipv6);
 
         let _ = reqwest::get(duck_url)
-            .await.or_else(|_| Err(Error::Error { message: "Unable to update duckdns".to_string() }))?
+            .await.or_else(|_| Err(Error::Error("Unable to update duckdns".to_string())))?
             .text()
             .await
-            .or_else(|_| Err(Error::Error { message: "Unable to read duckdns response".to_string() }))?;
+            .or_else(|_| Err(Error::Error("Unable to read duckdns response".to_string())))?;
         return Ok(Some((ipv4, ipv6)));
     }
     Ok(None)

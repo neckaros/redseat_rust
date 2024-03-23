@@ -4,16 +4,16 @@ use serde_json::Value;
 use super::ElementAction;
 
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "snake_case")] 
 pub struct Episode {
     pub serie_ref: String,
-    pub season: usize,
-    pub number: usize,
+    pub season: u32,
+    pub number: u32,
 
     
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub abs: Option<usize>,
+    pub abs: Option<u32>,
 
 	pub name: Option<String>,
 	pub overview: Option<String>,
@@ -42,11 +42,12 @@ pub struct Episode {
     pub trakt_rating: Option<f32>,
     pub trakt_votes: Option<u64>,
        
-
+    #[serde(default)]
     pub modified: u64,
+    #[serde(default)]
     pub added: u64,
     
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub serie_name: Option<String>
 }
 
