@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, io::{self, ErrorKind}, ops::Add, sync::Arc, time::{Duration, SystemTime, UNIX_EPOCH}};
+use std::{collections::{BTreeMap, HashMap}, io::{self, ErrorKind}, ops::Add, sync::Arc, time::{Duration, SystemTime, UNIX_EPOCH}};
 use futures::TryStreamExt;
 use tokio::{fs::File, io::{AsyncReadExt, AsyncWriteExt, BufReader}, sync::RwLock};
 use tokio_util::io::StreamReader;
@@ -7,13 +7,13 @@ use async_compression::tokio::bufread::GzipDecoder;
 
 #[derive(Debug, Clone)]
 pub struct ImdbContext {
-    ratings: Arc<RwLock<BTreeMap<String, (f32, u64)>>>,
+    ratings: Arc<RwLock<HashMap<String, (f32, u64)>>>,
     freshness: Arc<RwLock<u64>>
 }
 
 impl ImdbContext {
     pub fn new() -> Self {
-        Self { ratings: Arc::new(RwLock::new(BTreeMap::new())), freshness: Arc::new(RwLock::new(0)) }
+        Self { ratings: Arc::new(RwLock::new(HashMap::new())), freshness: Arc::new(RwLock::new(0)) }
     }
 }
 

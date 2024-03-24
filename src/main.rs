@@ -38,13 +38,13 @@ async fn main() ->  Result<()> {
     log_info(tools::log::LogServiceType::Register, format!("Initializing config"));
     server::initialize_config().await;
 
-    tokio::spawn(async move {
+    /*tokio::spawn(async move {
         //let tmdb = TmdbContext::new("4a01db3a73eed5cf17e9c7c27fd9d008".to_string()).await.unwrap();
         //tmdb.serie_image(MediasIds::from_tmdb(236235)).await.unwrap();
         //trakt.get_serie(&MediasIds { imdb: Some("tt0944947".to_string()), ..Default::default()}).await;
         //trakt.all_episodes(&MediasIds { imdb: Some("tt0944947".to_string()), ..Default::default()}).await;
 
-    });
+    });*/
 
     let register_infos = register().await?;
     let app = app();

@@ -9,6 +9,7 @@ pub mod serialization;
 pub mod prediction;
 pub mod file_tools;
 pub mod http_tools;
+pub mod scheduler;
 
 
 pub fn get_time() -> Duration {

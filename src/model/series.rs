@@ -193,9 +193,17 @@ impl ModelController {
         let id = nanoid!();
         new_serie.id = id.clone();
 		store.add_serie(new_serie).await?;
-        let new_person = self.get_serie(library_id, id, requesting_user).await?.ok_or(Error::NotFound)?;
-        self.send_serie(SeriesMessage { library: library_id.to_string(), action: ElementAction::Added, series: vec![new_person.clone()] });
-		Ok(new_person)
+        let inserted_serie = self.get_serie(library_id, id, requesting_user).await?.ok_or(Error::NotFound)?;
+        self.send_serie(SeriesMessage { library: library_id.to_string(), action: ElementAction::Added, series: vec![inserted_serie.clone()] });
+        
+        let mc = self.clone();
+        let inserted_serie_id = inserted_serie.id.clone();
+        let library_id = library_id.to_string();
+        let requesting_user = requesting_user.clone();
+        tokio::spawn(async move {
+            mc.refresh_episodes(&library_id, &inserted_serie_id, &requesting_user).await.unwrap();
+        });
+		Ok(inserted_serie)
 	}
 
 
@@ -253,7 +261,8 @@ impl ModelController {
             if let Some(existing) = existing {
                 Err(Error::Duplicate(existing.id.into(), "Serie".into()).into())
             } else { 
-                let new_serie = self.trakt.get_serie(&ids).await?;
+                let mut new_serie = self.trakt.get_serie(&ids).await?;
+                new_serie.fill_imdb_ratings(&self.imdb).await;
                 let imported_serie = self.add_serie(library_id, new_serie, requesting_user).await?;
                 Ok(imported_serie)
             }

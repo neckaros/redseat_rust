@@ -28,3 +28,13 @@ CREATE TRIGGER inserted_movie AFTER INSERT ON movies
             BEGIN
              update movies SET modified = round((julianday('now') - 2440587.5)*86400.0 * 1000), added = round((julianday('now') - 2440587.5)*86400.0 * 1000) WHERE id = NEW.id;
             END;
+
+CREATE TRIGGER modified_movie AFTER UPDATE ON movies
+            BEGIN
+             update movies SET modified = round((julianday('now') - 2440587.5)*86400.0 * 1000) WHERE id = NEW.id;
+            END;
+
+CREATE TRIGGER inserted_deleted AFTER INSERT ON deleted
+            BEGIN
+             update deleted SET date = round((julianday('now') - 2440587.5)*86400.0 * 1000) WHERE id = NEW.id and type = NEW.type;
+            END;

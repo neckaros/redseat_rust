@@ -162,6 +162,11 @@ impl SqliteLibraryStore {
     pub async fn remove_serie(&self, serie_id: String) -> Result<()> {
         self.connection.call( move |conn| { 
             conn.execute("DELETE FROM series WHERE id = ?", &[&serie_id])?;
+            conn.execute("DELETE FROM episodes WHERE serie_ref = ?", &[&serie_id])?;
+            conn.execute("DELETE FROM media_serie_mapping WHERE serie_ref = ?", &[&serie_id])?;
+            conn.execute("INSERT INTO deleted (id, type) VALUES (?, ?)", &[&serie_id, "serie"])?;
+
+
             Ok(())
         }).await?;
         Ok(())

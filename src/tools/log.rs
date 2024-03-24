@@ -5,6 +5,7 @@ pub enum LogServiceType {
     Database,
     Scoket,
     Plugin,
+    Scheduler,
     Source,
     Other
 }
@@ -16,6 +17,7 @@ impl LogServiceType {
             LogServiceType::Scoket => "SOCKET",
             LogServiceType::Plugin => "PLUGIN",
             LogServiceType::Source => "SOURCE",
+            LogServiceType::Scheduler => "SCHEDULER",
             LogServiceType::Other => "OTHER"
         }
     }

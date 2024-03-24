@@ -15,9 +15,10 @@ pub mod medias;
 pub mod movies;
 
 use std::{io::Read, path::PathBuf, pin::Pin, sync::Arc};
+use nanoid::nanoid;
 use strum::IntoEnumIterator;
 use rs_plugin_url_interfaces::RsLink;
-use crate::{domain::library::{LibraryMessage, LibraryRole}, plugins::{medias::{imdb::ImdbContext, tmdb::TmdbContext, trakt::TraktContext}, sources::{error::SourcesError, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, LocalSource, Source, SourceRead}, PluginManager}, server::get_server_file_path_array, tools::{image_tools::{resize_image_path, ImageSize, ImageSizeIter, ImageType}, log::log_info}};
+use crate::{domain::{library::{LibraryMessage, LibraryRole}, serie::Serie}, plugins::{medias::{imdb::ImdbContext, tmdb::TmdbContext, trakt::TraktContext}, sources::{error::SourcesError, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, LocalSource, Source, SourceRead}, PluginManager}, server::get_server_file_path_array, tools::{image_tools::{resize_image_path, ImageSize, ImageSizeIter, ImageType}, log::log_info, scheduler::{self, refresh::RefreshTask, RsScheduler, RsTaskType}}};
 
 use self::{store::SqliteStore, users::{ConnectedUser, UserRole}};
 use error::{Result, Error};
@@ -31,7 +32,8 @@ pub struct ModelController {
 	pub plugin_manager: Arc<PluginManager>,
 	pub trakt: TraktContext,
 	pub tmdb: TmdbContext,
-	pub imdb: ImdbContext
+	pub imdb: ImdbContext,
+	pub scheduler: Arc<RsScheduler>,
 }
 
 
@@ -39,14 +41,22 @@ pub struct ModelController {
 impl ModelController {
 	pub async fn new(store: SqliteStore, plugin_manager: PluginManager) -> crate::Result<Self> {
 		let tmdb = TmdbContext::new("4a01db3a73eed5cf17e9c7c27fd9d008".to_string()).await?;
-		Ok(Self {
+		let scheduler = RsScheduler::new();
+
+		let mc = Self {
 			store: Arc::new(store),
 			io: None,
 			plugin_manager: Arc::new(plugin_manager),
 			trakt: TraktContext::new("455f81b3409a8dd140a941e9250ff22b2ed92d68003491c3976363fe752a9024".to_string()),
 			tmdb,
-			imdb: ImdbContext::new()
-		})
+			imdb: ImdbContext::new(),
+			scheduler: Arc::new(scheduler)
+		};
+
+		let scheduler = &mc.scheduler;
+		scheduler.start(mc.clone()).await?;
+		scheduler.add(RsTaskType::Refresh, scheduler::RsSchedulerWhen::Every(20), RefreshTask {specific_library:None} ).await?;
+		Ok(mc)
 	}
 }
 
