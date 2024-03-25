@@ -22,6 +22,9 @@ pub enum Error {
 	LoginFail,
 	NotFound,
 
+	TimeCreationError,
+	TraktTooManyUpdates,
+
 	// Server Error
 	InvalidPublicKey,
 	InvalidPrivateKey,

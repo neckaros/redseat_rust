@@ -1,13 +1,13 @@
-use std::{path::PathBuf, pin::Pin};
+use std::{io, path::PathBuf, pin::Pin};
 use async_recursion::async_recursion;
 use axum::{async_trait, body::Body, response::IntoResponse};
-use futures::{future::BoxFuture, Future};
+use futures::{future::BoxFuture, Future, TryStreamExt};
 use hyper::{header, HeaderMap};
 use mime::{Mime, APPLICATION_OCTET_STREAM};
 use plugin_request_interfaces::RsRequest;
 use serde::{Deserialize, Serialize};
 use tokio::{fs::File, io::{AsyncRead, AsyncWrite, BufReader}};
-use tokio_util::io::ReaderStream;
+use tokio_util::io::{ReaderStream, StreamReader};
 use crate::{domain::{library::ServerLibrary, media::MediaForUpdate}, error::RsResult, model::{error::Error, users::ConnectedUser, ModelController}, routes::mw_range::RangeDefinition};
 
 use self::error::{SourcesError, SourcesResult};
@@ -82,7 +82,54 @@ pub enum SourceRead {
 type FuncResult = dyn Future<Output=crate::model::error::Result<RsRequest>>;
 
 impl SourceRead { 
-    
+    #[async_recursion]
+    pub async fn into_reader(self, library_id: &str, range: Option<RangeDefinition>, mc: Option<(ModelController, &ConnectedUser)>) -> RsResult<AsyncReadPinBox> {
+        match self {
+            SourceRead::Stream(reader) => {
+                Ok(reader.stream)
+            },
+            SourceRead::Request(request) => {
+
+                match request.status {
+                    plugin_request_interfaces::RsRequestStatus::Unprocessed => {
+                        if let Some((mc, user)) = mc {
+                            let new_request = mc.exec_request(request.clone(), Some(library_id.to_string()), user).await?.ok_or(Error::InvalidRsRequestStatus(request.status))?;
+                            let read = SourceRead::Request(new_request);
+                            read.into_reader(library_id, range.clone(), Some((mc, user))).await
+                        } else {
+                            Err(Error::InvalidRsRequestStatus(request.status).into())
+                        }
+                    },
+                    plugin_request_interfaces::RsRequestStatus::FinalPrivate | plugin_request_interfaces::RsRequestStatus::FinalPublic => {
+                        let mut headers = reqwest::header::HeaderMap::new();
+                        for (key, value) in request.headers.unwrap_or(vec![]) {
+                            headers.insert(reqwest::header::HeaderName::from_lowercase(key.to_lowercase().as_bytes()).map_err(|_| Error::UnableToFormatHeaders)?, reqwest::header::HeaderValue::from_str(&value).map_err(|_| Error::UnableToFormatHeaders)?);
+                        }
+                         if let Some(range) = range {
+                             let (key, val) = range.header();
+                             headers.insert(key, val);
+                         }
+                        
+                        let client = reqwest::Client::new();
+                        let r = client.get(request.url)
+                            .headers(headers)
+                            .send().await?;
+                        let stream = r.bytes_stream();
+                        let body_with_io_error = stream.map_err(|err| io::Error::new(io::ErrorKind::Other, err));
+                        let mut body_reader = StreamReader::new(body_with_io_error);
+                        let pinned: AsyncReadPinBox = Box::pin(body_reader);
+                        Ok(pinned)
+
+
+
+                    },
+                    _ => Err(Error::InvalidRsRequestStatus(request.status).into())
+                }
+
+                
+            },
+        }
+    }
 
     
     #[async_recursion]

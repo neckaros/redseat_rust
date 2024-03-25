@@ -1,6 +1,7 @@
+use chrono::{DateTime, FixedOffset};
 use reqwest::{Client, Url};
 use tower::Service;
-use crate::{domain::{episode::Episode, movie::Movie, serie::Serie, MediasIds}, plugins::medias::trakt::{trakt_episode::TraktSeasonWithEpisodes, trakt_show::TraktFullShow}, Error, Result};
+use crate::{domain::{episode::Episode, movie::Movie, serie::Serie, MediasIds}, plugins::medias::trakt::{trakt_episode::TraktSeasonWithEpisodes, trakt_show::TraktFullShow}, tools::clock::Clock, Error, Result};
 
 use self::{trakt_episode::TraktFullEpisode, trakt_movie::{TraktFullMovie, TraktTrendingMoviesResult}, trakt_show::TraktTrendingShowResult};
 // Context required for all requests
@@ -28,6 +29,27 @@ impl TraktContext {
 }
 
 impl TraktContext {
+
+    pub async fn episodes_refreshed(&self, date: DateTime<FixedOffset>) -> crate::Result<Vec<u64>> {
+        let mut all_updates:Vec<u64> = vec![];
+        let mut page = 1;
+        loop {
+            let url = self.base_url.join(&format!("shows/updates/id/{}?page={}&limit=100", date.to_utc().fixed_offset().print(), page)).unwrap();
+            let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
+            let nb_pages: u32 = r.headers().get("x-pagination-page-count").ok_or(crate::Error::TraktTooManyUpdates)?.to_str().map_err(|_| crate::Error::TraktTooManyUpdates)?.parse().map_err(|_| crate::Error::TraktTooManyUpdates)?;
+            let mut updates: Vec<u64> = r.json::<Vec<u64>>().await?.into_iter().collect();
+            all_updates.append(&mut updates);
+            if nb_pages > 10 {
+                return Err(crate::Error::TraktTooManyUpdates.into());
+            } else if page < nb_pages {
+                page = page + 1;
+            } else {
+                break;
+            }
+        }
+        Ok(all_updates)
+    }
+
     pub async fn get_serie(&self, id: &MediasIds) -> crate::Result<Serie> {
 
         let id = id.as_id_for_trakt().ok_or(Error::NoMediaIdRequired(id.clone()))?;
@@ -77,21 +99,35 @@ impl TraktContext {
     }
 }
 
-async fn get_movie() -> Result<()> {
-    // Create a request and convert it into an HTTP request
-
-    Ok(())
-
-}
-
 
 impl TraktContext {
+
+    pub async fn movies_refreshed(&self, date: DateTime<FixedOffset>) -> crate::Result<Vec<u64>> {
+        let mut all_updates:Vec<u64> = vec![];
+        let mut page = 1;
+        loop {
+            let url = self.base_url.join(&format!("movies/updates/id/{}?page={}&limit=100", date.to_utc().fixed_offset().print(), page)).unwrap();
+            let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
+            let nb_pages: u32 = r.headers().get("x-pagination-page-count").ok_or(crate::Error::TraktTooManyUpdates)?.to_str().map_err(|_| crate::Error::TraktTooManyUpdates)?.parse().map_err(|_| crate::Error::TraktTooManyUpdates)?;
+            let mut updates: Vec<u64> = r.json::<Vec<u64>>().await?.into_iter().collect();
+            all_updates.append(&mut updates);
+            if nb_pages > 10 {
+                return Err(crate::Error::TraktTooManyUpdates.into());
+            } else if page < nb_pages {
+                page = page + 1;
+            } else {
+                break;
+            }
+        }
+        Ok(all_updates)
+    }
+
     pub async fn get_movie(&self, id: &MediasIds) -> crate::Result<Movie> {
 
         let id = id.as_id_for_trakt().ok_or(Error::NoMediaIdRequired(id.clone()))?;
 
         let url = self.base_url.join(&format!("movies/{}?extended=full", id)).unwrap();
-        println!("url {}", url);
+
         let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
         let movie = r.json::<TraktFullMovie>().await?;
         let movie_nous: Movie = movie.into();

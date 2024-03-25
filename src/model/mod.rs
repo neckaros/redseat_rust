@@ -18,7 +18,7 @@ use std::{io::Read, path::PathBuf, pin::Pin, sync::Arc};
 use nanoid::nanoid;
 use strum::IntoEnumIterator;
 use rs_plugin_url_interfaces::RsLink;
-use crate::{domain::{library::{LibraryMessage, LibraryRole}, serie::Serie}, plugins::{medias::{imdb::ImdbContext, tmdb::TmdbContext, trakt::TraktContext}, sources::{error::SourcesError, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, LocalSource, Source, SourceRead}, PluginManager}, server::get_server_file_path_array, tools::{image_tools::{resize_image_path, ImageSize, ImageSizeIter, ImageType}, log::log_info, scheduler::{self, refresh::RefreshTask, RsScheduler, RsTaskType}}};
+use crate::{domain::{library::{LibraryMessage, LibraryRole}, serie::Serie}, plugins::{medias::{imdb::ImdbContext, tmdb::TmdbContext, trakt::TraktContext}, sources::{error::SourcesError, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, LocalSource, Source, SourceRead}, PluginManager}, server::get_server_file_path_array, tools::{clock::SECONDS_IN_HOUR, image_tools::{resize_image_path, ImageSize, ImageSizeIter, ImageType}, log::log_info, scheduler::{self, refresh::RefreshTask, RsScheduler, RsTaskType}}};
 
 use self::{store::SqliteStore, users::{ConnectedUser, UserRole}};
 use error::{Result, Error};
@@ -55,7 +55,9 @@ impl ModelController {
 
 		let scheduler = &mc.scheduler;
 		scheduler.start(mc.clone()).await?;
-		scheduler.add(RsTaskType::Refresh, scheduler::RsSchedulerWhen::Every(20), RefreshTask {specific_library:None} ).await?;
+		scheduler.add(RsTaskType::Refresh, scheduler::RsSchedulerWhen::Every(SECONDS_IN_HOUR), RefreshTask {specific_library:None} ).await?;
+		scheduler.add(RsTaskType::Refresh, scheduler::RsSchedulerWhen::At(0), RefreshTask {specific_library:None} ).await?;
+		scheduler.tick(mc.clone()).await;
 		Ok(mc)
 	}
 }

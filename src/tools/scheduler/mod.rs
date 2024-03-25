@@ -36,11 +36,11 @@ impl RsScheduler {
         }
         let new_token = CancellationToken::new();
         let cloned_token = new_token.clone();
-        let mut cloned_self = self.clone();
+        let cloned_self = self.clone();
         tokio::spawn(async move {
             while !cloned_token.is_cancelled() {
                 cloned_self.tick(mc.clone()).await;
-                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                tokio::time::sleep(tokio::time::Duration::from_secs(55)).await;
             }
             log_info(super::log::LogServiceType::Scheduler, "Scheduler stopped".into());
             
@@ -70,8 +70,8 @@ impl RsScheduler {
         Ok(())
     }
 
-    pub async fn tick(&mut self, mc: ModelController) {
-        log_info(super::log::LogServiceType::Scheduler, format!("Scheduler tick"));
+    pub async fn tick(&self, mc: ModelController) {
+        //log_info(super::log::LogServiceType::Scheduler, format!("Scheduler tick"));
 
         let mut queue = self.queue.lock().await;
         let now = get_time().as_secs();
@@ -94,8 +94,10 @@ impl RsScheduler {
                         });
                         task
                     };
-                    let _ = task.execute(mc).await;
-                    let now = get_time().as_secs();
+                    let exec_request = task.execute(mc).await;
+                    if let Err(error) = exec_request {
+                        log_error(super::log::LogServiceType::Scheduler, format!("Error executing task {:?} {:#}", item.kind, error));
+                    }
                     let new_item = {
                         let mut running = scheduler.running.lock().await;
                         running.remove(&item);
@@ -107,7 +109,9 @@ impl RsScheduler {
                         }
                     };
                     if let Some(item) = new_item {
-                        scheduler.readd(item).await;
+                        if let Err(error) = scheduler.readd(item.clone()).await {
+                            log_error(super::log::LogServiceType::Scheduler, format!("Unavble to reschedule task {:?}, {:#}", item, error))
+                        }
                     }
                     
                 });

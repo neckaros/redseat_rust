@@ -150,6 +150,8 @@ impl Source for PathProvider {
         }))
     }
 
+
+
     async fn get_file_write_stream(&self, name: &str) -> SourcesResult<(String, Pin<Box<dyn AsyncWrite + Send>>)> {
         let mut path = self.root.clone();
         let mut sourcepath = PathBuf::new();
@@ -194,6 +196,25 @@ impl Source for PathProvider {
         let file = BufWriter::new(File::create(&file_path).await?);
         let source = sourcepath.to_str().ok_or(SourcesError::Other("Unable to convert path to string".into()))?.to_string();
         Ok((source.to_string(), Box::pin(file)))
+    }
+
+}
+
+impl PathProvider {
+    pub async fn get_file_write_library_overwrite(&self, name: &str) -> SourcesResult<BufWriter<File>> {
+        let mut path = self.root.clone();
+        path.push(&name);
+        if let Some(p) = path.parent() {
+            create_dir_all(&p).await?;
+        }
+        let file = BufWriter::new(File::create(&path).await?);
+        Ok(file)
+    }
+    pub async fn get_file_library(&self, name: &str) -> SourcesResult<BufReader<File>> {
+        let mut path = self.root.clone();
+        path.push(&name);
+        let file = BufReader::new(File::open(&path).await?);
+        Ok(file)
     }
 
 }

@@ -23,7 +23,11 @@ pub enum TraktShowStatus {
     #[serde(rename = "ended")]
     Ended,
     #[serde(rename = "released")]
-    Released
+    Released,
+    #[serde(rename = "canceled")]
+    Canceled,
+    #[serde(rename = "pilot")]
+    Pilot
 }
 
 /// Airing information of a [show]. Used in [FullShow]

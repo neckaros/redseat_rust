@@ -6,6 +6,7 @@ use tokio::{io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader}, process
 
 use crate::{domain::ffmpeg::FfprobeResult, Error};
 
+pub mod ytdl;
 
 pub type VideoResult<T> = core::result::Result<T, VideoError>;
 
