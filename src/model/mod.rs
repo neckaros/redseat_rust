@@ -56,8 +56,8 @@ impl ModelController {
 		let scheduler = &mc.scheduler;
 		scheduler.start(mc.clone()).await?;
 		scheduler.add(RsTaskType::Refresh, scheduler::RsSchedulerWhen::Every(SECONDS_IN_HOUR), RefreshTask {specific_library:None} ).await?;
-		scheduler.add(RsTaskType::Refresh, scheduler::RsSchedulerWhen::At(0), RefreshTask {specific_library:None} ).await?;
-		scheduler.tick(mc.clone()).await;
+		//scheduler.add(RsTaskType::Refresh, scheduler::RsSchedulerWhen::At(0), RefreshTask {specific_library:None} ).await?;
+		//scheduler.tick(mc.clone()).await;
 		Ok(mc)
 	}
 }

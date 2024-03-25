@@ -97,11 +97,13 @@ pub struct MovieForUpdate {
 impl MovieForUpdate {
     pub fn has_update(&self) -> bool {
         self.name.is_some() || self.kind.is_some() || self.status.is_some()
+        || self.digitalairdate.is_some() || self.airdate.is_some() 
         || self.imdb.is_some() || self.slug.is_some() || self.tmdb.is_some() || self.trakt.is_some() || self.otherids.is_some()
         || self.imdb_rating.is_some() || self.imdb_votes.is_some() || self.trakt_rating.is_some() || self.trakt_votes.is_some()
         || self.trailer.is_some() || self.year.is_some()
     } 
 }
+
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")] 

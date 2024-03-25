@@ -7,6 +7,42 @@ use crate::domain::movie::Movie;
 use super::trakt_show::TraktIds;
 
 
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TraktRelease {
+    pub country: String,
+    pub certification: Option<String>,
+    #[serde(rename = "release_date")]
+    pub release_date: NaiveDate,
+    #[serde(rename = "release_type")]
+    pub release_type: TraktReleaseType,
+    pub note: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Default, Debug, PartialEq, Clone)]
+#[serde(rename_all = "lowercase")]
+pub enum TraktReleaseType {
+    Unknown,
+    Premiere,
+    Limited,
+    Theatrical,
+    Digital,
+    Physical,
+    Tv,
+    #[serde(other)]
+    #[default]
+    Other,
+}
+
+pub trait TraktReleases {
+    fn earliest_for(&self, kind: TraktReleaseType) -> Option<NaiveDate>;
+}
+impl TraktReleases for Vec<TraktRelease> {
+    fn earliest_for(&self, kind: TraktReleaseType) -> Option<NaiveDate> {
+        self.iter().filter(|r| &r.release_type == &kind).map(|r| r.release_date).min()
+    }
+}
+
 /// A [movie] with full [extended info]
 ///
 /// [movie]: https://trakt.docs.apiary.io/#reference/movies

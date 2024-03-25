@@ -111,12 +111,15 @@ impl SqliteLibraryStore {
 
     pub async fn update_movie(&self, movie_id: &str, update: MovieForUpdate) -> Result<()> {
         let id = movie_id.to_string();
-        let existing = self.get_movie(movie_id).await?.ok_or_else( || Error::NotFound)?;
+        //let existing = self.get_movie(movie_id).await?.ok_or_else( || Error::NotFound)?;
         self.connection.call( move |conn| { 
             let mut where_query = QueryBuilder::new();
 
             where_query.add_update(&update.name, "name");
             where_query.add_update(&update.kind, "type");
+
+            where_query.add_update(&update.airdate, "airdate");
+            where_query.add_update(&update.digitalairdate, "digitalairdate");
 
             where_query.add_update(&update.status, "status");
             where_query.add_update(&update.trailer, "trailer");

@@ -15,9 +15,6 @@ pub trait Clock<T> where T: chrono::TimeZone{
     fn floor_to_hour(&self) -> Option<DateTime<T>>;
     fn add(self, duration: Duration) -> RsResult<DateTime<T>>;
 }
-
-
-
 impl<T> Clock<T> for DateTime<T> where T: chrono::TimeZone {
     fn print(&self) -> String {
         self.to_rfc3339_opts(SecondsFormat::Secs, true)
@@ -28,6 +25,16 @@ impl<T> Clock<T> for DateTime<T> where T: chrono::TimeZone {
     
     fn add(self, duration: Duration) -> RsResult<DateTime<T>> {
         self.checked_add_signed(duration).ok_or(crate::error::Error::TimeCreationError)
+    }
+}
+
+pub trait RsNaiveDate {
+    fn utc(&self) -> RsResult<DateTime<Utc>>;
+}
+
+impl RsNaiveDate for NaiveDate {
+    fn utc(&self) -> RsResult<DateTime<Utc>>  {
+        Ok(Utc.from_local_datetime(&self.and_hms_opt(0, 0, 0).ok_or(crate::Error::TimeCreationError)?).single().ok_or(crate::Error::TimeCreationError)?)
     }
 }
 

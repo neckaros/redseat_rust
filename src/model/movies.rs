@@ -222,6 +222,12 @@ impl ModelController {
         if movie.tmdb != new_movie.tmdb {
             updates.tmdb = new_movie.tmdb;
         }
+        if movie.digitalairdate != new_movie.digitalairdate {
+            updates.digitalairdate = new_movie.digitalairdate;
+        }
+        if movie.airdate != new_movie.airdate {
+            updates.airdate = new_movie.airdate;
+        }
 
         let new_movie = self.update_movie(library_id, movie_id.to_string(), updates, requesting_user).await?;
         Ok(new_movie)        

@@ -1,9 +1,9 @@
 use chrono::{DateTime, FixedOffset};
 use reqwest::{Client, Url};
 use tower::Service;
-use crate::{domain::{episode::Episode, movie::Movie, serie::Serie, MediasIds}, plugins::medias::trakt::{trakt_episode::TraktSeasonWithEpisodes, trakt_show::TraktFullShow}, tools::clock::Clock, Error, Result};
+use crate::{domain::{episode::Episode, movie::Movie, serie::Serie, MediasIds}, plugins::medias::trakt::{trakt_episode::TraktSeasonWithEpisodes, trakt_show::TraktFullShow}, tools::clock::{Clock, RsNaiveDate}, Error, Result};
 
-use self::{trakt_episode::TraktFullEpisode, trakt_movie::{TraktFullMovie, TraktTrendingMoviesResult}, trakt_show::TraktTrendingShowResult};
+use self::{trakt_episode::TraktFullEpisode, trakt_movie::{TraktFullMovie, TraktRelease, TraktReleaseType, TraktReleases, TraktTrendingMoviesResult}, trakt_show::TraktTrendingShowResult};
 // Context required for all requests
 
 mod trakt_show;
@@ -122,15 +122,35 @@ impl TraktContext {
         Ok(all_updates)
     }
 
-    pub async fn get_movie(&self, id: &MediasIds) -> crate::Result<Movie> {
+    pub async fn get_movie_releases(&self, id: &MediasIds) -> crate::Result<Vec<TraktRelease>> {
 
         let id = id.as_id_for_trakt().ok_or(Error::NoMediaIdRequired(id.clone()))?;
+
+        let url = self.base_url.join(&format!("movies/{}/releases", id)).unwrap();
+
+        let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
+        let releases = r.json::<Vec<TraktRelease>>().await?;
+        Ok(releases)
+    }
+
+    pub async fn get_movie(&self, ids: &MediasIds) -> crate::Result<Movie> {
+
+        let id = ids.as_id_for_trakt().ok_or(Error::NoMediaIdRequired(ids.clone()))?;
 
         let url = self.base_url.join(&format!("movies/{}?extended=full", id)).unwrap();
 
         let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
         let movie = r.json::<TraktFullMovie>().await?;
-        let movie_nous: Movie = movie.into();
+        let mut movie_nous: Movie = movie.into();
+        let releases = self.get_movie_releases(&ids).await?;
+        let digital = releases.earliest_for(TraktReleaseType::Digital);
+        if digital.is_some() {
+            movie_nous.digitalairdate = digital.and_then(|t| Some(t.utc().ok()?.timestamp_millis() as u64));
+        }
+        let theatrical = releases.earliest_for(TraktReleaseType::Theatrical);
+        if theatrical.is_some() {
+            movie_nous.airdate = theatrical.and_then(|t| Some(t.utc().ok()?.timestamp_millis() as u64));
+        }
         Ok(movie_nous)
     }
 
@@ -143,4 +163,31 @@ impl TraktContext {
         Ok(shows)
     }
 
+}
+
+
+
+#[cfg(test)]
+mod tests {
+
+    use chrono::{TimeZone, Utc};
+    use tests::trakt_movie::{TraktReleaseType, TraktReleases};
+
+    use crate::{error::RsResult, tools::clock::RsNaiveDate};
+
+    use super::*;
+
+    fn exemple_movie() -> MediasIds {
+        MediasIds::from_imdb("tt1160419".to_owned())
+    }
+    #[tokio::test]
+    async fn trakt_releases() -> RsResult<()> {
+        let trakt = TraktContext::new("455f81b3409a8dd140a941e9250ff22b2ed92d68003491c3976363fe752a9024".to_owned());
+
+        let releases = trakt.get_movie_releases(&exemple_movie()).await?;
+        
+        println!("{:?}", releases);
+        println!("{:?}", releases.earliest_for(TraktReleaseType::Digital).and_then(|d| d.utc().ok()));
+        Ok(())
+    }
 }
