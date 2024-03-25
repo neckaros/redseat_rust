@@ -10,23 +10,23 @@ pub fn now() -> DateTime<FixedOffset> {
 
 pub type UtcDate = DateTime<Utc>;
 
-pub trait Clock {
+pub trait Clock<T> where T: chrono::TimeZone{
     fn print(&self) -> String;
-    fn floor_to_hour(&self) -> Option<DateTime<FixedOffset>>;
-    fn add(self, duration: Duration) -> RsResult<DateTime<FixedOffset>>;
+    fn floor_to_hour(&self) -> Option<DateTime<T>>;
+    fn add(self, duration: Duration) -> RsResult<DateTime<T>>;
 }
 
 
 
-impl Clock for DateTime<FixedOffset> {
+impl<T> Clock<T> for DateTime<T> where T: chrono::TimeZone {
     fn print(&self) -> String {
         self.to_rfc3339_opts(SecondsFormat::Secs, true)
     }
-    fn floor_to_hour(&self) -> Option<DateTime<FixedOffset>> {
-        Utc.with_ymd_and_hms(self.year(), self.month(), self.day(), self.hour(), 0, 0).single().and_then(|r| Some(r.fixed_offset()))
+    fn floor_to_hour(&self) -> Option<DateTime<T>> {
+        T::with_ymd_and_hms(&self.timezone(), self.year(), self.month(), self.day(), self.hour(), 0, 0).single()
     }
     
-    fn add(self, duration: Duration) -> RsResult<DateTime<FixedOffset>> {
+    fn add(self, duration: Duration) -> RsResult<DateTime<T>> {
         self.checked_add_signed(duration).ok_or(crate::error::Error::TimeCreationError)
     }
 }

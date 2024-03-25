@@ -103,6 +103,8 @@ pub enum Error {
 	NdShapeError(#[serde_as(as = "DisplayFromStr")] ShapeError),
 
 
+	#[from]
+	YtDl(#[serde_as(as = "DisplayFromStr")] youtube_dl::Error),
 	
 	
 	#[from]
