@@ -148,6 +148,11 @@ pub async fn get_server_file_path(name: &str) -> Result<PathBuf> {
     return Ok(dir_path);
 }
 
+pub async fn get_server_temp_file_path() -> Result<PathBuf> {
+    get_server_file_path_array(vec![".cache", &nanoid!()]).await
+}
+
+
 pub async fn get_server_file_path_array(mut names: Vec<&str>) -> Result<PathBuf> {
     let mut dir_path: PathBuf = get_server_local_path().await?;
     if let Some(last) = names.pop() {

@@ -23,7 +23,7 @@ pub struct Episode {
 
     
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub airdate: Option<u64>,
+    pub airdate: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration: Option<u64>,
 

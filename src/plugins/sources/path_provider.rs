@@ -108,7 +108,7 @@ impl Source for PathProvider {
 
         let mut filereader = BufReader::new(file);
 
-        let mut range_response = RangeResponse { total_size: Some(total_size.clone()), size: None, start: None, end: None };
+        let mut range_response = RangeResponse { size: Some(total_size.clone()), start: None, end: None };
         
         if let Some(range) = &range {
 
@@ -133,8 +133,9 @@ impl Source for PathProvider {
                     return Ok(SourceRead::Stream(FileStreamResult {
                         stream: Box::pin(taken),
                         size: Some(size),
+                        accept_range: true,
                         range: Some(range_response),
-                        mime: guess.first(),
+                        mime: guess.first().and_then(|g| Some(g.to_string())),
                         name: filename
                     }))
                 }
@@ -144,8 +145,9 @@ impl Source for PathProvider {
         Ok(SourceRead::Stream(FileStreamResult {
             stream: Box::pin(filereader),
             size: Some(size),
+            accept_range: true,
             range: if range.is_some() { Some(range_response) } else {None},
-            mime: guess.first(),
+            mime: guess.first().and_then(|g| Some(g.to_string())),
             name: filename
         }))
     }

@@ -40,7 +40,7 @@ impl TraktFullEpisode {
             name: self.title,
             overview: self.overview,
             alt: None,
-            airdate: self.first_aired.and_then(|t| Some(t.timestamp_millis() as u64)),
+            airdate: self.first_aired.and_then(|t| Some(t.timestamp_millis())),
             duration: Some(self.runtime as u64),
             params: None,
             imdb: self.ids.imdb,

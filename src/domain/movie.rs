@@ -16,8 +16,8 @@ pub struct Movie {
     #[serde(rename = "type")]
     pub kind: Option<Value>,
     pub year: Option<u16>,
-    pub airdate: Option<u64>,
-    pub digitalairdate: Option<u64>,
+    pub airdate: Option<i64>,
+    pub digitalairdate: Option<i64>,
 
     pub duration: Option<u32>,
     pub overview: Option<String>,
@@ -65,8 +65,8 @@ pub struct MovieForUpdate {
     #[serde(rename = "type")]
     pub kind: Option<Value>,
     pub year: Option<u32>,
-    pub airdate: Option<u64>,
-    pub digitalairdate: Option<u64>,
+    pub airdate: Option<i64>,
+    pub digitalairdate: Option<i64>,
 
     pub duration: Option<u64>,
     pub overview: Option<String>,

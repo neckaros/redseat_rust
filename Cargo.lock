@@ -2780,9 +2780,9 @@ checksum = "2900ede94e305130c13ddd391e0ab7cbaeb783945ae07a279c268cb05109c6cb"
 
 [[package]]
 name = "plugin-request-interfaces"
-version = "0.6.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad878f79dcf65a7800cc18dacb94d7f97dc7c16e4af6c48ed2fef982817357da"
+checksum = "846b106ddc88681b13ac894441962dbb0a03614bcb594fb48c1c996c11ce84ea"
 dependencies = [
  "rs-plugin-common-interfaces",
  "rusqlite",
@@ -3124,6 +3124,7 @@ dependencies = [
  "axum-extra",
  "axum-server",
  "axum-server-dual-protocol",
+ "bytes",
  "chrono",
  "clap",
  "derive_more",
@@ -3158,6 +3159,7 @@ dependencies = [
  "serial_test",
  "sha256",
  "socketioxide",
+ "stream-map-any",
  "strum",
  "strum_macros",
  "time",
@@ -3940,6 +3942,15 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
+
+[[package]]
+name = "stream-map-any"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ebaf16badec7336d10b3705057e07ea47e7ee1e0c2e83f936beec38aeebd583e"
+dependencies = [
+ "futures",
+]
 
 [[package]]
 name = "strsim"

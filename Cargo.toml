@@ -34,7 +34,7 @@ axum-server-dual-protocol = "0.6.0"
 
 rusqlite = { version = "0.31", features = ["bundled","serde_json"] }
 tokio-rusqlite = "0.5.1"
-
+bytes = "1.5.0"
 derive_more = "0.99.17"
 strum_macros = "0.26.1"
 tokio-util = "0.7.10"
@@ -57,10 +57,11 @@ http = "0.2.0"
 extism = "1.2.0"
 rs-plugin-common-interfaces = { version = "0.4.2", features = ["rusqlite",] }
 rs-plugin-url-interfaces = { version = "0.1.2", features = ["rusqlite"] }
-plugin-request-interfaces = { version = "0.6.0", features = ["rusqlite"] }
+plugin-request-interfaces = { version = "0.7.1", features = ["rusqlite"] }
 async-recursion = "1.1.0"
 async-compression = { version = "0.4.6", features = ["tokio"] }
 youtube_dl = { version = "0.9.0", features = ["tokio", "downloader-rustls-tls"] }
+stream-map-any = "0.2.2"
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }

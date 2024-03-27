@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 
-use crate::domain::{backup::Backup, plugin::{Plugin, PluginForAdd, PluginForInsert, PluginForUpdate, PluginWithCredential}};
+use crate::{domain::{backup::Backup, plugin::{Plugin, PluginForAdd, PluginForInsert, PluginForUpdate, PluginWithCredential}}, error::RsResult};
 
 use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
 
@@ -86,7 +86,7 @@ impl ModelController {
             Err(Error::NotFound)
         }
 	}
-    pub async fn exec_request(&self, request: RsRequest, library_id: Option<String>, requesting_user: &ConnectedUser) -> Result<Option<RsRequest>> {
+    pub async fn exec_request(&self, request: RsRequest, library_id: Option<String>, requesting_user: &ConnectedUser) -> RsResult<RsRequest> {
         if let Some(library_id) = library_id {
             requesting_user.check_library_role(&library_id, crate::domain::library::LibraryRole::Read)?;
         } else {
@@ -94,7 +94,7 @@ impl ModelController {
         }
         let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::Request), ..Default::default() }, &requesting_user).await?;
 
-        Ok(self.plugin_manager.request(request, plugins).await)
+        Ok(self.plugin_manager.request(request, plugins).await?)
         
     }
 }

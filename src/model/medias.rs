@@ -9,6 +9,7 @@ use http::header::CONTENT_TYPE;
 use mime::{Mime, APPLICATION_OCTET_STREAM};
 use mime_guess::get_mime_extensions_str;
 use nanoid::nanoid;
+use plugin_request_interfaces::{RsCookie, RsRequest};
 use query_external_ip::SourceError;
 use rs_plugin_common_interfaces::PluginType;
 use serde::{Deserialize, Serialize};
@@ -16,7 +17,7 @@ use tokio::io::{copy, AsyncRead, AsyncReadExt};
 use tokio_util::io::StreamReader;
 
 
-use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaTagReference, MediasMessage}, ElementAction}, plugins::{get_plugin_fodler, sources::{error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{resize_image, resize_image_reader, ImageSize, ImageType}, log::{log_error, log_info}, prediction::{predict_net, preload_model, PredictionTagResult}, video_tools::{self, VideoTime}}};
+use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaTagReference, MediasMessage}, ElementAction}, error::RsResult, plugins::{get_plugin_fodler, sources::{error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{resize_image, resize_image_reader, ImageSize, ImageType}, log::{log_error, log_info}, prediction::{predict_net, preload_model, PredictionTagResult}, video_tools::{self, VideoTime}}};
 
 use super::{error::{Error, Result}, plugins::PluginQuery, store, users::ConnectedUser, ModelController};
 
@@ -181,7 +182,10 @@ impl ModelController {
     pub fn process_media_spawn(&self, library_id: String, media_id: String, requesting_user: ConnectedUser){
         let mc = self.clone();
         tokio::spawn(async move {
-            mc.process_media(&library_id, &media_id, &requesting_user).await;
+            let r = mc.process_media(&library_id, &media_id, &requesting_user).await;
+            if let Err(error) = r {
+                log_error(crate::tools::log::LogServiceType::Source, format!("Unable to process media {} for predictions", media_id));
+            }
         });
     }
     pub async fn process_media(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> Result<()>{
@@ -231,7 +235,7 @@ impl ModelController {
 	}
 
 
-    pub async fn download_library_url(&self, library_id: &str, files: GroupMediaDownload<MediaDownloadUrl>, requesting_user: &ConnectedUser) -> Result<Vec<Media>> {
+    pub async fn download_library_url(&self, library_id: &str, files: GroupMediaDownload<MediaDownloadUrl>, requesting_user: &ConnectedUser) -> RsResult<Vec<Media>> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
 
         let m = self.source_for_library(&library_id).await?;
@@ -239,36 +243,33 @@ impl ModelController {
         let mut medias: Vec<Media> = vec![];
         //let infos = infos.unwrap_or_else(|| MediaForUpdate::default());
         for file in files.files {
+            let mut request: RsRequest = RsRequest::from(file.clone());
+            if let Some(cookies) = &files.cookies {
+                request.cookies = cookies.iter().map(|s| RsCookie::from_str(s).ok()).collect();
+            }
             let mut infos = file.infos.unwrap_or_else(|| MediaForUpdate::default());
-            let body = reqwest::get(file.url).await?;
-            let headers = body.headers();
+            let mut reader = SourceRead::Request(request).into_reader(library_id, None, Some((self.clone(), requesting_user))).await?;
 
             let name = infos.name.clone();
-            let mut filename = name.unwrap_or(nanoid!());
-            if infos.mimetype.is_none() && headers.contains_key(CONTENT_TYPE) {
-                infos.mimetype = headers.get(CONTENT_TYPE).and_then(|e| Some(e.to_str().and_then(|e| Ok(e.to_string())))).transpose()?;
+            let mut filename = name.or_else(|| reader.name).unwrap_or(nanoid!());
+            if infos.mimetype.is_none() {
+                infos.mimetype = reader.mime;
             }
 
-            if let Some(mimetype) = &infos.mimetype {
-                let suffix = get_extension_from_mime(mimetype);
-                filename = format!("{}.{}", filename, suffix);
-   
-                
+            if !filename.contains(".") || filename.split(".").last().unwrap_or("").len() > 5 {
+                if let Some(mimetype) = &infos.mimetype {
+                    let suffix = get_extension_from_mime(mimetype);
+                    filename = format!("{}.{}", filename, suffix);
+                }
             }
 
-
-            let stream = body.bytes_stream();
-
-            let body_with_io_error = stream.map_err(|err| io::Error::new(io::ErrorKind::Other, err));
-            let body_reader = StreamReader::new(body_with_io_error);
 
             
             let (source, writer) = m.get_file_write_stream(&filename).await?;
             println!("Adding: {}", source);
 
-            tokio::pin!(body_reader);
             tokio::pin!(writer);
-            copy(&mut body_reader, &mut writer).await?;
+            copy(&mut reader.stream, &mut writer).await?;
 
 
             

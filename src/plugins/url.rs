@@ -1,9 +1,9 @@
 use extism::convert::Json;
 use http::header::{CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE};
-use plugin_request_interfaces::{RsRequest, RsRequestWithCredential};
+use plugin_request_interfaces::{RsRequest, RsRequestStatus, RsRequestWithCredential};
 use rs_plugin_common_interfaces::{PluginCredential, PluginType};
 
-use crate::{domain::plugin::PluginWithCredential, tools::{file_tools::get_mime_from_filename, http_tools::{extract_header, guess_filename, parse_content_disposition}, log::log_error}};
+use crate::{domain::plugin::PluginWithCredential, error::RsResult, tools::{file_tools::get_mime_from_filename, http_tools::{extract_header, guess_filename, parse_content_disposition}, log::log_error, video_tools::ytdl::YydlContext}, Error};
 
 use super::PluginManager;
 
@@ -46,7 +46,8 @@ impl PluginManager {
         None
     }
 
-    pub async fn request(&self, mut request: RsRequest, plugins: impl Iterator<Item = PluginWithCredential>) -> Option<RsRequest>{
+    pub async fn request(&self, mut request: RsRequest, plugins: impl Iterator<Item = PluginWithCredential>) -> RsResult<RsRequest> {
+        println!("Plugins");
         let client = reqwest::Client::new();
         let r = client.head(&request.url).send().await;
         if let Ok(heads) = r {
@@ -78,7 +79,7 @@ impl PluginManager {
                         if res.mime.is_none() {
                             res.mime = get_mime_from_filename(&res.url);
                         }
-                        return Some(res);
+                        return Ok(res);
                     } else if let Err((error, code)) = res {
                         if code != 404 {
                             log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request {} {:?}", code, error))
@@ -88,7 +89,19 @@ impl PluginManager {
                 }
             }
         }
-        None
+        if request.status == RsRequestStatus::NeedParsing {
+            println!("Need Parsing {:?}", request.cookies);
+            let ctx = YydlContext::new().await?;
+            let r = ctx.request(&request).await?.ok_or(Error::Error("Unable to get video with YTDLP".to_owned()))?;
+            println!("parsed");
+            ctx.download_to(&request).await?;
+            request.url = r.url.ok_or(Error::Error("Unable to get video with YTDLP".to_owned()))?;
+
+        } else {
+            request.status = RsRequestStatus::FinalPublic;
+        }
+        
+        Ok(request)
     }
 
     pub fn request_all(&self, request: RsRequest) -> Option<RsRequest>{

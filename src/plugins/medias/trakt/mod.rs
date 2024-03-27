@@ -145,11 +145,11 @@ impl TraktContext {
         let releases = self.get_movie_releases(&ids).await?;
         let digital = releases.earliest_for(TraktReleaseType::Digital);
         if digital.is_some() {
-            movie_nous.digitalairdate = digital.and_then(|t| Some(t.utc().ok()?.timestamp_millis() as u64));
+            movie_nous.digitalairdate = digital.and_then(|t| Some(t.utc().ok()?.timestamp_millis()));
         }
         let theatrical = releases.earliest_for(TraktReleaseType::Theatrical);
         if theatrical.is_some() {
-            movie_nous.airdate = theatrical.and_then(|t| Some(t.utc().ok()?.timestamp_millis() as u64));
+            movie_nous.airdate = theatrical.and_then(|t| Some(t.utc().ok()?.timestamp_millis()));
         }
         Ok(movie_nous)
     }

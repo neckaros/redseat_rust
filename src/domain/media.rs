@@ -1,6 +1,7 @@
 use std::str::FromStr;
 
 use nanoid::nanoid;
+use plugin_request_interfaces::{RsRequest, RsRequestStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use strum_macros::EnumString;
@@ -84,7 +85,7 @@ pub struct Media {
 
     pub added: Option<u64>,
     pub modified: Option<u64>,
-    pub created: Option<u64>,
+    pub created: Option<i64>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rating: Option<f32>,
@@ -307,6 +308,23 @@ pub struct MediaDownloadUrl {
     pub parse: bool,
     pub upload_id: Option<String>,
     pub infos: Option<MediaForUpdate>
+}
+
+impl From<MediaDownloadUrl> for RsRequest {
+    fn from(value: MediaDownloadUrl) -> Self {
+        RsRequest {
+            url: value.url,
+            mime: (value.infos.clone()).and_then(|i| i.mimetype.clone()),
+            size: None,
+            filename: value.infos.and_then(|i| i.name.clone()),
+            status: if value.parse { RsRequestStatus::NeedParsing } else { RsRequestStatus::Unprocessed },
+            headers: None,
+            cookies: None,
+            files: None,
+            selected_file: None,
+            
+        }
+    }
 }
 
 impl GroupMediaDownloadContent for MediaDownloadUrl {
