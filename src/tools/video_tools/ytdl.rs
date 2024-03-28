@@ -1,4 +1,5 @@
-use std::{any::Any, path::{Path, PathBuf}, pin::Pin, process::Stdio, str::from_utf8};
+use std::{any::Any, io, path::{Path, PathBuf}, pin::Pin, process::Stdio, str::from_utf8};
+use bytes::Bytes;
 use stream_map_any::StreamMapAny;
 use futures::{AsyncRead, Stream, StreamExt};
 use nanoid::nanoid;
@@ -7,7 +8,7 @@ use tokio::{fs::{remove_file, File}, io::{AsyncWrite, AsyncWriteExt, BufReader},
 use tokio_util::io::{ReaderStream, StreamReader};
 use youtube_dl::{download_yt_dlp, SingleVideo, YoutubeDl};
 
-use crate::{error::RsResult, plugins::sources::AsyncReadPinBox, server::{get_server_folder_path_array, get_server_temp_file_path}, tools::log::log_info, Error};
+use crate::{domain::progress::RsProgress, error::RsResult, plugins::sources::AsyncReadPinBox, server::{get_server_folder_path_array, get_server_temp_file_path}, tools::log::log_info, Error};
 
 const FILE_NAME: &str = if cfg!(target_os = "windows") {
     "yt-dlp.exe"
@@ -126,8 +127,27 @@ impl YydlContext {
     }
 }
 
+impl RsProgress {
+    pub fn from_ytdl(str: &str) -> Option<Self> {
+        let mut split = str.split("progress=");
+        if let Some(progress_part) = split.nth(1) {
+            let mut parts = progress_part.split("-");
+           Some(Self {
+                id: nanoid!(),
+                current: parts.next().and_then(|p| p.parse::<u64>().ok()),
+                total: parts.next().and_then(|p| p.replace("\"", "").parse::<u64>().ok())
+            })
+        } else {
+            None
+        }
+    }
+}
 
-struct YtDlCommandBuilder {
+pub enum YtdlItem {
+    Progress(RsProgress),
+    Data(Result<Bytes, io::Error>)
+}
+pub struct YtDlCommandBuilder {
     cmd: Command,
     input_options: Vec<String>,
     output_options: Vec<String>,
@@ -155,7 +175,7 @@ impl YtDlCommandBuilder {
         self
     }
 
-    pub async fn run(&mut self) -> Result<(ReaderStream<ChildStdout>, Pin<Box<dyn Stream<Item = Option<String>>>>), Error>
+    pub async fn run(&mut self) -> Result<(ReaderStream<ChildStdout>, Pin<Box<dyn Stream<Item = RsProgress>>>), Error>
     {
         self.cmd
         .arg("--progress-template")
@@ -167,8 +187,8 @@ impl YtDlCommandBuilder {
         .spawn()?;
     
         let stdout = ReaderStream::new(child.stdout.take().unwrap());
-        let stderr = ReaderStream::new(child.stderr.take().unwrap()).map(|f| { 
-           let r = f.ok().and_then(|b| from_utf8(&b).ok().and_then(|b| Some(b.to_owned())));
+        let stderr = ReaderStream::new(child.stderr.take().unwrap()).filter_map(|f| async { 
+           let r = f.ok().and_then(|b| from_utf8(&b).ok().and_then(|b| RsProgress::from_ytdl(b)));
            r
             }
         );
@@ -245,7 +265,7 @@ mod tests {
         
     #[tokio::test]
     async fn test_stream2() -> RsResult<()> {
-        let mut reader = YtDlCommandBuilder::new("https://www.youtube.com/watch?v=8kGIlALKO-s").run().await?;
+        let reader = YtDlCommandBuilder::new("https://www.youtube.com/watch?v=8kGIlALKO-s").run().await?;
         let mut file: File = File::create("C:\\Users\\arnau\\AppData\\Local\\redseat\\.cache\\test1.webm").await?;
         let mut map = StreamMapAny::new();
         map.insert("data", reader.0);
@@ -259,7 +279,7 @@ mod tests {
                 file.write(&v).await?;
                 
             } else if let ("progress", variant) = data {
-                println!("progress: {:?}", variant.value::<Option<String>>() )
+                println!("progress: {:?}", variant.value::<RsProgress>().map_err(|_| crate::Error::Error("Unable to get RsProgres".to_owned()))?.percent() )
             }
         }
 

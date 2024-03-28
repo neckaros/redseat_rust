@@ -15,6 +15,8 @@ pub mod episode;
 pub mod plugin;
 pub mod movie;
 
+pub mod progress;
+
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")] 
