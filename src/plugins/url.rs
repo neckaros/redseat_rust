@@ -5,7 +5,7 @@ use rs_plugin_common_interfaces::{PluginCredential, PluginType};
 
 use crate::{domain::plugin::PluginWithCredential, error::RsResult, tools::{file_tools::get_mime_from_filename, http_tools::{extract_header, guess_filename, parse_content_disposition}, log::log_error, video_tools::ytdl::YydlContext}, Error};
 
-use super::PluginManager;
+use super::{sources::SourceRead, PluginManager};
 
 use rs_plugin_url_interfaces::RsLink;
 
@@ -46,7 +46,7 @@ impl PluginManager {
         None
     }
 
-    pub async fn request(&self, mut request: RsRequest, plugins: impl Iterator<Item = PluginWithCredential>) -> RsResult<RsRequest> {
+    pub async fn request(&self, mut request: RsRequest, plugins: impl Iterator<Item = PluginWithCredential>) -> RsResult<SourceRead> {
         println!("Plugins");
         let client = reqwest::Client::new();
         let r = client.head(&request.url).send().await;
@@ -79,7 +79,7 @@ impl PluginManager {
                         if res.mime.is_none() {
                             res.mime = get_mime_from_filename(&res.url);
                         }
-                        return Ok(res);
+                        return Ok(SourceRead::Request(res));
                     } else if let Err((error, code)) = res {
                         if code != 404 {
                             log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request {} {:?}", code, error))
@@ -89,19 +89,18 @@ impl PluginManager {
                 }
             }
         }
-        if request.status == RsRequestStatus::NeedParsing {
+        if request.status == RsRequestStatus::NeedParsing || request.url.ends_with(".m3u8") || request.mime.as_deref().unwrap_or("no") == "application/vnd.apple.mpegurl" {
             println!("Need Parsing {:?}", request.cookies);
             let ctx = YydlContext::new().await?;
-            let r = ctx.request(&request).await?.ok_or(Error::Error("Unable to get video with YTDLP".to_owned()))?;
-            println!("parsed");
-            ctx.download_to(&request).await?;
-            request.url = r.url.ok_or(Error::Error("Unable to get video with YTDLP".to_owned()))?;
+            let r = ctx.request(&request).await?;
+            let source = SourceRead::StreamWithProgress(r);
+            return Ok(source);
 
         } else {
             request.status = RsRequestStatus::FinalPublic;
         }
         
-        Ok(request)
+        Ok(SourceRead::Request(request))
     }
 
     pub fn request_all(&self, request: RsRequest) -> Option<RsRequest>{

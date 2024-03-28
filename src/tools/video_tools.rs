@@ -106,7 +106,7 @@ pub async fn probe_video(uri: &str) -> Result<FfprobeResult, Error> {
     .arg("json")
     .arg(uri)
     .output()
-    .await.map_err(|_| Error::GenericRedseatError)?
+    .await.map_err(|_| Error::Error("unable to probe video".to_owned()))?
     ;
     if let Ok(val) = str::from_utf8(&output.stderr) {
         if val != "" {
@@ -119,7 +119,7 @@ pub async fn probe_video(uri: &str) -> Result<FfprobeResult, Error> {
         let len = output_string.trim_end_matches(&['\r', '\n', ' '][..]).len();
         output_string.truncate(len);
         
-        let probe: FfprobeResult =  serde_json::from_str(&output_string).unwrap();
+        let probe: FfprobeResult =  serde_json::from_str(&output_string)?;
         Ok(probe)
     } else {
         Err(Error::GenericRedseatError)

@@ -184,6 +184,7 @@ impl ModelController {
                 match source {
                     crate::plugins::sources::SourceRead::Stream(s) => Ok(s),
                     crate::plugins::sources::SourceRead::Request(_) => Err(crate::Error::GenericRedseatError),
+                    crate::plugins::sources::SourceRead::StreamWithProgress(_) => Err(crate::Error::GenericRedseatError),
                 }
             }
         } else {

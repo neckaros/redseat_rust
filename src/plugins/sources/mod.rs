@@ -1,14 +1,16 @@
 use std::{io, path::PathBuf, pin::Pin, str::FromStr};
 use async_recursion::async_recursion;
 use axum::{async_trait, body::Body, response::IntoResponse};
-use futures::{future::BoxFuture, Future, TryStreamExt};
+use futures::{future::BoxFuture, Future, Stream, StreamExt, TryStreamExt};
 use hyper::{header, HeaderMap};
 use mime::{Mime, APPLICATION_OCTET_STREAM};
+use nanoid::nanoid;
 use plugin_request_interfaces::RsRequest;
 use serde::{Deserialize, Serialize};
 use tokio::{fs::File, io::{AsyncRead, AsyncWrite, BufReader}};
+
 use tokio_util::io::{ReaderStream, StreamReader};
-use crate::{domain::{library::ServerLibrary, media::MediaForUpdate}, error::RsResult, model::{error::Error, users::ConnectedUser, ModelController}, routes::mw_range::RangeDefinition};
+use crate::{domain::{library::ServerLibrary, media::MediaForUpdate}, error::RsResult, model::{error::Error, users::ConnectedUser, ModelController}, routes::mw_range::RangeDefinition, tools::video_tools::ytdl::ProgressStreamItem};
 
 use self::error::{SourcesError, SourcesResult};
 
@@ -97,8 +99,10 @@ impl<T: Sized + AsyncRead + Send> FileStreamResult<T> {
 
 pub enum SourceRead {
 	Stream(FileStreamResult<AsyncReadPinBox>),
-	Request(RsRequest)
+	Request(RsRequest),
+    StreamWithProgress(Pin<Box<dyn Stream<Item = ProgressStreamItem> + Send >>),
 }
+
 
 type FuncResult = dyn Future<Output=crate::model::error::Result<RsRequest>>;
 
@@ -109,14 +113,32 @@ impl SourceRead {
             SourceRead::Stream(reader) => {
                 Ok(reader)
             },
+            SourceRead::StreamWithProgress(reader) => {
+                let new_reader = reader.filter_map(|d| async { match d {
+                    ProgressStreamItem::Progress(_) => None,
+                    ProgressStreamItem::Data(d) => Some(d),
+                }
+                });
+                let reader = StreamReader::new(new_reader.map_err(|err| io::Error::new(io::ErrorKind::Other, err)));
+                let pinned: AsyncReadPinBox = Box::pin(reader);
+                let fsr = FileStreamResult { 
+                    stream: pinned, 
+                    size: None, 
+                    accept_range: false, 
+                    range: None, 
+                    mime: None, 
+                    name: Some(format!("{}.mp4", nanoid!()))
+
+                };
+                Ok(fsr)
+            },
             SourceRead::Request(request) => {
 
                 match request.status {
                     plugin_request_interfaces::RsRequestStatus::Unprocessed | plugin_request_interfaces::RsRequestStatus::NeedParsing => {
                         if let Some((mc, user)) = mc {
                             let new_request = mc.exec_request(request.clone(), Some(library_id.to_string()), user).await?;
-                            let read = SourceRead::Request(new_request);
-                            read.into_reader(library_id, range.clone(), Some((mc, user))).await
+                            new_request.into_reader(library_id, range.clone(), Some((mc, user))).await
                         } else {
                             Err(Error::InvalidRsRequestStatus(request.status).into())
                         }
@@ -190,13 +212,24 @@ impl SourceRead {
                 let status = if reader.range.is_some() { axum::http::StatusCode::PARTIAL_CONTENT } else { axum::http::StatusCode::OK };
                 Ok((status, headers, body).into_response())
             },
+            SourceRead::StreamWithProgress(reader) => {
+                let headers = HeaderMap::new();
+                let new_reader = reader.filter_map(|d| async { match d {
+                    ProgressStreamItem::Progress(_) => None,
+                    ProgressStreamItem::Data(d) => Some(d),
+                }
+                });
+                let body = Body::from_stream(new_reader);
+
+                Ok((axum::http::StatusCode::OK, headers, body).into_response())
+
+            },
             SourceRead::Request(request) => {
                 match request.status {
                     plugin_request_interfaces::RsRequestStatus::Unprocessed | plugin_request_interfaces::RsRequestStatus::NeedParsing => {
                         if let Some((mc, user)) = mc {
                             let new_request = mc.exec_request(request.clone(), Some(library_id.to_string()), user).await?;
-                            let read = SourceRead::Request(new_request);
-                            read.into_response(library_id, range.clone(), Some((mc, user))).await
+                            new_request.into_response(library_id, range.clone(), Some((mc, user))).await
                         } else {
                             Err(Error::InvalidRsRequestStatus(request.status).into())
                         }

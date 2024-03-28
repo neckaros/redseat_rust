@@ -1,14 +1,17 @@
 use std::{any::Any, io, path::{Path, PathBuf}, pin::Pin, process::Stdio, str::from_utf8};
 use bytes::Bytes;
 use stream_map_any::StreamMapAny;
-use futures::{AsyncRead, Stream, StreamExt};
+use futures::{AsyncRead, Stream};
+
 use nanoid::nanoid;
-use plugin_request_interfaces::RsRequest;
+use plugin_request_interfaces::{RsCookie, RsRequest};
 use tokio::{fs::{remove_file, File}, io::{AsyncWrite, AsyncWriteExt, BufReader}, process::{Child, ChildStderr, ChildStdout, Command}};
 use tokio_util::io::{ReaderStream, StreamReader};
 use youtube_dl::{download_yt_dlp, SingleVideo, YoutubeDl};
+use tokio_stream::StreamExt;
 
-use crate::{domain::progress::RsProgress, error::RsResult, plugins::sources::AsyncReadPinBox, server::{get_server_folder_path_array, get_server_temp_file_path}, tools::log::log_info, Error};
+
+use crate::{domain::progress::RsProgress, error::RsResult, plugins::sources::AsyncReadPinBox, server::{get_server_folder_path_array, get_server_temp_file_path}, tools::log::{log_error, log_info}, Error};
 
 const FILE_NAME: &str = if cfg!(target_os = "windows") {
     "yt-dlp.exe"
@@ -56,34 +59,25 @@ impl YydlContext {
         Ok(video)
     }
 
-    pub async fn request(&self, request: &RsRequest) -> RsResult<Option<SingleVideo>> {
-        let mut process = YoutubeDl::new(request.url.to_owned());
-        process.socket_timeout("15");
+    pub async fn request(&self, request: &RsRequest) -> RsResult<Pin<Box<dyn Stream<Item = ProgressStreamItem> + Send >>> {
 
-        let path = if let Some(cookies) = &request.cookies {
-            let p = get_server_temp_file_path().await?;
-            let mut file = File::create(&p).await?;
-            file.write("# Netscape HTTP Cookie File\n".as_bytes()).await?;
-            for cookie in cookies {
-                file.write(format!("{}\n", cookie.netscape()).as_bytes()).await?;
-            }
-            file.flush().await?;
-            process.cookies(&p.as_os_str().to_str().ok_or(Error::Error("unable to parse cookies path".to_owned()))?.to_owned());
-            Some(p)
-            
-        } else {
-            None
-        };
-        println!("path: {:?}", path);
-        let output = process
-        .run_async()
-        .await?;
-        if let Some(p) = path {
-            remove_file(p).await?;
+        let mut command = YtDlCommandBuilder::new(&request.url);
+        //let mut process = YoutubeDl::new(request.url.to_owned());
+        //process.socket_timeout("15");
+
+        if let Some(cookies) = &request.cookies {
+            command.set_cookies(cookies).await?;
         }
-        let video = output.into_single_video();
-        println!("Video title: {:?}", video);
-        Ok(video)
+        if let Some(headers) = &request.headers {
+            for header in headers {
+                command.add_header(&header.0, &header.1);
+            }
+        }
+        let output = command.run().await?;
+        //if let Some(p) = path {
+        //    remove_file(p).await?;
+        //}
+        Ok(output)
     }
 
     pub async fn download_to(&self, request: &RsRequest) -> RsResult<PathBuf> {
@@ -129,6 +123,7 @@ impl YydlContext {
 
 impl RsProgress {
     pub fn from_ytdl(str: &str) -> Option<Self> {
+        println!("ytdl {}", str);
         let mut split = str.split("progress=");
         if let Some(progress_part) = split.nth(1) {
             let mut parts = progress_part.split("-");
@@ -143,15 +138,13 @@ impl RsProgress {
     }
 }
 
-pub enum YtdlItem {
+pub enum ProgressStreamItem {
     Progress(RsProgress),
     Data(Result<Bytes, io::Error>)
 }
 pub struct YtDlCommandBuilder {
     cmd: Command,
-    input_options: Vec<String>,
-    output_options: Vec<String>,
-    video_effects: Vec<String>,
+    cookies_path: Option<PathBuf>
 }
 
 impl YtDlCommandBuilder {
@@ -160,24 +153,42 @@ impl YtDlCommandBuilder {
         cmd.arg(path);
         Self {
             cmd,
-            input_options: Vec::new(),
-            output_options: Vec::new(),
-            video_effects: Vec::new(),
+            cookies_path: None   
         }
     }
-
-
-    /// Ex: 500x500^
-    pub fn set_size(&mut self, size: &str) -> &mut Self {
-        self.cmd
-            .arg("-resize")
-            .arg(size);
+    pub fn add_header(&mut self, name: &str, value: &str) -> &mut Self {
+        self.cmd.arg("--add-headers").arg(format!("{}:{}", name, value));
         self
     }
+    /// Ex: Path to cookies file in netscape format
+    pub async fn set_cookies(&mut self, cookies: &Vec<RsCookie>) -> RsResult<&mut Self> {
+        let p = get_server_temp_file_path().await?;
+        let mut file = File::create(&p).await?;
+        file.write("# Netscape HTTP Cookie File\n".as_bytes()).await?;
+        for cookie in cookies {
+            file.write(format!("{}\n", cookie.netscape()).as_bytes()).await?;
+        }
+        file.flush().await?;
 
-    pub async fn run(&mut self) -> Result<(ReaderStream<ChildStdout>, Pin<Box<dyn Stream<Item = RsProgress>>>), Error>
+        self.cmd
+            .arg("--cookies")
+            .arg(&p);
+        self.cookies_path = Some(p);
+        Ok(self)
+    }
+
+    pub async fn run(&mut self) -> Result<Pin<Box<dyn Stream<Item = ProgressStreamItem> + Send>>, Error>
     {
         self.cmd
+        .arg("-f")
+        //.arg("best/bestvideo+bestaudio")
+        .arg("bestvideo+bestaudio/best")
+        .arg("--merge-output-format")
+        .arg("mp4")
+        .arg("--remux-video")
+        .arg("mp4")
+        .arg("--recode-video")
+        .arg("mp4")
         .arg("--progress-template")
         .arg("\"download:progress=%(progress.downloaded_bytes)s-%(progress.total_bytes)s\"")
         .arg("-o").arg("-")
@@ -185,32 +196,30 @@ impl YtDlCommandBuilder {
         .stderr(Stdio::piped());
         let mut child = self.cmd
         .spawn()?;
-    
-        let stdout = ReaderStream::new(child.stdout.take().unwrap());
-        let stderr = ReaderStream::new(child.stderr.take().unwrap()).filter_map(|f| async { 
-           let r = f.ok().and_then(|b| from_utf8(&b).ok().and_then(|b| RsProgress::from_ytdl(b)));
-           r
+        
+        let stdout = ReaderStream::new(child.stdout.take().unwrap()).map(|b| ProgressStreamItem::Data(b));
+        let stderr = ReaderStream::new(child.stderr.take().unwrap()).filter_map(|f| { 
+                let r = f.ok().and_then(|b| from_utf8(&b).ok().and_then(|b| RsProgress::from_ytdl(b).and_then(|p| Some(ProgressStreamItem::Progress(p)))));
+                r
             }
         );
-        //let reader = BufReader::new(stdout);
-        // let mut lines = reader.lines();
-        // while let Some(line) = lines.next_line().await.expect("msg") {
-        //      let line_spit = line.split("=").collect::<Vec<&str>>();
-        //      if line_spit[0] == "frame" {
-        //          if let Some(frames) = frames {
-        //              let frame_number = line_spit[1].parse::<isize>().unwrap();
-        //              let percent = frame_number as f64 / frames as f64 * 100 as f64;
-        //              println!("\rProgress: {}%", round(percent, 1));
-        //          } else {
-        //              println!("\rProgress: {} frames", line_spit[1]);
-        //          }
-        //      }
-        // }
-        //  child.wait().await.expect("oops");
 
-        Ok((stdout, Box::pin(stderr)))
-    }
-    
+        let cookies_path = self.cookies_path.clone();
+        tokio::spawn(async move {
+            let r = child.wait().await;
+            if let Err(error) = r {
+                log_error(crate::tools::log::LogServiceType::Plugin, format!("YTDLP error {:?}", error));
+            }
+            println!("CLEANING!!!!!");
+            if let Some(p) = cookies_path {
+                remove_file(p).await.expect("unable to delete file");
+            }
+        });
+        
+        let merged = stdout.merge(stderr);
+
+        Ok(Box::pin(merged))
+    } 
 }
 
 
@@ -221,9 +230,8 @@ mod tests {
     use std::io;
 
     use bytes::Bytes;
-    use futures::StreamExt;
     use tokio::{io::copy, join};
-    use tokio_stream::StreamMap;
+    use tokio_stream::{StreamExt, StreamMap};
     use tokio_util::io::ReaderStream;
 
     use crate::domain::library::LibraryRole;
@@ -239,48 +247,16 @@ mod tests {
 
     
     #[tokio::test]
-    async fn test_stream() -> RsResult<()> {
+    async fn test_stream2() -> RsResult<()> {
         let mut reader = YtDlCommandBuilder::new("https://www.youtube.com/watch?v=8kGIlALKO-s").run().await?;
         let mut file: File = File::create("C:\\Users\\arnau\\AppData\\Local\\redseat\\.cache\\test1.webm").await?;
-        /*let a = reader.0.for_each(|f| async move { println!("test"); 
-            if let Ok(f) = f {
-                //&file.write(&f);
-            }
-        
-    });*/
-    tokio::spawn( async move {
-       //let b = reader.1.for_each(|f| async move { println!("progress {:?}\n", f)}).await;
-    });
-        
-        while let Some(data) = reader.0.next().await {
-            file.write(&data?).await?;
-        }
-
-       //copy(&mut reader.1, &mut file).await?;
-       //join!(b);
-        //reader.0.wait().await?;
-        Ok(())
-    }
-
-        
-    #[tokio::test]
-    async fn test_stream2() -> RsResult<()> {
-        let reader = YtDlCommandBuilder::new("https://www.youtube.com/watch?v=8kGIlALKO-s").run().await?;
-        let mut file: File = File::create("C:\\Users\\arnau\\AppData\\Local\\redseat\\.cache\\test1.webm").await?;
-        let mut map = StreamMapAny::new();
-        map.insert("data", reader.0);
-        map.insert("progress", reader.1);
 
 
-        while let Some(data) = map.next().await {
-            //file.write(&data?).await?;
-            if let ("data", variant) = data {
-                let v = variant.value::<Result<Bytes, io::Error>>().map_err(|_| crate::Error::Error("map error".to_owned()))??;
-                file.write(&v).await?;
-                
-            } else if let ("progress", variant) = data {
-                println!("progress: {:?}", variant.value::<RsProgress>().map_err(|_| crate::Error::Error("Unable to get RsProgres".to_owned()))?.percent() )
-            }
+        while let Some(data) = reader.next().await {
+            match data {
+                ProgressStreamItem::Progress(p) => println!("progress: {:?}", p),
+                ProgressStreamItem::Data(b) => {file.write(&b?).await?;},
+            };
         }
 
 

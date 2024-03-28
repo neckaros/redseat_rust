@@ -64,7 +64,11 @@ async fn handler_urlrequest(State(mc): State<ModelController>, user: ConnectedUs
 		..Default::default()
 	};
 	let wasm = mc.exec_request(request, None, &user).await?;
-	let body = Json(json!(wasm));
+	let body = match wasm {
+		crate::plugins::sources::SourceRead::Stream(_) => Json(json!({"stream": true})),
+		crate::plugins::sources::SourceRead::Request(r) => Json(json!(r)),
+		crate::plugins::sources::SourceRead::StreamWithProgress(_) => Json(json!({"stream": true})),
+	};
 	Ok(body)
 }
 

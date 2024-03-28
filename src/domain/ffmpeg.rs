@@ -31,7 +31,7 @@ pub struct FfprobeStream {
     pub codec_type: CodecType,
 	
 	pub nb_frames: Option<String>,
-	pub tags: StreamTags
+	pub tags: Option<StreamTags>
 }
 
 impl FfprobeStream {
@@ -39,7 +39,7 @@ impl FfprobeStream {
 		if let Some(nb) = &self.nb_frames  {
 			let ivalue = nb.parse::<isize>().ok();
 			ivalue
-		} else if let Some(nb) = &self.tags.number_of_frames  {
+		} else if let Some(nb) = self.tags.as_ref().and_then(|t| t.number_of_frames.as_ref())  {
 			let ivalue = nb.parse::<isize>().ok();
 			ivalue
 		} else {

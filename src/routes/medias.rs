@@ -91,8 +91,11 @@ async fn handler_post(Path(library_id): Path<String>, State(mc): State<ModelCont
 	Ok(Json(json!({"message": "No media found"})))
 }
 async fn handler_download(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Json(download): Json<GroupMediaDownload<MediaDownloadUrl>>) -> Result<Json<Value>> {
-	let files = mc.download_library_url(&library_id,  download, &user).await?;
-	Ok(Json(json!({"files": files})))
+	tokio::spawn(async move {
+		let files = mc.download_library_url(&library_id,  download, &user).await.expect("Unable to download");
+	});
+	
+	Ok(Json(json!({"downloading": true})))
 }
 
 async fn handler_image(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ImageRequestOptions>) -> Result<Response> {
