@@ -136,7 +136,8 @@ impl Source for PathProvider {
                         accept_range: true,
                         range: Some(range_response),
                         mime: guess.first().and_then(|g| Some(g.to_string())),
-                        name: filename
+                        name: filename,
+                        cleanup: None
                     }))
                 }
             }
@@ -148,7 +149,8 @@ impl Source for PathProvider {
             accept_range: true,
             range: if range.is_some() { Some(range_response) } else {None},
             mime: guess.first().and_then(|g| Some(g.to_string())),
-            name: filename
+            name: filename,
+            cleanup: None
         }))
     }
 

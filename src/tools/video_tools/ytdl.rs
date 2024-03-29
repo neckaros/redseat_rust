@@ -177,6 +177,50 @@ impl YtDlCommandBuilder {
         Ok(self)
     }
 
+    pub async fn run_with_cache(&mut self, progress: impl Fn(RsProgress)) -> RsResult<(Pin<Box<dyn Stream<Item = ProgressStreamItem> + Send>>, Pin<Box<dyn Stream<Item = ProgressStreamItem> + Send>>)>
+    {
+        let p = get_server_temp_file_path().await?;
+        
+        self.cmd
+        .arg("-f")
+        //.arg("best/bestvideo+bestaudio")
+        .arg("bestvideo+bestaudio/best")
+        .arg("--merge-output-format")
+        .arg("mp4")
+        .arg("--remux-video")
+        .arg("mp4")
+        .arg("--progress-template")
+        .arg("\"download:progress=%(progress.downloaded_bytes)s-%(progress.total_bytes)s\"")
+        .arg("-o").arg("-")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+        let mut child = self.cmd
+        .spawn()?;
+        
+        let stdout = ReaderStream::new(child.stdout.take().unwrap()).map(|b| ProgressStreamItem::Data(b));
+        let stderr = ReaderStream::new(child.stderr.take().unwrap()).filter_map(|f| { 
+                let r = f.ok().and_then(|b| from_utf8(&b).ok().and_then(|b| RsProgress::from_ytdl(b).and_then(|p| Some(ProgressStreamItem::Progress(p)))));
+                r
+            }
+        );
+
+        let cookies_path = self.cookies_path.clone();
+        tokio::spawn(async move {
+            let r = child.wait().await;
+            if let Err(error) = r {
+                log_error(crate::tools::log::LogServiceType::Plugin, format!("YTDLP error {:?}", error));
+            }
+            println!("CLEANING!!!!!");
+            if let Some(p) = cookies_path {
+                remove_file(p).await.expect("unable to delete file");
+            }
+        });
+        
+       
+
+        Ok((Box::pin(stdout), Box::pin(stderr)))
+    } 
+
     pub async fn run(&mut self) -> Result<Pin<Box<dyn Stream<Item = ProgressStreamItem> + Send>>, Error>
     {
         self.cmd

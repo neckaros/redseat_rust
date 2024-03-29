@@ -1,4 +1,4 @@
-use std::{io, path::PathBuf, pin::Pin, str::FromStr};
+use std::{fmt::{self, Debug}, io, path::PathBuf, pin::Pin, str::FromStr, sync::Arc};
 use async_recursion::async_recursion;
 use axum::{async_trait, body::Body, response::IntoResponse};
 use futures::{future::BoxFuture, Future, Stream, StreamExt, TryStreamExt};
@@ -7,7 +7,7 @@ use mime::{Mime, APPLICATION_OCTET_STREAM};
 use nanoid::nanoid;
 use plugin_request_interfaces::RsRequest;
 use serde::{Deserialize, Serialize};
-use tokio::{fs::File, io::{AsyncRead, AsyncWrite, BufReader}};
+use tokio::{fs::File, io::{AsyncRead, AsyncWrite, BufReader}, sync::Mutex};
 
 use tokio_util::io::{ReaderStream, StreamReader};
 use crate::{domain::{library::ServerLibrary, media::MediaForUpdate}, error::RsResult, model::{error::Error, users::ConnectedUser, ModelController}, routes::mw_range::RangeDefinition, tools::video_tools::ytdl::ProgressStreamItem};
@@ -51,6 +51,7 @@ impl RangeResponse {
         format!("bytes {}-{}/{}", self.start.unwrap_or(0), self.end.unwrap_or(self.size.unwrap_or(0) - 1), self.size.unwrap_or(0))
     }
 }
+
 #[derive(Debug)]
 pub struct FileStreamResult<T: Sized + AsyncRead + Send> {
     pub stream: T,
@@ -59,7 +60,25 @@ pub struct FileStreamResult<T: Sized + AsyncRead + Send> {
     pub range: Option<RangeResponse>,
     pub mime: Option<String>,
     pub name: Option<String>,
+    pub cleanup: Option<Box<dyn Cleanup>>
 }
+
+#[async_trait]
+pub trait Cleanup: Send + Debug {
+
+}
+
+#[derive(Debug)]
+pub struct CleanupFiles {
+    pub paths: Vec<PathBuf>
+}
+impl Cleanup for CleanupFiles{}
+impl Drop for CleanupFiles {
+    fn drop(&mut self) {
+        println!("DROOOPPPPPEDDD")
+    }
+}
+
 
 // impl<T: Sized + AsyncRead + Send> FileStreamResult<T> {
 //     pub async fn from_path(path: &PathBuf) -> RsResult<Self> {
@@ -127,7 +146,8 @@ impl SourceRead {
                     accept_range: false, 
                     range: None, 
                     mime: None, 
-                    name: Some(format!("{}.mp4", nanoid!()))
+                    name: Some(format!("{}.mp4", nanoid!())),
+                    cleanup: None
 
                 };
                 Ok(fsr)
@@ -188,7 +208,7 @@ impl SourceRead {
                         
 
 
-                        Ok(FileStreamResult {stream:pinned, accept_range, size, range: range_response, mime, name: request.filename })
+                        Ok(FileStreamResult {stream:pinned, accept_range, size, range: range_response, mime, name: request.filename, cleanup: None })
 
 
 
