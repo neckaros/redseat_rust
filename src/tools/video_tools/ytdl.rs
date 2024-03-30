@@ -1,4 +1,4 @@
-use std::{any::Any, io, path::{Path, PathBuf}, pin::Pin, process::Stdio, str::from_utf8};
+use std::{any::Any, io, path::{Path, PathBuf}, pin::Pin, process::Stdio, str::from_utf8, sync::Arc};
 use bytes::Bytes;
 use stream_map_any::StreamMapAny;
 use futures::{AsyncRead, Stream};
@@ -11,7 +11,7 @@ use youtube_dl::{download_yt_dlp, SingleVideo, YoutubeDl};
 use tokio_stream::StreamExt;
 
 
-use crate::{domain::progress::RsProgress, error::RsResult, plugins::sources::AsyncReadPinBox, server::{get_server_folder_path_array, get_server_temp_file_path}, tools::log::{log_error, log_info}, Error};
+use crate::{domain::progress::{self, RsProgress}, error::RsResult, plugins::sources::{error::SourcesError, AsyncReadPinBox, CleanupFiles, FileStreamResult}, server::{get_server_folder_path_array, get_server_temp_file_path}, tools::{file_tools::get_mime_from_filename, log::{log_error, log_info}}, Error};
 
 const FILE_NAME: &str = if cfg!(target_os = "windows") {
     "yt-dlp.exe"
@@ -123,7 +123,7 @@ impl YydlContext {
 
 impl RsProgress {
     pub fn from_ytdl(str: &str) -> Option<Self> {
-        println!("ytdl {}", str);
+        //println!("ytdl {}", str);
         let mut split = str.split("progress=");
         if let Some(progress_part) = split.nth(1) {
             let mut parts = progress_part.split("-");
@@ -177,10 +177,10 @@ impl YtDlCommandBuilder {
         Ok(self)
     }
 
-    pub async fn run_with_cache(&mut self, progress: impl Fn(RsProgress)) -> RsResult<(Pin<Box<dyn Stream<Item = ProgressStreamItem> + Send>>, Pin<Box<dyn Stream<Item = ProgressStreamItem> + Send>>)>
+    pub async fn run_with_cache(&mut self, progress: Box<dyn Fn(RsProgress) + Send>) -> RsResult<FileStreamResult<Pin<Box<tokio::io::BufReader<tokio::fs::File>>>>>
     {
-        let p = get_server_temp_file_path().await?;
-        
+        let temp_path = get_server_temp_file_path().await?;
+        let fileroot = nanoid!();
         self.cmd
         .arg("-f")
         //.arg("best/bestvideo+bestaudio")
@@ -191,34 +191,76 @@ impl YtDlCommandBuilder {
         .arg("mp4")
         .arg("--progress-template")
         .arg("\"download:progress=%(progress.downloaded_bytes)s-%(progress.total_bytes)s\"")
-        .arg("-o").arg("-")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .arg("-P").arg(&temp_path)
+        .arg("-o").arg(format!("{}.%(ext)s", fileroot))
+        .stdout(Stdio::piped());
+        //.stderr(Stdio::piped());
         let mut child = self.cmd
         .spawn()?;
         
-        let stdout = ReaderStream::new(child.stdout.take().unwrap()).map(|b| ProgressStreamItem::Data(b));
-        let stderr = ReaderStream::new(child.stderr.take().unwrap()).filter_map(|f| { 
-                let r = f.ok().and_then(|b| from_utf8(&b).ok().and_then(|b| RsProgress::from_ytdl(b).and_then(|p| Some(ProgressStreamItem::Progress(p)))));
+        let mut out = ReaderStream::new(child.stdout.take().unwrap()).filter_map(|f| { 
+                let r = f.ok().and_then(|b| from_utf8(&b).ok().and_then(|b| RsProgress::from_ytdl(b)));
                 r
             }
         );
-
-        let cookies_path = self.cookies_path.clone();
         tokio::spawn(async move {
-            let r = child.wait().await;
-            if let Err(error) = r {
-                log_error(crate::tools::log::LogServiceType::Plugin, format!("YTDLP error {:?}", error));
-            }
-            println!("CLEANING!!!!!");
-            if let Some(p) = cookies_path {
-                remove_file(p).await.expect("unable to delete file");
+            while let Some(p) = &mut out.next().await {
+                progress(p.clone());
             }
         });
-        
-       
 
-        Ok((Box::pin(stdout), Box::pin(stderr)))
+        let r = child.wait().await;
+        if let Err(error) = r {
+            log_error(crate::tools::log::LogServiceType::Plugin, format!("YTDLP error {:?}", error));
+            return Err(error.into());
+        }
+        if let Some(p) = &self.cookies_path {
+            remove_file(p).await.expect("unable to delete file");
+        }
+  
+        let file = temp_path.read_dir()?.into_iter().filter_map(|f|{
+            if let Ok(file) = f {
+                Some(file)
+            } else {
+                None
+            }
+        }).find(|f| {
+            println!("p {:?}", f);
+            if let Some(p) = f.path().file_name().and_then(|p| p.to_str()) {
+                p.starts_with(&fileroot)
+            } else {
+                false
+            }
+        });
+       
+        let result = file.ok_or(Error::Error("unable to get ytdl output path".to_owned()))?;
+        let final_path = result.path();
+        let file = File::open(&final_path).await.map_err(|err| {
+            if err.kind() == std::io::ErrorKind::NotFound {
+                SourcesError::NotFound(result.path().to_str().map(|a| a.to_string()))
+            } else {
+                SourcesError::Io(err)
+            }
+        })?;
+        let metadata = file.metadata().await?;
+        let mime = final_path.to_str().and_then(|p| get_mime_from_filename(p));
+        let size = metadata.len();
+
+        let filereader = BufReader::new(file);
+        let cleanup = CleanupFiles {
+            paths: vec![temp_path]
+        };
+        let fs = FileStreamResult {
+            stream: Box::pin(filereader),
+            size: Some(size),
+            accept_range: false,
+            range: None,
+            mime,
+            name: None,
+            cleanup: Some(Box::new(cleanup)),
+        };
+    
+        Ok(fs)
     } 
 
     pub async fn run(&mut self) -> Result<Pin<Box<dyn Stream<Item = ProgressStreamItem> + Send>>, Error>
@@ -302,6 +344,17 @@ mod tests {
                 ProgressStreamItem::Data(b) => {file.write(&b?).await?;},
             };
         }
+
+
+        Ok(())
+    }
+
+        
+    #[tokio::test]
+    async fn test_run_with_cache() -> RsResult<()> {
+        let path = YtDlCommandBuilder::new("https://www.youtube.com/watch?v=8kGIlALKO-s").run_with_cache(Box::new(|pr| println!("progress:: {:?}", pr.percent().or_else(|| pr.current.and_then(|c| Some(c as f32)))))).await?;
+
+        println!("PATH: {:?}", path);
 
 
         Ok(())

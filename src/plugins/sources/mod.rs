@@ -1,4 +1,4 @@
-use std::{fmt::{self, Debug}, io, path::PathBuf, pin::Pin, str::FromStr, sync::Arc};
+use std::{fmt::{self, Debug}, fs::{remove_dir, remove_dir_all, remove_file}, io, path::PathBuf, pin::Pin, str::FromStr, sync::Arc};
 use async_recursion::async_recursion;
 use axum::{async_trait, body::Body, response::IntoResponse};
 use futures::{future::BoxFuture, Future, Stream, StreamExt, TryStreamExt};
@@ -75,7 +75,17 @@ pub struct CleanupFiles {
 impl Cleanup for CleanupFiles{}
 impl Drop for CleanupFiles {
     fn drop(&mut self) {
-        println!("DROOOPPPPPEDDD")
+        for path in &self.paths {
+            if path.is_dir() {
+                let d = remove_dir_all(path);
+                if let Err(error) = d {
+                    println!("error: {:?}", error);
+                }
+                
+            } else {
+                let _ = remove_file(path);
+            }
+        }
     }
 }
 

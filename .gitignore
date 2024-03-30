@@ -22,3 +22,4 @@ $$/.DS_Store
 models/**.*
 redseat-rust.exe
 .DS_Store
+yt-dlp
