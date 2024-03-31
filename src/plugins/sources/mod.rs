@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use tokio::{fs::File, io::{AsyncRead, AsyncWrite, BufReader}, sync::Mutex};
 
 use tokio_util::io::{ReaderStream, StreamReader};
-use crate::{domain::{library::ServerLibrary, media::MediaForUpdate}, error::RsResult, model::{error::Error, users::ConnectedUser, ModelController}, routes::mw_range::RangeDefinition, tools::video_tools::ytdl::ProgressStreamItem};
+use crate::{domain::{library::ServerLibrary, media::MediaForUpdate, progress::RsProgressCallback}, error::RsResult, model::{error::Error, users::ConnectedUser, ModelController}, routes::mw_range::RangeDefinition, tools::video_tools::ytdl::ProgressStreamItem};
 
 use self::error::{SourcesError, SourcesResult};
 
@@ -129,7 +129,6 @@ impl<T: Sized + AsyncRead + Send> FileStreamResult<T> {
 pub enum SourceRead {
 	Stream(FileStreamResult<AsyncReadPinBox>),
 	Request(RsRequest),
-    StreamWithProgress(Pin<Box<dyn Stream<Item = ProgressStreamItem> + Send >>),
 }
 
 
@@ -137,30 +136,10 @@ type FuncResult = dyn Future<Output=crate::model::error::Result<RsRequest>>;
 
 impl SourceRead { 
     #[async_recursion]
-    pub async fn into_reader(self, library_id: &str, range: Option<RangeDefinition>, mc: Option<(ModelController, &ConnectedUser)>) -> RsResult<FileStreamResult<AsyncReadPinBox>> {
+    pub async fn into_reader(self, library_id: &str, range: Option<RangeDefinition>, progress: RsProgressCallback, mc: Option<(ModelController, &ConnectedUser)>) -> RsResult<FileStreamResult<AsyncReadPinBox>> {
         match self {
             SourceRead::Stream(reader) => {
                 Ok(reader)
-            },
-            SourceRead::StreamWithProgress(reader) => {
-                let new_reader = reader.filter_map(|d| async { match d {
-                    ProgressStreamItem::Progress(_) => None,
-                    ProgressStreamItem::Data(d) => Some(d),
-                }
-                });
-                let reader = StreamReader::new(new_reader.map_err(|err| io::Error::new(io::ErrorKind::Other, err)));
-                let pinned: AsyncReadPinBox = Box::pin(reader);
-                let fsr = FileStreamResult { 
-                    stream: pinned, 
-                    size: None, 
-                    accept_range: false, 
-                    range: None, 
-                    mime: None, 
-                    name: Some(format!("{}.mp4", nanoid!())),
-                    cleanup: None
-
-                };
-                Ok(fsr)
             },
             SourceRead::Request(request) => {
 
@@ -168,7 +147,7 @@ impl SourceRead {
                     plugin_request_interfaces::RsRequestStatus::Unprocessed | plugin_request_interfaces::RsRequestStatus::NeedParsing => {
                         if let Some((mc, user)) = mc {
                             let new_request = mc.exec_request(request.clone(), Some(library_id.to_string()), user).await?;
-                            new_request.into_reader(library_id, range.clone(), Some((mc, user))).await
+                            new_request.into_reader(library_id, range.clone(), progress, Some((mc, user))).await
                         } else {
                             Err(Error::InvalidRsRequestStatus(request.status).into())
                         }
@@ -241,18 +220,6 @@ impl SourceRead {
                 let body = Body::from_stream(stream);
                 let status = if reader.range.is_some() { axum::http::StatusCode::PARTIAL_CONTENT } else { axum::http::StatusCode::OK };
                 Ok((status, headers, body).into_response())
-            },
-            SourceRead::StreamWithProgress(reader) => {
-                let headers = HeaderMap::new();
-                let new_reader = reader.filter_map(|d| async { match d {
-                    ProgressStreamItem::Progress(_) => None,
-                    ProgressStreamItem::Data(d) => Some(d),
-                }
-                });
-                let body = Body::from_stream(new_reader);
-
-                Ok((axum::http::StatusCode::OK, headers, body).into_response())
-
             },
             SourceRead::Request(request) => {
                 match request.status {

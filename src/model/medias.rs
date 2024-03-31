@@ -243,12 +243,14 @@ impl ModelController {
         let mut medias: Vec<Media> = vec![];
         //let infos = infos.unwrap_or_else(|| MediaForUpdate::default());
         for file in files.files {
+            let upload_id = file.upload_id.clone().unwrap_or_else(|| nanoid!()).clone();
             let mut request: RsRequest = RsRequest::from(file.clone());
             if let Some(cookies) = &files.cookies {
                 request.cookies = cookies.iter().map(|s| RsCookie::from_str(s).ok()).collect();
             }
             let mut infos = file.infos.unwrap_or_else(|| MediaForUpdate::default());
-            let mut reader = SourceRead::Request(request).into_reader(library_id, None, Some((self.clone(), requesting_user))).await?;
+            let mut reader = SourceRead::Request(request).into_reader(library_id, None, 
+                Some(Box::new(|pr| println!("progress:: {:?}", pr.percent().or_else(|| pr.current.and_then(|c| Some(c as f32)))))), Some((self.clone(), requesting_user))).await?;
 
             let name = infos.name.clone();
             let mut filename = name.or_else(|| reader.name).unwrap_or(nanoid!());

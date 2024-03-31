@@ -310,6 +310,26 @@ pub struct MediaDownloadUrl {
     pub infos: Option<MediaForUpdate>
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")] 
+pub struct MediaDownloadUrlWithId {
+    pub url: String,
+    pub parse: bool,
+    pub upload_id: String,
+    pub infos: Option<MediaForUpdate>
+}
+
+impl From<MediaDownloadUrl> for MediaDownloadUrlWithId {
+    fn from(value: MediaDownloadUrl) -> Self {
+        Self {
+            url: value.url,
+            parse: value.parse,
+            upload_id: value.upload_id.unwrap_or_else(|| nanoid!()),
+            infos: value.infos,
+        }
+    }
+}
+
 impl From<MediaDownloadUrl> for RsRequest {
     fn from(value: MediaDownloadUrl) -> Self {
         RsRequest {
@@ -322,7 +342,6 @@ impl From<MediaDownloadUrl> for RsRequest {
             cookies: None,
             files: None,
             selected_file: None,
-            
         }
     }
 }

@@ -11,7 +11,7 @@ use youtube_dl::{download_yt_dlp, SingleVideo, YoutubeDl};
 use tokio_stream::StreamExt;
 
 
-use crate::{domain::progress::{self, RsProgress}, error::RsResult, plugins::sources::{error::SourcesError, AsyncReadPinBox, CleanupFiles, FileStreamResult}, server::{get_server_folder_path_array, get_server_temp_file_path}, tools::{file_tools::get_mime_from_filename, log::{log_error, log_info}}, Error};
+use crate::{domain::progress::{self, RsProgress, RsProgressCallback}, error::RsResult, plugins::sources::{error::SourcesError, AsyncReadPinBox, CleanupFiles, FileStreamResult, SourceRead}, server::{get_server_folder_path_array, get_server_temp_file_path}, tools::{file_tools::get_mime_from_filename, log::{log_error, log_info}}, Error};
 
 const FILE_NAME: &str = if cfg!(target_os = "windows") {
     "yt-dlp.exe"
@@ -59,7 +59,7 @@ impl YydlContext {
         Ok(video)
     }
 
-    pub async fn request(&self, request: &RsRequest) -> RsResult<Pin<Box<dyn Stream<Item = ProgressStreamItem> + Send >>> {
+    pub async fn request(&self, request: &RsRequest, progress: RsProgressCallback) -> RsResult<SourceRead> {
 
         let mut command = YtDlCommandBuilder::new(&request.url);
         //let mut process = YoutubeDl::new(request.url.to_owned());
@@ -73,11 +73,10 @@ impl YydlContext {
                 command.add_header(&header.0, &header.1);
             }
         }
-        let output = command.run().await?;
-        //if let Some(p) = path {
-        //    remove_file(p).await?;
-        //}
-        Ok(output)
+        let output = command.run_with_cache(progress).await?;
+
+        let read = SourceRead::Stream(output);
+        Ok(read)
     }
 
     pub async fn download_to(&self, request: &RsRequest) -> RsResult<PathBuf> {
@@ -85,7 +84,7 @@ impl YydlContext {
         process.socket_timeout("15");
 
 
-        let mut download_path = get_server_folder_path_array(vec![".cache"]).await?;
+        let download_path = get_server_folder_path_array(vec![".cache"]).await?;
         let filename = format!("{}.mp4", nanoid!());
         let path = if let Some(cookies) = &request.cookies {
             let p = get_server_temp_file_path().await?;
@@ -177,7 +176,7 @@ impl YtDlCommandBuilder {
         Ok(self)
     }
 
-    pub async fn run_with_cache(&mut self, progress: Box<dyn Fn(RsProgress) + Send>) -> RsResult<FileStreamResult<Pin<Box<tokio::io::BufReader<tokio::fs::File>>>>>
+    pub async fn run_with_cache(&mut self, progress: Option<Box<dyn Fn(RsProgress) + Send>>) -> RsResult<FileStreamResult<AsyncReadPinBox>>
     {
         let temp_path = get_server_temp_file_path().await?;
         let fileroot = nanoid!();
@@ -203,11 +202,13 @@ impl YtDlCommandBuilder {
                 r
             }
         );
-        tokio::spawn(async move {
-            while let Some(p) = &mut out.next().await {
-                progress(p.clone());
-            }
-        });
+        if let Some(progress) = progress {
+            tokio::spawn(async move {
+                while let Some(p) = &mut out.next().await {
+                    progress(p.clone());
+                }
+            });
+        }
 
         let r = child.wait().await;
         if let Err(error) = r {
@@ -250,13 +251,13 @@ impl YtDlCommandBuilder {
         let cleanup = CleanupFiles {
             paths: vec![temp_path]
         };
-        let fs = FileStreamResult {
+        let fs: FileStreamResult<AsyncReadPinBox> = FileStreamResult {
             stream: Box::pin(filereader),
             size: Some(size),
             accept_range: false,
             range: None,
             mime,
-            name: None,
+            name: final_path.file_name().and_then(|p| p.to_str()).and_then(|f| Some(f.to_owned())),
             cleanup: Some(Box::new(cleanup)),
         };
     
@@ -352,9 +353,9 @@ mod tests {
         
     #[tokio::test]
     async fn test_run_with_cache() -> RsResult<()> {
-        let path = YtDlCommandBuilder::new("https://www.youtube.com/watch?v=8kGIlALKO-s").run_with_cache(Box::new(|pr| println!("progress:: {:?}", pr.percent().or_else(|| pr.current.and_then(|c| Some(c as f32)))))).await?;
+        let path = YtDlCommandBuilder::new("https://www.youtube.com/watch?v=8kGIlALKO-s").run_with_cache(Some(Box::new(|pr| println!("progress:: {:?}", pr.percent().or_else(|| pr.current.and_then(|c| Some(c as f32))))))).await?;
 
-        println!("PATH: {:?}", path);
+        println!("PATH: {:?}", path.mime);
 
 
         Ok(())

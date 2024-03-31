@@ -157,7 +157,7 @@ impl Source for PathProvider {
 
 
     async fn get_file_write_stream(&self, name: &str) -> SourcesResult<(String, Pin<Box<dyn AsyncWrite + Send>>)> {
-        let mut path = self.root.clone();
+        let path = self.root.clone();
         let mut sourcepath = PathBuf::new();
 
         if !self.for_local {

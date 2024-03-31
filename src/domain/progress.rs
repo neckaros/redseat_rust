@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+pub type RsProgressCallback = Option<Box<dyn Fn(RsProgress) + Send>>;
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, PartialOrd, Default)]
 #[serde(rename_all = "snake_case")] 
 pub struct RsProgress {

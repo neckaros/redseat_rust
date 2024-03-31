@@ -3,7 +3,7 @@ use http::header::{CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE};
 use plugin_request_interfaces::{RsRequest, RsRequestStatus, RsRequestWithCredential};
 use rs_plugin_common_interfaces::{PluginCredential, PluginType};
 
-use crate::{domain::plugin::PluginWithCredential, error::RsResult, tools::{file_tools::get_mime_from_filename, http_tools::{extract_header, guess_filename, parse_content_disposition}, log::log_error, video_tools::ytdl::YydlContext}, Error};
+use crate::{domain::plugin::PluginWithCredential, error::RsResult, plugins::sources::{AsyncReadPinBox, FileStreamResult}, tools::{file_tools::get_mime_from_filename, http_tools::{extract_header, guess_filename, parse_content_disposition}, log::log_error, video_tools::ytdl::YydlContext}, Error};
 
 use super::{sources::SourceRead, PluginManager};
 
@@ -61,7 +61,7 @@ impl PluginManager {
             if let Some(filename) = extract_header(headers, CONTENT_DISPOSITION).and_then(parse_content_disposition) {
                 println!("dispo {}", filename);
             } else {
-                let filename = guess_filename(&request.url, &request.mime);
+                //let filename = guess_filename(&request.url, &request.mime);
                 //println!("filename {}", filename);
             }
         }
@@ -92,9 +92,8 @@ impl PluginManager {
         if request.status == RsRequestStatus::NeedParsing || request.url.ends_with(".m3u8") || request.mime.as_deref().unwrap_or("no") == "application/vnd.apple.mpegurl" {
             println!("Need Parsing {:?}", request.cookies);
             let ctx = YydlContext::new().await?;
-            let r = ctx.request(&request).await?;
-            let source = SourceRead::StreamWithProgress(r);
-            return Ok(source);
+            let result = ctx.request(&request, None).await?;
+            return Ok(result);
 
         } else {
             request.status = RsRequestStatus::FinalPublic;

@@ -1,5 +1,5 @@
 
-use crate::{domain::{plugin::{PluginForAdd, PluginForUpdate}}, model::{plugins::PluginQuery, users::ConnectedUser}, ModelController, Result};
+use crate::{domain::plugin::{PluginForAdd, PluginForUpdate}, model::{plugins::PluginQuery, users::ConnectedUser}, ModelController, Result};
 use axum::{extract::{Path, Query, State}, routing::{delete, get, patch, post}, Json, Router};
 use plugin_request_interfaces::RsRequest;
 use rs_plugin_common_interfaces::PluginType;
@@ -44,11 +44,14 @@ struct ExpandQuery {
 
 
 async fn handler_parse(State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ExpandQuery>) -> Result<Json<Value>> {
+	user.check_role(&crate::model::users::UserRole::Read);
 	let wasm = mc.plugin_manager.parse(query.url);
 	let body = Json(json!(wasm));
 	Ok(body)
 }
 async fn handler_expand(State(mc): State<ModelController>, user: ConnectedUser, Json(link): Json<RsLink>) -> Result<Json<Value>> {
+	user.check_role(&crate::model::users::UserRole::Read);
+
 	let wasm = mc.plugin_manager.expand(link);
 	if let Some(link) = wasm {
 		let body = Json(json!(link));
@@ -67,7 +70,6 @@ async fn handler_urlrequest(State(mc): State<ModelController>, user: ConnectedUs
 	let body = match wasm {
 		crate::plugins::sources::SourceRead::Stream(_) => Json(json!({"stream": true})),
 		crate::plugins::sources::SourceRead::Request(r) => Json(json!(r)),
-		crate::plugins::sources::SourceRead::StreamWithProgress(_) => Json(json!({"stream": true})),
 	};
 	Ok(body)
 }
