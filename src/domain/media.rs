@@ -7,7 +7,7 @@ use serde_json::Value;
 use strum_macros::EnumString;
 
 use rs_plugin_url_interfaces::RsLink;
-use super::ElementAction;
+use super::{progress::RsProgress, ElementAction};
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FileEpisode {
    id: String,
@@ -360,4 +360,14 @@ pub struct MediasMessage {
     pub library: String,
     pub action: ElementAction,
     pub medias: Vec<Media>
+}
+
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")] 
+pub struct ProgressMessage {
+    pub library: String,
+    pub action: ElementAction,
+    pub name: String,
+    pub progress: RsProgress
 }

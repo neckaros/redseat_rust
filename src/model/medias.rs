@@ -17,7 +17,7 @@ use tokio::io::{copy, AsyncRead, AsyncReadExt};
 use tokio_util::io::StreamReader;
 
 
-use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaTagReference, MediasMessage}, ElementAction}, error::RsResult, plugins::{get_plugin_fodler, sources::{error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{resize_image, resize_image_reader, ImageSize, ImageType}, log::{log_error, log_info}, prediction::{predict_net, preload_model, PredictionTagResult}, video_tools::{self, VideoTime}}};
+use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaTagReference, MediasMessage, ProgressMessage}, ElementAction}, error::RsResult, plugins::{get_plugin_fodler, sources::{error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{resize_image, resize_image_reader, ImageSize, ImageType}, log::{log_error, log_info}, prediction::{predict_net, preload_model, PredictionTagResult}, video_tools::{self, VideoTime}}};
 
 use super::{error::{Error, Result}, plugins::PluginQuery, store, users::ConnectedUser, ModelController};
 
@@ -95,6 +95,15 @@ impl ModelController {
             let r = user.check_library_role(&message.library, LibraryRole::Read);
 			if r.is_ok() {
 				let _ = socket.emit("tags", message);
+			}
+		});
+	}
+
+	pub fn send_progress(&self, message: ProgressMessage) {
+		self.for_connected_users(&message, |user, socket, message| {
+            let r = user.check_library_role(&message.library, LibraryRole::Read);
+			if r.is_ok() {
+				let _ = socket.emit("medias_progress", message);
 			}
 		});
 	}
@@ -231,6 +240,8 @@ impl ModelController {
 
 
         let media = store.get_media(&id).await?.ok_or(Error::NotFound)?;
+        self.send_media(MediasMessage { library: library_id.to_string(), action: ElementAction::Added, medias: vec![media.clone()] });
+
         Ok(media)
 	}
 
@@ -249,8 +260,21 @@ impl ModelController {
                 request.cookies = cookies.iter().map(|s| RsCookie::from_str(s).ok()).collect();
             }
             let mut infos = file.infos.unwrap_or_else(|| MediaForUpdate::default());
+
+            let lib_progress = library_id.to_string();
+            let mc_progress = self.clone();
+            let name_progress = infos.name.clone().unwrap_or(upload_id.clone());
             let mut reader = SourceRead::Request(request).into_reader(library_id, None, 
-                Some(Box::new(|pr| println!("progress:: {:?}", pr.percent().or_else(|| pr.current.and_then(|c| Some(c as f32)))))), Some((self.clone(), requesting_user))).await?;
+                Some(Box::new(move |pr| {
+                    let message = ProgressMessage {
+                        library: lib_progress.clone(),
+                        action: ElementAction::Updated,
+                        name: name_progress.clone(),
+                        progress: pr,
+                    };
+                    mc_progress.send_progress(message);
+
+                })), Some((self.clone(), requesting_user))).await?;
 
             let name = infos.name.clone();
             let mut filename = name.or_else(|| reader.name).unwrap_or(nanoid!());
@@ -302,6 +326,8 @@ impl ModelController {
                 log_error(crate::tools::log::LogServiceType::Source, format!("Unable to generate thumb {:#}", r));
             }
             let media = store.get_media(&id).await?.ok_or(Error::NotFound)?;
+            self.send_media(MediasMessage { library: library_id.to_string(), action: ElementAction::Added, medias: vec![media.clone()] });
+            
             medias.push(media)
 
 
