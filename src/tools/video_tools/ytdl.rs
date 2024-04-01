@@ -11,7 +11,7 @@ use youtube_dl::{download_yt_dlp, SingleVideo, YoutubeDl};
 use tokio_stream::StreamExt;
 
 
-use crate::{domain::progress::{self, RsProgress, RsProgressCallback}, error::RsResult, plugins::sources::{error::SourcesError, AsyncReadPinBox, CleanupFiles, FileStreamResult, SourceRead}, server::{get_server_folder_path_array, get_server_temp_file_path}, tools::{file_tools::get_mime_from_filename, log::{log_error, log_info}}, Error};
+use crate::{domain::progress::{self, RsProgress, RsProgressCallback, RsProgressType}, error::RsResult, plugins::sources::{error::SourcesError, AsyncReadPinBox, CleanupFiles, FileStreamResult, SourceRead}, server::{get_server_folder_path_array, get_server_temp_file_path}, tools::{file_tools::get_mime_from_filename, log::{log_error, log_info}}, Error};
 
 const FILE_NAME: &str = if cfg!(target_os = "windows") {
     "yt-dlp.exe"
@@ -122,14 +122,14 @@ impl YydlContext {
 
 impl RsProgress {
     pub fn from_ytdl(str: &str) -> Option<Self> {
-        //println!("ytdl {}", str);
         let mut split = str.split("progress=");
         if let Some(progress_part) = split.nth(1) {
             let mut parts = progress_part.split("-");
            Some(Self {
                 id: nanoid!(),
                 current: parts.next().and_then(|p| p.parse::<u64>().ok()),
-                total: parts.next().and_then(|p| p.replace("\"", "").parse::<u64>().ok())
+                total: parts.next().and_then(|p| p.replace("\"", "").parse::<u64>().ok()),
+                kind: RsProgressType::Download
             })
         } else {
             None
@@ -176,7 +176,7 @@ impl YtDlCommandBuilder {
         Ok(self)
     }
 
-    pub async fn run_with_cache(&mut self, progress: Option<Box<dyn Fn(RsProgress) + Send>>) -> RsResult<FileStreamResult<AsyncReadPinBox>>
+    pub async fn run_with_cache(&mut self, progress: RsProgressCallback) -> RsResult<FileStreamResult<AsyncReadPinBox>>
     {
         let temp_path = get_server_temp_file_path().await?;
         let fileroot = nanoid!();
@@ -205,7 +205,7 @@ impl YtDlCommandBuilder {
         if let Some(progress) = progress {
             tokio::spawn(async move {
                 while let Some(p) = &mut out.next().await {
-                    progress(p.clone());
+                    progress.send(p.to_owned()).await.unwrap();
                 }
             });
         }
@@ -226,7 +226,6 @@ impl YtDlCommandBuilder {
                 None
             }
         }).find(|f| {
-            println!("p {:?}", f);
             if let Some(p) = f.path().file_name().and_then(|p| p.to_str()) {
                 p.starts_with(&fileroot)
             } else {
@@ -317,7 +316,7 @@ mod tests {
     use std::io;
 
     use bytes::Bytes;
-    use tokio::{io::copy, join};
+    use tokio::{io::copy, join, sync::mpsc};
     use tokio_stream::{StreamExt, StreamMap};
     use tokio_util::io::ReaderStream;
 
@@ -353,9 +352,21 @@ mod tests {
         
     #[tokio::test]
     async fn test_run_with_cache() -> RsResult<()> {
-        let path = YtDlCommandBuilder::new("https://www.youtube.com/watch?v=8kGIlALKO-s").run_with_cache(Some(Box::new(|pr| println!("progress:: {:?}", pr.percent().or_else(|| pr.current.and_then(|c| Some(c as f32))))))).await?;
+        let (tx_progress, mut rx_progress) = mpsc::channel::<RsProgress>(100);
+
+        tokio::spawn(async move {
+            while let Some(progress) = rx_progress.recv().await {
+                println!("PROGRESS {:?}", progress);
+                
+            }
+            println!("Finished progress");
+        });
+
+        let path = YtDlCommandBuilder::new("https://www.youtube.com/watch?v=8kGIlALKO-s").run_with_cache(Some(tx_progress)).await?;
 
         println!("PATH: {:?}", path.mime);
+
+
 
 
         Ok(())

@@ -58,7 +58,7 @@ async fn handler_predict(Path((library_id, media_id)): Path<(String, String)>, S
 
 async fn handler_get_file(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, range: Option<RangeDefinition>) -> Result<Response> {
 	let reader = mc.library_file(&library_id, &media_id, range.clone(), &user).await?;
-	Ok(reader.into_response(&library_id, range, Some((mc.clone(), &user))).await?)
+	Ok(reader.into_response(&library_id, range, None, Some((mc.clone(), &user))).await?)
 }
 
 async fn handler_patch(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(update): Json<MediaForUpdate>) -> Result<Json<Value>> {

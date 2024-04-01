@@ -13,11 +13,11 @@ use plugin_request_interfaces::{RsCookie, RsRequest};
 use query_external_ip::SourceError;
 use rs_plugin_common_interfaces::PluginType;
 use serde::{Deserialize, Serialize};
-use tokio::io::{copy, AsyncRead, AsyncReadExt};
+use tokio::{io::{copy, AsyncRead, AsyncReadExt}, sync::mpsc};
 use tokio_util::io::StreamReader;
 
 
-use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaTagReference, MediasMessage, ProgressMessage}, ElementAction}, error::RsResult, plugins::{get_plugin_fodler, sources::{error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{resize_image, resize_image_reader, ImageSize, ImageType}, log::{log_error, log_info}, prediction::{predict_net, preload_model, PredictionTagResult}, video_tools::{self, VideoTime}}};
+use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaTagReference, MediasMessage, ProgressMessage}, progress::{RsProgress, RsProgressType}, ElementAction}, error::RsResult, plugins::{get_plugin_fodler, sources::{async_reader_progress::ProgressReader, error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{resize_image, resize_image_reader, ImageSize, ImageType}, log::{log_error, log_info, LogServiceType}, prediction::{predict_net, preload_model, PredictionTagResult}, video_tools::{self, VideoTime}}};
 
 use super::{error::{Error, Result}, plugins::PluginQuery, store, users::ConnectedUser, ModelController};
 
@@ -193,7 +193,7 @@ impl ModelController {
         tokio::spawn(async move {
             let r = mc.process_media(&library_id, &media_id, &requesting_user).await;
             if let Err(error) = r {
-                log_error(crate::tools::log::LogServiceType::Source, format!("Unable to process media {} for predictions", media_id));
+                log_error(crate::tools::log::LogServiceType::Source, format!("Unable to process media {} for predictions: {:?}", media_id, error));
             }
         });
     }
@@ -264,17 +264,36 @@ impl ModelController {
             let lib_progress = library_id.to_string();
             let mc_progress = self.clone();
             let name_progress = infos.name.clone().unwrap_or(upload_id.clone());
-            let mut reader = SourceRead::Request(request).into_reader(library_id, None, 
-                Some(Box::new(move |pr| {
-                    let message = ProgressMessage {
-                        library: lib_progress.clone(),
-                        action: ElementAction::Updated,
-                        name: name_progress.clone(),
-                        progress: pr,
-                    };
-                    mc_progress.send_progress(message);
 
-                })), Some((self.clone(), requesting_user))).await?;
+
+            let (tx_progress, mut rx_progress) = mpsc::channel::<RsProgress>(100);
+
+            
+            let progress_id = upload_id.clone();
+            tokio::spawn(async move {
+                let mut last_send = 0;
+                let mut last_type: Option<RsProgressType> = None;
+                
+                while let Some(mut progress) = rx_progress.recv().await {
+                    let current = progress.current.unwrap_or(1);
+                    if last_send == 0 || current < last_send || current - last_send  > 1000000 || Some(&progress.kind) != last_type.as_ref() {
+                        last_type = Some(progress.kind.clone());
+                        last_send = current.clone();
+                        progress.id = progress_id.clone();
+                        let message = ProgressMessage {
+                            library: lib_progress.clone(),
+                            name: name_progress.clone(),
+                            progress,
+                        };
+                        mc_progress.send_progress(message);
+                    }
+                }
+            });
+
+
+
+            let reader = SourceRead::Request(request).into_reader(library_id, None, 
+                Some(tx_progress.clone()), Some((self.clone(), requesting_user))).await?;
 
             let name = infos.name.clone();
             let mut filename = name.or_else(|| reader.name).unwrap_or(nanoid!());
@@ -292,27 +311,29 @@ impl ModelController {
 
             
             let (source, writer) = m.get_file_write_stream(&filename).await?;
-            println!("Adding: {}", source);
-
+            let mut progress_reader = ProgressReader::new(reader.stream, RsProgress { id: upload_id.clone(), total: reader.size, current: Some(0), kind: RsProgressType::Transfert }, tx_progress.clone());
             tokio::pin!(writer);
-            copy(&mut reader.stream, &mut writer).await?;
+            copy(&mut progress_reader, &mut writer).await?;
 
+            
 
             
             let _ = m.fill_infos(&source, &mut infos).await;
-            println!("new infos {:?}", infos);
 
             let mut new_file = MediaForAdd::default();
             new_file.name = filename.to_string();
             new_file.source = Some(source.to_string());
             new_file.mimetype = infos.mimetype.clone();
             new_file.created = Some(infos.created.unwrap_or_else(|| Utc::now().timestamp_millis() as u64));
+
+            let final_progress = tx_progress.send(RsProgress { id: upload_id.clone(), total: infos.size, current: infos.size, kind: RsProgressType::Finished }).await;
+            if let Err(error) = final_progress {
+                log_error(LogServiceType::Source, format!("Unable to send final progress message: {:?}", error));
+            }
             
             if let Some(ref mime) = new_file.mimetype {
                 new_file.kind = file_type_from_mime(&mime);
             }
-
-            println!("new file {:?}", new_file);
 
             let id = nanoid!();
             store.add_media(MediaForInsert { id: id.clone(), media: new_file }).await?;
@@ -371,7 +392,6 @@ impl ModelController {
         } else {
             ModelController::get_temporary_local_read_url(library_id, media_id).await?
         };
-        println!("video path {}", uri);
         let thumb = video_tools::thumb_video(&uri, time).await?;
         let mut cursor = std::io::Cursor::new(thumb);
         let thumb = resize_image_reader(&mut cursor, 512).await?;

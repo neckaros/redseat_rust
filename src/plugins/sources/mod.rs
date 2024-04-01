@@ -7,16 +7,17 @@ use mime::{Mime, APPLICATION_OCTET_STREAM};
 use nanoid::nanoid;
 use plugin_request_interfaces::RsRequest;
 use serde::{Deserialize, Serialize};
-use tokio::{fs::File, io::{AsyncRead, AsyncWrite, BufReader}, sync::Mutex};
+use tokio::{fs::File, io::{AsyncRead, AsyncWrite, BufReader}, sync::{mpsc::Sender, Mutex}};
 
 use tokio_util::io::{ReaderStream, StreamReader};
-use crate::{domain::{library::ServerLibrary, media::MediaForUpdate, progress::RsProgressCallback}, error::RsResult, model::{error::Error, users::ConnectedUser, ModelController}, routes::mw_range::RangeDefinition, tools::video_tools::ytdl::ProgressStreamItem};
+use crate::{domain::{library::ServerLibrary, media::MediaForUpdate, progress::{RsProgress, RsProgressCallback}}, error::RsResult, model::{error::Error, users::ConnectedUser, ModelController}, routes::mw_range::RangeDefinition, tools::video_tools::ytdl::ProgressStreamItem};
 
 use self::error::{SourcesError, SourcesResult};
 
 pub mod path_provider;
 pub mod virtual_provider;
 pub mod error;
+pub mod async_reader_progress;
 
 pub type AsyncReadPinBox = Pin<Box<dyn AsyncRead + Send>>;
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -136,7 +137,7 @@ type FuncResult = dyn Future<Output=crate::model::error::Result<RsRequest>>;
 
 impl SourceRead { 
     #[async_recursion]
-    pub async fn into_reader(self, library_id: &str, range: Option<RangeDefinition>, progress: RsProgressCallback, mc: Option<(ModelController, &ConnectedUser)>) -> RsResult<FileStreamResult<AsyncReadPinBox>> {
+    pub async fn into_reader(self, library_id: &str, range: Option<RangeDefinition>, progress: Option<Sender<RsProgress>>, mc: Option<(ModelController, &ConnectedUser)>) -> RsResult<FileStreamResult<AsyncReadPinBox>> {
         match self {
             SourceRead::Stream(reader) => {
                 Ok(reader)
@@ -146,8 +147,8 @@ impl SourceRead {
                 match request.status {
                     plugin_request_interfaces::RsRequestStatus::Unprocessed | plugin_request_interfaces::RsRequestStatus::NeedParsing => {
                         if let Some((mc, user)) = mc {
-                            let new_request = mc.exec_request(request.clone(), Some(library_id.to_string()), user).await?;
-                            new_request.into_reader(library_id, range.clone(), progress, Some((mc, user))).await
+                            let new_request = mc.exec_request(request.clone(), Some(library_id.to_string()), progress, user).await?;
+                            new_request.into_reader(library_id, range.clone(), None, Some((mc, user))).await
                         } else {
                             Err(Error::InvalidRsRequestStatus(request.status).into())
                         }
@@ -212,7 +213,7 @@ impl SourceRead {
 
     
     #[async_recursion]
-    pub async fn into_response(self, library_id: &str, range: Option<RangeDefinition>, mc: Option<(ModelController, &ConnectedUser)>) -> RsResult<axum::response::Response> {
+    pub async fn into_response(self, library_id: &str, range: Option<RangeDefinition>, progress: RsProgressCallback, mc: Option<(ModelController, &ConnectedUser)>) -> RsResult<axum::response::Response> {
         match self {
             SourceRead::Stream(reader) => {
                 let headers = reader.hearders().map_err(|_| Error::UnableToFormatHeaders)?;
@@ -225,8 +226,8 @@ impl SourceRead {
                 match request.status {
                     plugin_request_interfaces::RsRequestStatus::Unprocessed | plugin_request_interfaces::RsRequestStatus::NeedParsing => {
                         if let Some((mc, user)) = mc {
-                            let new_request = mc.exec_request(request.clone(), Some(library_id.to_string()), user).await?;
-                            new_request.into_response(library_id, range.clone(), Some((mc, user))).await
+                            let new_request = mc.exec_request(request.clone(), Some(library_id.to_string()), progress, user).await?;
+                            new_request.into_response(library_id, range.clone(), None, Some((mc, user))).await
                         } else {
                             Err(Error::InvalidRsRequestStatus(request.status).into())
                         }

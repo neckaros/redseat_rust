@@ -367,7 +367,6 @@ pub struct MediasMessage {
 #[serde(rename_all = "camelCase")] 
 pub struct ProgressMessage {
     pub library: String,
-    pub action: ElementAction,
     pub name: String,
     pub progress: RsProgress
 }

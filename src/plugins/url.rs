@@ -3,7 +3,7 @@ use http::header::{CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE};
 use plugin_request_interfaces::{RsRequest, RsRequestStatus, RsRequestWithCredential};
 use rs_plugin_common_interfaces::{PluginCredential, PluginType};
 
-use crate::{domain::plugin::PluginWithCredential, error::RsResult, plugins::sources::{AsyncReadPinBox, FileStreamResult}, tools::{file_tools::get_mime_from_filename, http_tools::{extract_header, guess_filename, parse_content_disposition}, log::log_error, video_tools::ytdl::YydlContext}, Error};
+use crate::{domain::{plugin::PluginWithCredential, progress::RsProgressCallback}, error::RsResult, plugins::sources::{AsyncReadPinBox, FileStreamResult}, tools::{file_tools::get_mime_from_filename, http_tools::{extract_header, guess_filename, parse_content_disposition}, log::log_error, video_tools::ytdl::YydlContext}, Error};
 
 use super::{sources::SourceRead, PluginManager};
 
@@ -46,7 +46,7 @@ impl PluginManager {
         None
     }
 
-    pub async fn request(&self, mut request: RsRequest, plugins: impl Iterator<Item = PluginWithCredential>) -> RsResult<SourceRead> {
+    pub async fn request(&self, mut request: RsRequest, plugins: impl Iterator<Item = PluginWithCredential>, progress: RsProgressCallback) -> RsResult<SourceRead> {
         println!("Plugins");
         let client = reqwest::Client::new();
         let r = client.head(&request.url).send().await;
@@ -90,9 +90,8 @@ impl PluginManager {
             }
         }
         if request.status == RsRequestStatus::NeedParsing || request.url.ends_with(".m3u8") || request.mime.as_deref().unwrap_or("no") == "application/vnd.apple.mpegurl" {
-            println!("Need Parsing {:?}", request.cookies);
             let ctx = YydlContext::new().await?;
-            let result = ctx.request(&request, None).await?;
+            let result = ctx.request(&request, progress).await?;
             return Ok(result);
 
         } else {

@@ -6,9 +6,10 @@ use plugin_request_interfaces::RsRequest;
 use rs_plugin_common_interfaces::{PluginInformation, PluginType};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::sync::mpsc::Sender;
 
 
-use crate::{domain::{backup::Backup, plugin::{Plugin, PluginForAdd, PluginForInsert, PluginForUpdate, PluginWithCredential}}, error::RsResult, plugins::sources::SourceRead};
+use crate::{domain::{backup::Backup, plugin::{Plugin, PluginForAdd, PluginForInsert, PluginForUpdate, PluginWithCredential}, progress::{RsProgress, RsProgressCallback}}, error::RsResult, plugins::sources::SourceRead};
 
 use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
 
@@ -86,7 +87,7 @@ impl ModelController {
             Err(Error::NotFound)
         }
 	}
-    pub async fn exec_request(&self, request: RsRequest, library_id: Option<String>, requesting_user: &ConnectedUser) -> RsResult<SourceRead> {
+    pub async fn exec_request(&self, request: RsRequest, library_id: Option<String>, progress: Option<Sender<RsProgress>>, requesting_user: &ConnectedUser) -> RsResult<SourceRead> {
         if let Some(library_id) = library_id {
             requesting_user.check_library_role(&library_id, crate::domain::library::LibraryRole::Read)?;
         } else {
@@ -94,7 +95,7 @@ impl ModelController {
         }
         let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::Request), ..Default::default() }, &requesting_user).await?;
 
-        Ok(self.plugin_manager.request(request, plugins).await?)
+        Ok(self.plugin_manager.request(request, plugins, progress).await?)
         
     }
 }

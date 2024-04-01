@@ -1,12 +1,28 @@
-use serde::{Deserialize, Serialize};
+use std::default;
 
-pub type RsProgressCallback = Option<Box<dyn Fn(RsProgress) + Send>>;
+use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc::Sender;
+
+pub type RsProgressCallback = Option<Sender<RsProgress>>;
+
+
+
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, PartialOrd, Default)]
 #[serde(rename_all = "snake_case")] 
 pub struct RsProgress {
     pub id: String,
 	pub total: Option<u64>,
     pub current: Option<u64>,
+    pub kind: RsProgressType,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, PartialOrd, Default)]
+#[serde(rename_all = "snake_case")] 
+pub enum RsProgressType {
+    Download,
+    #[default]
+    Transfert,
+    Finished,
 }
 
 impl RsProgress {
