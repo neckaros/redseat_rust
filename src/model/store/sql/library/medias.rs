@@ -1,6 +1,6 @@
 use rusqlite::{params, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, Row, ToSql};
 
-use crate::{domain::media::{FileType, Media, MediaForInsert, MediaForUpdate}, model::{medias::{MediaQuery, MediaSource}, store::{from_comma_separated_optional, from_pipe_separated_optional, to_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}}}};
+use crate::{domain::media::{FileType, Media, MediaForInsert, MediaForUpdate, MediaItemReference}, model::{medias::{MediaQuery, MediaSource}, people::PeopleQuery, store::{from_comma_separated_optional, from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_comma_separated_optional, to_pipe_separated_optional}, tags::TagQuery}, tools::{array_tools::AddOrSetArray, log::{log_info, LogServiceType}, text_tools::{extract_people, extract_tags}}};
 use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
 
@@ -194,9 +194,52 @@ impl SqliteLibraryStore {
     }
 
 
-    pub async fn update_media(&self, media_id: &str, update: MediaForUpdate) -> Result<()> {
+    pub async fn update_media(&self, media_id: &str, mut update: MediaForUpdate) -> Result<()> {
         let id = media_id.to_string();
         let existing = self.get_media(media_id).await?.ok_or_else( || Error::NotFound)?;
+
+        //add tags in description to lookups
+        if let Some(description) = &update.description {
+            let parsed_tags = extract_tags(&description);
+            if parsed_tags.len() > 0 {
+                update.tags_lookup.add_or_set(parsed_tags);
+            }
+        }
+        //add people in description to lookups
+        if let Some(description) = &update.description {
+            let parsed_people = extract_people(&description);
+            if parsed_people.len() > 0 {
+                update.people_lookup.add_or_set(parsed_people);
+            }
+        }
+        
+        // Find tags with lookup 
+        if let Some(lookup_tags) = update.tags_lookup {
+            let mut found_tags: Vec<MediaItemReference> = vec![];
+            for lookup_tag in lookup_tags {
+                let found = self.get_tags(TagQuery::new_with_name(&lookup_tag)).await?;
+                if let Some(tag) = found.get(0) {
+                    found_tags.push(MediaItemReference { id: tag.id.clone(), conf: Some(100) });
+                }
+            }
+            if found_tags.len() > 0 {
+                update.add_tags.add_or_set(found_tags);
+            }
+        }
+        // Find people with lookup 
+        if let Some(lookup_people) = update.people_lookup {
+            let mut found_people: Vec<MediaItemReference> = vec![];
+            for lookup_tag in lookup_people {
+                let found = self.get_people(PeopleQuery::from_name(&lookup_tag)).await?;
+                if let Some(person) = found.get(0) {
+                    found_people.push(MediaItemReference { id: person.id.clone(), conf: Some(100) });
+                }
+            }
+            if found_people.len() > 0 {
+                update.add_people.add_or_set(found_people);
+            }
+        }
+       
         self.connection.call( move |conn| { 
             let mut where_query = QueryBuilder::new();
             
@@ -210,6 +253,14 @@ impl SqliteLibraryStore {
 
             where_query.add_update(&update.width, "width");
             where_query.add_update(&update.height, "height");
+            where_query.add_update(&update.color_space, "colorSpace");
+            where_query.add_update(&update.bitrate, "bitrate");
+            
+            let v = to_comma_separated_optional(update.vcodecs);
+            where_query.add_update(&v, "vcodecs");
+            let v = to_comma_separated_optional(update.acodecs);
+            where_query.add_update(&v, "acodecs");
+
 
             where_query.add_update(&update.duration, "duration");
 
@@ -226,17 +277,6 @@ impl SqliteLibraryStore {
 
             where_query.add_update(&update.uploader, "uploader");
             where_query.add_update(&update.uploadkey, "uploaderkey");
-     
-     /*
-            pub add_tags: Option<Vec<String>>,
-            pub remove_tags: Option<Vec<String>>,
-        
-            pub add_series: Option<Vec<FileEpisode>>,
-            pub remove_series: Option<Vec<FileEpisode>>,
-        
-            pub add_people: Option<Vec<String>>,
-            pub remove_people: Option<Vec<String>>,
-    */
 
             where_query.add_where(QueryWhereType::Equal("id", &id));
             if where_query.columns_update.len() > 0 {
@@ -248,13 +288,35 @@ impl SqliteLibraryStore {
             if let Some(add_tags) = update.add_tags {
                 for tag in add_tags {
                     if !all_tags.contains(&tag.id) {
-                        conn.execute("INSERT INTO media_tag_mapping (media_ref, tag_ref, confidence) VALUES (? ,? , ?) ", params![id, tag.id, tag.conf])?;
+                        let r = conn.execute("INSERT INTO media_tag_mapping (media_ref, tag_ref, confidence) VALUES (? ,? , ?) ", params![id, tag.id, tag.conf]);
+                        if let Err(error) = r {
+                            log_info(LogServiceType::Source, format!("unable to add tag {:?}: {:?}", tag, error));
+                        }
                     }
                 }
             }
-            if let Some(add_tags) = update.remove_tags {
-                for tag in add_tags {
+            if let Some(remove_tags) = update.remove_tags {
+                for tag in remove_tags {
                     conn.execute("DELETE FROM media_tag_mapping WHERE media_ref = ? and tag_ref = ?", params![id, tag])?;
+                }
+            }
+
+
+            
+            let all_people: Vec<String> = existing.people.clone().unwrap_or(vec![]).into_iter().map(|t| t.id).collect();
+            if let Some(add_people) = update.add_people {
+                for person in add_people {
+                    if !all_people.contains(&person.id) {
+                        let r = conn.execute("INSERT INTO media_people_mapping (media_ref, people_ref, confidence) VALUES (? ,? , ?) ", params![id, person.id, person.conf]);
+                        if let Err(error) = r {
+                            log_info(LogServiceType::Source, format!("unable to add person {:?}: {:?}", person, error));
+                        }
+                    }
+                }
+            }
+            if let Some(remove_people) = update.remove_people {
+                for person in remove_people {
+                    conn.execute("DELETE FROM media_people_mapping WHERE media_ref = ? and people_ref = ?", params![id, person])?;
                 }
             }
             

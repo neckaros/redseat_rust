@@ -1,7 +1,7 @@
 use std::str::FromStr;
 
 use nanoid::nanoid;
-use plugin_request_interfaces::{RsRequest, RsRequestStatus};
+use plugin_request_interfaces::{RsCookie, RsRequest, RsRequestStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use strum_macros::EnumString;
@@ -31,22 +31,22 @@ impl FromStr for FileEpisode {
 }
 
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct MediaTagReference {
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct MediaItemReference {
    pub id: String,
    #[serde(skip_serializing_if = "Option::is_none")]
    pub conf: Option<u16>
 }
 
-impl FromStr for MediaTagReference {
+impl FromStr for MediaItemReference {
     type Err = crate::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let splitted: Vec<&str> = s.split("|").collect();
         if splitted.len() == 2 {
-            Ok(MediaTagReference { id: splitted[0].to_string(), conf: splitted[1].parse::<u16>().ok().and_then(|e| if e == 100 {None} else {Some(e)}) })
+            Ok(MediaItemReference { id: splitted[0].to_string(), conf: splitted[1].parse::<u16>().ok().and_then(|e| if e == 100 {None} else {Some(e)}) })
         } else {
-            Ok(MediaTagReference { id: splitted[0].to_string(), conf: None })
+            Ok(MediaItemReference { id: splitted[0].to_string(), conf: None })
         }
     }
 }
@@ -123,7 +123,7 @@ pub struct Media {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fps: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub bitrate: Option<usize>,
+    pub bitrate: Option<u64>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub long: Option<f64>,
@@ -138,11 +138,11 @@ pub struct Media {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub progress: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tags: Option<Vec<MediaTagReference>>,
+    pub tags: Option<Vec<MediaItemReference>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub series: Option<Vec<FileEpisode>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub people: Option<Vec<String>>,
+    pub people: Option<Vec<MediaItemReference>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thumb: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -176,20 +176,25 @@ pub struct MediaForUpdate {
     pub modified: Option<u64>,
     pub created: Option<u64>,
 
-    pub width: Option<usize>,
-    pub height: Option<usize>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub color_space: Option<String>,
+    pub vcodecs: Option<Vec<String>>,
+    pub acodecs: Option<Vec<String>>,
+    pub bitrate: Option<u64>,
   
-    pub duration: Option<usize>,
+    pub duration: Option<u64>,
  
     pub progress: Option<usize>,
 
-    pub add_tags: Option<Vec<MediaTagReference>>,
+    pub add_tags: Option<Vec<MediaItemReference>>,
     pub remove_tags: Option<Vec<String>>,
-
+    pub tags_lookup: Option<Vec<String>>,
+    
     pub add_series: Option<Vec<FileEpisode>>,
     pub remove_series: Option<Vec<FileEpisode>>,
 
-    pub add_people: Option<Vec<String>>,
+    pub add_people: Option<Vec<MediaItemReference>>,
     pub remove_people: Option<Vec<String>>,
     pub people_lookup: Option<Vec<String>>,
 
@@ -239,7 +244,7 @@ pub struct MediaForAdd {
     pub achan: Option<Vec<usize>>,
     pub vcodecs: Option<Vec<String>>,
     pub fps: Option<f32>,
-    pub bitrate: Option<usize>,
+    pub bitrate: Option<u64>,
 
     pub long: Option<f64>,
     pub lat: Option<f64>,
@@ -280,14 +285,11 @@ impl MediaForAdd {
     }
 }
 
-pub trait GroupMediaDownloadContent {
-    fn infos(&self) -> Option<MediaForUpdate>;
-}
+
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")] 
-pub struct GroupMediaDownload<T>
-where T: GroupMediaDownloadContent {
+pub struct GroupMediaDownload<T> {
     pub group: Option<bool>,
     pub group_thumbnail_url: Option<String>,
     pub group_filename: Option<String>,
@@ -296,8 +298,12 @@ where T: GroupMediaDownloadContent {
 
     pub referer: Option<String>,
     pub cookies: Option<Vec<String>>,
+    pub origin_url: Option<String>,
 
     pub title: Option<String>,
+
+    pub people_lookup: Option<Vec<String>>,
+    pub tags_lookup: Option<Vec<String>>,
 }
 
 
@@ -307,51 +313,77 @@ pub struct MediaDownloadUrl {
     pub url: String,
     pub parse: bool,
     pub upload_id: Option<String>,
-    pub infos: Option<MediaForUpdate>
-}
+    //pub infos: Option<MediaForUpdate>,
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")] 
-pub struct MediaDownloadUrlWithId {
-    pub url: String,
-    pub parse: bool,
-    pub upload_id: String,
-    pub infos: Option<MediaForUpdate>
-}
-
-impl From<MediaDownloadUrl> for MediaDownloadUrlWithId {
-    fn from(value: MediaDownloadUrl) -> Self {
-        Self {
-            url: value.url,
-            parse: value.parse,
-            upload_id: value.upload_id.unwrap_or_else(|| nanoid!()),
-            infos: value.infos,
-        }
-    }
+    pub kind: Option<FileType>,
+    pub filename: Option<String>,
+    pub description: Option<String>,
+    pub length: Option<u64>,
+    pub thumbnail_url: Option<String>,
+    
+    pub people_lookup: Option<Vec<String>>,
+    pub tags_lookup: Option<Vec<String>>,
 }
 
 impl From<MediaDownloadUrl> for RsRequest {
     fn from(value: MediaDownloadUrl) -> Self {
         RsRequest {
             url: value.url,
-            mime: (value.infos.clone()).and_then(|i| i.mimetype.clone()),
+            mime: None,
             size: None,
-            filename: value.infos.and_then(|i| i.name.clone()),
+            filename: value.filename,
             status: if value.parse { RsRequestStatus::NeedParsing } else { RsRequestStatus::Unprocessed },
             headers: None,
             cookies: None,
             files: None,
             selected_file: None,
+            tags: value.tags_lookup,
+            people: value.people_lookup,
+            ..Default::default()
         }
     }
 }
 
-impl GroupMediaDownloadContent for MediaDownloadUrl {
-    fn infos(&self) -> Option<MediaForUpdate> {
-        self.infos.clone()
+impl From<GroupMediaDownload<MediaDownloadUrl>> for Vec<RsRequest> {
+    fn from(value: GroupMediaDownload<MediaDownloadUrl>) -> Self {
+        let mut output = Vec::new();
+        for file in value.files {
+            output.push(
+            RsRequest {
+                        upload_id: file.upload_id,
+                        url: file.url,
+                        mime: None,
+                        size: None,
+                        filename: file.filename,
+                        status: if file.parse { RsRequestStatus::NeedParsing } else { RsRequestStatus::Unprocessed },
+                        headers: None,
+                        cookies: value.cookies.as_ref().and_then(|c| c.iter().map(|s| RsCookie::from_str(s).ok()).collect()),
+                        files: None,
+                        selected_file: None,
+                        referer: value.referer.clone(),
+                        tags: file.tags_lookup.or(value.tags_lookup.clone()),
+                        people: file.people_lookup.or(value.people_lookup.clone()),
+                        description: file.description.or(value.title.clone()),
+                        ..Default::default()
+                    });
+        }
+        output
     }
 }
 
+impl From<RsRequest> for MediaForUpdate {
+    fn from(value: RsRequest) -> Self {
+        MediaForUpdate {
+            name: value.filename,
+            description: value.description,
+            //kind: value.k,
+            size: value.size,
+            people_lookup: value.people,
+            tags_lookup: value.tags,
+            ..Default::default()
+        }
+    }
+}
 
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

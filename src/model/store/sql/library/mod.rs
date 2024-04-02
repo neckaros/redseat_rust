@@ -28,6 +28,8 @@ impl SqliteLibraryStore {
 
     pub async fn migrate(&self) -> Result<usize> {
         let (initial_version, version) = self.connection.call( |conn| {
+            
+
             let mut version = conn.query_row(
                 "SELECT user_version FROM pragma_user_version;",
                 [],

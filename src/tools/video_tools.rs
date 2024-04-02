@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tokio::{io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader}, process::Command};
 
+use crate::error::RsResult;
 use crate::{domain::ffmpeg::FfprobeResult, Error};
 
 pub mod ytdl;
@@ -151,7 +152,7 @@ impl VideoTime {
 }
 
 pub async fn thumb_video(uri: &str, at_time: VideoTime) -> Result<Vec<u8>, Error> {
-    let duration = get_duration(uri).await.ok_or(Error::GenericRedseatError)?;
+    let duration = get_duration(uri).await?.ok_or(Error::Error("Unable to get video duration".to_owned()))?;
     let ss = at_time.position(duration);
     let output = Command::new("ffmpeg")
     .arg("-ss")
@@ -167,8 +168,7 @@ pub async fn thumb_video(uri: &str, at_time: VideoTime) -> Result<Vec<u8>, Error
     .arg("pipe:1")
 
     .output()
-    .await.map_err(|_| Error::GenericRedseatError)?
-    ;
+    .await.map_err(|error| Error::Error(format!("unable to get video thumb ffmpeg: {:?}", error)))?;
     /*if let Ok(val) = str::from_utf8(&output.stderr) {
         if val != "" {
             return Err(Error::Error { message: val.to_string() })
@@ -189,12 +189,10 @@ pub async fn get_number_of_frames(uri: &str) -> Option<isize> {
     } 
 }
 
-pub async fn get_duration(uri: &str) -> Option<f64> {  
-    if let Some(probe) = probe_video(uri).await.ok() {
-        probe.duration()
-    } else {
-        None
-    } 
+pub async fn get_duration(uri: &str) -> RsResult<Option<f64>> {  
+    let probe = probe_video(uri).await?;
+    Ok(probe.duration())
+    
 }
 
 pub async fn convert(uri: &str, to: &str, args: Option<Vec<String>>) {

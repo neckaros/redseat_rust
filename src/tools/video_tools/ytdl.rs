@@ -1,5 +1,6 @@
 use std::{any::Any, io, path::{Path, PathBuf}, pin::Pin, process::Stdio, str::from_utf8, sync::Arc};
 use bytes::Bytes;
+use serde_json::Value;
 use stream_map_any::StreamMapAny;
 use futures::{AsyncRead, Stream};
 
@@ -7,11 +8,14 @@ use nanoid::nanoid;
 use plugin_request_interfaces::{RsCookie, RsRequest};
 use tokio::{fs::{remove_file, File}, io::{AsyncWrite, AsyncWriteExt, BufReader}, process::{Child, ChildStderr, ChildStdout, Command}};
 use tokio_util::io::{ReaderStream, StreamReader};
-use youtube_dl::{download_yt_dlp, SingleVideo, YoutubeDl};
+use youtube_dl::{download_yt_dlp, YoutubeDl};
 use tokio_stream::StreamExt;
 
+pub mod ytdl_model;
 
-use crate::{domain::progress::{self, RsProgress, RsProgressCallback, RsProgressType}, error::RsResult, plugins::sources::{error::SourcesError, AsyncReadPinBox, CleanupFiles, FileStreamResult, SourceRead}, server::{get_server_folder_path_array, get_server_temp_file_path}, tools::{file_tools::get_mime_from_filename, log::{log_error, log_info}}, Error};
+use crate::{domain::progress::{self, RsProgress, RsProgressCallback, RsProgressType}, error::RsResult, plugins::sources::{error::SourcesError, AsyncReadPinBox, CleanupFiles, FileStreamResult, SourceRead}, server::{get_server_folder_path_array, get_server_temp_file_path}, tools::{file_tools::get_mime_from_filename, log::{log_error, log_info}, video_tools::ytdl::ytdl_model::{Playlist, SingleVideo}}, Error};
+
+use self::ytdl_model::YoutubeDlOutput;
 
 const FILE_NAME: &str = if cfg!(target_os = "windows") {
     "yt-dlp.exe"
@@ -49,16 +53,6 @@ impl YydlContext {
         Path::new(FILE_NAME).exists()
     }
 
-    pub async fn url(&self, url: &str) -> RsResult<Option<SingleVideo>> {
-            let output = YoutubeDl::new(url)
-            .socket_timeout("15")
-            .run_async()
-            .await?;
-        let video = output.into_single_video();
-        println!("Video title: {:?}", video);
-        Ok(video)
-    }
-
     pub async fn request(&self, request: &RsRequest, progress: RsProgressCallback) -> RsResult<SourceRead> {
 
         let mut command = YtDlCommandBuilder::new(&request.url);
@@ -77,6 +71,30 @@ impl YydlContext {
 
         let read = SourceRead::Stream(output);
         Ok(read)
+    }
+
+    pub async fn request_infos(&self, request: &RsRequest) -> RsResult<Option<SingleVideo>> {
+
+        let mut command = YtDlCommandBuilder::new(&request.url);
+        //let mut process = YoutubeDl::new(request.url.to_owned());
+        //process.socket_timeout("15");
+
+        if let Some(cookies) = &request.cookies {
+            command.set_cookies(cookies).await?;
+        }
+        if let Some(headers) = &request.headers {
+            for header in headers {
+                command.add_header(&header.0, &header.1);
+            }
+        }
+
+        if let Some(referer) = &request.referer {
+            command.add_referer(&referer);
+        }
+
+        let output = command.infos().await?;
+
+        Ok(output)
     }
 
     pub async fn download_to(&self, request: &RsRequest) -> RsResult<PathBuf> {
@@ -154,6 +172,27 @@ impl YtDlCommandBuilder {
             cmd,
             cookies_path: None   
         }
+    }
+
+    pub async fn set_request(&mut self, request: &RsRequest) -> RsResult<()> {
+        if let Some(cookies) = &request.cookies {
+            self.set_cookies(cookies).await?;
+        }
+        if let Some(headers) = &request.headers {
+            for header in headers {
+                self.add_header(&header.0, &header.1);
+            }
+        }
+
+        if let Some(referer) = &request.referer {
+            self.add_referer(&referer);
+        }
+        Ok(())
+    }
+    
+    pub fn add_referer(&mut self, referer: &str) -> &mut Self {
+        self.cmd.arg("--referer").arg(referer);
+        self
     }
     pub fn add_header(&mut self, name: &str, value: &str) -> &mut Self {
         self.cmd.arg("--add-headers").arg(format!("{}:{}", name, value));
@@ -263,6 +302,34 @@ impl YtDlCommandBuilder {
         Ok(fs)
     } 
 
+    pub async fn infos(&mut self) -> RsResult<Option<SingleVideo>>
+    {
+        self.cmd
+        .arg("-J");
+        //.stderr(Stdio::piped());
+        let output = self.cmd
+        .output().await?;
+
+        let processed = YtDlCommandBuilder::process_json_output(output.stdout)?.into_single_video();
+        Ok(processed)
+    } 
+
+    fn process_json_output(stdout: Vec<u8>) -> Result<YoutubeDlOutput, Error> {
+        use serde_json::json;
+    
+   
+        let value: Value = serde_json::from_reader(stdout.as_slice())?;
+    
+        let is_playlist = value["_type"] == json!("playlist");
+        if is_playlist {
+            let playlist: Playlist = serde_json::from_value(value)?;
+            Ok(YoutubeDlOutput::Playlist(Box::new(playlist)))
+        } else {
+            let video: SingleVideo = serde_json::from_value(value)?;
+            Ok(YoutubeDlOutput::SingleVideo(Box::new(video)))
+        }
+    }
+
     pub async fn run(&mut self) -> Result<Pin<Box<dyn Stream<Item = ProgressStreamItem> + Send>>, Error>
     {
         self.cmd
@@ -311,6 +378,9 @@ impl YtDlCommandBuilder {
 
 
 
+
+
+
 #[cfg(test)]
 mod tests {
     use std::io;
@@ -323,14 +393,6 @@ mod tests {
     use crate::domain::library::LibraryRole;
 
     use super::*;
-
-    #[tokio::test]
-    async fn test_role() {
-        let ctx = YydlContext::new().await.unwrap();
-        ctx.url("https://twitter.com/").await.unwrap();
-
-    }
-
     
     #[tokio::test]
     async fn test_stream2() -> RsResult<()> {
@@ -367,6 +429,20 @@ mod tests {
         println!("PATH: {:?}", path.mime);
 
 
+
+
+        Ok(())
+    }
+
+    
+        
+    #[tokio::test]
+    async fn test_run_infos() -> RsResult<()> {
+
+        let path = YtDlCommandBuilder::new("https://www.youtube.com/watch?v=-t7Aa6Dr4pI").infos().await?;
+
+        println!("TAGS: {:?}", path.as_ref().and_then(|r| r.tags.clone()));
+        assert!(path.unwrap().tags.unwrap().contains(&"axum".to_owned()));
 
 
         Ok(())

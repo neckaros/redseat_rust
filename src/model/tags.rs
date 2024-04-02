@@ -16,11 +16,15 @@ use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
 pub struct TagForAdd {
 	pub name: String,
     pub parent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "type")]
     pub kind: Option<String>,
     pub alt: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub thumb: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<Value>,
+    #[serde(default)]
     pub generated: bool,
 }
 #[derive(Debug, Serialize, Deserialize, Clone)]

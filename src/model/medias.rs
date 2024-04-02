@@ -17,7 +17,7 @@ use tokio::{io::{copy, AsyncRead, AsyncReadExt}, sync::mpsc};
 use tokio_util::io::StreamReader;
 
 
-use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaTagReference, MediasMessage, ProgressMessage}, progress::{RsProgress, RsProgressType}, ElementAction}, error::RsResult, plugins::{get_plugin_fodler, sources::{async_reader_progress::ProgressReader, error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{resize_image, resize_image_reader, ImageSize, ImageType}, log::{log_error, log_info, LogServiceType}, prediction::{predict_net, preload_model, PredictionTagResult}, video_tools::{self, VideoTime}}};
+use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaItemReference, MediasMessage, ProgressMessage}, progress::{RsProgress, RsProgressType}, ElementAction}, error::RsResult, plugins::{get_plugin_fodler, sources::{async_reader_progress::ProgressReader, error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{self, resize_image, resize_image_reader, ImageSize, ImageType}, log::{log_error, log_info, LogServiceType}, prediction::{predict_net, preload_model, PredictionTagResult}, video_tools::{self, probe_video, VideoTime}}};
 
 use super::{error::{Error, Result}, plugins::PluginQuery, store, users::ConnectedUser, ModelController};
 
@@ -198,9 +198,28 @@ impl ModelController {
         });
     }
     pub async fn process_media(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> Result<()>{
+        let existing = self.get_media(library_id, media_id.to_owned(), requesting_user).await?.ok_or(Error::NotFound)?;
+
+        if existing.kind == FileType::Video {
+            let r = self.update_video_infos(library_id, media_id, requesting_user).await;
+            if let Err(r) = r {
+                log_error(LogServiceType::Source, format!("unable to get video infos for {}: {:?}", media_id, r));
+            }
+        } else if existing.kind == FileType::Photo {
+            let r = self.update_photo_infos(library_id, media_id, requesting_user).await;
+            if let Err(r) = r {
+                log_error(LogServiceType::Source, format!("unable to get photos infos for {}: {:?}", media_id, r));
+            }
+        }
+
+
+
         let _ = self.prediction(library_id, media_id, true, requesting_user).await;
         Ok(())
     }
+
+
+    
     pub async fn add_library_file<T: AsyncRead>(&self, library_id: &str, filename: &str, infos: Option<MediaForUpdate>, reader: T, requesting_user: &ConnectedUser) -> Result<Media> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
 
@@ -252,23 +271,20 @@ impl ModelController {
         let m = self.source_for_library(&library_id).await?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         let mut medias: Vec<Media> = vec![];
+        let requests: Vec<RsRequest> = files.into(); 
         //let infos = infos.unwrap_or_else(|| MediaForUpdate::default());
-        for file in files.files {
-            let upload_id = file.upload_id.clone().unwrap_or_else(|| nanoid!()).clone();
-            let mut request: RsRequest = RsRequest::from(file.clone());
-            if let Some(cookies) = &files.cookies {
-                request.cookies = cookies.iter().map(|s| RsCookie::from_str(s).ok()).collect();
-            }
-            let mut infos = file.infos.unwrap_or_else(|| MediaForUpdate::default());
+        for mut request in requests {
+            let upload_id = request.upload_id.clone().unwrap_or_else(|| nanoid!());
 
+            self.plugin_manager.fill_infos(&mut request).await;
+            let mut infos: MediaForUpdate = request.clone().into();
+            println!("infos {:?}", infos);
+
+            //Progress
             let lib_progress = library_id.to_string();
             let mc_progress = self.clone();
             let name_progress = infos.name.clone().unwrap_or(upload_id.clone());
-
-
             let (tx_progress, mut rx_progress) = mpsc::channel::<RsProgress>(100);
-
-            
             let progress_id = upload_id.clone();
             tokio::spawn(async move {
                 let mut last_send = 0;
@@ -443,7 +459,7 @@ impl ModelController {
                     if insert_tags {
                         for tag in &prediction {
                             let db_tag = self.get_ai_tag(&library_id, tag.tag.clone(), &requesting_user).await?;
-                            self.update_media(&library_id, media_id.to_string(), MediaForUpdate { add_tags: Some(vec![MediaTagReference { id: db_tag.id, conf: Some(tag.probability as u16) }]), ..Default::default() }, &requesting_user).await?;
+                            self.update_media(&library_id, media_id.to_string(), MediaForUpdate { add_tags: Some(vec![MediaItemReference { id: db_tag.id, conf: Some(tag.probability as u16) }]), ..Default::default() }, &requesting_user).await?;
                         }
                     }
                     all_predictions.append(&mut prediction);
@@ -456,6 +472,66 @@ impl ModelController {
         }
     }
     
+    pub async fn update_video_infos(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> crate::Result<()> {
+        requesting_user.check_file_role(library_id, media_id, LibraryRole::Read)?;
+
+        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let source = store.get_media_source(&media_id).await?.ok_or(Error::NotFound)?;
+
+        let m = self.source_for_library(&library_id).await?; 
+        let local_path = m.local_path(&source.source);
+        let uri = if let Some(local_path) = local_path {
+            local_path.to_str().unwrap().to_string()
+        } else {
+            ModelController::get_temporary_local_read_url(library_id, media_id).await?
+        };
+
+        let videos_infos = probe_video(&uri).await?;
+
+        let mut update = MediaForUpdate::default();
+        if let Some(duration) = videos_infos.duration() {
+            update.duration = Some(duration as u64);
+        }
+        let (width, height) = videos_infos.size();
+        update.width = width;
+        update.height = height;
+
+        if let Some(video_stream) = videos_infos.video_stream() {
+            update.color_space = video_stream.color_space.clone();
+            update.vcodecs = video_stream.codec_name.clone().and_then(|c| Some(vec![c]));
+            update.bitrate = video_stream.bitrate().clone();
+        }
+
+        self.update_media(library_id, media_id.to_owned(), update, requesting_user).await?;
+
+        println!("videos infos {:?}", videos_infos);
+        Ok(())
+    }
+
+    pub async fn update_photo_infos(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> crate::Result<()> {
+        requesting_user.check_file_role(library_id, media_id, LibraryRole::Read)?;
+
+        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+
+        let mut m = self.library_file(library_id, media_id, None, requesting_user).await?.into_reader(library_id, None, None, Some((self.clone(), &requesting_user))).await?;
+
+        let images_infos = image_tools::ImageCommandBuilder::new().infos(&mut m.stream).await?;
+        if let Some(infos) = images_infos.get(0) {
+            let mut update = MediaForUpdate::default();
+
+            update.width = Some(infos.image.geometry.width);
+            update.height = Some(infos.image.geometry.height);
+
+            if let Some(color_space) = &infos.image.colorspace {
+                update.color_space = Some(color_space.clone());
+            }
+        
+    
+            self.update_media(library_id, media_id.to_owned(), update, requesting_user).await?;
+        }
+        Ok(())
+    }
+
     pub async fn remove_library_file(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> Result<()> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;

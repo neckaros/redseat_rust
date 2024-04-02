@@ -3,7 +3,7 @@ use http::header::{CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE};
 use plugin_request_interfaces::{RsRequest, RsRequestStatus, RsRequestWithCredential};
 use rs_plugin_common_interfaces::{PluginCredential, PluginType};
 
-use crate::{domain::{plugin::PluginWithCredential, progress::RsProgressCallback}, error::RsResult, plugins::sources::{AsyncReadPinBox, FileStreamResult}, tools::{file_tools::get_mime_from_filename, http_tools::{extract_header, guess_filename, parse_content_disposition}, log::log_error, video_tools::ytdl::YydlContext}, Error};
+use crate::{domain::{plugin::PluginWithCredential, progress::RsProgressCallback}, error::RsResult, plugins::sources::{AsyncReadPinBox, FileStreamResult}, tools::{array_tools::AddOrSetArray, file_tools::get_mime_from_filename, http_tools::{extract_header, guess_filename, parse_content_disposition}, log::log_error, video_tools::ytdl::YydlContext}, Error};
 
 use super::{sources::SourceRead, PluginManager};
 
@@ -28,6 +28,30 @@ impl PluginManager {
         }
         None
     }
+
+    pub async fn fill_infos(&self, request: &mut RsRequest) {
+        let ctx = YydlContext::new().await;
+        if let Ok(ctx) = ctx {
+            let video = ctx.request_infos(&request).await;
+            if let Ok(Some(video)) = video {
+                if let Some(tags) = video.tags {
+                    request.tags.add_or_set(tags);
+                }
+                if let Some(person) = video.uploader {
+                    request.people.add_or_set(vec![person]);
+                }
+                if let Some(description) = video.description {
+                    if request.description == None {
+                        request.description = Some(description);
+                    }
+                    
+                }
+            }
+        }
+        
+
+    }
+
     pub fn expand(&self, link: RsLink) -> Option<String>{
         for plugin in &self.plugins {
             let mut plugin_m = plugin.plugin.lock().unwrap();
@@ -92,6 +116,7 @@ impl PluginManager {
         if request.status == RsRequestStatus::NeedParsing || request.url.ends_with(".m3u8") || request.mime.as_deref().unwrap_or("no") == "application/vnd.apple.mpegurl" {
             let ctx = YydlContext::new().await?;
             let result = ctx.request(&request, progress).await?;
+
             return Ok(result);
 
         } else {

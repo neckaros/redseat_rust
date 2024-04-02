@@ -35,6 +35,11 @@ impl SqliteLibraryStore {
             if query.after.is_some() {
                 where_query.add_oder(OrderBuilder::new("modified".to_string(), SqlOrder::ASC))
             }
+            
+
+            if let Some(q) = &query.name {
+                where_query.add_where(QueryWhereType::EqualWithAlt("name", "alt", "|", q));
+            }
 
 
             let mut query = conn.prepare(&format!("SELECT id, name, socials, type, alt, portrait, params, birthday, modified, added  FROM people {}{}", where_query.format(), where_query.format_order()))?;

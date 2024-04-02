@@ -1,5 +1,5 @@
 use core::fmt;
-use std::{fs::{remove_file, File}, io::{Seek, Write}, num::ParseIntError, path::PathBuf, process::Stdio, str::FromStr};
+use std::{fs::{remove_file, File}, io::{Seek, Write}, num::ParseIntError, path::PathBuf, process::Stdio, str::{from_utf8, FromStr}};
 
 use image::{ColorType, DynamicImage, ImageEncoder, ImageOutputFormat};
 use serde::{Deserialize, Serialize};
@@ -9,6 +9,12 @@ use tokio::{io::{AsyncRead, AsyncWrite, AsyncWriteExt}, process::{Child, Command
 use webp::WebPEncodingError;
 use derive_more::From;
 use which::which;
+
+use crate::{error::RsResult, Error};
+
+use self::image_magick::ImageMagickInfo;
+
+pub mod image_magick;
 
 pub type ImageResult<T> = core::result::Result<T, ImageError>;
 
@@ -167,10 +173,10 @@ impl core::fmt::Display for ImageError {
 impl std::error::Error for ImageError {}
 
 pub fn has_image_magick() -> bool {
-    which("magickh").is_ok()
+    which("magick").is_ok()
 }
 
-struct ImageCommandBuilder {
+pub struct ImageCommandBuilder {
     cmd: Command
 }
 
@@ -195,6 +201,28 @@ impl ImageCommandBuilder {
             .arg(size);
         self
     }
+    
+    pub async fn infos<'a, R>(&mut self, reader: &'a mut R) -> RsResult<Vec<ImageMagickInfo>> where
+    R: AsyncRead + Unpin + ?Sized
+    {
+        let mut cmd = self.cmd
+        .arg("json:-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()?;
+    
+        if let Some(mut stdin) = cmd.stdin.take() {  
+            tokio::io::copy(reader, &mut stdin).await?;
+        }
+        let output = cmd.wait_with_output().await?;
+        
+        let str = from_utf8(&output.stdout).map_err(|e| Error::Error(format!("Unable to parse output to string: {:?}", e)))?;
+        let info: Vec<ImageMagickInfo> = serde_json::from_str(str)?;
+        
+        //writer.write_all(&output.stdout).await?;
+        Ok(info)
+    }
+
 
     pub async fn run<'a, R>(&mut self, format: &str, reader: &'a mut R) -> ImageResult<Vec<u8>>
     where
@@ -302,6 +330,16 @@ mod tests {
             fs::remove_file(&target).expect("failed to remove existing result file");
         }
         resize_image_path(&source, &target, 7680).await.unwrap()
+        //convert_to_pipe("C:/Users/arnau/Downloads/IMG_5020.mov", None).await;
+    }
+
+
+    #[tokio::test]
+    async fn info() {
+        let source = PathBuf::from_str("test_data/image.jpg").expect("unable to set path");
+        let mut file = tokio::fs::File::open(source).await.unwrap();
+        let info = ImageCommandBuilder::new().infos(&mut file).await.unwrap();
+        println!("INFOS: {:?}", info)
         //convert_to_pipe("C:/Users/arnau/Downloads/IMG_5020.mov", None).await;
     }
 }

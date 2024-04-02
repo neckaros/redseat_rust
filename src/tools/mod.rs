@@ -11,12 +11,16 @@ pub mod file_tools;
 pub mod http_tools;
 pub mod scheduler;
 
+pub mod text_tools;
+
 pub mod clock;
 
 
 pub fn get_time() -> Duration {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap()
 }
+
+
 
 #[cfg(test)]
 mod tests {

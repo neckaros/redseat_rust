@@ -100,7 +100,7 @@ impl<'a> QueryWhereType<'a> {
                 values.push(value);
                 values.push(value);
 
-                format!("( {} = ? or  '{}' || {} || '{}' LIKE '%{}' || ? || '{}%')", name, separator, alt, separator, separator, separator)
+                format!("( {} = ? COLLATE NOCASE or  '{}' || {} || '{}' LIKE '%{}' || ? || '{}%')", name, separator, alt, separator, separator, separator)
             },
             QueryWhereType::SeparatedContain(name, separator, value) => {
                 values.push(value);

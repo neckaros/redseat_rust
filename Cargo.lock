@@ -2786,9 +2786,9 @@ checksum = "2900ede94e305130c13ddd391e0ab7cbaeb783945ae07a279c268cb05109c6cb"
 
 [[package]]
 name = "plugin-request-interfaces"
-version = "0.7.1"
+version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "846b106ddc88681b13ac894441962dbb0a03614bcb594fb48c1c996c11ce84ea"
+checksum = "be7befeb4ba1675d686f5e086a7320bb50c6dfcf5cefa049d3df582d05794b56"
 dependencies = [
  "rs-plugin-common-interfaces",
  "rusqlite",
@@ -3155,6 +3155,7 @@ dependencies = [
  "query_external_ip",
  "rand",
  "rcgen",
+ "regex",
  "reqwest",
  "rs-plugin-common-interfaces",
  "rs-plugin-url-interfaces",
@@ -3197,9 +3198,9 @@ dependencies = [
 
 [[package]]
 name = "regex"
-version = "1.10.3"
+version = "1.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b62dbe01f0b06f9d8dc7d49e05a0785f153b00b2c227856282f671e0318c9b15"
+checksum = "c117dbdfde9c8308975b6a18d71f3f385c89461f7b3fb054288ecf2a2058ba4c"
 dependencies = [
  "aho-corasick",
  "memchr",

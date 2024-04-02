@@ -57,12 +57,13 @@ http = "0.2.0"
 extism = "1.2.0"
 rs-plugin-common-interfaces = { version = "0.4.2", features = ["rusqlite",] }
 rs-plugin-url-interfaces = { version = "0.1.2", features = ["rusqlite"] }
-plugin-request-interfaces = { version = "0.7.1", features = ["rusqlite"] }
+plugin-request-interfaces = { version = "0.8.2", features = ["rusqlite"] }
 async-recursion = "1.1.0"
 async-compression = { version = "0.4.6", features = ["tokio"] }
 youtube_dl = { version = "0.9.0", features = ["tokio", "downloader-rustls-tls"] }
 stream-map-any = "0.2.2"
 human_bytes = "0.4.3"
+regex = "1.10.4"
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }

@@ -37,17 +37,21 @@ pub struct PersonForInsert {
 }
 
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct PeopleQuery {
-    pub after: Option<u64>
+    pub after: Option<u64>,
+    pub name: Option<String>,
 }
 
 impl PeopleQuery {
     pub fn new_empty() -> PeopleQuery {
-        PeopleQuery { after: None }
+        PeopleQuery { ..Default::default() }
     }
     pub fn from_after(after: u64) -> PeopleQuery {
-        PeopleQuery { after: Some(after) }
+        PeopleQuery { after: Some(after), ..Default::default() }
+    }
+    pub fn from_name(name: &str) -> PeopleQuery {
+        PeopleQuery { name: Some(name.to_owned()), ..Default::default() }
     }
 }
 

@@ -11,9 +11,12 @@ pub struct Tag {
 	pub name: String,
     pub parent: Option<String>,
     #[serde(rename = "type")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
     pub alt: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub thumb: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<Value>,
     pub modified: u64,
     pub added: u64,
