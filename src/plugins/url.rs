@@ -1,7 +1,11 @@
+use std::collections::HashMap;
+
 use extism::convert::Json;
+use futures::future::ok;
 use http::header::{CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE};
 use plugin_request_interfaces::{RsRequest, RsRequestStatus, RsRequestWithCredential};
 use rs_plugin_common_interfaces::{PluginCredential, PluginType};
+use rs_plugin_lookup_interfaces::{RsLookupQuery, RsLookupResult, RsLookupWrapper};
 
 use crate::{domain::{plugin::PluginWithCredential, progress::RsProgressCallback}, error::RsResult, plugins::sources::{AsyncReadPinBox, FileStreamResult}, tools::{array_tools::AddOrSetArray, file_tools::get_mime_from_filename, http_tools::{extract_header, guess_filename, parse_content_disposition}, log::log_error, video_tools::ytdl::YydlContext}, Error};
 
@@ -71,7 +75,6 @@ impl PluginManager {
     }
 
     pub async fn request(&self, mut request: RsRequest, plugins: impl Iterator<Item = PluginWithCredential>, progress: RsProgressCallback) -> RsResult<SourceRead> {
-        println!("Plugins");
         let client = reqwest::Client::new();
         let r = client.head(&request.url).send().await;
         if let Ok(heads) = r {
@@ -97,9 +100,9 @@ impl PluginManager {
                         request: request.clone(),
                         credential: plugin_with_cred.credential.clone().and_then(|p| Some(PluginCredential::from(p)))
                     };
+                    //println!("request {}", serde_json::to_string(&req).unwrap());
                     let res = plugin_m.call_get_error_code::<Json<RsRequestWithCredential>, Json<RsRequest>>("process", Json(req));
                     if let Ok(Json(mut res)) = res {
-
                         if res.mime.is_none() {
                             res.mime = get_mime_from_filename(&res.url);
                         }
@@ -142,5 +145,35 @@ impl PluginManager {
             }
         }
         None
+    }
+
+
+
+    pub async fn lookup(&self, query: RsLookupQuery, plugins: impl Iterator<Item = PluginWithCredential>) -> RsResult<Vec<RsLookupResult>> {
+        let mut results = vec![];
+        for plugin_with_cred in plugins {
+            println!("PLUGIN {}", plugin_with_cred.plugin.name);
+            if let Some(plugin) = self.plugins.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
+                let mut plugin_m = plugin.plugin.lock().unwrap();
+                if plugin.infos.kind == PluginType::Lookup {
+                    let wrapped_query = RsLookupWrapper {
+                        query: query.clone(),
+                        credential: plugin_with_cred.credential.clone().and_then(|p| Some(PluginCredential::from(p))),
+                        params: None,
+                    };
+                    //println!("request {}", serde_json::to_string(&wrapped_query).unwrap());
+                    let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<RsLookupResult>>("process", Json(wrapped_query));
+                    if let Ok(Json(res)) = res {
+                        results.push(res);
+                    } else if let Err((error, code)) = res {
+                        if code != 404 {
+                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request {} {:?}", code, error))
+                        }
+                    }
+                    
+                }
+            }
+        }
+        Ok(results)
     }
 }

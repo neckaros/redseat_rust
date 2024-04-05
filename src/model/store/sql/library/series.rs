@@ -71,8 +71,6 @@ impl SqliteLibraryStore {
     }
 
     pub async fn get_serie_by_external_id(&self, ids: MediasIds) -> Result<Option<Serie>> {
-        let i = ids.clone();
-        //println!("{}, {}, {}, {}, {}",i.imdb.unwrap_or("zz".to_string()), i.slug.unwrap_or("zz".to_string()), i.tmdb.unwrap_or(0), i.trakt.unwrap_or(0), i.tvdb.unwrap_or(0));
         let row = self.connection.call( move |conn| { 
             let mut query = conn.prepare("SELECT 
             id, name, type, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, year, modified, added, imdb_rating, imdb_votes, trailer, maxCreated, trakt_rating, trakt_votes, status 

@@ -154,7 +154,7 @@ pub enum ImageError {
 }
 
 impl From<WebPEncodingError> for ImageError {
-    fn from(error: WebPEncodingError) -> Self {
+    fn from(_error: WebPEncodingError) -> Self {
         ImageError::Error
     }
 }

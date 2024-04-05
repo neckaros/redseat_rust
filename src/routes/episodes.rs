@@ -1,7 +1,8 @@
 
-use crate::{domain::episode::Episode, model::{episodes::{EpisodeForUpdate, EpisodeQuery}, users::ConnectedUser, ModelController}, Error, Result};
+use crate::{domain::episode::{self, Episode}, model::{episodes::{EpisodeForUpdate, EpisodeQuery}, users::ConnectedUser, ModelController}, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
 use futures::TryStreamExt;
+use rs_plugin_lookup_interfaces::{RsLookupEpisode, RsLookupQuery};
 use serde_json::{json, ser, Value};
 use tokio::io::AsyncRead;
 use tokio_util::io::{ReaderStream, StreamReader};
@@ -20,6 +21,7 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/seasons/:season/episodes/:number", patch(handler_patch))
 		.route("/seasons/:season/episodes/:number", delete(handler_delete))
 		.route("/seasons/:season/episodes/:number/image", get(handler_image))
+		.route("/seasons/:season/episodes/:number/search", get(handler_lookup))
 		.route("/:id/image", post(handler_post_image))
 		.with_state(mc)
         
@@ -31,7 +33,7 @@ async fn handler_list(Path((library_id, serie_id)): Path<(String, String)>, Stat
 	let body = Json(json!(libraries));
 	Ok(body)
 }
-async fn handler_refresh(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(mut query): Query<EpisodeQuery>) -> Result<Json<Value>> {
+async fn handler_refresh(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(_query): Query<EpisodeQuery>) -> Result<Json<Value>> {
 	let libraries = mc.refresh_episodes(&library_id, &serie_id, &user).await?;
 	let body = Json(json!(libraries));
 	Ok(body)
@@ -61,6 +63,27 @@ async fn handler_delete(Path((library_id, serie_id, season, number)): Path<(Stri
 	let body = Json(json!(library));
 	Ok(body)
 }
+
+async fn handler_lookup(Path((library_id, serie_id, season, number)): Path<(String, String, u32, u32)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	let episode = mc.get_episode(&library_id, serie_id.clone(), season, number, &user).await?.ok_or(Error::NotFound)?;
+	let serie = mc.get_serie(&library_id, serie_id,  &user).await?.ok_or(Error::NotFound)?;
+	let query_episode = RsLookupEpisode {
+    serie: serie.name,
+    imdb: episode.imdb,
+    slug: episode.slug,
+    tmdb: episode.tmdb,
+    trakt: episode.trakt,
+    tvdb: episode.tmdb,
+    otherids: episode.otherids,
+    season: episode.season,
+    number: Some(episode.number),
+	};
+	let query = RsLookupQuery::Episode(query_episode);
+	let library = mc.exec_lookup(query, Some(library_id), &user).await?;
+	let body = Json(json!(library));
+	Ok(body)
+}
+
 
 async fn handler_post(Path((library_id, _)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(new_serie): Json<Episode>) -> Result<Json<Value>> {
 	let credential = mc.add_episode(&library_id, new_serie, &user).await?;

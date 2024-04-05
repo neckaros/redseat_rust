@@ -511,8 +511,6 @@ impl ModelController {
     pub async fn update_photo_infos(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> crate::Result<()> {
         requesting_user.check_file_role(library_id, media_id, LibraryRole::Read)?;
 
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
-
         let mut m = self.library_file(library_id, media_id, None, requesting_user).await?.into_reader(library_id, None, None, Some((self.clone(), &requesting_user))).await?;
 
         let images_infos = image_tools::ImageCommandBuilder::new().infos(&mut m.stream).await?;

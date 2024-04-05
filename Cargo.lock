@@ -2786,10 +2786,11 @@ checksum = "2900ede94e305130c13ddd391e0ab7cbaeb783945ae07a279c268cb05109c6cb"
 
 [[package]]
 name = "plugin-request-interfaces"
-version = "0.8.2"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be7befeb4ba1675d686f5e086a7320bb50c6dfcf5cefa049d3df582d05794b56"
+checksum = "a80546d485be4c7b95ef90c2420071ade2abcfa081f8ea3a4638aff574c02403"
 dependencies = [
+ "regex",
  "rs-plugin-common-interfaces",
  "rusqlite",
  "serde",
@@ -3158,6 +3159,7 @@ dependencies = [
  "regex",
  "reqwest",
  "rs-plugin-common-interfaces",
+ "rs-plugin-lookup-interfaces",
  "rs-plugin-url-interfaces",
  "rsa",
  "rusqlite",
@@ -3333,11 +3335,25 @@ dependencies = [
 
 [[package]]
 name = "rs-plugin-common-interfaces"
-version = "0.4.2"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3bf009a0ab669a5888147460f828e0bea4be28f09e997b759d15f0c809384eb"
+checksum = "fb57a7889b1fa8a92dfe4561af66a5d0e5a666c9bf2635f74e56de953d713006"
 dependencies = [
  "rusqlite",
+ "serde",
+ "serde_json",
+ "strum",
+ "strum_macros",
+]
+
+[[package]]
+name = "rs-plugin-lookup-interfaces"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0bdfd162d3f3b7db301acf616774900430c8c7e2dc734b60d9a1bfe16a61d592"
+dependencies = [
+ "plugin-request-interfaces",
+ "rs-plugin-common-interfaces",
  "serde",
  "serde_json",
  "strum",

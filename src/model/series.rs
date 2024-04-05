@@ -335,7 +335,7 @@ impl ModelController {
         let image_reader = reqwest::get(images).await?;
         let stream = image_reader.bytes_stream();
         let body_with_io_error = stream.map_err(|err| io::Error::new(io::ErrorKind::Other, err));
-        let mut body_reader = StreamReader::new(body_with_io_error);
+        let body_reader = StreamReader::new(body_with_io_error);
         Ok(Box::pin(body_reader))
     }
 

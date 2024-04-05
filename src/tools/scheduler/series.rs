@@ -9,7 +9,7 @@ pub struct SerieTask {
 }
 
 impl SerieTask {
-    pub fn new(params: String) -> RsResult<Self> {
+    pub fn new(_params: String) -> RsResult<Self> {
         Ok(Self {})
     }
 }

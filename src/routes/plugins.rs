@@ -44,13 +44,13 @@ struct ExpandQuery {
 
 
 async fn handler_parse(State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ExpandQuery>) -> Result<Json<Value>> {
-	user.check_role(&crate::model::users::UserRole::Read);
+	user.check_role(&crate::model::users::UserRole::Read)?;
 	let wasm = mc.plugin_manager.parse(query.url);
 	let body = Json(json!(wasm));
 	Ok(body)
 }
 async fn handler_expand(State(mc): State<ModelController>, user: ConnectedUser, Json(link): Json<RsLink>) -> Result<Json<Value>> {
-	user.check_role(&crate::model::users::UserRole::Read);
+	user.check_role(&crate::model::users::UserRole::Read)?;
 
 	let wasm = mc.plugin_manager.expand(link);
 	if let Some(link) = wasm {

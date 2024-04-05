@@ -90,7 +90,7 @@ impl SqliteLibraryStore {
     }
 
     pub async fn get_movie_by_external_id(&self, ids: MediasIds) -> Result<Option<Movie>> {
-        let i = ids.clone();
+        
         //println!("{}, {}, {}, {}, {}",i.imdb.unwrap_or("zz".to_string()), i.slug.unwrap_or("zz".to_string()), i.tmdb.unwrap_or(0), i.trakt.unwrap_or(0), i.tvdb.unwrap_or(0));
         let row = self.connection.call( move |conn| { 
             let mut query = conn.prepare("SELECT  

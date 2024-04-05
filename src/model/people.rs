@@ -4,10 +4,10 @@
 use nanoid::nanoid;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::{fs::File, io::BufReader};
+use tokio::{fs::File, io::{AsyncRead, BufReader}};
 
 use rs_plugin_url_interfaces::RsLink;
-use crate::{domain::{library::LibraryRole, people::{PeopleMessage, Person}, ElementAction}, plugins::sources::{AsyncReadPinBox, FileStreamResult}, tools::image_tools::{ImageSize, ImageType}};
+use crate::{domain::{library::LibraryRole, people::{PeopleMessage, Person}, ElementAction, MediasIds}, plugins::sources::{AsyncReadPinBox, FileStreamResult}, tools::image_tools::{ImageSize, ImageType}};
 
 use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
 
@@ -151,6 +151,13 @@ impl ModelController {
     
 	pub async fn person_image(&self, library_id: &str, person_id: &str, kind: Option<ImageType>, size: Option<ImageSize>, requesting_user: &ConnectedUser) -> Result<FileStreamResult<AsyncReadPinBox>> {
         self.library_image(library_id, ".portraits", person_id, kind, size, requesting_user).await
+	}
+
+    pub async fn update_person_image<T: AsyncRead>(&self, library_id: &str, person_id: &str, kind: &Option<ImageType>, reader: T, requesting_user: &ConnectedUser) -> Result<()> {
+        if MediasIds::is_id(&person_id) {
+            return Err(Error::InvalidIdForAction("udpate person image".to_string(), person_id.to_string()))
+        }
+        self.update_library_image(library_id, ".portraits", person_id, kind, reader, requesting_user).await
 	}
 
     

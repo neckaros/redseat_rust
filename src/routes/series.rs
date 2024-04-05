@@ -32,9 +32,9 @@ async fn handler_list(Path(library_id): Path<String>, State(mc): State<ModelCont
 	let libraries = mc.get_series(&library_id, query, &user).await?;
 	let body = Json(json!(libraries));
 	Ok(body)
-}
+	}
 
-async fn handler_trending(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+async fn handler_trending(State(mc): State<ModelController>) -> Result<Json<Value>> {
 	let libraries = mc.trending_shows().await?;
 	let body = Json(json!(libraries));
 	Ok(body)

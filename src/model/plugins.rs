@@ -4,6 +4,7 @@
 use nanoid::nanoid;
 use plugin_request_interfaces::RsRequest;
 use rs_plugin_common_interfaces::{PluginInformation, PluginType};
+use rs_plugin_lookup_interfaces::{RsLookupQuery, RsLookupResult};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc::Sender;
@@ -40,7 +41,7 @@ impl ModelController {
 		Ok(iter)
 	}
 
-    pub async fn get_wasm(&self, query: PluginQuery, requesting_user: &ConnectedUser) -> Result<Vec<&PluginInformation>> {
+    pub async fn get_wasm(&self, _query: PluginQuery, requesting_user: &ConnectedUser) -> Result<Vec<&PluginInformation>> {
         requesting_user.check_role(&UserRole::Admin)?;
 		let wasm: Vec<&PluginInformation> = self.plugin_manager.plugins.iter().map(|p| &p.infos).collect();
 		Ok(wasm)
@@ -96,6 +97,19 @@ impl ModelController {
         let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::Request), ..Default::default() }, &requesting_user).await?;
 
         Ok(self.plugin_manager.request(request, plugins, progress).await?)
+        
+    }
+
+    
+    pub async fn exec_lookup(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser) -> RsResult<Vec<RsLookupResult>> {
+        if let Some(library_id) = library_id {
+            requesting_user.check_library_role(&library_id, crate::domain::library::LibraryRole::Read)?;
+        } else {
+            requesting_user.check_role(&UserRole::Read)?;
+        }
+        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::Lookup), ..Default::default() }, &requesting_user).await?;
+        
+        Ok(self.plugin_manager.lookup(query, plugins).await?)
         
     }
 }
