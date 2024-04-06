@@ -148,7 +148,7 @@ pub struct Media {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thumbv: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub thumbsize: Option<usize>,
+    pub thumbsize: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub iv: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -22,6 +22,8 @@ pub enum Error {
 	LoginFail,
 	NotFound,
 
+	UnavailableForCryptedLibraries,
+
 	TimeCreationError,
 	TraktTooManyUpdates,
 
@@ -153,6 +155,8 @@ impl Error {
 		#[allow(unreachable_patterns)]
 		match self {
 			Self::NotFound => (StatusCode::NOT_FOUND, ClientError::NOT_FOUND),
+
+			Self::UnavailableForCryptedLibraries => (StatusCode::UNPROCESSABLE_ENTITY, ClientError::NOT_FOR_CRYPTED_LIBRARY),
 			
 
 			Self::LoginFail => (StatusCode::FORBIDDEN, ClientError::LOGIN_FAIL),
@@ -192,6 +196,7 @@ pub enum ClientError {
 	TOKEN_EXPIRED,
 	FORBIDDEN,
 	NOT_FOUND,
+	NOT_FOR_CRYPTED_LIBRARY,
 	INVALID_PARAMS,
 	SERVICE_ERROR,
 	Custom(String),

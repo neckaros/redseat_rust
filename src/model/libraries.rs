@@ -241,6 +241,7 @@ impl ModelController {
 		self.store.update_library(library_id, update).await?;
         let library = self.store.get_library(library_id).await?;
         if let Some(library) = library { 
+            self.cache_update_library(library.clone()).await;
             self.send_library(LibraryMessage { action: crate::domain::ElementAction::Updated, library: library.clone() });
             Ok(map_library_for_user(library, &requesting_user))
         } else {
@@ -265,6 +266,7 @@ impl ModelController {
         self.store.add_library_rights(library_id.clone(), user_id, vec![LibraryRole::Admin]).await?;
         let library = self.store.get_library(&library_id).await?;
         if let Some(library) = library { 
+            self.cache_update_library(library.clone()).await;
             self.send_library(LibraryMessage { action: crate::domain::ElementAction::Added, library: library.clone() });
             Ok(Some(ServerLibraryForRead::from(library)))
         } else {
@@ -276,6 +278,7 @@ impl ModelController {
         requesting_user.check_library_role(&library_id, LibraryRole::Admin)?;
         let library = self.store.get_library(&library_id).await?;
         if let Some(library) = library { 
+            self.cache_remove_library(&library.id).await;
             self.store.remove_library(library_id.to_string()).await?;
             self.send_library(LibraryMessage { action: crate::domain::ElementAction::Removed, library: library.clone() });
             Ok(ServerLibraryForRead::from(library))

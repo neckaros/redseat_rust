@@ -22,7 +22,7 @@ use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload,
 
 use super::{error::{Error, Result}, plugins::PluginQuery, store, users::ConnectedUser, ModelController};
 
-
+pub const CRYPTO_HEADER_SIZE: u64 = 16 + 4 + 4 + 32 + 256;
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")] 
@@ -77,7 +77,8 @@ impl MediaQuery {
 pub struct MediaSource {
     pub id: String,
     pub source: String,
-    pub kind: FileType
+    pub kind: FileType,
+    pub thumb_size: Option<u64>,
 }
 impl TryFrom<Media> for MediaSource {
     type Error = crate::model::error::Error;
@@ -86,7 +87,8 @@ impl TryFrom<Media> for MediaSource {
         Ok(MediaSource {
             id: value.id,
             source,
-            kind: value.kind
+            kind: value.kind,
+            thumb_size: value.thumbsize
         })
     }
 }
@@ -205,13 +207,16 @@ impl ModelController {
 	}
 
     
-	pub async fn library_file(&self, library_id: &str, media_id: &str, range: Option<RangeDefinition>, requesting_user: &ConnectedUser) -> Result<SourceRead> {
+	pub async fn library_file(&self, library_id: &str, media_id: &str, mut range: Option<RangeDefinition>, raw: bool, requesting_user: &ConnectedUser) -> Result<SourceRead> {
         requesting_user.check_file_role(library_id, media_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         let existing = store.get_media_source(&media_id).await?;
-
+//range: { start: headerSize() + (fileInfo.thumbsize ?? 0) }
         if let Some(existing) = existing {
             let m = self.source_for_library(&library_id).await?;
+            if self.cache_get_library(library_id).await.and_then(|l| l.crypt).unwrap_or(false) && raw == false {
+                range = Some(RangeDefinition { start: Some(CRYPTO_HEADER_SIZE + existing.thumb_size.unwrap_or(0)), end: None })
+            }
             let reader_response = m.get_file(&existing.source, range).await?;
             Ok(reader_response)
         } else {
@@ -227,7 +232,9 @@ impl ModelController {
             }
         });
     }
-    pub async fn process_media(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> Result<()>{
+    pub async fn process_media(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> RsResult<()>{
+        self.cache_check_library_notcrypt(library_id).await?;
+
         let existing = self.get_media(library_id, media_id.to_owned(), requesting_user).await?.ok_or(Error::NotFound)?;
 
         if existing.kind == FileType::Video {
@@ -252,7 +259,7 @@ impl ModelController {
     
     pub async fn add_library_file<T: AsyncRead>(&self, library_id: &str, filename: &str, infos: Option<MediaForUpdate>, reader: T, requesting_user: &ConnectedUser) -> Result<Media> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
-
+        let crypted = self.cache_get_library_crypt(library_id).await;
         let m = self.source_for_library(&library_id).await?;
 
 
@@ -264,7 +271,9 @@ impl ModelController {
 
 
         let mut infos = infos.unwrap_or_else(|| MediaForUpdate::default());
-        let _ = m.fill_infos(&source, &mut infos).await;
+        if !crypted {
+            let _ = m.fill_infos(&source, &mut infos).await;
+        }
 
         let mut new_file = MediaForAdd::default();
         new_file.name = filename.to_string();
@@ -276,16 +285,16 @@ impl ModelController {
             new_file.kind = file_type_from_mime(&mime);
         }
 
-        println!("new file {:?}", new_file);
-
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         let id = nanoid!();
         store.add_media(MediaForInsert { id: id.clone(), media: new_file }).await?;
         
         store.update_media(&id, infos).await?;
 
-        let _ = self.generate_thumb(&library_id, &id, &requesting_user).await;
-        self.process_media_spawn(library_id.to_string(), id.clone(), requesting_user.clone());
+        if !crypted {
+            let _ = self.generate_thumb(&library_id, &id, &requesting_user).await;
+            self.process_media_spawn(library_id.to_string(), id.clone(), requesting_user.clone());
+        }
 
 
         let media = store.get_media(&id).await?.ok_or(Error::NotFound)?;
@@ -297,6 +306,7 @@ impl ModelController {
 
     pub async fn download_library_url(&self, library_id: &str, files: GroupMediaDownload<MediaDownloadUrl>, requesting_user: &ConnectedUser) -> RsResult<Vec<Media>> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        self.cache_check_library_notcrypt(library_id).await?;
 
         let m = self.source_for_library(&library_id).await?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
@@ -403,6 +413,8 @@ impl ModelController {
 	}
 
     pub async fn generate_thumb(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> crate::error::Result<()> {
+        self.cache_check_library_notcrypt(library_id).await?;
+
         let m = self.source_for_library(&library_id).await?; 
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         let media = store.get_media(&media_id).await?.ok_or(Error::NotFound)?;
@@ -555,7 +567,7 @@ impl ModelController {
     pub async fn update_photo_infos(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> crate::Result<()> {
         requesting_user.check_file_role(library_id, media_id, LibraryRole::Read)?;
 
-        let mut m = self.library_file(library_id, media_id, None, requesting_user).await?.into_reader(library_id, None, None, Some((self.clone(), &requesting_user))).await?;
+        let mut m = self.library_file(library_id, media_id, None, false, requesting_user).await?.into_reader(library_id, None, None, Some((self.clone(), &requesting_user))).await?;
 
         let images_infos = image_tools::ImageCommandBuilder::new().infos(&mut m.stream).await?;
         if let Some(infos) = images_infos.get(0) {

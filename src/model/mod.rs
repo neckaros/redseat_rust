@@ -14,26 +14,29 @@ pub mod episodes;
 pub mod medias;
 pub mod movies;
 
-use std::{io::Read, path::PathBuf, pin::Pin, sync::Arc};
+use std::{collections::HashMap, io::Read, path::PathBuf, pin::Pin, sync::Arc};
+use futures::lock::Mutex;
 use nanoid::nanoid;
 use strum::IntoEnumIterator;
 use rs_plugin_url_interfaces::RsLink;
-use crate::{domain::{library::{LibraryMessage, LibraryRole}, serie::Serie}, plugins::{medias::{imdb::ImdbContext, tmdb::TmdbContext, trakt::TraktContext}, sources::{error::SourcesError, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, LocalSource, Source, SourceRead}, PluginManager}, server::get_server_file_path_array, tools::{clock::SECONDS_IN_HOUR, image_tools::{resize_image_path, ImageSize, ImageSizeIter, ImageType}, log::log_info, scheduler::{self, refresh::RefreshTask, RsScheduler, RsTaskType}}};
+use crate::{domain::{library::{LibraryMessage, LibraryRole, ServerLibrary}, serie::Serie}, error::RsResult, plugins::{medias::{imdb::ImdbContext, tmdb::TmdbContext, trakt::TraktContext}, sources::{error::SourcesError, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, LocalSource, Source, SourceRead}, PluginManager}, routes::mw_range::RangeDefinition, server::get_server_file_path_array, tools::{clock::SECONDS_IN_HOUR, image_tools::{resize_image_path, ImageSize, ImageSizeIter, ImageType}, log::log_info, scheduler::{self, refresh::RefreshTask, RsScheduler, RsTaskType}}};
 
-use self::{store::SqliteStore, users::{ConnectedUser, UserRole}};
+use self::{medias::CRYPTO_HEADER_SIZE, store::SqliteStore, users::{ConnectedUser, UserRole}};
 use error::{Result, Error};
 use socketioxide::{extract::SocketRef, SocketIo};
-use tokio::{fs::{self, remove_file, File}, io::{copy, AsyncRead, BufReader}};
+use tokio::{fs::{self, remove_file, File}, io::{copy, AsyncRead, BufReader}, sync::RwLock};
 
 #[derive(Clone)]
 pub struct ModelController {
 	store: Arc<SqliteStore>,
 	io: Option<SocketIo>,
 	pub plugin_manager: Arc<PluginManager>,
-	pub trakt: TraktContext,
-	pub tmdb: TmdbContext,
-	pub imdb: ImdbContext,
+	pub trakt: Arc<TraktContext>,
+	pub tmdb: Arc<TmdbContext>,
+	pub imdb: Arc<ImdbContext>,
 	pub scheduler: Arc<RsScheduler>,
+
+	pub chache_libraries: Arc<RwLock<HashMap<String, ServerLibrary>>>
 }
 
 
@@ -47,11 +50,14 @@ impl ModelController {
 			store: Arc::new(store),
 			io: None,
 			plugin_manager: Arc::new(plugin_manager),
-			trakt: TraktContext::new("455f81b3409a8dd140a941e9250ff22b2ed92d68003491c3976363fe752a9024".to_string()),
-			tmdb,
-			imdb: ImdbContext::new(),
-			scheduler: Arc::new(scheduler)
+			trakt: Arc::new(TraktContext::new("455f81b3409a8dd140a941e9250ff22b2ed92d68003491c3976363fe752a9024".to_string())),
+			tmdb: Arc::new(tmdb),
+			imdb: Arc::new(ImdbContext::new()),
+			scheduler: Arc::new(scheduler),
+			chache_libraries: Arc::new(RwLock::new(HashMap::new()))
 		};
+
+		mc.cache_update_all_libraries().await?;
 
 		let scheduler = &mc.scheduler;
 		scheduler.start(mc.clone()).await?;
@@ -66,6 +72,39 @@ impl ModelController {
 
 
 impl  ModelController {
+
+	pub async fn cache_get_library(&self, library: &str) -> Option<ServerLibrary> {
+		let cache = self.chache_libraries.read().await;
+		cache.get(library).cloned()
+	}
+	pub async fn cache_get_library_crypt(&self, library: &str) -> bool {
+		let cache = self.chache_libraries.read().await;
+		cache.get(library).and_then(|r| r.crypt).unwrap_or(false)
+	}
+	pub async fn cache_check_library_notcrypt(&self, library: &str) -> RsResult<()> {
+		if self.cache_get_library_crypt(library).await {
+			Err(crate::Error::UnavailableForCryptedLibraries)
+		} else {
+			Ok(())
+		}
+	}
+
+	pub async fn cache_update_library(&self, library: ServerLibrary) {
+		let mut cache = self.chache_libraries.write().await;
+		cache.remove(&library.id);
+		cache.insert(library.id.clone(), library);
+	}
+	pub async fn cache_remove_library(&self, library: &str) {
+		let mut cache = self.chache_libraries.write().await;
+		cache.remove(library);
+	}
+	pub async fn cache_update_all_libraries(&self) -> RsResult<()>{
+		let libraries = self.store.get_libraries().await?;
+		for library in libraries {
+			self.cache_update_library(library).await;
+		}
+		Ok(())
+	}
 
 	pub fn parse(&self, url: String) {
 		self.plugin_manager.parse(url);
@@ -126,6 +165,23 @@ impl  ModelController {
 
 	pub async fn library_image(&self, library_id: &str, folder: &str, id: &str, kind: Option<ImageType>, size: Option<ImageSize>, requesting_user: &ConnectedUser) -> Result<FileStreamResult<AsyncReadPinBox>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+
+		let crypt = self.cache_get_library(library_id).await.and_then(|l| l.crypt).unwrap_or(false);
+
+		if crypt {
+			let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+			let media_source = store.get_media_source(id).await?.ok_or(Error::NotFound)?;
+			//headerSize(), end: headerSize() + fileInfo.thumbsize - 1 }
+            let range = RangeDefinition { start: Some(CRYPTO_HEADER_SIZE), end: Some(CRYPTO_HEADER_SIZE + media_source.thumb_size.unwrap_or(0)) };
+			let source = self.source_for_library(library_id).await?;
+			let reader = source.get_file("source", Some(range)).await?;
+			if let SourceRead::Stream(reader) = reader {
+				return Ok(reader);
+			} else {
+				return Err(Error::NotFound)
+			}
+            
+		}
 
         let m = self.library_source_for_library(&library_id).await?;
 		let source_filepath = format!("{}/{}{}{}.webp", folder, id, ImageType::optional_to_filename_element(&kind), ImageSize::optional_to_filename_element(&size));

@@ -74,7 +74,7 @@ async fn handler_predict(Path((library_id, media_id)): Path<(String, String)>, S
 }
 
 async fn handler_get_file(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, range: Option<RangeDefinition>) -> Result<Response> {
-	let reader = mc.library_file(&library_id, &media_id, range.clone(), &user).await?;
+	let reader = mc.library_file(&library_id, &media_id, range.clone(), false, &user).await?;
 	Ok(reader.into_response(&library_id, range, None, Some((mc.clone(), &user))).await?)
 }
 

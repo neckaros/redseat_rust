@@ -24,7 +24,8 @@ impl SqliteLibraryStore {
         Ok(MediaSource {
             id: row.get(0)?,
             source: row.get(1)?,
-            kind: row.get(2)?
+            kind: row.get(2)?,
+            thumb_size: row.get(3)?,
         })
     }
 
@@ -226,7 +227,7 @@ impl SqliteLibraryStore {
         let media_id = media_id.to_string();
         let row = self.connection.call( move |conn| { 
             let mut query = conn.prepare("SELECT 
-            id, source, type
+            id, source, type, thumbsize
             FROM medias
             WHERE id = ?")?;
             let row = query.query_row(

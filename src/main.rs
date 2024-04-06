@@ -175,7 +175,7 @@ async fn register() -> Result<RegisterInfo>{
         
 
         let public_config = PublicServerInfos::get(&certs.0, &public_domain).await?;
-        log_info(LogServiceType::Register, format!("Exposed public infos: {:?}", public_config));
+        log_info(LogServiceType::Register, format!("Exposed public url: {}:{}", public_config.url, public_config.port));
         
         let client = reqwest::Client::new();
         println!("server: {}", format!("https://{}/servers/${}/register", config.redseat_home, config.id));

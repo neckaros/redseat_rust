@@ -101,11 +101,11 @@ pub async fn get_home() -> String {
 }
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PublicServerInfos {
-    url: String,
-    port: u16,
-    cert: String,
-    id: String,
-    local: Option<String>, 
+    pub url: String,
+    pub port: u16,
+    pub cert: String,
+    pub id: String,
+    pub local: Option<String>, 
 }
 
 impl PublicServerInfos {
