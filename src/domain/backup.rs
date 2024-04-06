@@ -32,6 +32,7 @@ pub struct BackupFile {
     pub size: u64,
     pub date: u64,
     pub iv: Option<String>,
+    pub thumb_size: Option<u64>,
     pub info_size: Option<u64>,
     pub error: Option<String>,
 }

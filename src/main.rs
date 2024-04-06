@@ -8,12 +8,13 @@ use axum::{
 use axum_server::tls_rustls::RustlsConfig;
 
 use domain::MediasIds;
+use hyper::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use model::{store::SqliteStore, ModelController};
 use plugins::{medias::{imdb::ImdbContext, tmdb::{tmdb_configuration::TmdbConfiguration, TmdbContext}, trakt::TraktContext}, PluginManager};
 use routes::{mw_auth, mw_range};
 
 
-use server::get_server_port;
+use server::{get_home, get_server_port, PublicServerInfos};
 use tokio::net::TcpListener;
 use tools::{auth::{sign_local, Claims}, log::LogServiceType, prediction};
 use tower::ServiceBuilder;
@@ -90,7 +91,8 @@ async fn app() -> Result<Router> {
 
     let cors: CorsLayer = CorsLayer::new()
     // allow `GET` and `POST` when accessing the resource
-    .allow_methods(vec![Method::GET, Method::PATCH, Method::DELETE, Method::POST])
+    .allow_methods(vec![Method::GET, Method::PATCH, Method::DELETE, Method::HEAD, Method::OPTIONS, Method::POST])
+    .allow_headers([AUTHORIZATION, ACCEPT, CONTENT_TYPE])
     // allow requests from any origin
     .allow_origin(Any);
     let (iolayer, io) = SocketIo::builder().with_state(mc.clone()).build_layer();
@@ -103,7 +105,7 @@ async fn app() -> Result<Router> {
         .nest("/libraries/:libraryid/medias", routes::medias::routes(mc.clone()))
         .nest("/libraries/:libraryid/tags", routes::tags::routes(mc.clone()))
         .nest("/libraries/:libraryid/people", routes::people::routes(mc.clone()))
-        .nest("/libraries/:libraryid/shows", routes::series::routes(mc.clone()))
+        .nest("/libraries/:libraryid/series", routes::series::routes(mc.clone()))
         .nest("/libraries/:libraryid/movies", routes::movies::routes(mc.clone()))
         .nest("/library", routes::libraries::routes(mc.clone())) // duplicate for legacy
         .nest("/users", routes::users::routes(mc.clone()))
@@ -166,19 +168,30 @@ async fn register() -> Result<RegisterInfo>{
 
     if domain.is_some() && duck_dns.is_some() {
         log_info(tools::log::LogServiceType::Register, "Public domain certificate check".to_string());
+        let public_domain = domain.unwrap();
+        let certs = certificate::dns_certify(&public_domain, &duck_dns.unwrap()).await?;
+        register_info.cert_paths = Some(certs.clone());
 
-        let certs = certificate::dns_certify(&domain.unwrap(), &duck_dns.unwrap()).await?;
-        register_info.cert_paths = Some(certs);
+        
+
+        let public_config = PublicServerInfos::get(&certs.0, &public_domain).await?;
+        log_info(LogServiceType::Register, format!("Exposed public infos: {:?}", public_config));
+        
+        let client = reqwest::Client::new();
+        println!("server: {}", format!("https://{}/servers/${}/register", config.redseat_home, config.id));
+        let res = client.post(format!("https://{}/servers/${}/register", config.redseat_home, config.id))
+            .json(&public_config)
+            .send()
+            .await?;
+
+        let register_response = res.text().await?;
+        println!("repsonse: {}", register_response);
     } 
 
+    //const register = await axios.post(`https://${process.env.REDSEAT_HOME}/servers/${serverId}/register`, publicInfo)
 
     Ok(register_info)
-    //println!("DuckDns domain not found");
 
-    //println!("Please enter your duckdns domain and press enter:");
-    //let mut input_string = String::new();
-    //io::stdin().read_line(&mut input_string).unwrap();
-    //println!("You wrote {:?}", input_string.trim());
 } 
 
 

@@ -13,25 +13,57 @@ use plugin_request_interfaces::{RsCookie, RsRequest};
 use query_external_ip::SourceError;
 use rs_plugin_common_interfaces::PluginType;
 use serde::{Deserialize, Serialize};
+use strum_macros::EnumString;
 use tokio::{io::{copy, AsyncRead, AsyncReadExt}, sync::mpsc};
 use tokio_util::io::StreamReader;
+use crate::model::store::sql::SqlOrder;
 
-
-use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaItemReference, MediasMessage, ProgressMessage}, progress::{RsProgress, RsProgressType}, ElementAction}, error::RsResult, plugins::{get_plugin_fodler, sources::{async_reader_progress::ProgressReader, error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{self, resize_image, resize_image_reader, ImageSize, ImageType}, log::{log_error, log_info, LogServiceType}, prediction::{predict_net, preload_model, PredictionTagResult}, video_tools::{self, probe_video, VideoTime}}};
+use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaItemReference, MediaWithAction, MediasMessage, ProgressMessage}, progress::{RsProgress, RsProgressType}, ElementAction}, error::RsResult, plugins::{get_plugin_fodler, sources::{async_reader_progress::ProgressReader, error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{self, resize_image, resize_image_reader, ImageSize, ImageType}, log::{log_error, log_info, LogServiceType}, prediction::{predict_net, preload_model, PredictionTagResult}, video_tools::{self, probe_video, VideoTime}}};
 
 use super::{error::{Error, Result}, plugins::PluginQuery, store, users::ConnectedUser, ModelController};
 
 
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")] 
 pub struct MediaQuery {
+    
+    #[serde(default)]
+    pub sort: RsSort,
+    #[serde(default)]
+    pub order: SqlOrder,
+
+    pub before: Option<u64>,
     pub after: Option<u64>,
     #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(default)]
+    pub people: Vec<String>,
+    #[serde(default)]
+    pub series: Vec<String>,
     pub limit: Option<usize>,
-    #[serde(rename = "type")]
-    pub kind: Option<FileType>,
+    #[serde(default)]
+    pub types: Vec<FileType>,
+    
+    pub page_key: Option<u64>,
+
+    pub filter: Option<String>,
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, strum_macros::Display,EnumString, Default)]
+#[strum(serialize_all = "camelCase")]
+#[serde(rename_all = "camelCase")]
+pub enum RsSort {
+    #[default]
+    Modified,
+    Added,
+    Created,
+    Rating,
+    Name,
+    Size
+}
+
+
 
 impl MediaQuery {
     pub fn new_empty() -> MediaQuery {
@@ -84,9 +116,9 @@ impl ModelController {
         requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
 		store.update_media(&media_id, update).await?;
-        let person = store.get_media(&media_id).await?.ok_or(Error::NotFound)?;
-        self.send_media(MediasMessage { library: library_id.to_string(), action: ElementAction::Updated, medias: vec![person.clone()] });
-        Ok(person)
+        let media = store.get_media(&media_id).await?.ok_or(Error::NotFound)?;
+        self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media: media.clone(), action: ElementAction::Updated}] });
+        Ok(media)
 	}
 
 
@@ -94,7 +126,7 @@ impl ModelController {
 		self.for_connected_users(&message, |user, socket, message| {
             let r = user.check_library_role(&message.library, LibraryRole::Read);
 			if r.is_ok() {
-				let _ = socket.emit("tags", message);
+				let _ = socket.emit("medias", message);
 			}
 		});
 	}
@@ -116,7 +148,7 @@ impl ModelController {
 		store.add_media(media.clone()).await?;
         let new_file = self.get_media(library_id, media.id, requesting_user).await?.ok_or(Error::NotFound)?;
         if notif { 
-            self.send_media(MediasMessage { library: library_id.to_string(), action: ElementAction::Added, medias: vec![new_file.clone()] });
+            self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media: new_file.clone(), action: ElementAction::Added}] });
         }
 		Ok(new_file)
 	}
@@ -127,7 +159,7 @@ impl ModelController {
         let existing = store.get_media(&media_id).await?;
         if let Some(existing) = existing { 
             self.remove_library_file(&library_id, &media_id, &requesting_user).await?;
-            self.send_media(MediasMessage { library: library_id.to_string(), action: ElementAction::Removed, medias: vec![existing.clone()] });
+            self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media: existing.clone(), action: ElementAction::Removed}] });
             Ok(existing)
         } else {
             Err(Error::NotFound)
@@ -135,7 +167,6 @@ impl ModelController {
 	}
 
 	pub async fn media_image(&self, library_id: &str, media_id: &str, size: Option<ImageSize>, requesting_user: &ConnectedUser) -> Result<FileStreamResult<AsyncReadPinBox>> {
-        println!("media image");
         let size = if let Some(s) = size {
                 if s == ImageSize::Large {
                     None
@@ -147,9 +178,8 @@ impl ModelController {
             } else {
                 None
             };
-            println!("trying to get");
+
         let result = self.library_image(library_id, ".thumbs", media_id, None, size.clone(), requesting_user).await;
-        println!("next");
         if let Err(error) = result {
             if let Error::Source(s) = &error {
                 if let SourcesError::NotFound(_) = s {
@@ -259,7 +289,7 @@ impl ModelController {
 
 
         let media = store.get_media(&id).await?.ok_or(Error::NotFound)?;
-        self.send_media(MediasMessage { library: library_id.to_string(), action: ElementAction::Added, medias: vec![media.clone()] });
+        self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media: media.clone(), action: ElementAction::Added}] });
 
         Ok(media)
 	}
@@ -363,7 +393,7 @@ impl ModelController {
                 log_error(crate::tools::log::LogServiceType::Source, format!("Unable to generate thumb {:#}", r));
             }
             let media = store.get_media(&id).await?.ok_or(Error::NotFound)?;
-            self.send_media(MediasMessage { library: library_id.to_string(), action: ElementAction::Added, medias: vec![media.clone()] });
+            self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media: media.clone(), action: ElementAction::Added}] });
             
             medias.push(media)
 
@@ -380,6 +410,7 @@ impl ModelController {
         let thumb = match media.kind {
             FileType::Photo => { 
                 let media_source: MediaSource = media.try_into()?;
+                println!("Photo {}", &media_source.source);
                 let th = m.thumb(&media_source.source).await?;
                 Ok(th)
             },
@@ -424,8 +455,21 @@ impl ModelController {
     
         let local_port = get_server_port().await;
         let token = sign_local(claims).await.map_err(|_| Error::UnableToSignShareToken)?;
-        let uri = format!("http://localhost:{}/libraries/{}/medias/{}?share_token={}", local_port, library_id, media_id, token);
+        let uri = format!("http://localhost:{}/libraries/{}/medias/{}?sharetoken={}", local_port, library_id, media_id, token);
         Ok(uri)
+    }
+
+
+    pub async  fn get_file_share_token(&self, library_id: &str, media_id: &str, delay_in_seconds: u64, requesting_user: &ConnectedUser) -> Result<String> {
+        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        let exp = ClaimsLocal::generate_seconds(delay_in_seconds);
+        let claims = ClaimsLocal {
+            cr: "service::share_media".to_string(),
+            kind: crate::tools::auth::ClaimsLocalType::File(library_id.to_string(), media_id.to_string()),
+            exp,
+        };
+        let token = sign_local(claims).await.map_err(|_| Error::UnableToSignShareToken)?;
+        Ok(token)
     }
 
     pub async fn prediction(&self, library_id: &str, media_id: &str, insert_tags: bool, requesting_user: &ConnectedUser) -> crate::Result<Vec<PredictionTagResult>> {

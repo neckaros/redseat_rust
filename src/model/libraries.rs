@@ -2,6 +2,7 @@ use std::{cmp::Ordering, str::FromStr};
 
 use nanoid::nanoid;
 use serde::{Deserialize, Serialize};
+use tokio::fs::read_dir;
 
 use crate::{domain::{library::{LibraryMessage, LibraryRole, LibraryType, ServerLibrary, ServerLibrarySettings}, ElementAction}, tools::auth::ClaimsLocalType};
 
@@ -107,7 +108,9 @@ pub struct ServerLibraryForRead {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub crypt: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub settings: Option<ServerLibrarySettings>
+    pub settings: Option<ServerLibrarySettings>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub roles: Option<Vec<LibraryRole>>
 }
 impl From<ServerLibrary> for ServerLibraryForRead {
     fn from(lib: ServerLibrary) -> Self {
@@ -119,6 +122,21 @@ impl From<ServerLibrary> for ServerLibraryForRead {
             kind: lib.kind,
             crypt: lib.crypt,
             settings:Some(lib.settings),
+            roles: None
+        }
+    }
+}
+impl ServerLibraryForRead {
+    fn into_with_role(lib: ServerLibrary, roles: &Vec<LibraryRole>) -> Self {
+        ServerLibraryForRead {
+            id: lib.id,
+            name: lib.name,
+            source: Some(lib.source),
+            root: lib.root,
+            kind: lib.kind,
+            crypt: lib.crypt,
+            settings:Some(lib.settings),
+            roles: Some(roles.to_owned())
         }
     }
 }
@@ -148,12 +166,12 @@ pub(super) fn map_library_for_user(library: ServerLibrary, user: &ConnectedUser)
         ConnectedUser::Server(user) => {
             let rights = user.libraries.iter().find(|x| x.id == library.id);
             if let Some(rights) = rights {
-                let mut library = ServerLibraryForRead::from(library);
+                let mut library_out = ServerLibraryForRead::into_with_role(library, &rights.roles);
                 if !rights.has_role(&LibraryRole::Admin) {
-                    library.root = None;
-                    library.settings = None;
+                    library_out.root = None;
+                    library_out.settings = None;
                 }
-                Some(ServerLibraryForRead::from(library))
+                Some(library_out)
             } else {
                 None
             }
@@ -217,6 +235,7 @@ impl ModelController {
 		let libraries = self.store.get_libraries().await?.into_iter().flat_map(|l|  map_library_for_user(l, &requesting_user));
 		Ok(libraries.collect::<Vec<super::libraries::ServerLibraryForRead>>())
 	}
+
 	pub async fn update_library(&self, library_id: &str, update: ServerLibraryForUpdate, requesting_user: &ConnectedUser) -> Result<Option<super::libraries::ServerLibraryForRead>> {
         requesting_user.check_library_role(&library_id, LibraryRole::Admin)?;
 		self.store.update_library(library_id, update).await?;
@@ -277,6 +296,26 @@ impl ModelController {
         Ok(invitation)
 	}
 
+
+    pub async fn get_watermarks(&self, library_id: &str, requesting_user: &ConnectedUser) -> Result<Vec<String>> {
+        requesting_user.check_library_role(&library_id, LibraryRole::Read)?;
+        let local = self.library_source_for_library(library_id).await?;
+        let path = local.get_gull_path("");
+        let mut files = read_dir(&path).await?;
+        let mut watermars: Vec<String> = vec![];
+        while let Ok(Some(entry)) = files.next_entry().await {
+            let metadata = entry.metadata().await?;
+            if metadata.is_file() {
+                if let Some(filename) = entry.file_name().to_str() {
+                    if filename.starts_with(".watermark.") && filename.ends_with(".png") {
+                        watermars.push(filename.replace(".watermark.", "").replace(".png", ""));
+                    }
+                }
+            }
+        }
+     
+		Ok(watermars)
+	}
 
 }
 

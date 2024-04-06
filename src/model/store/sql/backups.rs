@@ -1,6 +1,6 @@
 use rusqlite::{params, params_from_iter, OptionalExtension, ToSql};
 
-use crate::{domain::backup::Backup, model::{backups::BackupForUpdate, store::SqliteStore}};
+use crate::{domain::backup::{Backup, BackupFile}, model::{backups::BackupForUpdate, store::SqliteStore}};
 use super::Result;
 
 
@@ -117,5 +117,37 @@ impl SqliteStore {
             Ok(())
         }).await?;
         Ok(())
+    }
+
+
+    pub async fn get_backup_file(&self, library_id: &str, media_id: &str) -> Result<Vec<BackupFile>> {
+        let media_id = media_id.to_owned();
+        let library_id = library_id.to_owned();
+        let row = self.server_store.call( move |conn| { 
+            let mut query = conn.prepare("SELECT backup, library, file, id, path, hash, sourcehash, size, date, iv, infoSize, thumbsize, error FROM Backups_Files WHERE file = ? and library = ?")?;
+            let rows = query.query_map(
+            [media_id, library_id],
+            |row| {
+                Ok(BackupFile {
+                    backup: row.get(0)?,
+                    library:row.get(1)?,
+                    file:row.get(2)?,
+                    id:row.get(3)?,
+                    path:row.get(4)?,
+                    hash:row.get(5)?,
+                    sourcehash:row.get(6)?,
+                    size:row.get(7)?,
+                    date:row.get(8)?,
+                    iv:row.get(9)?,
+                    info_size:row.get(10)?,
+                    thumb_size: row.get(11)?,
+                    error:row.get(12)?,
+                })
+            },
+            )?;
+            let files:Vec<BackupFile> = rows.collect::<std::result::Result<Vec<BackupFile>, rusqlite::Error>>()?; 
+            Ok(files)
+        }).await?;
+        Ok(row)
     }
 }

@@ -108,7 +108,7 @@ impl ModelController {
             requesting_user.check_role(&UserRole::Read)?;
         }
         let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::Lookup), ..Default::default() }, &requesting_user).await?;
-        
+
         Ok(self.plugin_manager.lookup(query, plugins).await?)
         
     }

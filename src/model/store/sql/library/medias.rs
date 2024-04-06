@@ -1,6 +1,6 @@
 use rusqlite::{params, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, Row, ToSql};
 
-use crate::{domain::media::{FileType, Media, MediaForInsert, MediaForUpdate, MediaItemReference}, model::{medias::{MediaQuery, MediaSource}, people::PeopleQuery, store::{from_comma_separated_optional, from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_comma_separated_optional, to_pipe_separated_optional}, tags::TagQuery}, tools::{array_tools::AddOrSetArray, log::{log_info, LogServiceType}, text_tools::{extract_people, extract_tags}}};
+use crate::{domain::media::{FileType, Media, MediaForInsert, MediaForUpdate, MediaItemReference}, model::{medias::{MediaQuery, MediaSource, RsSort}, people::PeopleQuery, store::{from_comma_separated_optional, from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_comma_separated_optional, to_pipe_separated_optional}, tags::TagQuery}, tools::{array_tools::AddOrSetArray, log::{log_info, LogServiceType}, text_tools::{extract_people, extract_tags}}};
 use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
 
@@ -91,32 +91,75 @@ impl SqliteLibraryStore {
 
          
             tags: from_comma_separated_optional(row.get(42)?),
-            people: from_pipe_separated_optional(row.get(43)?),
+            people: from_comma_separated_optional(row.get(43)?),
             series: from_comma_separated_optional(row.get(44)?),
             //series: None,
         })
     }
 
-    pub async fn get_medias(&self, query: MediaQuery) -> Result<Vec<Media>> {
+    pub async fn get_medias(&self, mut query: MediaQuery) -> Result<Vec<Media>> {
         let row = self.connection.call( move |conn| { 
             let mut where_query = QueryBuilder::new();
+            let sort = query.sort.to_string();
+            if let Some(page_key) = query.page_key {
+                if query.order == SqlOrder::DESC {
+                    query.before = Some(page_key);
+                } else {
+                    query.after = Some(page_key);
+                }
+            }
 
             if let Some(q) = &query.after {
-                where_query.add_where(QueryWhereType::After("modified", q));
+                if query.sort == RsSort::Added || query.sort == RsSort::Modified || query.sort == RsSort::Created {
+                    where_query.add_where(QueryWhereType::After(&sort, q));
+                } else {
+                    where_query.add_where(QueryWhereType::After("modified", q));
+                }
             }
-            if let Some(q) = &query.kind {
-                where_query.add_where(QueryWhereType::Equal("type", q));
+            if let Some(q) = &query.before {
+                if query.sort == RsSort::Added || query.sort == RsSort::Modified || query.sort == RsSort::Created {
+                    where_query.add_where(QueryWhereType::Before(&sort, q));
+                } else {
+                    where_query.add_where(QueryWhereType::Before("modified", q));
+                }
             }
 
-            if query.after.is_some() {
-                where_query.add_oder(OrderBuilder::new("m.modified".to_string(), SqlOrder::ASC))
-            } else {
-                where_query.add_oder(OrderBuilder::new("m.modified".to_string(), SqlOrder::DESC))
+
+            if query.types.len() > 0 {
+                let mut types = vec![];
+                for kind in &query.types {
+                    types.push(QueryWhereType::Equal("type", kind));
+                }
+                where_query.add_where(QueryWhereType::Or(types));
             }
+
+            for person in &query.people {
+                where_query.add_where(QueryWhereType::InStringList("people", ",", person));
+            }
+
+            //let series_formated = &query.series.iter().map(|s| format!("{}|", s)).collect::<Vec<String>>();
+            for serie in &query.series {
+                if serie.contains("|") {
+                    where_query.add_where(QueryWhereType::Custom("series like '%' || ? || '%'", serie));
+                } else {
+                    where_query.add_where(QueryWhereType::Custom("(',' || series || ',' LIKE '%,' || ? || '|%')", serie));
+                }
+                
+            }
+            
+
+
+
+            
+            where_query.add_oder(OrderBuilder::new(format!("m.{}", sort), query.order));
+
+
+
             for tag in &query.tags {
                 where_query.add_recursive("tags", "media_tag_mapping", "media_ref", "tag_ref", tag);
             }
             
+
 
             let mut query = conn.prepare(&format!("
             {}
@@ -130,14 +173,14 @@ impl SqliteLibraryStore {
             m.added, m.created
 			,(select GROUP_CONCAT(tag_ref || '|' || IFNULL(confidence, 101)) from media_tag_mapping where media_ref = m.id and (confidence != -1 or confidence IS NULL)) as tags
 			,(select GROUP_CONCAT(people_ref ) from media_people_mapping where media_ref = m.id) as people
-			,(select GROUP_CONCAT(serie_ref || '|' || ifnull(season,'') || '|' || ifnull(printf('%04d', episode),'') ) from media_serie_mapping where media_ref = m.id) as series
+			,(select GROUP_CONCAT(serie_ref || '|' || ifnull(printf('%04d', season),'') || '|' || ifnull(printf('%04d', episode),'') ) from media_serie_mapping where media_ref = m.id) as series
 			
             FROM medias as m
              {}
                           {}
              LIMIT {}", where_query.format_recursive(), where_query.format(), where_query.format_order(), query.limit.unwrap_or(200)))?;
 
-             //println!("query {:?}", query.expanded_sql());
+            //println!("query {:?}", query.expanded_sql());
 
 
             let rows = query.query_map(

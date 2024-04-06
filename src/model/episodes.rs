@@ -116,7 +116,7 @@ impl ModelController {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
 		store.add_episode(new_serie.clone()).await?;
-        let new_episode = self.get_episode(library_id, new_serie.serie_ref, new_serie.season, new_serie.number, requesting_user).await?.ok_or(Error::NotFound)?;
+        let new_episode = self.get_episode(library_id, new_serie.serie, new_serie.season, new_serie.number, requesting_user).await?.ok_or(Error::NotFound)?;
         self.send_episode(EpisodesMessage { library: library_id.to_string(), action: ElementAction::Added, episodes: vec![new_episode.clone()] });
 		Ok(new_episode)
 	}

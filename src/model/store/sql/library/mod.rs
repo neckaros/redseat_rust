@@ -80,7 +80,7 @@ impl SqliteLibraryStore {
             Ok(())
         }).await?;*/
 
-        if initial_version < 29 {
+        if initial_version == 30 {
             log_info(LogServiceType::Database, format!("Update Library Database adding tag paths"));                   
             let tags = self.get_tags(TagQuery::new_empty()).await?;
             let tags = ModelController::fill_tags_paths(None, "/", &tags);

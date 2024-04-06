@@ -4,18 +4,22 @@ use tokio::{fs::{create_dir_all, metadata, read_to_string, File}, io::AsyncWrite
 use serde::{Deserialize, Serialize};
 use nanoid::nanoid;
 use clap::Parser;
-use crate::{error::Error, tools::log::{log_info, LogServiceType}, Result};
+use crate::{error::{Error, RsResult}, tools::log::{log_info, LogServiceType}, RegisterInfo, Result};
 
 
 static CONFIG: OnceLock<Mutex<ServerConfig>> = OnceLock::new();
 
 const ENV_SERVERID: &str = "REDSEAT_SERVERID";
+const ENV_HOME: &str = "REDSEAT_HOME";
 const ENV_PORT: &str = "REDSEAT_PORT";
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ServerConfig {
     #[serde(default = "default_serverid")]
     pub id: String,
-    pub port: Option<String>,
+    #[serde(default = "default_home")]
+    pub redseat_home: String,
+    pub port: Option<u16>,
+    pub local: Option<String>,
     pub domain: Option<String>,
     pub duck_dns: Option<String>,
 }
@@ -47,7 +51,7 @@ pub async fn get_server_local_path() -> Result<PathBuf> {
 
 pub async fn get_server_port() -> u16 {
     let config_port = get_config().await.port;
-    env::var(ENV_PORT).ok().or_else(|| config_port).unwrap_or("8080".to_string()).parse().expect("Invalid port value") 
+    env::var(ENV_PORT).ok().and_then(|p| p.parse::<u16>().ok()).or_else(|| config_port).unwrap_or(8080)
 }
 
 fn default_serverid() -> String {
@@ -58,6 +62,7 @@ fn default_serverid() -> String {
         return new_id;
     } 
 } 
+
 fn get_config_override_serverid() -> Option<String> {
     if let Ok(val) =env::var(ENV_SERVERID) {
         return Some(val);
@@ -71,6 +76,52 @@ fn get_config_override_serverid() -> Option<String> {
 pub async fn get_server_id() -> String {
     get_config().await.id
 }
+
+fn default_home() -> String {
+    let new_id = "redseat.vercel.app".to_owned();
+    if let Some(id) = get_config_override_home() {
+        return id;
+    } else {
+        return new_id;
+    } 
+} 
+
+fn get_config_override_home() -> Option<String> {
+    if let Ok(val) =env::var(ENV_HOME) {
+        return Some(val);
+    } else {
+        //let args = Args::parse();
+        //return args.serverid;
+        return None;
+    } 
+}
+
+pub async fn get_home() -> String {
+    get_config().await.redseat_home
+}
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PublicServerInfos {
+    url: String,
+    port: u16,
+    cert: String,
+    id: String,
+    local: Option<String>, 
+}
+
+impl PublicServerInfos {
+    pub async fn get(public_cert_path: &PathBuf, url: &str) -> RsResult<Self> {
+        let cert = read_to_string(public_cert_path).await?;
+        let config = get_config().await;
+        Ok(PublicServerInfos {
+            url: url.to_owned(),
+            port: get_server_port().await,
+            cert,
+            id: get_server_id().await,
+            local: config.local,
+        })
+    }
+}
+
 
 pub async fn get_config() -> ServerConfig {
     if let Some(config) = CONFIG.get() {

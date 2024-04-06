@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 pub fn routes(mc: ModelController) -> Router {
 	Router::new()
 		.route("/", get(handler_libraries))
+		.route("/:id/watermarks", get(handler_watermarks))
 		.route("/:id", get(handler_id))
 		.route("/:id", patch(handler_patch))
 		.route("/:id", delete(handler_delete))
@@ -22,6 +23,12 @@ pub fn routes(mc: ModelController) -> Router {
 
 async fn handler_libraries(State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
 	let libraries = mc.get_libraries(&user).await?;
+	let body = Json(json!(libraries));
+	Ok(body)
+}
+
+async fn handler_watermarks(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	let libraries = mc.get_watermarks(&library_id, &user).await?;
 	let body = Json(json!(libraries));
 	Ok(body)
 }

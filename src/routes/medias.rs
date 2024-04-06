@@ -20,8 +20,10 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/", post(handler_post))
 		.route("/download", post(handler_download))
 		.route("/:id/metadata", get(handler_get))
+		.route("/:id/sharetoken", get(handler_sharetoken))
 		.route("/:id/predict", get(handler_predict))
 		.route("/:id", get(handler_get_file))
+		.route("/:id/backup/metadatas", get(handler_get_backup_medata))
 		.route("/:id", patch(handler_patch))
 		.route("/:id", delete(handler_delete))
 		.route("/:id/image", get(handler_image))
@@ -32,9 +34,18 @@ pub fn routes(mc: ModelController) -> Router {
 }
 
 async fn handler_list(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<MediaQuery>) -> Result<Json<Value>> {
-	let libraries = mc.get_medias(&library_id, query, &user).await?;
-	let body = Json(json!(libraries));
-	Ok(body)
+	if let Some(filter) = &query.filter {
+		let old_query = serde_json::from_str::<MediaQuery>(&filter)?;
+		//old_query.page_key = query.page_key;
+		let libraries = mc.get_medias(&library_id, old_query, &user).await?;
+		let body = Json(json!(libraries));
+		Ok(body)
+	} else {
+		let libraries = mc.get_medias(&library_id, query, &user).await?;
+		let body = Json(json!(libraries));
+		Ok(body)
+	}
+
 }
 
 async fn handler_get(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
@@ -42,6 +53,12 @@ async fn handler_get(Path((library_id, media_id)): Path<(String, String)>, State
 	let body = Json(json!(library));
 	Ok(body)
 }
+
+async fn handler_sharetoken(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<String> {
+	let sharetoken = mc.get_file_share_token(&library_id, &media_id, 6 * 60 * 60,  &user).await?;
+	Ok(sharetoken)
+}
+
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 struct PredictOption {
@@ -61,8 +78,12 @@ async fn handler_get_file(Path((library_id, media_id)): Path<(String, String)>, 
 	Ok(reader.into_response(&library_id, range, None, Some((mc.clone(), &user))).await?)
 }
 
+async fn handler_get_backup_medata(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	let reader = mc.get_backup_file(&library_id, &media_id, &user).await?;
+	Ok(Json(json!(reader)))
+}
+
 async fn handler_patch(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(update): Json<MediaForUpdate>) -> Result<Json<Value>> {
-	println!("{:?}", update);
 	let new_credential = mc.update_media(&library_id, media_id, update, &user).await?;
 	Ok(Json(json!(new_credential)))
 }
@@ -110,7 +131,7 @@ async fn handler_image(Path((library_id, media_id)): Path<(String, String)>, Sta
 }
 
 #[debug_handler]
-async fn handler_post_image(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ImageUploadOptions>, mut multipart: Multipart) -> Result<Json<Value>> {
+async fn handler_post_image(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, mut multipart: Multipart) -> Result<Json<Value>> {
 	while let Some(field) = multipart.next_field().await.unwrap() {
         //let name = field.name().unwrap().to_string();
 		//let filename = field.file_name().unwrap().to_string();
@@ -123,7 +144,7 @@ async fn handler_post_image(Path((library_id, media_id)): Path<(String, String)>
 
 		
         //println!("Length of `{}` {}  {} is {} bytes", name, filename, mime, data.len());
-			mc.update_serie_image(&library_id, &media_id, &query.kind, reader, &user).await?;
+			mc.update_media_image(&library_id, &media_id, reader, &user).await?;
     }
 	
     Ok(Json(json!({"data": "ok"})))

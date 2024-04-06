@@ -31,9 +31,9 @@ pub struct TraktFullEpisode {
 }
 
 impl TraktFullEpisode {
-    pub fn into_trakt(self, serie_ref: String) -> Episode {
+    pub fn into_trakt(self, serie: String) -> Episode {
         Episode {
-            serie_ref,
+            serie,
             season: self.season,
             number: self.number,
             abs: self.number_abs,

@@ -385,13 +385,18 @@ impl From<RsRequest> for MediaForUpdate {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")] 
+pub struct MediaWithAction {
+    pub action: ElementAction,
+    pub media: Media
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")] 
 pub struct MediasMessage {
     pub library: String,
-    pub action: ElementAction,
-    pub medias: Vec<Media>
+    pub medias: Vec<MediaWithAction>
 }
 
 

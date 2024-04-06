@@ -1,5 +1,5 @@
 
-use crate::{domain::episode::{self, Episode}, model::{episodes::{EpisodeForUpdate, EpisodeQuery}, users::ConnectedUser, ModelController}, Error, Result};
+use crate::{domain::{episode::{self, Episode}, media::Media}, model::{episodes::{EpisodeForUpdate, EpisodeQuery}, medias::MediaQuery, users::ConnectedUser, ModelController}, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
 use futures::TryStreamExt;
 use rs_plugin_lookup_interfaces::{RsLookupEpisode, RsLookupQuery};
@@ -22,6 +22,7 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/seasons/:season/episodes/:number", delete(handler_delete))
 		.route("/seasons/:season/episodes/:number/image", get(handler_image))
 		.route("/seasons/:season/episodes/:number/search", get(handler_lookup))
+		.route("/seasons/:season/episodes/:number/medias", get(handler_medias))
 		.route("/:id/image", post(handler_post_image))
 		.with_state(mc)
         
@@ -84,6 +85,13 @@ async fn handler_lookup(Path((library_id, serie_id, season, number)): Path<(Stri
 	Ok(body)
 }
 
+
+async fn handler_medias(Path((library_id, serie_id, season, number)): Path<(String, String, u32, u32)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	println!("{}|{}|{:04}", serie_id, season, number);
+	let libraries = mc.get_medias(&library_id, MediaQuery { series: vec![format!("{}|{:04}|{:04}", serie_id, season, number)], ..Default::default() }, &user).await?;
+	let body = Json(json!(libraries));
+	Ok(body)
+}
 
 async fn handler_post(Path((library_id, _)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(new_serie): Json<Episode>) -> Result<Json<Value>> {
 	let credential = mc.add_episode(&library_id, new_serie, &user).await?;

@@ -128,7 +128,7 @@ impl Source for PathProvider {
                     let taken = filereader.take(end - start + 1);
                     size = end - start + 1;
                     range_response.end = Some(end.clone());
-                    range_response.size = Some(size.clone());
+                    range_response.size = Some(total_size.clone());
                     //println!("range: {}", &range_response.header_value());
                     return Ok(SourceRead::Stream(FileStreamResult {
                         stream: Box::pin(taken),
@@ -140,6 +140,9 @@ impl Source for PathProvider {
                         cleanup: None
                     }))
                 }
+            } else {
+                range_response.end = Some(total_size - 1);
+                range_response.size = Some(total_size.clone());
             }
         }
 

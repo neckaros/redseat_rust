@@ -10,7 +10,7 @@ impl SqliteLibraryStore {
   
     fn row_to_episode(row: &Row) -> rusqlite::Result<Episode> {
         Ok(Episode {
-            serie_ref: row.get(0)?,
+            serie: row.get(0)?,
             season: row.get(1)?,
             number: row.get(2)?,
             abs: row.get(3)?,
@@ -166,7 +166,7 @@ impl SqliteLibraryStore {
             //println!("oo {} {} {}", episode.serie_ref, episode.season, episode.number);
             conn.execute("INSERT INTO episodes (serie_ref, season, number, abs, name, overview, airdate, duration, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, imdb_rating, imdb_votes, trakt_rating, trakt_votes)
             VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params![
-                episode.serie_ref,
+                episode.serie,
                 episode.season,
                 episode.number,
                 episode.abs,

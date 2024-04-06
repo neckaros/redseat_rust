@@ -49,7 +49,7 @@ impl FromStr for RangeResponse {
 
 impl RangeResponse {
     pub fn header_value(&self) -> String  {
-        format!("bytes {}-{}/{}", self.start.unwrap_or(0), self.end.unwrap_or(self.size.unwrap_or(0) - 1), self.size.unwrap_or(0))
+        format!("bytes {}-{}/{}", self.start.unwrap_or(0), self.end.unwrap_or(self.size.unwrap_or(1) - 1), self.size.unwrap_or(0))
     }
 }
 

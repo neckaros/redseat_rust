@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 
-use crate::domain::backup::Backup;
+use crate::domain::{backup::{Backup, BackupFile}, library::LibraryRole};
 
 use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
 
@@ -93,5 +93,11 @@ impl ModelController {
         } else {
             Err(Error::NotFound)
         }
+	}
+
+    pub async fn get_backup_file(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> Result<Vec<BackupFile>> {
+        requesting_user.check_library_role(&library_id, LibraryRole::Admin)?;
+		let credential = self.store.get_backup_file(&library_id, &media_id).await?;
+		Ok(credential)
 	}
 }

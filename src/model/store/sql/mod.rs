@@ -9,8 +9,9 @@ use std::fmt::Display;
 
 use rsa::{pkcs8::der::TagNumber, rand_core::le};
 use rusqlite::{params_from_iter, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, ParamsFromIter, Row, ToSql};
-use serde::de::DeserializeOwned;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
+use strum_macros::EnumString;
 use tokio_rusqlite::Connection;
 
 
@@ -67,6 +68,7 @@ pub enum QueryWhereType<'a> {
     Custom(&'a str, &'a dyn ToSql),
     Static(String),
     SeparatedContain(&'a str, String, &'a dyn ToSql),
+    InStringList(&'a str, &'a str, &'a dyn ToSql),
     EqualWithAlt(&'a str, &'a str, &'a str, &'a dyn ToSql),
     Or(Vec<QueryWhereType<'a>>),
 }
@@ -94,6 +96,13 @@ impl<'a> QueryWhereType<'a> {
             QueryWhereType::Before(name, value) => {
                 values.push(value);
                 format!("{} < ?", name)
+            },
+            
+            QueryWhereType::InStringList(name, separator, value) => {
+
+                values.push(value);
+
+                format!("('{}' || {} || '{}' LIKE '%{}' || ? || '{}%')", separator, name, separator, separator, separator)
             },
             QueryWhereType::EqualWithAlt(name, alt, separator, value) => {
 
@@ -124,8 +133,14 @@ impl<'a> QueryWhereType<'a> {
     }
 }
 
+
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, strum_macros::Display,EnumString, Default)]
+#[strum(serialize_all = "UPPERCASE")]
+#[serde(rename_all = "UPPERCASE")]
 pub enum SqlOrder {
     ASC,
+    #[default]
     DESC
 }
 

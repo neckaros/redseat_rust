@@ -43,7 +43,7 @@ pub async fn list_plugins() -> crate::Result<impl Iterator<Item = PluginWasm>> {
             let plugin = PluginBuilder::new(manifest)
                 .with_wasi(true)
                 .build();
-            
+
             if let Ok(mut plugin) = plugin {
                 let infos = plugin.call::<&str, Json<PluginInformation>>("infos", "");
                 if let Ok(Json(res)) = infos {
