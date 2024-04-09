@@ -7,7 +7,7 @@ use serde_json::Value;
 use tokio::{fs::File, io::{AsyncRead, BufReader}};
 
 use rs_plugin_url_interfaces::RsLink;
-use crate::{domain::{library::LibraryRole, people::{PeopleMessage, Person}, ElementAction, MediasIds}, plugins::sources::{AsyncReadPinBox, FileStreamResult}, tools::image_tools::{ImageSize, ImageType}};
+use crate::{domain::{library::LibraryRole, people::{PeopleMessage, Person}, ElementAction, MediasIds}, error::RsResult, plugins::sources::{AsyncReadPinBox, FileStreamResult}, tools::image_tools::{ImageSize, ImageType}};
 
 use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
 
@@ -149,7 +149,7 @@ impl ModelController {
 
 
     
-	pub async fn person_image(&self, library_id: &str, person_id: &str, kind: Option<ImageType>, size: Option<ImageSize>, requesting_user: &ConnectedUser) -> Result<FileStreamResult<AsyncReadPinBox>> {
+	pub async fn person_image(&self, library_id: &str, person_id: &str, kind: Option<ImageType>, size: Option<ImageSize>, requesting_user: &ConnectedUser) -> RsResult<FileStreamResult<AsyncReadPinBox>> {
         self.library_image(library_id, ".portraits", person_id, kind, size, requesting_user).await
 	}
 

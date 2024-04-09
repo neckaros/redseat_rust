@@ -1,3 +1,6 @@
+use std::collections::HashSet;
+use std::hash::Hash;
+
 pub fn replace_add_remove_from_array<T: PartialEq + Clone>(existing: Option<Vec<T>>, replace: Option<Vec<T>>, add: Option<Vec<T>>, remove: Option<Vec<T>>) -> Option<Vec<T>> {
 
     let existing = match replace {
@@ -64,6 +67,26 @@ impl<T: PartialEq> AddOrSetArray<T> for Option<Vec<T>> {
     }
 }
 
+pub trait Dedup<T, U> where U: PartialEq {
+    fn dedup_key(self, key: impl Fn(&T) -> U) -> Vec<T>;
+}
+
+impl<T, U: Eq + Hash> Dedup<T, U> for Vec<T> {
+    fn dedup_key(self, key: impl Fn(&T) -> U) -> Vec<T> {
+        let mut new_list = vec![];
+        let mut set = HashSet::new();
+        for element in self {
+            let key = key(&element);
+            if !set.contains(&key) {
+                set.insert(key);
+                new_list.push(element);
+            }
+        }
+        new_list
+    }
+}
+
+
 
 #[cfg(test)]
 mod tests {
@@ -124,5 +147,24 @@ mod tests {
 
         assert_eq!(media_update.add_tags.as_ref().unwrap().len(), 1);
         assert_eq!(media_update.add_tags.as_ref().unwrap().get(0).unwrap().id, "exist".to_owned());
+    }
+
+    #[test]
+    pub fn test_dedup() {
+        #[derive(Debug)]
+        struct Test {
+            pub id: String,
+            pub name: String,
+        }
+
+        let elements = vec![Test { id: "1".to_owned(), name: "aaa".to_owned()},Test { id: "2".to_owned(), name: "BBB".to_owned()},Test { id: "1".to_owned(), name: "ccc".to_owned()},Test { id: "3".to_owned(), name: "ddd".to_owned()}];
+        let deduped = elements.dedup_key(|e| e.id.clone());
+        assert_eq!(deduped.len(), 3);
+        assert_eq!(deduped.get(0).unwrap().id, "1");
+        assert_eq!(deduped.get(0).unwrap().name, "aaa");
+        assert_eq!(deduped.get(1).unwrap().id, "2");
+        assert_eq!(deduped.get(1).unwrap().name, "BBB");
+        assert_eq!(deduped.get(2).unwrap().id, "3");
+        assert_eq!(deduped.get(2).unwrap().name, "ddd");
     }
 }

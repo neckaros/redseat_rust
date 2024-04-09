@@ -1,27 +1,40 @@
 
 
 
-use std::{io::{self, Read}, num, pin::Pin};
+use std::{collections::HashMap, io::{self, Read}, num, pin::Pin};
 
 use async_recursion::async_recursion;
 use futures::TryStreamExt;
 use nanoid::nanoid;
+use rs_plugin_common_interfaces::MediaType;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value};
+use serde_json::Value;
 use tokio::{fs::File, io::{AsyncRead, AsyncWriteExt, BufReader}};
 use tokio_util::io::StreamReader;
 
 
-use crate::{domain::{episode::{self, Episode, EpisodeWithShow, EpisodesMessage}, library::LibraryRole, people::{PeopleMessage, Person}, serie::{self, Serie, SeriesMessage}, ElementAction, MediasIds}, error::RsResult, plugins::sources::{AsyncReadPinBox, FileStreamResult, Source}, tools::{image_tools::{resize_image_reader, ImageSize, ImageType}, log::log_info}};
+use crate::{domain::{episode::{self, Episode, EpisodeWithShow, EpisodesMessage}, library::LibraryRole, people::{PeopleMessage, Person}, serie::{self, Serie, SeriesMessage}, ElementAction, MediasIds}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{AsyncReadPinBox, FileStreamResult, Source}}, tools::{array_tools::Dedup, clock::now, image_tools::{resize_image_reader, ImageSize, ImageType}, log::log_info}};
 
-use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
+use super::{error::{Error, Result}, medias::{RsSort, RsSortOrder}, store::sql::SqlOrder, users::{ConnectedUser, HistoryQuery}, ModelController};
 
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct EpisodeQuery {
     pub serie_ref: Option<String>,
     pub season: Option<u32>,
+    
+    #[serde(default)]
+    pub not_seasons: Vec<u32>,
+
     pub after: Option<u64>,
+
+    pub aired_before: Option<u64>,
+    pub aired_after: Option<u64>,
+
+    #[serde(default)]
+    pub sorts: Vec<RsSortOrder>,
+
     pub limit: Option<u32>
 }
 
@@ -38,7 +51,7 @@ impl EpisodeQuery {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct EpisodeForUpdate {
     pub abs: Option<u32>,
 
@@ -67,28 +80,75 @@ pub struct EpisodeForUpdate {
     pub trakt_votes: Option<u64>,
 }
 
-
+impl Episode {
+    pub async fn fill_imdb_ratings(&mut self, imdb_context: &ImdbContext) {
+        if let Some(imdb) = &self.imdb {
+            let rating = imdb_context.get_rating(&imdb).await.unwrap_or(None);
+            if let Some(rating) = rating {
+                self.imdb_rating = Some(rating.0);
+                self.imdb_votes = Some(rating.1);
+            }
+        }
+    } 
+}
 
 impl ModelController {
 
-	pub async fn get_episodes(&self, library_id: &str, query: EpisodeQuery, requesting_user: &ConnectedUser) -> Result<Vec<Episode>> {
+	pub async fn get_episodes(&self, library_id: &str, query: EpisodeQuery, requesting_user: &ConnectedUser) -> RsResult<Vec<Episode>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
-		let episodes = store.get_episodes(query).await?;
+        let mut episodes = store.get_episodes(query).await?;
+
+        self.fill_episodes_watched_imdb(&mut episodes, &requesting_user).await?;
 		Ok(episodes)
 	}
 
-    pub async fn get_episodes_upcoming(&self, library_id: &str, query: EpisodeQuery, requesting_user: &ConnectedUser) -> Result<Vec<Episode>> {
+    pub async fn fill_episode_watched_imdb(&self, episode: &mut Episode, requesting_user: &ConnectedUser) -> RsResult<()> {
+        let watched = self.get_watched(HistoryQuery { types: vec![MediaType::Episode], id: Some(episode.clone().into()), ..Default::default() }, &requesting_user).await?;
+        let watched = watched.get(0);
+        if let Some(watched) = watched {
+            episode.watched = Some(watched.date);
+        }
+        episode.fill_imdb_ratings(&self.imdb).await;
+        Ok(())
+    }
+    pub async fn fill_episodes_watched_imdb(&self, episodes: &mut Vec<Episode>, requesting_user: &ConnectedUser) -> RsResult<()> {
+        let watched = self.get_watched(HistoryQuery { types: vec![MediaType::Episode], ..Default::default() }, &requesting_user).await?.into_iter().map(|e| (e.id.clone(), e)).collect::<HashMap<_, _>>();
+        for episode in episodes {
+            if let Some(trakt) = episode.trakt {
+                let watch = watched.get(&trakt.to_string());
+                if let Some(watch) = watch {
+                    episode.watched = Some(watch.date.clone());
+                }
+            }
+            episode.fill_imdb_ratings(&self.imdb).await;
+        }
+        Ok(())
+    }
+
+    pub async fn get_episodes_upcoming(&self, library_id: &str, query: EpisodeQuery, requesting_user: &ConnectedUser) -> RsResult<Vec<Episode>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
-		let episodes = store.get_episodes_upcoming(query).await?;
+		let mut episodes = store.get_episodes_upcoming(query).await?;
+        self.fill_episodes_watched_imdb(&mut episodes, &requesting_user).await?;
 		Ok(episodes)
 	}
 
-    pub async fn get_episode(&self, library_id: &str, serie_id: String, season: u32, number: u32, requesting_user: &ConnectedUser) -> Result<Option<Episode>> {
+    pub async fn get_episodes_ondeck(&self, library_id: &str, query: EpisodeQuery, requesting_user: &ConnectedUser) -> RsResult<Vec<Episode>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
-		let episode = store.get_episode(&serie_id, season, number).await?;
+		let mut episodes = store.get_episodes_aired(query).await?;
+        self.fill_episodes_watched_imdb(&mut episodes, &requesting_user).await?;
+		let mut episodes = episodes.into_iter().filter(|e| e.watched.is_none()).collect::<Vec<_>>().dedup_key(|e| e.serie.clone());
+        episodes.reverse();
+		Ok(episodes)
+	}
+
+    pub async fn get_episode(&self, library_id: &str, serie_id: String, season: u32, number: u32, requesting_user: &ConnectedUser) -> RsResult<Episode> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+		let mut episode = store.get_episode(&serie_id, season, number).await?.ok_or(Error::NotFound)?;
+        self.fill_episode_watched_imdb(&mut episode, &requesting_user).await?;
 		Ok(episode)
 	}
 
@@ -112,11 +172,11 @@ impl ModelController {
 	}
 
 
-    pub async fn add_episode(&self, library_id: &str, new_serie: Episode, requesting_user: &ConnectedUser) -> Result<Episode> {
+    pub async fn add_episode(&self, library_id: &str, new_serie: Episode, requesting_user: &ConnectedUser) -> RsResult<Episode> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
 		store.add_episode(new_serie.clone()).await?;
-        let new_episode = self.get_episode(library_id, new_serie.serie, new_serie.season, new_serie.number, requesting_user).await?.ok_or(Error::NotFound)?;
+        let new_episode = self.get_episode(library_id, new_serie.serie, new_serie.season, new_serie.number, requesting_user).await?;
         self.send_episode(EpisodesMessage { library: library_id.to_string(), action: ElementAction::Added, episodes: vec![new_episode.clone()] });
 		Ok(new_episode)
 	}

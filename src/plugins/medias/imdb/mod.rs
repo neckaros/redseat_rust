@@ -2,7 +2,7 @@ use std::{collections::{BTreeMap, HashMap}, io::{self, ErrorKind}, ops::Add, syn
 use futures::TryStreamExt;
 use tokio::{fs::File, io::{AsyncReadExt, AsyncWriteExt, BufReader}, sync::RwLock};
 use tokio_util::io::StreamReader;
-use crate::{error::RsResult, server::get_server_file_path_array, tools::get_time, Error};
+use crate::{error::RsResult, server::get_server_file_path_array, tools::{get_time, log::{log_info, LogServiceType}}, Error};
 use async_compression::tokio::bufread::GzipDecoder;
 
 #[derive(Debug, Clone)]
@@ -54,7 +54,7 @@ impl ImdbContext {
             0
         };
         let text = if now - m > 50000 {
-            println!("REFRESHING");
+            log_info(LogServiceType::Other, "Refreshing IMDB ratings".to_owned());
             map_write.clear();
             let reader = reqwest::get("https://datasets.imdbws.com/title.ratings.tsv.gz").await?.bytes_stream().map_err(|e| io::Error::new(ErrorKind::Other, e));
             let mut decoder = GzipDecoder::new(StreamReader::new(reader));
@@ -63,7 +63,7 @@ impl ImdbContext {
             File::create(local_path).await?.write_all(text.as_bytes()).await?;
             text
         } else {
-            println!("eXISTING");
+            log_info(LogServiceType::Other, "Loading IMDB ratings in memory".to_owned());
             let mut text = String::new();
             File::open(local_path).await?.read_to_string(&mut text).await?;
             text

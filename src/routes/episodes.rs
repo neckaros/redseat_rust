@@ -66,7 +66,7 @@ async fn handler_delete(Path((library_id, serie_id, season, number)): Path<(Stri
 }
 
 async fn handler_lookup(Path((library_id, serie_id, season, number)): Path<(String, String, u32, u32)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
-	let episode = mc.get_episode(&library_id, serie_id.clone(), season, number, &user).await?.ok_or(Error::NotFound)?;
+	let episode = mc.get_episode(&library_id, serie_id.clone(), season, number, &user).await?;
 	let serie = mc.get_serie(&library_id, serie_id,  &user).await?.ok_or(Error::NotFound)?;
 	let query_episode = RsLookupEpisode {
     serie: serie.name,

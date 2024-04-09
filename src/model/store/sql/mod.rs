@@ -59,18 +59,20 @@ pub fn add_for_sql_update<'a, T: ToSql + 'a,>(optional: Option<T>, name: &str, c
 }
 
 
-
 pub enum QueryWhereType<'a> {
     Like(&'a str, &'a dyn ToSql),
     Equal(&'a str, &'a dyn ToSql),
     After(&'a str, &'a dyn ToSql),
     Before(&'a str, &'a dyn ToSql),
     Custom(&'a str, &'a dyn ToSql),
+    In(&'a str, Vec<&'a dyn ToSql>),
+    NotIn(&'a str, Vec<&'a dyn ToSql>),
     Static(String),
     SeparatedContain(&'a str, String, &'a dyn ToSql),
     InStringList(&'a str, &'a str, &'a dyn ToSql),
     EqualWithAlt(&'a str, &'a str, &'a str, &'a dyn ToSql),
     Or(Vec<QueryWhereType<'a>>),
+    And(Vec<QueryWhereType<'a>>),
 }
 
 impl<'a> QueryWhereType<'a> {
@@ -96,6 +98,20 @@ impl<'a> QueryWhereType<'a> {
             QueryWhereType::Before(name, value) => {
                 values.push(value);
                 format!("{} < ?", name)
+            },
+            QueryWhereType::In(name, ins) => {
+
+                for value in ins {
+                    values.push(value);
+                }
+                format!("{} in ({})", name, ins.iter().map(|_| "?").collect::<Vec<_>>().join(", "))
+            },
+            QueryWhereType::NotIn(name, ins) => {
+
+                for value in ins {
+                    values.push(value);
+                }
+                format!("{} not in ({})", name, ins.iter().map(|_| "?").collect::<Vec<_>>().join(", "))
             },
             
             QueryWhereType::InStringList(name, separator, value) => {
@@ -127,6 +143,15 @@ impl<'a> QueryWhereType<'a> {
                     values.append(&mut v);
                 }
                 format!("({})", texts.join(" or "))
+            },
+            QueryWhereType::And(sub_queries) => {
+                let mut texts: Vec<String> = vec![];
+                for query in sub_queries {
+                    let (t, mut v) = query.expand()?;
+                    texts.push(t);
+                    values.append(&mut v);
+                }
+                format!("({})", texts.join(" and "))
             },
         };
         Ok((text, values))

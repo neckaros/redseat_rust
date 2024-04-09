@@ -59,7 +59,7 @@ pub struct TraktFullMovie {
     pub country: Option<String>,
     pub trailer: Option<String>,
     pub homepage: Option<String>,
-    pub rating: f64,
+    pub rating: f32,
     pub votes: u32,
     pub comment_count: u32,
     pub updated_at: Option<DateTime<Utc>>,

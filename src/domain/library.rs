@@ -29,13 +29,14 @@ pub enum LibraryRole {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-#[serde(rename_all = "snake_case")] 
+#[serde(rename_all = "camelCase")] 
 pub enum LibraryType {
 	Photos,
 	Shows,
 	Movies,
 	Iptv,
 }
+
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")] 

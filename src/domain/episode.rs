@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::tools::serialization_tools::rating_serializer;
+
 use super::ElementAction;
 
 
@@ -37,8 +39,10 @@ pub struct Episode {
     pub tvdb: Option<u64>,
     pub otherids: Option<String>,
     
+    #[serde(serialize_with = "rating_serializer")]
     pub imdb_rating: Option<f32>,
     pub imdb_votes: Option<u64>,
+    #[serde(serialize_with = "rating_serializer")]
     pub trakt_rating: Option<f32>,
     pub trakt_votes: Option<u64>,
 
@@ -55,6 +59,12 @@ pub struct Episode {
     
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub serie_name: Option<String>
+}
+
+impl Episode {
+    pub fn id(&self) -> String {
+        format!("{}x{}x{}", self.serie, self.season, self.number)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

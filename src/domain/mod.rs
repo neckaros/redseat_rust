@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use self::{movie::Movie, serie::Serie};
+use self::{episode::Episode, movie::Movie, serie::Serie};
 
 pub mod media;
 pub mod library;
@@ -14,6 +14,7 @@ pub mod serie;
 pub mod episode;
 pub mod plugin;
 pub mod movie;
+pub mod watched;
 
 pub mod progress;
 
@@ -98,6 +99,12 @@ impl From<Serie> for MediasIds {
         MediasIds { redseat: Some(value.id), trakt: value.trakt, slug: value.slug, tvdb: value.tvdb, imdb: value.imdb, tmdb: value.tmdb, tvrage: None }
     }
 }
+impl From<Episode> for MediasIds {
+    fn from(value: Episode) -> Self {
+        MediasIds { redseat: Some(value.id()), trakt: value.trakt, slug: value.slug, tvdb: value.tvdb, imdb: value.imdb, tmdb: value.tmdb, tvrage: None }
+    }
+}
+
 
 impl From<Movie> for MediasIds {
     fn from(value: Movie) -> Self {

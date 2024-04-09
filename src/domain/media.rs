@@ -78,7 +78,7 @@ pub struct Media {
     #[serde(rename = "type")]
     pub kind: FileType,
     pub mimetype: Option<String>,
-    pub size: Option<usize>,
+    pub size: Option<u64>,
     
     #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<Value>,
@@ -162,6 +162,13 @@ pub struct Media {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uploadkey: Option<String>,
 } 
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RsGpsPosition {
+    pub lat: f64,
+    pub long: f64,
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]

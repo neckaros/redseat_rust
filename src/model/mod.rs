@@ -163,25 +163,9 @@ impl  ModelController {
 		Ok(source)
 	}
 
-	pub async fn library_image(&self, library_id: &str, folder: &str, id: &str, kind: Option<ImageType>, size: Option<ImageSize>, requesting_user: &ConnectedUser) -> Result<FileStreamResult<AsyncReadPinBox>> {
+	pub async fn library_image(&self, library_id: &str, folder: &str, id: &str, kind: Option<ImageType>, size: Option<ImageSize>, requesting_user: &ConnectedUser) -> RsResult<FileStreamResult<AsyncReadPinBox>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
-
-		let crypt = self.cache_get_library(library_id).await.and_then(|l| l.crypt).unwrap_or(false);
-
-		if crypt {
-			let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
-			let media_source = store.get_media_source(id).await?.ok_or(Error::NotFound)?;
-			//headerSize(), end: headerSize() + fileInfo.thumbsize - 1 }
-            let range = RangeDefinition { start: Some(CRYPTO_HEADER_SIZE), end: Some(CRYPTO_HEADER_SIZE + media_source.thumb_size.unwrap_or(0)) };
-			let source = self.source_for_library(library_id).await?;
-			let reader = source.get_file("source", Some(range)).await?;
-			if let SourceRead::Stream(reader) = reader {
-				return Ok(reader);
-			} else {
-				return Err(Error::NotFound)
-			}
-            
-		}
+		self.cache_check_library_notcrypt(library_id).await?;
 
         let m = self.library_source_for_library(&library_id).await?;
 		let source_filepath = format!("{}/{}{}{}.webp", folder, id, ImageType::optional_to_filename_element(&kind), ImageSize::optional_to_filename_element(&size));
@@ -198,7 +182,7 @@ impl  ModelController {
 						if let SourceRead::Stream(reader) = reader {
 							return Ok(reader);
 						} else {
-							return Err(Error::NotFound)
+							return Err(Error::NotFound.into())
 						}
 					}
 					
@@ -209,7 +193,7 @@ impl  ModelController {
 		if let SourceRead::Stream(reader) = reader {
 			return Ok(reader);
 		} else {
-			return Err(Error::NotFound)
+			return Err(Error::NotFound.into())
 		}
 	}
 	pub async fn has_library_image(&self, library_id: &str, folder: &str, id: &str, kind: Option<ImageType>, requesting_user: &ConnectedUser) -> Result<bool> {

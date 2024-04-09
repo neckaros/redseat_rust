@@ -4,7 +4,7 @@ use nanoid::nanoid;
 use serde::{Deserialize, Serialize};
 use tokio::fs::read_dir;
 
-use crate::{domain::{library::{LibraryMessage, LibraryRole, LibraryType, ServerLibrary, ServerLibrarySettings}, ElementAction}, tools::auth::ClaimsLocalType};
+use crate::{domain::{library::{LibraryMessage, LibraryRole, LibraryType, ServerLibrary, ServerLibrarySettings}, ElementAction}, plugins::sources::{Source, SourceRead}, tools::auth::ClaimsLocalType};
 
 use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
 
@@ -318,6 +318,20 @@ impl ModelController {
         }
      
 		Ok(watermars)
+	}
+
+    pub async fn get_watermark(&self, library_id: &str, watermark: &str, requesting_user: &ConnectedUser) -> Result<SourceRead> {
+        requesting_user.check_library_role(&library_id, LibraryRole::Read)?;
+
+        let watermark = if watermark == "default" {
+            "".to_owned()
+        } else {
+            format!(".{}",watermark)
+        };
+        let local = self.library_source_for_library(library_id).await?;
+        let sourceread = local.get_file(&format!(".watermark{}.png", watermark), None).await?;
+            
+		Ok(sourceread)
 	}
 
 }

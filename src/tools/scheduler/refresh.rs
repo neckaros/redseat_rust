@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use crate::domain::movie::Movie;
 use crate::domain::serie::Serie;
+use crate::model::episodes::{EpisodeForUpdate, EpisodeQuery};
 use crate::model::movies::MovieQuery;
+use crate::model::series::SerieForUpdate;
 use crate::tools::clock::{now, Clock};
 use crate::{domain::library, error::RsResult, model::{series::SerieQuery, users::ConnectedUser, ModelController}, plugins::sources::Source, tools::{clock::UtcDate, log::{log_error, log_info}}};
 
@@ -77,8 +79,12 @@ impl RsSchedulerTask for RefreshTask {
                     }
                     let mut stream = source.get_file_write_library_overwrite(&refresh_path).await?;
 
+                    //Imdb rating
+                    mc.refresh_series_imdb(&library.id, &ConnectedUser::ServerAdmin).await?;
+
                     stream.write_all(now.print().as_bytes()).await?;
                     stream.flush().await?
+                    
                 },
                 library::LibraryType::Movies => {
                     let refresh_path = "settings/trakt_movie_refresh.txt";
@@ -113,6 +119,10 @@ impl RsSchedulerTask for RefreshTask {
                             log_info(crate::tools::log::LogServiceType::Scheduler, format!("Refreshed movie {}", movie.name));
                         }
                     }
+
+                    //Imdb rating
+                    mc.refresh_movies_imdb(&library.id, &ConnectedUser::ServerAdmin).await?;
+
                     let mut stream = source.get_file_write_library_overwrite(&refresh_path).await?;
 
                     stream.write_all(now.print().as_bytes()).await?;

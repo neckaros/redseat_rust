@@ -1,4 +1,4 @@
-use rusqlite::params;
+use rusqlite::{params, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, ToSql};
 use tokio_rusqlite::Connection;
 use crate::{model::{tags::TagQuery, ModelController}, tools::log::{log_info, LogServiceType}};
 
@@ -14,6 +14,8 @@ pub mod movie;
 pub struct SqliteLibraryStore {
 	connection: Connection,
 }
+
+
 
 // Constructor
 impl SqliteLibraryStore {

@@ -1,6 +1,6 @@
 
 use crate::{domain::library::LibraryRole, model::{libraries::{ServerLibraryForAdd, ServerLibraryForUpdate}, users::ConnectedUser, ModelController}, Error, Result};
-use axum::{extract::{Path, Query, State}, routing::{delete, get, patch, post}, Json, Router};
+use axum::{extract::{Path, Query, State}, response::Response, routing::{delete, get, patch, post}, Json, Router};
 use hyper::StatusCode;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -11,6 +11,7 @@ pub fn routes(mc: ModelController) -> Router {
 	Router::new()
 		.route("/", get(handler_libraries))
 		.route("/:id/watermarks", get(handler_watermarks))
+		.route("/:id/watermarks/:watermark", get(handler_watermarks_get))
 		.route("/:id", get(handler_id))
 		.route("/:id", patch(handler_patch))
 		.route("/:id", delete(handler_delete))
@@ -32,6 +33,13 @@ async fn handler_watermarks(Path(library_id): Path<String>, State(mc): State<Mod
 	let body = Json(json!(libraries));
 	Ok(body)
 }
+
+async fn handler_watermarks_get(Path((library_id, watermark)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Response> {
+	let reader = mc.get_watermark(&library_id, &watermark, &user).await?;
+	
+	Ok(reader.into_response(&library_id, None, None, Some((mc.clone(), &user))).await?)
+}
+
 
 async fn handler_id(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
 	let library = mc.get_library(&library_id, &user).await?;

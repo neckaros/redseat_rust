@@ -14,7 +14,9 @@ pub fn routes(mc: ModelController) -> Router {
 	Router::new()
 		.route("/", get(handler_list))
 		.route("/trending", get(handler_trending))
+		.route("/ondeck", get(handler_ondeck))
 		.route("/upcoming", get(handler_upcoming))
+		.route("/episodes", get(handler_list_episodes))
 		.route("/", post(handler_post))
 		.route("/:id", get(handler_get))
 		.route("/:id", patch(handler_patch))
@@ -32,8 +34,13 @@ async fn handler_list(Path(library_id): Path<String>, State(mc): State<ModelCont
 	let libraries = mc.get_series(&library_id, query, &user).await?;
 	let body = Json(json!(libraries));
 	Ok(body)
-	}
+}
 
+async fn handler_list_episodes(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<EpisodeQuery>) -> Result<Json<Value>> {
+	let libraries = mc.get_episodes(&library_id, query, &user).await?;
+	let body = Json(json!(libraries));
+	Ok(body)
+}
 async fn handler_trending(State(mc): State<ModelController>) -> Result<Json<Value>> {
 	let libraries = mc.trending_shows().await?;
 	let body = Json(json!(libraries));
@@ -43,6 +50,12 @@ async fn handler_trending(State(mc): State<ModelController>) -> Result<Json<Valu
 async fn handler_upcoming(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<EpisodeQuery>) -> Result<Json<Value>> {
 	let libraries = mc.get_episodes_upcoming(&library_id, query, &user).await?;
 	let body = Json(json!(libraries));
+	Ok(body)
+}
+
+async fn handler_ondeck(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<EpisodeQuery>) -> Result<Json<Value>> {
+	let episodes = mc.get_episodes_ondeck(&library_id, query, &user).await?;
+	let body = Json(json!(episodes));
 	Ok(body)
 }
 

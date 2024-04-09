@@ -17,6 +17,7 @@ use super::{mw_range::RangeDefinition, ImageRequestOptions, ImageUploadOptions};
 pub fn routes(mc: ModelController) -> Router {
 	Router::new()
 		.route("/", get(handler_list))
+		.route("/loc", get(handler_locs))
 		.route("/", post(handler_post))
 		.route("/download", post(handler_download))
 		.route("/:id/metadata", get(handler_get))
@@ -45,6 +46,18 @@ async fn handler_list(Path(library_id): Path<String>, State(mc): State<ModelCont
 		let body = Json(json!(libraries));
 		Ok(body)
 	}
+
+}
+#[derive(Debug, Serialize, Deserialize)]
+struct LocQuery {
+	pub precision: Option<u32>
+}
+
+async fn handler_locs(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<LocQuery>) -> Result<Json<Value>> {
+
+	let libraries = mc.get_locs(&library_id, query.precision, &user).await?;
+	let body = Json(json!(libraries));
+	Ok(body)
 
 }
 

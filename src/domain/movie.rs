@@ -2,6 +2,8 @@ use rs_plugin_url_interfaces::RsLink;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::tools::serialization_tools::rating_serializer;
+
 use super::ElementAction;
 
 
@@ -33,12 +35,14 @@ pub struct Movie {
     pub lang: Option<String>,
     pub original: Option<String>,
 
+    #[serde(serialize_with = "rating_serializer")]
     #[serde(rename = "imdb_rating")]
     pub imdb_rating: Option<f32>,
     #[serde(rename = "imdb_votes")]
     pub imdb_votes: Option<u64>,
+    #[serde(serialize_with = "rating_serializer")]
     #[serde(rename = "trakt_rating")]
-    pub trakt_rating: Option<f64>,
+    pub trakt_rating: Option<f32>,
     #[serde(rename = "trakt_votes")]
     pub trakt_votes: Option<u32>,
 
@@ -82,11 +86,11 @@ pub struct MovieForUpdate {
     pub lang: Option<String>,
     pub original: Option<String>,
     #[serde(rename = "imdb_rating")]
-    pub imdb_rating: Option<f64>,
+    pub imdb_rating: Option<f32>,
     #[serde(rename = "imdb_votes")]
     pub imdb_votes: Option<u64>,
     #[serde(rename = "trakt_rating")]
-    pub trakt_rating: Option<f64>,
+    pub trakt_rating: Option<f32>,
     #[serde(rename = "trakt_votes")]
     pub trakt_votes: Option<u32>,
     pub trailer: Option<RsLink>,

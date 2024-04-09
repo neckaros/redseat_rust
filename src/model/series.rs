@@ -13,10 +13,10 @@ use tokio_util::io::StreamReader;
 
 use crate::{domain::{library::LibraryRole, people::{PeopleMessage, Person}, serie::{Serie, SeriesMessage}, ElementAction, MediasIds}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source}}, server::get_server_folder_path_array, tools::{image_tools::{resize_image_reader, ImageSize, ImageType}, log::log_info}};
 
-use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
+use super::{episodes::{EpisodeForUpdate, EpisodeQuery}, error::{Error, Result}, users::ConnectedUser, ModelController};
 
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct SerieQuery {
     pub after: Option<u64>
 }
@@ -30,7 +30,7 @@ impl SerieQuery {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
 pub struct SerieForUpdate {
 	pub name: Option<String>,
     #[serde(rename = "type")]
@@ -61,10 +61,7 @@ pub struct SerieForUpdate {
 
 impl SerieForUpdate {
     pub fn has_update(&self) -> bool {
-        self.name.is_some() || self.kind.is_some() || self.status.is_some() || self.alt.is_some() || self.add_alts.is_some() || self.remove_alts.is_some()
-        || self.params.is_some() || self.imdb.is_some() || self.slug.is_some() || self.tmdb.is_some() || self.trakt.is_some() || self.tvdb.is_some() || self.otherids.is_some()
-        || self.imdb_rating.is_some() || self.imdb_votes.is_some() || self.trakt_rating.is_some() || self.trakt_votes.is_some()
-        || self.trailer.is_some() || self.year.is_some() || self.max_created.is_some()
+        self != &SerieForUpdate::default()
     } 
 }
 
@@ -252,6 +249,29 @@ impl ModelController {
         let new_serie = self.update_serie(library_id, serie_id.to_string(), updates, requesting_user).await?;
         Ok(new_serie)        
 	}
+
+
+    pub async fn refresh_series_imdb(&self, library_id: &str, requesting_user: &ConnectedUser) -> RsResult<()> {
+        let all_series = self.get_series(&library_id, SerieQuery::default(), &requesting_user).await?;
+        //Imdb rating
+        for mut serie in all_series {
+            let existing_votes = serie.imdb_votes.unwrap_or(0).clone();
+            serie.fill_imdb_ratings(&self.imdb).await;
+            let serieid = serie.id.clone();
+            if existing_votes != serie.imdb_votes.unwrap_or(0) {
+                self.update_serie(&library_id, serie.id, SerieForUpdate { imdb_rating: serie.imdb_rating, imdb_votes: serie.imdb_votes, ..Default::default()}, &ConnectedUser::ServerAdmin).await?;
+            }
+            let episodes = self.get_episodes(&library_id, EpisodeQuery {serie_ref: Some(serieid.clone()), ..Default::default() }, &ConnectedUser::ServerAdmin).await?;
+            for mut episode in episodes {
+                let existing_votes = episode.imdb_votes.unwrap_or(0).clone();
+                episode.fill_imdb_ratings(&self.imdb).await;
+                if existing_votes != episode.imdb_votes.unwrap_or(0) {
+                    self.update_episode(&library_id, serieid.clone(), episode.season, episode.number, EpisodeForUpdate { imdb_rating: serie.imdb_rating, imdb_votes: serie.imdb_votes, ..Default::default()}, &ConnectedUser::ServerAdmin).await?;
+                }
+            }
+        }
+        Ok(())
+    }
 
 
     pub async fn import_serie(&self, library_id: &str, serie_id: &str, requesting_user: &ConnectedUser) -> RsResult<Serie> {

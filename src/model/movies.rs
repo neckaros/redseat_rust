@@ -1,10 +1,11 @@
 
 
 
-use std::{io::{self, Read}, pin::Pin};
+use std::{collections::HashMap, io::{self, Read}, pin::Pin};
 
 use futures::TryStreamExt;
 use nanoid::nanoid;
+use rs_plugin_common_interfaces::MediaType;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::{fs::File, io::{AsyncRead, AsyncWriteExt, BufReader}};
@@ -13,10 +14,10 @@ use tokio_util::io::StreamReader;
 
 use crate::{domain::{library::LibraryRole, movie::{Movie, MovieForUpdate, MoviesMessage}, people::{PeopleMessage, Person}, ElementAction, MediasIds}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source}}, server::get_server_folder_path_array, tools::{image_tools::{resize_image_reader, ImageSize, ImageType}, log::log_info}};
 
-use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
+use super::{error::{Error, Result}, users::{ConnectedUser, HistoryQuery}, ModelController};
 
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct MovieQuery {
     pub after: Option<u64>
 }
@@ -68,58 +69,86 @@ impl Movie {
 
 impl ModelController {
 
-	pub async fn get_movies(&self, library_id: &str, query: MovieQuery, requesting_user: &ConnectedUser) -> Result<Vec<Movie>> {
+	pub async fn get_movies(&self, library_id: &str, query: MovieQuery, requesting_user: &ConnectedUser) -> RsResult<Vec<Movie>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
-		let people = store.get_movies(query).await?;
-		Ok(people)
+		let mut movies = store.get_movies(query).await?;
+
+        self.fill_movies_watched(&mut movies, &requesting_user).await?;
+		Ok(movies)
 	}
 
-    pub async fn get_movie(&self, library_id: &str, movie_id: String, requesting_user: &ConnectedUser) -> Result<Option<Movie>> {
+    pub async fn get_movie(&self, library_id: &str, movie_id: String, requesting_user: &ConnectedUser) -> RsResult<Movie> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
 
         if MediasIds::is_id(&movie_id) {
             let id: MediasIds = movie_id.try_into().map_err(|_| Error::NotFound)?;
             let movie = store.get_movie_by_external_id(id.clone()).await?;
-            if let Some(movie) = movie {
-                Ok(Some(movie))
+            if let Some(mut movie) = movie {
+                self.fill_movie_watched(&mut movie, &requesting_user).await?;
+                Ok(movie)
             } else {
-                let mut trakt_show = self.trakt.get_movie(&id).await.map_err(|_| Error::NotFound)?;
-                trakt_show.fill_imdb_ratings(&self.imdb).await;
-                Ok(Some(trakt_show))
+                let mut trakt_movie = self.trakt.get_movie(&id).await.map_err(|_| Error::NotFound)?;
+                trakt_movie.fill_imdb_ratings(&self.imdb).await;
+                self.fill_movie_watched(&mut trakt_movie, &requesting_user).await?;
+                Ok(trakt_movie)
             }
         } else {
-            let movie = store.get_movie(&movie_id).await?;
+            let mut movie = store.get_movie(&movie_id).await?.ok_or(Error::NotFound)?;
+            self.fill_movie_watched(&mut movie, &requesting_user).await?;
             Ok(movie)
         }
 	}
+
+    pub async fn fill_movie_watched(&self, movie: &mut Movie, requesting_user: &ConnectedUser) -> RsResult<()> {
+        let watched = self.get_watched(HistoryQuery { types: vec![MediaType::Movie], id: Some(movie.clone().into()), ..Default::default() }, &requesting_user).await?;
+        let watched = watched.get(0);
+        if let Some(watched) = watched {
+            movie.watched = Some(watched.date);
+        }
+        Ok(())
+    }
+    pub async fn fill_movies_watched(&self, movies: &mut Vec<Movie>, requesting_user: &ConnectedUser) -> RsResult<()> {
+        let watched = self.get_watched(HistoryQuery { types: vec![MediaType::Movie], ..Default::default() }, &requesting_user).await?.into_iter().map(|e| (e.id.clone(), e)).collect::<HashMap<_, _>>();
+        for movie in movies {
+            if let Some(trakt) = movie.trakt {
+                let watch = watched.get(&trakt.to_string());
+                if let Some(watch) = watch {
+                    movie.watched = Some(watch.date.clone());
+                }
+            }
+        }
+        Ok(())
+    }
     
-    pub async fn get_movie_by_external_id(&self, library_id: &str, ids: MediasIds, requesting_user: &ConnectedUser) -> RsResult<Option<Movie>> {
+    pub async fn get_movie_by_external_id(&self, library_id: &str, ids: MediasIds, requesting_user: &ConnectedUser) -> RsResult<Movie> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
-        let movie = store.get_movie_by_external_id(ids).await?;
+        let movie = store.get_movie_by_external_id(ids).await?.ok_or(Error::NotFound)?;
         Ok(movie)
     }
 
 
     pub async fn get_movie_ids(&self, library_id: &str, movie_id: &str, requesting_user: &ConnectedUser) -> RsResult<MediasIds> {
-        let movie = self.get_movie(library_id, movie_id.to_string(), requesting_user).await?.ok_or(Error::NotFound)?;
+        let movie = self.get_movie(library_id, movie_id.to_string(), requesting_user).await?;
         let ids: MediasIds = movie.into();
         Ok(ids)
     }
 
-    pub async fn trending_movies(&self)  -> RsResult<Vec<Movie>> {
-        self.trakt.trending_movies().await
+    pub async fn trending_movies(&self, requesting_user: &ConnectedUser )  -> RsResult<Vec<Movie>> {
+        let mut movies = self.trakt.trending_movies().await?;
+        self.fill_movies_watched(&mut movies, &requesting_user).await?;
+        Ok(movies)
     }
 
 
 
 
-    pub async fn update_movie(&self, library_id: &str, movie_id: String, update: MovieForUpdate, requesting_user: &ConnectedUser) -> Result<Movie> {
+    pub async fn update_movie(&self, library_id: &str, movie_id: String, update: MovieForUpdate, requesting_user: &ConnectedUser) -> RsResult<Movie> {
         requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
         if MediasIds::is_id(&movie_id) {
-            return Err(Error::InvalidIdForAction("udpate".to_string(), movie_id))
+            return Err(Error::InvalidIdForAction("udpate".to_string(), movie_id).into())
         }
         if update.has_update() {
             let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
@@ -128,10 +157,25 @@ impl ModelController {
             self.send_movie(MoviesMessage { library: library_id.to_string(), action: ElementAction::Updated, movies: vec![person.clone()] });
             Ok(person)
         } else {
-            let movie = self.get_movie(library_id, movie_id, requesting_user).await?.ok_or(Error::NotFound)?;
+            let movie = self.get_movie(library_id, movie_id, requesting_user).await?;
             Ok(movie)
         }  
 	}
+
+    pub async fn refresh_movies_imdb(&self, library_id: &str, requesting_user: &ConnectedUser) -> RsResult<()> {
+        let movies = self.get_movies(&library_id, MovieQuery::default(), &requesting_user).await?;
+        //Imdb rating
+        for mut movie in movies {
+            let existing_votes = movie.imdb_votes.unwrap_or(0).clone();
+            movie.fill_imdb_ratings(&self.imdb).await;
+            if existing_votes != movie.imdb_votes.unwrap_or(0) {
+                self.update_movie(&library_id, movie.id, MovieForUpdate { imdb_rating: movie.imdb_rating, imdb_votes: movie.imdb_votes, ..Default::default()}, &ConnectedUser::ServerAdmin).await?;
+            }
+           
+        }
+        Ok(())
+    }
+
 
 
 	pub fn send_movie(&self, message: MoviesMessage) {
@@ -147,15 +191,15 @@ impl ModelController {
     pub async fn add_movie(&self, library_id: &str, mut new_movie: Movie, requesting_user: &ConnectedUser) -> RsResult<Movie> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;        
         let ids: MediasIds = new_movie.clone().into();
-        let existing = self.get_movie_by_external_id(library_id, ids, requesting_user).await?;
-        if let Some(existing) = existing {
+        let existing = self.get_movie_by_external_id(library_id, ids, requesting_user).await;
+        if let Ok(existing) = existing {
             return Err(Error::Duplicate(existing.id.into(), "Movie".into()).into())
         }
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         let id = nanoid!();
         new_movie.id = id.clone();
 		store.add_movie(new_movie).await?;
-        let new_person = self.get_movie(library_id, id, requesting_user).await?.ok_or(Error::NotFound)?;
+        let new_person = self.get_movie(library_id, id, requesting_user).await?;
         self.send_movie(MoviesMessage { library: library_id.to_string(), action: ElementAction::Added, movies: vec![new_person.clone()] });
 		Ok(new_person)
 	}
@@ -182,8 +226,8 @@ impl ModelController {
     pub async fn import_movie(&self, library_id: &str, movie_id: &str, requesting_user: &ConnectedUser) -> RsResult<Movie> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         if let Ok(ids) = MediasIds::try_from(movie_id.to_string()) {
-            let existing = self.get_movie_by_external_id(library_id, ids.clone(), requesting_user).await?;
-            if let Some(existing) = existing {
+            let existing = self.get_movie_by_external_id(library_id, ids.clone(), requesting_user).await;
+            if let Ok(existing) = existing {
                 Err(Error::Duplicate(existing.id.into(), "Movie".into()).into())
             } else { 
                 let new_movie = self.trakt.get_movie(&ids).await?;
@@ -200,7 +244,7 @@ impl ModelController {
     pub async fn refresh_movie(&self, library_id: &str, movie_id: &str, requesting_user: &ConnectedUser) -> RsResult<Movie> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         let ids = self.get_movie_ids(library_id, movie_id, requesting_user).await?;
-        let movie = self.get_movie(library_id, movie_id.to_string(), requesting_user).await?.ok_or(Error::NotFound)?;
+        let movie = self.get_movie(library_id, movie_id.to_string(), requesting_user).await?;
         let new_movie = self.trakt.get_movie(&ids).await?;
         let mut updates = MovieForUpdate {..Default::default()};
 
@@ -285,7 +329,7 @@ impl ModelController {
 
     /// download and update image
     pub async fn refresh_movie_image(&self, library_id: &str, movie_id: &str, kind: &ImageType, requesting_user: &ConnectedUser) -> RsResult<()> {
-        let movie = self.get_movie(library_id, movie_id.to_string(), requesting_user).await?.ok_or(Error::NotFound)?;
+        let movie = self.get_movie(library_id, movie_id.to_string(), requesting_user).await?;
         let ids: MediasIds = movie.into();
         let reader = self.download_movie_image(&ids, kind).await?;
         self.update_movie_image(library_id, movie_id, kind, reader, requesting_user).await?;

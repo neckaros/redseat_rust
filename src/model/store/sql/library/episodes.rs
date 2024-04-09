@@ -1,4 +1,4 @@
-use rusqlite::{params, OptionalExtension, Row};
+use rusqlite::{params, OptionalExtension, Row, ToSql};
 
 use crate::{domain::episode::{self, Episode, EpisodeWithShow}, model::{episodes::{EpisodeForUpdate, EpisodeQuery}, store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_pipe_separated_optional}}, tools::array_tools::replace_add_remove_from_array};
 use super::{Result, SqliteLibraryStore};
@@ -59,22 +59,39 @@ impl SqliteLibraryStore {
             if let Some(q) = &query.after {
                 where_query.add_where(QueryWhereType::After("modified", q));
             }
+            
+            if let Some(q) = &query.aired_after {
+                where_query.add_where(QueryWhereType::After("airdate", q));
+            }
+            if let Some(q) = &query.aired_before {
+                where_query.add_where(QueryWhereType::Before("airdate", q));
+            }
+
             if let Some(q) = &query.serie_ref {
                 where_query.add_where(QueryWhereType::Equal("serie_ref", q));
             }
             if let Some(q) = &query.season {
                 where_query.add_where(QueryWhereType::Equal("season", q));
             }
+
             
-            if query.after.is_some() {
-                where_query.add_oder(OrderBuilder::new("modified".to_string(), SqlOrder::ASC));
-            } else {
-                where_query.add_oder(OrderBuilder::new("season".to_string(), SqlOrder::ASC));
-                where_query.add_oder(OrderBuilder::new("number".to_string(), SqlOrder::ASC));
+            if query.not_seasons.len() > 0 {
+                let refed = query.not_seasons.iter().map(|t| t as &dyn ToSql).collect::<Vec<_>>();
+                where_query.add_where(QueryWhereType::NotIn("season", refed));
             }
+            
+            for sorts in query.sorts {
+                where_query.add_oder(OrderBuilder::new(sorts.sort.to_string(), sorts.order));
+            }
+            
+            
+            //where_query.add_oder(OrderBuilder::new("season".to_string(), SqlOrder::ASC));
+            //where_query.add_oder(OrderBuilder::new("number".to_string(), SqlOrder::ASC));
+            
 
 
             let mut query = conn.prepare(&format!("SELECT serie_ref, season, number, abs, name, overview, airdate, duration, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, modified, added, imdb_rating, imdb_votes, trakt_rating, trakt_votes, null as serie_name  FROM episodes {}{}", where_query.format(), where_query.format_order()))?;
+            println!("query {:?}", query.expanded_sql());
             let rows = query.query_map(
             where_query.values(), Self::row_to_episode,
             )?;
@@ -93,12 +110,35 @@ impl SqliteLibraryStore {
             episodes as ep
             LEFT JOIN series ON ep.serie_ref = series.id
             WHERE 
+            season <> 0 and
             airdate > round((julianday('now') - 2440587.5)*86400.0 * 1000)
             ORDER BY airdate ASC
             LIMIT ?
             ")?;
             let rows = stm.query_map(
             &[&query.limit.unwrap_or(10)], Self::row_to_episode,
+            )?;
+            let backups:Vec<Episode> = rows.collect::<std::result::Result<Vec<Episode>, rusqlite::Error>>()?; 
+            Ok(backups)
+        }).await?;
+        Ok(row)
+    }
+
+    pub async fn get_episodes_aired(&self, _query: EpisodeQuery) -> Result<Vec<Episode>> {
+        let row = self.connection.call( move |conn| { 
+            let mut stm = conn.prepare("SELECT 
+            ep.serie_ref, ep.season, ep.number, ep.abs, ep.name, ep.overview, ep.airdate, ep.duration, ep.alt, ep.params, ep.imdb, ep.slug, ep.tmdb, ep.trakt, ep.tvdb, ep.otherids, ep.modified, ep.added, ep.imdb_rating, ep.imdb_votes, ep.trakt_rating, ep.trakt_votes,
+            series.name  
+            FROM 
+            episodes as ep
+            LEFT JOIN series ON ep.serie_ref = series.id
+            WHERE 
+            season <> 0 and
+            airdate < round((julianday('now') - 2440587.5)*86400.0 * 1000)
+            ORDER BY  ep.airdate ASC,  ep.season ASC,  ep.number
+            ")?;
+            let rows = stm.query_map(
+            params![], Self::row_to_episode,
             )?;
             let backups:Vec<Episode> = rows.collect::<std::result::Result<Vec<Episode>, rusqlite::Error>>()?; 
             Ok(backups)

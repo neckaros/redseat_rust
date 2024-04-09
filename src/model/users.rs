@@ -1,5 +1,6 @@
 use std::{cmp::Ordering, str::FromStr};
 
+use rs_plugin_common_interfaces::MediaType;
 use rusqlite::{
     types::{FromSql, FromSqlError, FromSqlResult, ValueRef},
     ToSql,
@@ -7,9 +8,9 @@ use rusqlite::{
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
 
-use crate::{domain::library::{LibraryRole, LibraryType}, tools::auth::{ClaimsLocal, ClaimsLocalType}};
+use crate::{domain::{library::{LibraryRole, LibraryType}, watched::Watched, MediasIds}, error::RsResult, tools::auth::{ClaimsLocal, ClaimsLocalType}};
 
-use super::{error::{Error, Result}, libraries::ServerLibraryForRead};
+use super::{error::{Error, Result}, libraries::ServerLibraryForRead, medias::RsSort, store::sql::{users::WatchedQuery, SqlOrder}, ModelController};
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 pub enum ConnectedUser {
@@ -282,6 +283,33 @@ pub struct ServerUserForUpdate {
     pub preferences: Option<ServerUserPreferences>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")] 
+pub struct HistoryQuery {
+    
+    #[serde(default)]
+    pub sort: RsSort,
+    #[serde(default)]
+    pub order: SqlOrder,
+
+    pub before: Option<u64>,
+    pub after: Option<u64>,
+    #[serde(default)]
+    pub types: Vec<MediaType>,
+
+    pub id: Option<MediasIds>,
+    
+    pub page_key: Option<u64>,
+}
+
+
+
+impl ModelController {
+    pub async fn get_watched(&self, query: HistoryQuery, user: &ConnectedUser) -> RsResult<Vec<Watched>> {
+        user.check_role(&UserRole::Read)?;
+        Ok(self.store.get_watched(query).await?)
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -13,6 +13,8 @@ pub mod scheduler;
 
 pub mod text_tools;
 
+pub mod serialization_tools;
+
 pub mod clock;
 
 

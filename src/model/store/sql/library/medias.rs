@@ -1,8 +1,23 @@
 use rusqlite::{params, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, Row, ToSql};
 
-use crate::{domain::media::{FileType, Media, MediaForInsert, MediaForUpdate, MediaItemReference}, model::{medias::{MediaQuery, MediaSource, RsSort}, people::PeopleQuery, store::{from_comma_separated_optional, from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_comma_separated_optional, to_pipe_separated_optional}, tags::TagQuery}, tools::{array_tools::AddOrSetArray, log::{log_info, LogServiceType}, text_tools::{extract_people, extract_tags}}};
+use crate::{domain::media::{FileType, Media, MediaForInsert, MediaForUpdate, MediaItemReference, RsGpsPosition}, model::{medias::{MediaQuery, MediaSource, RsSort}, people::PeopleQuery, store::{from_comma_separated_optional, from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_comma_separated_optional, to_pipe_separated_optional}, tags::TagQuery}, tools::{array_tools::AddOrSetArray, log::{log_info, LogServiceType}, text_tools::{extract_people, extract_tags}}};
 use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
+
+
+impl FromSql for RsGpsPosition {
+    fn column_result(value: ValueRef) -> FromSqlResult<Self> {
+        String::column_result(value).and_then(|as_string| {
+            let mut splitted = as_string.split(",");
+            let lat = splitted.next().and_then(|f| f.parse::<f64>().ok()).ok_or(FromSqlError::InvalidType)?;
+            let long = splitted.next().and_then(|f| f.parse::<f64>().ok()).ok_or(FromSqlError::InvalidType)?;
+            Ok(RsGpsPosition {
+                lat: lat,
+                long: long,
+            })
+        })
+    }
+}
 
 impl FromSql for FileType {
     fn column_result(value: ValueRef) -> FromSqlResult<Self> {
@@ -26,6 +41,7 @@ impl SqliteLibraryStore {
             source: row.get(1)?,
             kind: row.get(2)?,
             thumb_size: row.get(3)?,
+            size: row.get(4)?,
         })
     }
 
@@ -227,7 +243,7 @@ impl SqliteLibraryStore {
         let media_id = media_id.to_string();
         let row = self.connection.call( move |conn| { 
             let mut query = conn.prepare("SELECT 
-            id, source, type, thumbsize
+            id, source, type, thumbsize, size
             FROM medias
             WHERE id = ?")?;
             let row = query.query_row(
@@ -237,6 +253,20 @@ impl SqliteLibraryStore {
         Ok(row)
     }
 
+    pub async fn get_medias_locs(&self, precision: u32) -> Result<Vec<RsGpsPosition>> {
+        let rows = self.connection.call( move |conn| { 
+
+            let mut query = conn.prepare("SELECT distinct(round(lat,?) || ',' || round(long,?)) as coord from medias where long IS NOT NULL")?;
+            let rows = query.query_map(
+            params![precision, precision],|row| {
+                let s: RsGpsPosition =  row.get(0)?;
+                Ok(s)
+            })?;
+            let rows:Vec<RsGpsPosition> = rows.collect::<std::result::Result<Vec<RsGpsPosition>, rusqlite::Error>>()?; 
+            Ok(rows)
+        }).await?;
+        Ok(rows)
+    }
 
     pub async fn update_media(&self, media_id: &str, mut update: MediaForUpdate) -> Result<()> {
         let id = media_id.to_string();

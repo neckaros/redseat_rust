@@ -1,5 +1,6 @@
-use crate::{model::{ModelController, users::ConnectedUser}, Result};
+use crate::{model::{users::{ConnectedUser, HistoryQuery}, ModelController}, Result};
 use axum::{extract::{Path, State}, middleware, routing::get, Json, Router};
+use axum_extra::extract::Query;
 use serde_json::{json, Value};
 
 use super::mw_auth;
@@ -17,6 +18,7 @@ pub fn routes(mc: ModelController) -> Router {
 	Router::new()
 		.route("/me", get(handler_me))
 		.route("/:id", get(handler_id))
+		.route("/me/history", get(handler_list_history))
 		.merge(admin_routes)
 		.with_state(mc)
 	
@@ -37,6 +39,13 @@ async fn handler_id(Path(user_id): Path<String>, State(mc): State<ModelControlle
 
 async fn handler_list(State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
 	let users = mc.get_users(&user).await?;
+	let body = Json(json!(users));
+
+	Ok(body)
+}
+
+async fn handler_list_history(State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<HistoryQuery>) -> Result<Json<Value>> {
+	let users = mc.get_watched(query, &user).await?;
 	let body = Json(json!(users));
 
 	Ok(body)

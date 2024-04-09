@@ -34,6 +34,8 @@ impl SqliteLibraryStore {
             }
             if query.after.is_some() {
                 where_query.add_oder(OrderBuilder::new("modified".to_string(), SqlOrder::ASC))
+            } else {
+                where_query.add_oder(OrderBuilder::new("name".to_string(), SqlOrder::ASC))
             }
             
 
