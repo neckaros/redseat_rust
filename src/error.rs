@@ -112,6 +112,9 @@ pub enum Error {
 	#[from]
 	SystemnTime(#[serde_as(as = "DisplayFromStr")] SystemTimeError),
 
+	
+	#[from]
+	Extism(#[serde_as(as = "DisplayFromStr")] extism::Error),
 }
 
 // region:    --- Error Boilerplate

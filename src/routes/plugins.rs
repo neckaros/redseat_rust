@@ -20,6 +20,7 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/urlrequest", get(handler_urlrequest))
 		.route("/", post(handler_post))
 		.route("/:id", get(handler_get))
+		.route("/:id/reload", get(handler_reload))
 		.route("/:id", patch(handler_patch))
 		.route("/:id", delete(handler_delete))
 		.with_state(mc)
@@ -74,6 +75,13 @@ async fn handler_urlrequest(State(mc): State<ModelController>, user: ConnectedUs
 
 async fn handler_get(Path(plugin_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
 	let library = mc.get_plugin(plugin_id, &user).await?;
+	let body = Json(json!(library));
+	Ok(body)
+}
+
+
+async fn handler_reload(Path(plugin_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	let library = mc.reload_plugin(plugin_id, &user).await?;
 	let body = Json(json!(library));
 	Ok(body)
 }

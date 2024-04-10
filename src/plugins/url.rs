@@ -15,9 +15,9 @@ use rs_plugin_url_interfaces::RsLink;
 
 impl PluginManager {
 
-    pub fn parse(&self, url: String, plugins: impl Iterator<Item = PluginWithCredential>) -> Option<RsLink>{
+    pub async fn parse(&self, url: String, plugins: impl Iterator<Item = PluginWithCredential>) -> Option<RsLink>{
         for plugin_with_cred in plugins {
-            if let Some(plugin) = self.plugins.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
+            if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
                 let mut plugin_m = plugin.plugin.lock().unwrap();
                 if plugin.infos.kind == PluginType::UrlParser {
                     let res = plugin_m.call_get_error_code::<&str, Json<RsLink>>("parse", &url);
@@ -36,9 +36,9 @@ impl PluginManager {
     }
 
     
-    pub fn expand(&self, link: RsLink, plugins: impl Iterator<Item = PluginWithCredential>) -> Option<String>{
+    pub async fn expand(&self, link: RsLink, plugins: impl Iterator<Item = PluginWithCredential>) -> Option<String>{
         for plugin_with_cred in plugins {
-            if let Some(plugin) = self.plugins.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
+            if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
                 let mut plugin_m = plugin.plugin.lock().unwrap();
                 if plugin.infos.kind == PluginType::UrlParser {
                     let res = plugin_m.call_get_error_code::<Json<RsLink>, &str>("expand", Json(link.clone()));
@@ -100,7 +100,7 @@ impl PluginManager {
             }
         }
         for plugin_with_cred in plugins {
-            if let Some(plugin) = self.plugins.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
+            if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
                 let mut plugin_m = plugin.plugin.lock().unwrap();
                 if plugin.infos.kind == PluginType::Request {
                     let req = RsRequestPluginRequest {
@@ -137,32 +137,13 @@ impl PluginManager {
         Ok(SourceRead::Request(request))
     }
 
-    pub fn request_all(&self, request: RsRequest) -> Option<RsRequest>{
-        for plugin in &self.plugins {
-            let mut plugin_m = plugin.plugin.lock().unwrap();
-            if plugin.infos.kind == PluginType::Request {
-                let res = plugin_m.call_get_error_code::<Json<RsRequest>, Json<RsRequest>>("process", Json(request.clone()));
-                if let Ok(Json(res)) = res {
-                    return Some(res);
-                } else if let Err((error, code)) = res {
-                    if code != 404 {
-                        log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request {} {:?}", code, error))
-                    }
-                }
-                
-            }
-        }
-        None
-    }
-
-
-
     pub async fn lookup(&self, query: RsLookupQuery, plugins: impl Iterator<Item = PluginWithCredential>) -> RsResult<Vec<RsLookupResult>> {
         let mut results = vec![];
         for plugin_with_cred in plugins {
-            println!("PLUGIN {}", plugin_with_cred.plugin.name);
-            if let Some(plugin) = self.plugins.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
+            if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
                 let mut plugin_m = plugin.plugin.lock().unwrap();
+                
+                println!("PLUGIN {}", plugin_with_cred.plugin.name);
                 if plugin.infos.kind == PluginType::Lookup {
                     let wrapped_query = RsLookupWrapper {
                         query: query.clone(),

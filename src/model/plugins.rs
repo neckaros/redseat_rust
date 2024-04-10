@@ -29,7 +29,7 @@ impl ModelController {
         requesting_user.check_role(&UserRole::Admin)?;
 		let mut installed_plugins = self.store.get_plugins(query).await?;
         let all_plugins = &self.plugin_manager.plugins;
-        for plugin in all_plugins {
+        for plugin in all_plugins.read().await.iter() {
             let existing = installed_plugins.iter_mut().find(|r| r.path == plugin.filename);
             if let Some(existing) = existing {
                 existing.description = Some(plugin.infos.description.clone());
@@ -52,10 +52,18 @@ impl ModelController {
 		Ok(iter)
 	}
 
-    pub async fn get_plugin(&self, plugin_id: String, requesting_user: &ConnectedUser) -> Result<Option<Plugin>> {
+    pub async fn get_plugin(&self, plugin_id: String, requesting_user: &ConnectedUser) -> RsResult<Plugin> {
         requesting_user.check_role(&UserRole::Admin)?;
-		let credential = self.store.get_plugin(&plugin_id).await?;
+		let credential = self.store.get_plugin(&plugin_id).await?.ok_or(Error::NotFound)?;
 		Ok(credential)
+	}
+
+    pub async fn reload_plugin(&self, plugin_id: String, requesting_user: &ConnectedUser) -> RsResult<Plugin> {
+        requesting_user.check_role(&UserRole::Admin)?;
+        let plugin = self.get_plugin(plugin_id, requesting_user).await?;
+
+        self.plugin_manager.load_wasm_plugin(&plugin.path).await?;
+		Ok(plugin)
 	}
 
     pub async fn update_plugin(&self, plugin_id: &str, update: PluginForUpdate, requesting_user: &ConnectedUser) -> Result<Plugin> {
@@ -69,11 +77,11 @@ impl ModelController {
         }
 	}
 
-    pub async fn install_plugin(&self, plugin: PluginForInstall, requesting_user: &ConnectedUser) -> Result<Plugin> {
+    pub async fn install_plugin(&self, plugin: PluginForInstall, requesting_user: &ConnectedUser) -> RsResult<Plugin> {
         requesting_user.check_role(&UserRole::Admin)?;
-       
-        let plugin = self.plugin_manager.plugins.iter().find(|p| p.filename == plugin.path).ok_or(Error::NotFound)?;
-
+        let plugins = self.plugin_manager.plugins.read().await;
+        let plugin = plugins.iter().find(|p| p.filename == plugin.path).ok_or(Error::NotFound)?;
+  
         let plugin_for_add:PluginForAdd  = plugin.into();
         
         let plugin = PluginForInsert {
@@ -81,30 +89,30 @@ impl ModelController {
             plugin: plugin_for_add
         };
 		self.store.add_plugin(plugin.clone()).await?;
-        let plugin = self.get_plugin(plugin.id, &requesting_user).await?.ok_or(Error::NotFound)?;
+        let plugin = self.get_plugin(plugin.id, &requesting_user).await?;
 		Ok(plugin)
 	}
 
-    pub async fn add_plugin(&self, plugin: PluginForAdd, requesting_user: &ConnectedUser) -> Result<Plugin> {
+    pub async fn add_plugin(&self, plugin: PluginForAdd, requesting_user: &ConnectedUser) -> RsResult<Plugin> {
         requesting_user.check_role(&UserRole::Admin)?;
         let plugin = PluginForInsert {
             id: nanoid!(),
             plugin
         };
 		self.store.add_plugin(plugin.clone()).await?;
-        let plugin = self.get_plugin(plugin.id, &requesting_user).await?.ok_or(Error::NotFound)?;
+        let plugin = self.get_plugin(plugin.id, &requesting_user).await?;
 		Ok(plugin)
 	}
 
 
-    pub async fn remove_plugin(&self, plugin_id: &str, requesting_user: &ConnectedUser) -> Result<Plugin> {
+    pub async fn remove_plugin(&self, plugin_id: &str, requesting_user: &ConnectedUser) -> RsResult<Plugin> {
         requesting_user.check_role(&UserRole::Admin)?;
         let credential = self.store.get_plugin(&plugin_id).await?;
         if let Some(credential) = credential { 
             self.store.remove_plugin(plugin_id.to_string()).await?;
             Ok(credential)
         } else {
-            Err(Error::NotFound)
+            Err(Error::NotFound.into())
         }
 	}
 
@@ -117,7 +125,7 @@ impl ModelController {
         }
         let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::UrlParser), ..Default::default() }).await?;
 
-        Ok(self.plugin_manager.parse(url, plugins).ok_or(Error::NotFound)?)
+        Ok(self.plugin_manager.parse(url, plugins).await.ok_or(Error::NotFound)?)
 	}
 
     pub async fn exec_expand(&self, library_id: Option<String>, link: RsLink, requesting_user: &ConnectedUser) -> RsResult<String> {
@@ -128,7 +136,7 @@ impl ModelController {
         }
         let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::UrlParser), ..Default::default() }).await?;
 
-        Ok(self.plugin_manager.expand(link, plugins).ok_or(Error::NotFound)?)
+        Ok(self.plugin_manager.expand(link, plugins).await.ok_or(Error::NotFound)?)
 	}
 
 

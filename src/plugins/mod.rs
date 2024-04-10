@@ -4,8 +4,9 @@ use extism::{convert::Json, Manifest, PluginBuilder, Wasm};
 use rs_plugin_common_interfaces::{PluginInformation, PluginType};
 
 use extism::Plugin as ExtismPlugin;
+use tokio::sync::RwLock;
 
-use crate::{domain::{library::ServerLibrary, plugin::{self, PluginWasm}}, model::ModelController, server::get_server_folder_path_array, tools::log::{log_error, log_info}, Result};
+use crate::{domain::{library::ServerLibrary, plugin::{self, PluginWasm}}, error::RsResult, model::ModelController, server::get_server_folder_path_array, tools::log::{log_error, log_info}, Error, Result};
 
 use self::sources::{error::SourcesResult, path_provider::PathProvider, virtual_provider::VirtualProvider, Source};
 
@@ -15,7 +16,7 @@ pub mod medias;
 
 
 pub struct PluginManager {
-    pub plugins: Vec<PluginWasm>
+    pub plugins: RwLock<Vec<PluginWasm>>
 }
 
 
@@ -71,6 +72,8 @@ pub async fn list_plugins() -> crate::Result<impl Iterator<Item = PluginWasm>> {
 }
 
 
+
+
 /*pub fn parse_url_plugin(url: String, plugin: PluginInformation) {
     let manifest = Manifest::new([plugin.]);
     let plugin = PluginBuilder::new(manifest)
@@ -85,8 +88,35 @@ impl PluginManager {
     pub async fn new() -> Result<Self> {
         let plugins: Vec<PluginWasm> = list_plugins().await?.collect();
         Ok(
-            PluginManager { plugins }
+            PluginManager { plugins: RwLock::new(plugins) }
         )
+    }
+
+
+    pub async fn load_wasm_plugin(&self, filename: &str) -> RsResult<()> {
+        let mut folder = get_plugin_fodler().await?;
+        folder.push(filename);
+        let existing = self.plugins.read().await.iter().position(|e| e.path == folder);
+        if let Some(existing) = existing {
+            self.plugins.write().await.swap_remove(existing);
+        }
+        let manifest = Manifest::new([folder.clone()]).with_allowed_host("*");
+        let mut plugin = PluginBuilder::new(manifest)
+            .with_wasi(true)
+            .build()?;
+    
+        let Json(infos) = plugin.call::<&str, Json<PluginInformation>>("infos", "")?;
+       
+        let filename = folder.file_name().unwrap().to_str().unwrap();
+        log_info(crate::tools::log::LogServiceType::Plugin, format!("Loaded plugin {} ({}) -> {:?}", infos.name, infos.kind, folder));
+        let p = PluginWasm {
+            filename: filename.to_string(),
+            path: folder,
+            infos,
+            plugin:Mutex::new(plugin),
+        };
+        self.plugins.write().await.push(p);
+        Ok(())
     }
 
     pub async fn source_for_library(&self, library: ServerLibrary, controller: ModelController) -> SourcesResult<Box<dyn Source>> {
@@ -99,5 +129,7 @@ impl PluginManager {
         };
         Ok(source)
     }
+
+
 
 }
