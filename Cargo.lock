@@ -2786,9 +2786,9 @@ checksum = "2900ede94e305130c13ddd391e0ab7cbaeb783945ae07a279c268cb05109c6cb"
 
 [[package]]
 name = "plugin-request-interfaces"
-version = "0.11.0"
+version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a80546d485be4c7b95ef90c2420071ade2abcfa081f8ea3a4638aff574c02403"
+checksum = "c40cd370e6b48b7806ea749bf0aca1693b502de0c7d09fdd65eaa0c6ef6ec580"
 dependencies = [
  "regex",
  "rs-plugin-common-interfaces",

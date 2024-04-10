@@ -1,7 +1,8 @@
 
-use crate::{domain::{episode::{self, Episode}, media::Media}, model::{episodes::{EpisodeForUpdate, EpisodeQuery}, medias::MediaQuery, users::ConnectedUser, ModelController}, Error, Result};
+use crate::{domain::{episode::{self, Episode}, media::{FileEpisode, Media, MediaForUpdate}}, model::{episodes::{EpisodeForUpdate, EpisodeQuery}, medias::MediaQuery, users::ConnectedUser, ModelController}, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
 use futures::TryStreamExt;
+use plugin_request_interfaces::RsRequest;
 use rs_plugin_lookup_interfaces::{RsLookupEpisode, RsLookupQuery};
 use serde_json::{json, ser, Value};
 use tokio::io::AsyncRead;
@@ -22,6 +23,7 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/seasons/:season/episodes/:number", delete(handler_delete))
 		.route("/seasons/:season/episodes/:number/image", get(handler_image))
 		.route("/seasons/:season/episodes/:number/search", get(handler_lookup))
+		.route("/seasons/:season/episodes/:number/search", post(handler_lookup_add))
 		.route("/seasons/:season/episodes/:number/medias", get(handler_medias))
 		.route("/:id/image", post(handler_post_image))
 		.with_state(mc)
@@ -84,6 +86,22 @@ async fn handler_lookup(Path((library_id, serie_id, season, number)): Path<(Stri
 	let body = Json(json!(library));
 	Ok(body)
 }
+
+async fn handler_lookup_add(Path((library_id, serie_id, season, number)): Path<(String, String, u32, u32)>, State(mc): State<ModelController>, user: ConnectedUser, Json(request): Json<RsRequest>) -> Result<Json<Value>> {
+	let infos = MediaForUpdate {
+		add_series: Some(vec![FileEpisode {
+			id: serie_id,
+			season: Some(season),
+			episode: Some(number),
+		}]),
+		..Default::default()
+	};
+	let added = mc.medias_add_request(&library_id,  request, Some(infos), &user).await.expect("Unable to download");
+
+	
+	Ok(Json(json!(added)))
+}
+
 
 
 async fn handler_medias(Path((library_id, serie_id, season, number)): Path<(String, String, u32, u32)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {

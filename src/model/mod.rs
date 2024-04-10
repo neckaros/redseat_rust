@@ -106,9 +106,6 @@ impl  ModelController {
 		Ok(())
 	}
 
-	pub fn parse(&self, url: String) {
-		self.plugin_manager.parse(url);
-	}
 
 	pub async fn get_user_unchecked(&self, user_id: &str) -> Result<users::ServerUser> {
 		self.store.get_user(&user_id).await

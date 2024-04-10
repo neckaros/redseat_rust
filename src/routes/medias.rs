@@ -1,10 +1,11 @@
 
 use std::{path::PathBuf, str::FromStr};
 
-use crate::{domain::media::{GroupMediaDownload, MediaDownloadUrl, MediaForUpdate, MediaItemReference}, model::{medias::MediaQuery, series::{SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, plugins::sources::SourceRead, tools::prediction::predict_net, Error, Result};
+use crate::{domain::media::{GroupMediaDownload, MediaDownloadUrl, MediaForUpdate, MediaItemReference}, model::{medias::{MediaFileQuery, MediaQuery}, series::{SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, plugins::sources::SourceRead, tools::prediction::predict_net, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
 use futures::TryStreamExt;
 use hyper::{header::ACCEPT_RANGES, StatusCode};
+use plugin_request_interfaces::RsRequest;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -20,6 +21,7 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/loc", get(handler_locs))
 		.route("/", post(handler_post))
 		.route("/download", post(handler_download))
+		.route("/request", post(handler_add_request))
 		.route("/:id/metadata", get(handler_get))
 		.route("/:id/sharetoken", get(handler_sharetoken))
 		.route("/:id/predict", get(handler_predict))
@@ -86,8 +88,8 @@ async fn handler_predict(Path((library_id, media_id)): Path<(String, String)>, S
 	Ok(body)
 }
 
-async fn handler_get_file(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, range: Option<RangeDefinition>) -> Result<Response> {
-	let reader = mc.library_file(&library_id, &media_id, range.clone(), false, &user).await?;
+async fn handler_get_file(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, range: Option<RangeDefinition>, Query(query): Query<MediaFileQuery>) -> Result<Response> {
+	let reader = mc.library_file(&library_id, &media_id, range.clone(), query, &user).await?;
 	Ok(reader.into_response(&library_id, range, None, Some((mc.clone(), &user))).await?)
 }
 
@@ -131,6 +133,15 @@ async fn handler_download(Path(library_id): Path<String>, State(mc): State<Model
 	});
 	
 	Ok(Json(json!({"downloading": true})))
+}
+
+
+async fn handler_add_request(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Json(request): Json<RsRequest>) -> Result<Json<Value>> {
+	
+	let added = mc.medias_add_request(&library_id,  request, None, &user).await.expect("Unable to download");
+
+	
+	Ok(Json(json!(added)))
 }
 
 async fn handler_image(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ImageRequestOptions>) -> Result<Response> {

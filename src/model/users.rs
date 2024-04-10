@@ -13,6 +13,7 @@ use crate::{domain::{library::{LibraryRole, LibraryType}, watched::Watched, Medi
 use super::{error::{Error, Result}, libraries::ServerLibraryForRead, medias::RsSort, store::sql::{users::WatchedQuery, SqlOrder}, ModelController};
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
+#[serde(rename_all = "camelCase")]
 pub enum ConnectedUser {
     Server(ServerUser),
     Share(ClaimsLocal),

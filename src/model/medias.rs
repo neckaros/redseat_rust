@@ -1,7 +1,7 @@
 
 
 
-use std::{io::{self, Read}, path::PathBuf, pin::Pin, result, str::FromStr};
+use std::{io::{self, Cursor, Read}, path::PathBuf, pin::Pin, result, str::FromStr};
 
 use chrono::{Datelike, Utc};
 use futures::TryStreamExt;
@@ -9,14 +9,14 @@ use http::header::CONTENT_TYPE;
 use mime::{Mime, APPLICATION_OCTET_STREAM};
 use mime_guess::get_mime_extensions_str;
 use nanoid::nanoid;
-use plugin_request_interfaces::{RsCookie, RsRequest};
+use plugin_request_interfaces::{RsCookie, RsRequest, RsRequestStatus};
 use query_external_ip::SourceError;
 use rs_plugin_common_interfaces::PluginType;
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
 use tokio::{io::{copy, AsyncRead, AsyncReadExt}, sync::mpsc};
 use tokio_util::io::StreamReader;
-use crate::{domain::media::RsGpsPosition, model::store::sql::SqlOrder};
+use crate::{domain::media::{RsGpsPosition, DEFAULT_MIME}, model::store::sql::SqlOrder, tools::image_tools::convert_image_reader};
 
 use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaItemReference, MediaWithAction, MediasMessage, ProgressMessage}, progress::{RsProgress, RsProgressType}, ElementAction}, error::RsResult, plugins::{get_plugin_fodler, sources::{async_reader_progress::ProgressReader, error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{self, resize_image, resize_image_reader, ImageSize, ImageType}, log::{log_error, log_info, LogServiceType}, prediction::{predict_net, preload_model, PredictionTagResult}, video_tools::{self, probe_video, VideoTime}}};
 
@@ -48,6 +48,16 @@ pub struct MediaQuery {
     pub page_key: Option<u64>,
 
     pub filter: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")] 
+pub struct MediaFileQuery {
+    #[serde(default)]
+    pub unsupported_mime: Vec<String>,
+    
+    #[serde(default)]
+    pub raw: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, strum_macros::Display,EnumString, Default)]
@@ -89,6 +99,8 @@ pub struct MediaSource {
     pub kind: FileType,
     pub thumb_size: Option<u64>,
     pub size: Option<u64>,
+    
+    pub mime: String,
 }
 impl TryFrom<Media> for MediaSource {
     type Error = crate::model::error::Error;
@@ -99,7 +111,8 @@ impl TryFrom<Media> for MediaSource {
             source,
             kind: value.kind,
             thumb_size: value.thumbsize,
-            size: value.size
+            size: value.size,
+            mime: value.mimetype.unwrap_or(DEFAULT_MIME.to_owned()),
         })
     }
 }
@@ -245,17 +258,17 @@ impl ModelController {
 	}
 
     
-	pub async fn library_file(&self, library_id: &str, media_id: &str, mut range: Option<RangeDefinition>, raw: bool, requesting_user: &ConnectedUser) -> Result<SourceRead> {
+	pub async fn library_file(&self, library_id: &str, media_id: &str, mut range: Option<RangeDefinition>, query: MediaFileQuery, requesting_user: &ConnectedUser) -> RsResult<SourceRead> {
         requesting_user.check_file_role(library_id, media_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         let existing = store.get_media_source(&media_id).await?;
         let crypted = self.cache_get_library(library_id).await.and_then(|l| l.crypt).unwrap_or(false);
         if let Some(existing) = existing {
             let m = self.source_for_library(&library_id).await?;
-            if crypted && raw == false {
+            if crypted && query.raw == false {
                 range = Some(RangeDefinition { start: Some(CRYPTO_HEADER_SIZE + existing.thumb_size.unwrap_or(0)), end: None })
             }
-            let mut reader_response = m.get_file(&existing.source, range).await?;
+            let mut reader_response = m.get_file(&existing.source, range.clone()).await?;
 
             if crypted {
                 if let SourceRead::Stream(reader) = &mut reader_response {
@@ -263,10 +276,30 @@ impl ModelController {
                     reader.size = existing.size;
                 }
             }
-            
-            Ok(reader_response)
+
+            if query.unsupported_mime.len() > 0 {
+                if existing.kind == FileType::Photo && query.unsupported_mime.contains(&existing.mime) || query.unsupported_mime.contains(&"all".to_owned()) {
+                    let mut data = reader_response.into_reader(library_id, range, None, Some((self.clone(), &requesting_user))).await?; 
+                    let resized = convert_image_reader(&mut data.stream, "jpg", Some(80)).await?;
+                    let len = resized.len();
+                    let resized = Cursor::new(resized);
+                    Ok(SourceRead::Stream(FileStreamResult {
+                        stream: Box::pin(resized),
+                        size: Some(len as u64),
+                        accept_range: false,
+                        range: None,
+                        mime: Some("image/webp".to_owned()),
+                        name: Some("converted.webp".to_owned()),
+                        cleanup: None,
+                    }))
+                } else {
+                    Ok(reader_response)
+                }
+            } else {
+                Ok(reader_response)
+            }
         } else {
-            Err(Error::NotFound)
+            Err(Error::NotFound.into())
         }
 	}
     pub fn process_media_spawn(&self, library_id: String, media_id: String, requesting_user: ConnectedUser){
@@ -457,6 +490,47 @@ impl ModelController {
         }
         Ok(medias)
 	}
+    
+    pub async fn medias_add_request(&self, library_id: &str, request: RsRequest, additional_infos: Option<MediaForUpdate>, requesting_user: &ConnectedUser) -> RsResult<Media> {
+        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+     
+        let processed_request = if request.status == RsRequestStatus::Unprocessed {
+            self.exec_request(request.clone(), Some(library_id.to_string()), true, None, &requesting_user).await?
+        } else {
+            SourceRead::Request(request.clone())
+        };
+
+        let infos: MediaForUpdate = request.clone().into();
+
+        let final_infos: MediaForUpdate = (&processed_request).into();
+
+
+     
+        let mut new_file = MediaForAdd::default();
+        new_file.name = final_infos.name.or_else(|| infos.name).unwrap_or(nanoid!());
+        new_file.source = Some(request.url);
+        new_file.mimetype = final_infos.mimetype.or_else(|| infos.mimetype);
+        new_file.size = final_infos.size.or_else(|| infos.size);
+        new_file.created = Some(infos.created.unwrap_or_else(|| Utc::now().timestamp_millis() as u64));
+        
+        if let Some(ref mime) = new_file.mimetype {
+            new_file.kind = file_type_from_mime(&mime);
+        }
+
+        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let id = nanoid!();
+        store.add_media(MediaForInsert { id: id.clone(), media: new_file }).await?;
+        
+        if let Some(update) = additional_infos {
+            self.update_media(&library_id, id.clone(), update, &requesting_user).await?;
+        }
+
+        let media = store.get_media(&id).await?.ok_or(Error::NotFound)?;
+        self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media: media.clone(), action: ElementAction::Added}] });
+
+        Ok(media)
+	}
+
 
     pub async fn generate_thumb(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> crate::error::Result<()> {
         self.cache_check_library_notcrypt(library_id).await?;
@@ -613,7 +687,7 @@ impl ModelController {
     pub async fn update_photo_infos(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> crate::Result<()> {
         requesting_user.check_file_role(library_id, media_id, LibraryRole::Read)?;
         self.cache_check_library_notcrypt(library_id).await?;
-        let mut m = self.library_file(library_id, media_id, None, false, requesting_user).await?.into_reader(library_id, None, None, Some((self.clone(), &requesting_user))).await?;
+        let mut m = self.library_file(library_id, media_id, None, MediaFileQuery::default() , requesting_user).await?.into_reader(library_id, None, None, Some((self.clone(), &requesting_user))).await?;
 
         let images_infos = image_tools::ImageCommandBuilder::new().infos(&mut m.stream).await?;
         if let Some(infos) = images_infos.get(0) {

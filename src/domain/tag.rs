@@ -5,7 +5,7 @@ use super::ElementAction;
 
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "snake_case")] 
+#[serde(rename_all = "camelCase")] 
 pub struct Tag {
     pub id: String,
 	pub name: String,

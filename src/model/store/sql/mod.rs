@@ -233,6 +233,10 @@ impl <'a> QueryBuilder<'a> {
         }
     }
 
+    pub fn add_nullify(&mut self, column: &str)  {
+        self.columns_update.push(format!("{} = NULL", column));
+    }
+
     pub fn add_where(&mut self, kind: QueryWhereType<'a>) {
         self.wheres.push(kind);
     }

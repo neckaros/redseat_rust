@@ -57,7 +57,7 @@ http = "0.2.0"
 extism = "1.2.0"
 rs-plugin-common-interfaces = { version = "0.11.1", features = ["rusqlite",] }
 rs-plugin-url-interfaces = { version = "0.1.2", features = ["rusqlite"] }
-plugin-request-interfaces = { version = "0.11.0", features = ["rusqlite"] }
+plugin-request-interfaces = { version = "0.11.1", features = ["rusqlite"] }
 rs-plugin-lookup-interfaces = "0.11.0"
 async-recursion = "1.1.0"
 async-compression = { version = "0.4.6", features = ["tokio"] }

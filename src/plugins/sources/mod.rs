@@ -147,7 +147,7 @@ impl SourceRead {
                 match request.status {
                     plugin_request_interfaces::RsRequestStatus::Unprocessed | plugin_request_interfaces::RsRequestStatus::NeedParsing => {
                         if let Some((mc, user)) = mc {
-                            let new_request = mc.exec_request(request.clone(), Some(library_id.to_string()), progress, user).await?;
+                            let new_request = mc.exec_request(request.clone(), Some(library_id.to_string()), false, progress, user).await?;
                             new_request.into_reader(library_id, range.clone(), None, Some((mc, user))).await
                         } else {
                             Err(Error::InvalidRsRequestStatus(request.status).into())
@@ -226,7 +226,7 @@ impl SourceRead {
                 match request.status {
                     plugin_request_interfaces::RsRequestStatus::Unprocessed | plugin_request_interfaces::RsRequestStatus::NeedParsing => {
                         if let Some((mc, user)) = mc {
-                            let new_request = mc.exec_request(request.clone(), Some(library_id.to_string()), progress, user).await?;
+                            let new_request = mc.exec_request(request.clone(), Some(library_id.to_string()), false, progress, user).await?;
                             new_request.into_response(library_id, range.clone(), None, Some((mc, user))).await
                         } else {
                             Err(Error::InvalidRsRequestStatus(request.status).into())

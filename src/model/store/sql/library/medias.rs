@@ -1,6 +1,6 @@
 use rusqlite::{params, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, Row, ToSql};
 
-use crate::{domain::media::{FileType, Media, MediaForInsert, MediaForUpdate, MediaItemReference, RsGpsPosition}, model::{medias::{MediaQuery, MediaSource, RsSort}, people::PeopleQuery, store::{from_comma_separated_optional, from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_comma_separated_optional, to_pipe_separated_optional}, tags::TagQuery}, tools::{array_tools::AddOrSetArray, log::{log_info, LogServiceType}, text_tools::{extract_people, extract_tags}}};
+use crate::{domain::media::{FileEpisode, FileType, Media, MediaForInsert, MediaForUpdate, MediaItemReference, RsGpsPosition}, model::{medias::{MediaQuery, MediaSource, RsSort}, people::PeopleQuery, store::{from_comma_separated_optional, from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_comma_separated_optional, to_pipe_separated_optional}, tags::TagQuery}, tools::{array_tools::AddOrSetArray, log::{log_info, LogServiceType}, text_tools::{extract_people, extract_tags}}};
 use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
 
@@ -34,6 +34,15 @@ impl ToSql for FileType {
     }
 }
 
+impl RsSort {
+    pub fn to_media_query(&self) -> String {
+        match self {
+            RsSort::Rating => "rating".to_owned(),
+            _ => format!("m.{}", self.to_string()),
+        }
+    }
+}
+
 impl SqliteLibraryStore {
     fn row_to_mediasource(row: &Row) -> rusqlite::Result<MediaSource> {
         Ok(MediaSource {
@@ -42,6 +51,7 @@ impl SqliteLibraryStore {
             kind: row.get(2)?,
             thumb_size: row.get(3)?,
             size: row.get(4)?,
+            mime: row.get(5)?,
         })
     }
 
@@ -117,7 +127,7 @@ impl SqliteLibraryStore {
     pub async fn get_medias(&self, mut query: MediaQuery) -> Result<Vec<Media>> {
         let row = self.connection.call( move |conn| { 
             let mut where_query = QueryBuilder::new();
-            let sort = query.sort.to_string();
+            let sort = query.sort.to_media_query();
             if let Some(page_key) = query.page_key {
                 if query.order == SqlOrder::DESC {
                     query.before = Some(page_key);
@@ -168,7 +178,7 @@ impl SqliteLibraryStore {
 
 
             
-            where_query.add_oder(OrderBuilder::new(format!("m.{}", sort), query.order));
+            where_query.add_oder(OrderBuilder::new(sort.to_owned(), query.order));
 
 
 
@@ -190,7 +200,7 @@ impl SqliteLibraryStore {
             m.added, m.created
 			,(select GROUP_CONCAT(tag_ref || '|' || IFNULL(confidence, 101)) from media_tag_mapping where media_ref = m.id and (confidence != -1 or confidence IS NULL)) as tags
 			,(select GROUP_CONCAT(people_ref ) from media_people_mapping where media_ref = m.id) as people
-			,(select GROUP_CONCAT(serie_ref || '|' || ifnull(printf('%04d', season),'') || '|' || ifnull(printf('%04d', episode),'') ) from media_serie_mapping where media_ref = m.id) as series
+			,(select GROUP_CONCAT(serie_ref || '|' || printf('%04d', season) || '|' || printf('%04d', episode)) from media_serie_mapping where media_ref = m.id) as series
 			
             FROM medias as m
              {}
@@ -220,7 +230,7 @@ impl SqliteLibraryStore {
             
             GROUP_CONCAT(distinct a.tag_ref || '|' || IFNULL(a.confidence, 101)) tags,
             GROUP_CONCAT(distinct b.people_ref) people,
-            GROUP_CONCAT(distinct c.serie_ref || '|' || ifnull(c.season,'') || '|' || ifnull(printf('%04d', c.episode),'') ) series
+            GROUP_CONCAT(distinct c.serie_ref || '|' || printf('%04d', c.season) || '|' || printf('%04d', c.episode) ) series
             
             FROM medias as m
                 LEFT JOIN ratings on ratings.media_ref = m.id
@@ -243,7 +253,7 @@ impl SqliteLibraryStore {
         let media_id = media_id.to_string();
         let row = self.connection.call( move |conn| { 
             let mut query = conn.prepare("SELECT 
-            id, source, type, thumbsize, size
+            id, source, type, thumbsize, size, mimetype
             FROM medias
             WHERE id = ?")?;
             let row = query.query_row(
@@ -395,6 +405,34 @@ impl SqliteLibraryStore {
             }
             
 
+            let all_series: Vec<FileEpisode> = existing.series.clone().unwrap_or(vec![]);
+            if let Some(add_serie) = update.add_series {
+                for file_episode in add_serie {
+                    if !all_series.contains(&file_episode) {
+                        let r = conn.execute("INSERT INTO media_serie_mapping (media_ref, serie_ref, season, episode) VALUES (? ,? , ?, ?) ", params![id, file_episode.id, file_episode.season, file_episode.episode]);
+                        if let Err(error) = r {
+                            log_info(LogServiceType::Source, format!("unable to add serie {:?}: {:?}", file_episode, error));
+                        }
+                    }
+                }
+            }
+            if let Some(remove_series) = update.remove_series {
+                for file_serie in remove_series {
+                    if let Some(season) = file_serie.season {
+                        if let Some(episode) = file_serie.episode {
+                            conn.execute("DELETE FROM media_serie_mapping WHERE media_ref = ? and serie_ref = ? and season = ? and episode = ?", params![id, file_serie.id, season, episode])?;
+                        } else {
+                            conn.execute("DELETE FROM media_serie_mapping WHERE media_ref = ? and serie_ref = ? and season = ?", params![id, file_serie.id, season])?;
+                        }
+                    } else if let Some(episode) = file_serie.episode {
+                        conn.execute("DELETE FROM media_serie_mapping WHERE media_ref = ? and serie_ref = ? and episode = ?", params![id, file_serie.id, episode])?;
+                    } else {
+                        conn.execute("DELETE FROM media_serie_mapping WHERE media_ref = ? and serie_ref = ?", params![id, file_serie.id])?;
+                    }
+                   
+                }
+            }
+
             Ok(())
         }).await?;
 
@@ -465,7 +503,13 @@ impl SqliteLibraryStore {
 
     pub async fn remove_media(&self, media_id: String) -> Result<()> {
         self.connection.call( move |conn| { 
-            conn.execute("DELETE FROM medias WHERE id = ?", &[&media_id])?;
+            conn.execute("DELETE FROM medias WHERE id = ?", params![media_id])?;
+            conn.execute("DELETE FROM ratings WHERE media_ref = ?", params![media_id])?;
+            conn.execute("DELETE FROM media_tag_mapping WHERE media_ref = ?", params![media_id])?;
+            conn.execute("DELETE FROM media_serie_mapping WHERE media_ref = ?", params![media_id])?;
+            conn.execute("DELETE FROM media_people_mapping WHERE media_ref = ?", params![media_id])?;
+            conn.execute("DELETE FROM shares WHERE media_ref = ?", params![media_id])?;
+
             Ok(())
         }).await?;
         Ok(())

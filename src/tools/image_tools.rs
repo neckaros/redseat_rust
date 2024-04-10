@@ -267,6 +267,15 @@ pub async fn resize_image_reader<R>(reader: &mut R, size: u32) -> ImageResult<Ve
     Ok(data)
 }
 
+pub async fn convert_image_reader<R>(reader: &mut R, format: &str, quality: Option<u16>) -> ImageResult<Vec<u8>>where
+    R: AsyncRead + Unpin + ?Sized,   {
+    let mut builder = ImageCommandBuilder::new();
+    builder.set_quality(quality.unwrap_or(80));
+    let data = builder.run(format,reader).await?;
+    
+    Ok(data)
+}
+
 
 pub async fn resize_image_path_native(path: &PathBuf, to: &PathBuf, size: u32) -> ImageResult<()> {
     let mut output = File::create(to)?;

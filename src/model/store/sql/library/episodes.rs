@@ -91,7 +91,7 @@ impl SqliteLibraryStore {
 
 
             let mut query = conn.prepare(&format!("SELECT serie_ref, season, number, abs, name, overview, airdate, duration, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, modified, added, imdb_rating, imdb_votes, trakt_rating, trakt_votes, null as serie_name  FROM episodes {}{}", where_query.format(), where_query.format_order()))?;
-            println!("query {:?}", query.expanded_sql());
+            //println!("query {:?}", query.expanded_sql());
             let rows = query.query_map(
             where_query.values(), Self::row_to_episode,
             )?;

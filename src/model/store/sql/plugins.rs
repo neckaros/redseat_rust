@@ -45,6 +45,8 @@ impl SqliteStore {
             settings:  row.get(4)?,
             libraries: from_comma_separated(row.get(5)?),
             credential:  row.get(6)?,
+            installed: true,
+            ..Default::default()
         })
     }
     pub async fn get_plugin(&self, plugin_id: &str) -> Result<Option<Plugin>> {
@@ -122,6 +124,10 @@ impl SqliteStore {
             where_query.add_update(&update.path, "path");
             where_query.add_update(&update.settings, "settings");
             where_query.add_update(&update.credential, "credential");
+
+            if update.remove_credential {
+                where_query.add_nullify("credential");
+            }
 
             //println!("{:?}", update);
             let libraries = replace_add_remove_from_array(Some(existing.libraries.clone()), update.libraries, update.add_libraries, update.remove_libraries);

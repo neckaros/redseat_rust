@@ -7,12 +7,20 @@ use serde_json::Value;
 use strum_macros::EnumString;
 
 use rs_plugin_url_interfaces::RsLink;
+use crate::plugins::sources::SourceRead;
+
 use super::{progress::RsProgress, ElementAction};
-#[derive(Debug, Serialize, Deserialize, Clone)]
+
+
+pub const DEFAULT_MIME: &str = "application/octet-stream";
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct FileEpisode {
-   id: String,
-   season: Option<usize>,
-   episode: Option<usize>
+   pub id: String, 
+   #[serde(skip_serializing_if = "Option::is_none")]
+   pub season: Option<u32>,
+   #[serde(skip_serializing_if = "Option::is_none")]
+   pub episode: Option<u32>
 }
 
 impl FromStr for FileEpisode {
@@ -21,9 +29,9 @@ impl FromStr for FileEpisode {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let splitted: Vec<&str> = s.split("|").collect();
         if splitted.len() == 3 {
-            Ok(FileEpisode { id: splitted[0].to_string(), season: splitted[1].parse::<usize>().ok(), episode: splitted[2].parse::<usize>().ok() })
+            Ok(FileEpisode { id: splitted[0].to_string(), season: splitted[1].parse::<u32>().ok().and_then(|i| if i == 0 {None} else {Some(i)}), episode: splitted[2].parse::<u32>().ok().and_then(|i| if i == 0 {None} else {Some(i)}) })
         } else if splitted.len() == 2 {
-            Ok(FileEpisode { id: splitted[0].to_string(), season: splitted[1].parse::<usize>().ok(), episode: None })
+            Ok(FileEpisode { id: splitted[0].to_string(), season: splitted[1].parse::<u32>().ok().and_then(|i| if i == 0 {None} else {Some(i)}), episode: None })
         } else {
             Ok(FileEpisode { id: splitted[0].to_string(), season: None, episode: None })
         }
@@ -228,7 +236,7 @@ pub struct MediaForAdd {
     #[serde(rename = "type")]
     pub kind: FileType,
     pub mimetype: Option<String>,
-    pub size: Option<usize>,
+    pub size: Option<u64>,
     
     #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<Value>,
@@ -391,6 +399,30 @@ impl From<RsRequest> for MediaForUpdate {
         }
     }
 }
+
+impl From<&SourceRead> for MediaForUpdate {
+    fn from(value: &SourceRead) -> Self {
+        match value {
+            SourceRead::Stream(stream) => {
+                MediaForUpdate {
+                    name: stream.name.clone(),
+                    mimetype: stream.mime.clone(),
+                    size: stream.size.clone(),
+                    ..Default::default()
+                }
+            },
+            SourceRead::Request(r) => {
+                MediaForUpdate {
+                    name: r.filename.clone(),
+                    mimetype: r.mime.clone(),
+                    size: r.size.clone(),
+                    ..Default::default()
+                }
+            },
+        }
+    }
+}
+
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")] 

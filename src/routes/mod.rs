@@ -12,6 +12,7 @@ pub mod credentials;
 pub mod backups;
 pub mod plugins;
 
+pub mod library_plugins;
 pub mod tags;
 pub mod people;
 pub mod movies;
