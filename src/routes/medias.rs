@@ -81,6 +81,12 @@ struct PredictOption {
 	pub tag: bool
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+struct UploadOption {
+	#[serde(default)]
+	pub spawn: bool
+}
+
 async fn handler_predict(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<PredictOption>) -> Result<Json<Value>> {
 	let prediction = mc.prediction(&library_id, &media_id, query.tag, &user).await?;
 	let body = Json(json!(prediction));
@@ -126,13 +132,17 @@ async fn handler_post(Path(library_id): Path<String>, State(mc): State<ModelCont
     }
 	Ok(Json(json!({"message": "No media found"})))
 }
-async fn handler_download(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Json(download): Json<GroupMediaDownload<MediaDownloadUrl>>) -> Result<Json<Value>> {
-	
-	tokio::spawn(async move {
-		let _ = mc.download_library_url(&library_id,  download, &user).await.expect("Unable to download");
-	});
-	
-	Ok(Json(json!({"downloading": true})))
+async fn handler_download(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<UploadOption>, Json(download): Json<GroupMediaDownload<MediaDownloadUrl>>) -> Result<Json<Value>> {
+	if query.spawn {
+		tokio::spawn(async move {
+			let _ = mc.download_library_url(&library_id,  download, &user).await.expect("Unable to download");
+		});
+		
+		Ok(Json(json!({"downloading": true})))
+	} else {
+		let body = mc.download_library_url(&library_id,  download, &user).await?;
+		Ok(Json(json!(body)))
+	}
 }
 
 

@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
 use tokio::{io::{copy, AsyncRead, AsyncReadExt}, sync::mpsc};
 use tokio_util::io::StreamReader;
-use crate::{domain::media::{RsGpsPosition, DEFAULT_MIME}, model::store::sql::SqlOrder, tools::image_tools::convert_image_reader};
+use crate::{domain::{media::{RsGpsPosition, DEFAULT_MIME}, MediaElement}, model::store::sql::SqlOrder, tools::image_tools::convert_image_reader};
 
 use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaItemReference, MediaWithAction, MediasMessage, ProgressMessage}, progress::{RsProgress, RsProgressType}, ElementAction}, error::RsResult, plugins::{get_plugin_fodler, sources::{async_reader_progress::ProgressReader, error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{self, resize_image, resize_image_reader, ImageSize, ImageType}, log::{log_error, log_info, LogServiceType}, prediction::{predict_net, preload_model, PredictionTagResult}, video_tools::{self, probe_video, VideoTime}}};
 
@@ -390,14 +390,28 @@ impl ModelController {
         let m = self.source_for_library(&library_id).await?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         let mut medias: Vec<Media> = vec![];
+        let origin = if let Some(origin) = &files.origin_url {
+            self.exec_parse(Some(library_id.to_owned()), origin.to_owned(), &requesting_user).await.ok()
+        } else {
+            None
+        };
+
         let requests: Vec<RsRequest> = files.into(); 
+    
         //let infos = infos.unwrap_or_else(|| MediaForUpdate::default());
         for mut request in requests {
             let upload_id = request.upload_id.clone().unwrap_or_else(|| nanoid!());
 
             self.plugin_manager.fill_infos(&mut request).await;
             let mut infos: MediaForUpdate = request.clone().into();
-            println!("infos {:?}", infos);
+            infos.origin = origin.clone();
+            
+            if let Some(origin) = &origin {
+                let existing = store.get_media_by_origin(origin.clone()).await;
+                if let Some(existing) = existing {
+                    return Err(Error::Duplicate(existing.id.to_owned(), MediaElement::Media(existing)).into())
+                }
+            }
 
             //Progress
             let lib_progress = library_id.to_string();
@@ -428,7 +442,7 @@ impl ModelController {
 
 
             let reader = SourceRead::Request(request).into_reader(library_id, None, 
-                Some(tx_progress.clone()), Some((self.clone(), requesting_user))).await?;
+                Some(tx_progress.clone()), Some((self.clone(), &ConnectedUser::ServerAdmin))).await?;
 
             let name = infos.name.clone();
             let mut filename = name.or_else(|| reader.name).unwrap_or(nanoid!());
@@ -442,18 +456,25 @@ impl ModelController {
                     filename = format!("{}.{}", filename, suffix);
                 }
             }
-
-
             
             let (source, writer) = m.get_file_write_stream(&filename).await?;
             let mut progress_reader = ProgressReader::new(reader.stream, RsProgress { id: upload_id.clone(), total: reader.size, current: Some(0), kind: RsProgressType::Transfert }, tx_progress.clone());
             tokio::pin!(writer);
+
             copy(&mut progress_reader, &mut writer).await?;
 
             
 
             
             let _ = m.fill_infos(&source, &mut infos).await;
+
+            if let Some(hash) = &infos.md5 {
+                let existing = store.get_media_by_hash(hash.to_owned()).await;
+                if let Some(existing) = existing {
+                    m.remove(&source).await?;
+                    return Err(Error::Duplicate(existing.id.to_owned(), MediaElement::Media(existing)).into())
+                }
+            }
 
             let mut new_file = MediaForAdd::default();
             new_file.name = filename.to_string();
@@ -475,8 +496,8 @@ impl ModelController {
             
             store.update_media(&id, infos).await?;
 
-            let r = self.generate_thumb(&library_id, &id, &requesting_user).await;
-            self.process_media_spawn(library_id.to_string(), id.clone(), requesting_user.clone());
+            let r = self.generate_thumb(&library_id, &id, &ConnectedUser::ServerAdmin).await;
+            self.process_media_spawn(library_id.to_string(), id.clone(), ConnectedUser::ServerAdmin);
             
             if let Err(r) = r {
                 log_error(crate::tools::log::LogServiceType::Source, format!("Unable to generate thumb {:#}", r));

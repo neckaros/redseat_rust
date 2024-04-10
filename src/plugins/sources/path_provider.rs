@@ -95,7 +95,6 @@ impl Source for PathProvider {
 
         let file = File::open(&path).await.map_err(|err| {
             if err.kind() == std::io::ErrorKind::NotFound {
-                println!("NG path {:?}", path);
                 SourcesError::NotFound(path.to_str().map(|a| a.to_string()))
             } else {
                 SourcesError::Io(err)

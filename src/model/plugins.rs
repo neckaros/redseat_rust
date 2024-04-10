@@ -42,8 +42,7 @@ impl ModelController {
 		Ok(installed_plugins)
 	}
 
-    pub async fn get_plugins_with_credential(&self, query: PluginQuery, requesting_user: &ConnectedUser) -> Result<impl Iterator<Item = PluginWithCredential>> {
-        requesting_user.check_role(&UserRole::Admin)?;
+    async fn get_plugins_with_credential(&self, query: PluginQuery) -> Result<impl Iterator<Item = PluginWithCredential>> {
 		let plugins = self.store.get_plugins(query).await?.into_iter();
 		let credentials = self.store.get_credentials().await?;
         let iter = plugins.map(move |p| {
@@ -116,7 +115,7 @@ impl ModelController {
         } else {
             requesting_user.check_role(&UserRole::Admin)?;
         }
-        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::UrlParser), ..Default::default() }, &requesting_user).await?;
+        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::UrlParser), ..Default::default() }).await?;
 
         Ok(self.plugin_manager.parse(url, plugins).ok_or(Error::NotFound)?)
 	}
@@ -127,7 +126,7 @@ impl ModelController {
         } else {
             requesting_user.check_role(&UserRole::Admin)?;
         }
-        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::UrlParser), ..Default::default() }, &requesting_user).await?;
+        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::UrlParser), ..Default::default() }).await?;
 
         Ok(self.plugin_manager.expand(link, plugins).ok_or(Error::NotFound)?)
 	}
@@ -135,13 +134,14 @@ impl ModelController {
 
 
     pub async fn exec_request(&self, request: RsRequest, library_id: Option<String>, savable: bool, progress: Option<Sender<RsProgress>>, requesting_user: &ConnectedUser) -> RsResult<SourceRead> {
+       
         if let Some(library_id) = library_id {
             requesting_user.check_library_role(&library_id, crate::domain::library::LibraryRole::Read)?;
+
         } else {
             requesting_user.check_role(&UserRole::Admin)?;
         }
-        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::Request), ..Default::default() }, &requesting_user).await?;
-
+        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::Request), ..Default::default() }).await?;
         Ok(self.plugin_manager.request(request, savable, plugins, progress).await?)
         
     }
@@ -152,7 +152,7 @@ impl ModelController {
         } else {
             requesting_user.check_role(&UserRole::Admin)?;
         }
-        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::Lookup), ..Default::default() }, &requesting_user).await?;
+        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::Lookup), ..Default::default() }).await?;
 
         Ok(self.plugin_manager.lookup(query, plugins).await?)
         

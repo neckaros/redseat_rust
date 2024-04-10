@@ -1,4 +1,5 @@
-use rusqlite::{params, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, Row, ToSql};
+use rs_plugin_url_interfaces::RsLink;
+use rusqlite::{params, params_from_iter, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, Row, ToSql};
 
 use crate::{domain::media::{FileEpisode, FileType, Media, MediaForInsert, MediaForUpdate, MediaItemReference, RsGpsPosition}, model::{medias::{MediaQuery, MediaSource, RsSort}, people::PeopleQuery, store::{from_comma_separated_optional, from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_comma_separated_optional, to_pipe_separated_optional}, tags::TagQuery}, tools::{array_tools::AddOrSetArray, log::{log_info, LogServiceType}, text_tools::{extract_people, extract_tags}}};
 use super::{Result, SqliteLibraryStore};
@@ -42,6 +43,26 @@ impl RsSort {
         }
     }
 }
+
+const MEDIA_QUERY: &str = "SELECT 
+        m.id, m.source, m.name, m.description, m.type, m.mimetype, m.size, avg(ratings.rating) as rating, m.md5, m.params, 
+        m.width, m.height, m.phash, m.thumbhash, m.focal, m.iso, m.colorSpace, m.sspeed, m.orientation, m.duration, 
+        m.acodecs, m.achan, m.vcodecs, m.fps, m.bitrate, m.long, m.lat, m.model, m.pages, m.progress, 
+        m.thumb, m.thumbv, m.thumbsize, m.iv, m.origin, m.movie, m.lang, m.uploader, m.uploadkey, m.modified, 
+        m.added, m.created,
+        
+        GROUP_CONCAT(distinct a.tag_ref || '|' || IFNULL(a.confidence, 101)) tags,
+        GROUP_CONCAT(distinct b.people_ref) people,
+        GROUP_CONCAT(distinct c.serie_ref || '|' || printf('%04d', c.season) || '|' || printf('%04d', c.episode) ) series
+        
+        FROM medias as m
+            LEFT JOIN ratings on ratings.media_ref = m.id
+            LEFT JOIN media_tag_mapping a on a.media_ref = m.id and (a.confidence != -1 or a.confidence IS NULL)
+            LEFT JOIN media_people_mapping b on b.media_ref = m.id
+            LEFT JOIN media_serie_mapping c on c.media_ref = m.id
+        
+        
+        ";
 
 impl SqliteLibraryStore {
     fn row_to_mediasource(row: &Row) -> rusqlite::Result<MediaSource> {
@@ -218,34 +239,45 @@ impl SqliteLibraryStore {
         }).await?;
         Ok(row)
     }
+    
     pub async fn get_media(&self, media_id: &str) -> Result<Option<Media>> {
         let media_id = media_id.to_string();
         let row = self.connection.call( move |conn| { 
-            let mut query = conn.prepare("SELECT 
-            m.id, m.source, m.name, m.description, m.type, m.mimetype, m.size, avg(ratings.rating) as rating, m.md5, m.params, 
-            m.width, m.height, m.phash, m.thumbhash, m.focal, m.iso, m.colorSpace, m.sspeed, m.orientation, m.duration, 
-            m.acodecs, m.achan, m.vcodecs, m.fps, m.bitrate, m.long, m.lat, m.model, m.pages, m.progress, 
-            m.thumb, m.thumbv, m.thumbsize, m.iv, m.origin, m.movie, m.lang, m.uploader, m.uploadkey, m.modified, 
-            m.added, m.created,
-            
-            GROUP_CONCAT(distinct a.tag_ref || '|' || IFNULL(a.confidence, 101)) tags,
-            GROUP_CONCAT(distinct b.people_ref) people,
-            GROUP_CONCAT(distinct c.serie_ref || '|' || printf('%04d', c.season) || '|' || printf('%04d', c.episode) ) series
-            
-            FROM medias as m
-                LEFT JOIN ratings on ratings.media_ref = m.id
-                LEFT JOIN media_tag_mapping a on a.media_ref = m.id and (a.confidence != -1 or a.confidence IS NULL)
-                LEFT JOIN media_people_mapping b on b.media_ref = m.id
-                LEFT JOIN media_serie_mapping c on c.media_ref = m.id
-            
-            
-            WHERE id = ?
-            GROUP BY m.id")?;
+            let mut query = conn.prepare(&format!("{} WHERE id = ?", MEDIA_QUERY))?;
             let row = query.query_row(
             [media_id],Self::row_to_media).optional()?;
             Ok(row)
         }).await?;
         Ok(row)
+    }
+
+    pub async fn get_media_by_hash(&self, hash: String) -> Option<Media> {
+        let row = self.connection.call( move |conn| { 
+            let mut query = conn.prepare(&format!("{} WHERE md5 = ?", MEDIA_QUERY))?;
+            let row = query.query_row(
+            params![hash],Self::row_to_media)?;
+            Ok(row)
+        }).await;
+        row.ok()
+    }
+
+    pub async fn get_media_by_origin(&self, origin: RsLink) -> Option<Media> {
+        let origin = origin.to_owned();
+        let row = self.connection.call( move |conn| { 
+            let query_elements = if let Some(file) = origin.file {
+                (vec![origin.platform.to_owned(), origin.id.to_owned(), file], "where json_extract(origin, '$.platform') = ? and json_extract(origin, '$.id') = ? and json_extract(origin, '$.file') = ?")
+            } else {
+                (vec![origin.platform.to_owned(), origin.id.to_owned()], "where json_extract(origin, '$.platform') = ? and json_extract(origin, '$.id') = ?")
+            };
+            
+
+            let mut query = conn.prepare(&format!("{} {}", MEDIA_QUERY,query_elements.1))?;
+            //println!("q {:?}", query.expanded_sql());
+            let row = query.query_row(
+                params_from_iter(query_elements.0) ,Self::row_to_media)?;
+            Ok(row)
+        }).await;
+        row.ok()
     }
 
 

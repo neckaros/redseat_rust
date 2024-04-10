@@ -12,7 +12,7 @@ use tokio::{fs::File, io::{AsyncRead, AsyncWriteExt, BufReader}};
 use tokio_util::io::StreamReader;
 
 
-use crate::{domain::{library::LibraryRole, movie::{Movie, MovieForUpdate, MoviesMessage}, people::{PeopleMessage, Person}, ElementAction, MediasIds}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source}}, server::get_server_folder_path_array, tools::{image_tools::{resize_image_reader, ImageSize, ImageType}, log::log_info}};
+use crate::{domain::{library::LibraryRole, movie::{Movie, MovieForUpdate, MoviesMessage}, people::{PeopleMessage, Person}, ElementAction, MediaElement, MediasIds}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source}}, server::get_server_folder_path_array, tools::{image_tools::{resize_image_reader, ImageSize, ImageType}, log::log_info}};
 
 use super::{error::{Error, Result}, users::{ConnectedUser, HistoryQuery}, ModelController};
 
@@ -193,7 +193,7 @@ impl ModelController {
         let ids: MediasIds = new_movie.clone().into();
         let existing = self.get_movie_by_external_id(library_id, ids, requesting_user).await;
         if let Ok(existing) = existing {
-            return Err(Error::Duplicate(existing.id.into(), "Movie".into()).into())
+            return Err(Error::Duplicate(existing.id.to_owned(), MediaElement::Movie(existing)).into())
         }
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         let id = nanoid!();
@@ -228,7 +228,7 @@ impl ModelController {
         if let Ok(ids) = MediasIds::try_from(movie_id.to_string()) {
             let existing = self.get_movie_by_external_id(library_id, ids.clone(), requesting_user).await;
             if let Ok(existing) = existing {
-                Err(Error::Duplicate(existing.id.into(), "Movie".into()).into())
+                Err(Error::Duplicate(existing.id.to_owned(), MediaElement::Movie(existing)).into())
             } else { 
                 let new_movie = self.trakt.get_movie(&ids).await?;
                 let imported_movie = self.add_movie(library_id, new_movie, requesting_user).await?;

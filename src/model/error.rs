@@ -4,7 +4,7 @@ use plugin_request_interfaces::RsRequestStatus;
 use serde::Serialize;
 use serde_with::{serde_as, DisplayFromStr};
 
-use crate::{domain::library::LibraryRole, error::{ClientError, DuplicateClientError}, plugins::sources::error::SourcesError, tools::image_tools::ImageError};
+use crate::{domain::{library::LibraryRole, media::Media, MediaElement}, error::{ClientError, DuplicateClientError}, plugins::sources::error::SourcesError, tools::image_tools::ImageError};
 
 use super::{libraries::ServerLibraryForUpdate, users::{ConnectedUser, ServerUser, ServerUserForUpdate, UserRole}};
 
@@ -20,7 +20,8 @@ pub enum Error {
 	NoSourceForMedia,
 	UnsupportedTypeForThumb,
 	
-	Duplicate(String, String),
+	Duplicate(String, MediaElement),
+	DuplicateMedia(Media),
 
 	UnableToSignShareToken,
 
@@ -103,7 +104,7 @@ impl Error {
 			Error::NotFound => (StatusCode::NOT_FOUND, ClientError::NOT_FOUND),
 			Error::FileNotFound(_) => (StatusCode::NOT_FOUND, ClientError::NOT_FOUND),
 
-			Self::Duplicate(id, kind) => (StatusCode::NOT_FOUND, ClientError::DUPLICATE(DuplicateClientError { id: id.to_string(), kind: kind.to_string()})),
+			Self::Duplicate(id, element) => (StatusCode::NOT_FOUND, ClientError::DUPLICATE(DuplicateClientError { id: id.to_string(), element: element.to_owned()})),
 
 			Error::InvalidIdForAction(action, id)  => (StatusCode::BAD_REQUEST, ClientError::Custom(format!("Invalid id {} for {}", id, action)) ),
 			

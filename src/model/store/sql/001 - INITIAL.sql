@@ -85,3 +85,4 @@ CREATE TABLE progress (type TEXT, id TEXT, user_ref TEXT, progress INTEGER, ids 
 
 
 
+CREATE TABLE uploadkeys (id TEXT PRIMARY KEY, library_ref TEXT NOT NULL, expiry INTEGER, tags INTEGER DEFAULT "0") WITHOUT ROWID;

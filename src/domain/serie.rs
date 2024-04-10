@@ -6,7 +6,7 @@ use crate::{model::series::SerieForUpdate, tools::serialization_tools::rating_se
 use super::ElementAction;
 
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, PartialEq, Deserialize, Clone)]
 #[serde(rename_all = "snake_case")] 
 pub struct Serie {
 

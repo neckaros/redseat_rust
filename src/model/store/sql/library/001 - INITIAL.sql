@@ -21,7 +21,7 @@ CREATE TABLE ratings (media_ref TEXT, user_ref TEXT, rating REAL, PRIMARY KEY (m
 CREATE TABLE series (id TEXT PRIMARY KEY, name TEXT, year INTEGER, type TEXT, alt TEXT, params TEXT, poster TEXT, imdb TEXT, slug TEXT, tmdb INTEGER, trakt INTEGER, tvdb INTEGER, otherids TEXT, created INTEGER, status TEXT, overview TEXT, lang TEXT, original TEXT, modified INTEGER, added INTEGER, imdb_rating REAL, imdb_votes INTEGER, trailer TEXT, maxCreated INTEGER, trakt_rating REAL, trakt_votes INTEGER) WITHOUT ROWID;
 CREATE TABLE shares (media_ref TEXT, platform TEXT, idex TEXT, params TEXT, PRIMARY KEY (media_ref, platform, idex));
 CREATE TABLE tags (id TEXT PRIMARY KEY, name TEXT, parent TEXT, type TEXT, alt TEXT, thumb TEXT, params TEXT, modified INTEGER, added INTEGER, generated INTEGER DEFAULT "0" NOT NULL CHECK (generated IN (0, 1))) WITHOUT ROWID;
-CREATE TABLE uploadkeys (id TEXT PRIMARY KEY, expiry INTEGER, tags INTEGER DEFAULT "0") WITHOUT ROWID;
+
 CREATE TABLE user_rights (
                 user   TEXT NOT NULL,
                 type TEXT   TEXT NOT NULL,

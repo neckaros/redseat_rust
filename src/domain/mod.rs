@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use self::{episode::Episode, movie::Movie, serie::Serie};
+use self::{episode::Episode, media::Media, movie::Movie, serie::Serie};
 
 pub mod media;
 pub mod library;
@@ -140,4 +140,13 @@ impl TryFrom<String> for MediasIds {
     }
     
     
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")] 
+pub enum MediaElement {
+	Media(Media),
+    Movie(Movie),
+    Episode(Episode),
+    Serie(Serie)
 }

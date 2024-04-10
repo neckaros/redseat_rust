@@ -11,7 +11,7 @@ use tokio::{fs::File, io::{AsyncRead, AsyncWriteExt, BufReader}};
 use tokio_util::io::StreamReader;
 
 
-use crate::{domain::{library::LibraryRole, people::{PeopleMessage, Person}, serie::{Serie, SeriesMessage}, ElementAction, MediasIds}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source}}, server::get_server_folder_path_array, tools::{image_tools::{resize_image_reader, ImageSize, ImageType}, log::log_info}};
+use crate::{domain::{library::LibraryRole, people::{PeopleMessage, Person}, serie::{Serie, SeriesMessage}, ElementAction, MediaElement, MediasIds}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source}}, server::get_server_folder_path_array, tools::{image_tools::{resize_image_reader, ImageSize, ImageType}, log::log_info}};
 
 use super::{episodes::{EpisodeForUpdate, EpisodeQuery}, error::{Error, Result}, users::ConnectedUser, ModelController};
 
@@ -184,7 +184,7 @@ impl ModelController {
         let ids: MediasIds = new_serie.clone().into();
         let existing = self.get_serie_by_external_id(library_id, ids, requesting_user).await?;
         if let Some(existing) = existing {
-            return Err(Error::Duplicate(existing.id.into(), "Serie".into()).into())
+            return Err(Error::Duplicate(existing.id.to_owned(), MediaElement::Serie(existing)).into())
         }
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         let id = nanoid!();
@@ -279,7 +279,7 @@ impl ModelController {
         if let Ok(ids) = MediasIds::try_from(serie_id.to_string()) {
             let existing = self.get_serie_by_external_id(library_id, ids.clone(), requesting_user).await?;
             if let Some(existing) = existing {
-                Err(Error::Duplicate(existing.id.into(), "Serie".into()).into())
+                Err(Error::Duplicate(existing.id.to_owned(), MediaElement::Serie(existing)).into())
             } else { 
                 let mut new_serie = self.trakt.get_serie(&ids).await?;
                 new_serie.fill_imdb_ratings(&self.imdb).await;

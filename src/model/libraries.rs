@@ -185,6 +185,17 @@ pub(super) fn map_library_for_user(library: ServerLibrary, user: &ConnectedUser)
                 None
             }
         },
+        ConnectedUser::UploadKey(key) => {
+            let mut library_out = ServerLibraryForRead::into_with_role(library, &vec![LibraryRole::Write]);
+            if library_out.id == key.id {
+                library_out.root = None;
+                library_out.settings = None;
+                Some(library_out)
+            } else {
+                None
+            }
+                
+        },
     }
 
 

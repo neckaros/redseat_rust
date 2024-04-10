@@ -17,6 +17,7 @@ use super::{error::{Error, Result}, libraries::ServerLibraryForRead, medias::RsS
 pub enum ConnectedUser {
     Server(ServerUser),
     Share(ClaimsLocal),
+    UploadKey(UploadKey),
     Anonymous,
     ServerAdmin
 }
@@ -90,6 +91,12 @@ impl ConnectedUser {
                 },
                 ClaimsLocalType::UserRole(_) => Err(Error::ShareTokenInsufficient),
                 ClaimsLocalType::Admin => Err(Error::ShareTokenInsufficient),
+            }
+        } else if let ConnectedUser::UploadKey(key) = &self {
+            if key.library == library_id { 
+                Ok(()) 
+            } else {
+                Err(Error::ShareTokenInsufficient)
             }
         } else {
             Err(Error::NotServerConnected)
@@ -258,6 +265,15 @@ pub struct ServerUser {
     pub libraries: Vec<ServerUserLibrariesRights>
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct UploadKey {
+    pub id: String,
+    pub library: String,
+    pub expiry: Option<u64>,
+    #[serde(default)]
+    pub tags: bool,
+}
+
 impl ServerUser {
     pub fn is_admin(&self) -> bool {
         matches!(&self.role, UserRole::Admin)
@@ -309,6 +325,10 @@ impl ModelController {
     pub async fn get_watched(&self, query: HistoryQuery, user: &ConnectedUser) -> RsResult<Vec<Watched>> {
         user.check_role(&UserRole::Read)?;
         Ok(self.store.get_watched(query).await?)
+    }
+
+    pub async fn get_upload_key(&self, key: String) -> RsResult<UploadKey> {
+        Ok(self.store.get_upload_key(key).await?)
     }
 }
 

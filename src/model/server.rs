@@ -4,4 +4,5 @@ use serde::{Deserialize, Serialize};
 pub struct AuthMessage {
     pub token: Option<String>,
     pub sharetoken: Option<String>,
+    pub key: Option<String>,
 }

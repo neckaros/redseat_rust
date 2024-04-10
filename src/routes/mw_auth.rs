@@ -18,7 +18,8 @@ const BEARER: &str = "Bearer ";
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TokenParams {
     token: Option<String>,
-    sharetoken: Option<String>
+    sharetoken: Option<String>,
+    key: Option<String>
 }
 
 
@@ -37,6 +38,7 @@ pub async fn mw_must_be_admin(user: ConnectedUser, req: Request, next: Next) -> 
                 return Err(Error::Forbiden)
             }
         },
+        ConnectedUser::UploadKey(_) =>  return Err(Error::Forbiden),
     }
     Ok(next.run(req).await)
 }
@@ -58,7 +60,7 @@ pub async fn mw_token_resolver(mc: State<ModelController>, headers: HeaderMap, q
             None => None,
         },
     };
-    let auth_message = AuthMessage { token, sharetoken};
+    let auth_message = AuthMessage { token, sharetoken, key: query.key.clone()};
     let connected_user = parse_auth_message(&auth_message, &mc.0).await?;
     req.extensions_mut().insert(connected_user);
 
@@ -74,10 +76,15 @@ pub async fn parse_auth_message(auth: &AuthMessage, mc: &ModelController) -> Res
         Ok(ConnectedUser::Server(user))
 
     } else if let Some(sharetoken) = &auth.sharetoken {
-      let claims = verify_local(&sharetoken).await?;
+        let claims = verify_local(&sharetoken).await?;
         
         Ok(ConnectedUser::Share(claims))
 
+    } else if let Some(key) = &auth.key {
+        let uploadkey = mc.get_upload_key(key.to_owned()).await?;
+          
+        Ok(ConnectedUser::UploadKey(uploadkey))
+  
     } else {
         Ok(ConnectedUser::Anonymous)
     }

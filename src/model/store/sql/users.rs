@@ -1,7 +1,7 @@
-use rusqlite::{types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, Row, ToSql};
+use rusqlite::{params, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, Row, ToSql};
 use serde::{Deserialize, Serialize};
 
-use crate::{domain::watched::Watched, model::{store::{from_comma_separated, sql::library, SqliteStore}, users::{HistoryQuery, ServerUser, ServerUserForUpdate, ServerUserLibrariesRights, ServerUserLibrariesRightsWithUser, ServerUserPreferences, UserRole}}};
+use crate::{domain::watched::Watched, model::{store::{from_comma_separated, sql::library, SqliteStore}, users::{HistoryQuery, ServerUser, ServerUserForUpdate, ServerUserLibrariesRights, ServerUserLibrariesRightsWithUser, ServerUserPreferences, UploadKey, UserRole}}};
 
 use super::{super::Error, OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder};
 use super::Result;
@@ -155,7 +155,15 @@ impl SqliteStore {
             
         })
     }
-
+    fn row_to_uploadkey(row: &Row) -> rusqlite::Result<UploadKey> {
+        Ok(UploadKey {
+            id: row.get(0)?,
+            library: row.get(1)?,
+            expiry: row.get(2)?,
+            tags: row.get(3)?,
+            
+        })
+    }
 
     pub async fn get_watched(&self, query: HistoryQuery) -> Result<Vec<Watched>> {
         let row = self.server_store.call( move |conn| { 
@@ -182,9 +190,6 @@ impl SqliteStore {
                 where_query.add_where(QueryWhereType::And(list));
                 
             }
-            
-
-
             let mut query = conn.prepare(&format!("SELECT type, source, id, user_ref, date, modified  FROM Watched {}{}", where_query.format(), where_query.format_order()))?;
 
             let rows = query.query_map(
@@ -194,6 +199,20 @@ impl SqliteStore {
             Ok(backups)
         }).await?;
         Ok(row)
+    }
+
+    pub async fn get_upload_key(&self, key: String) -> Result<UploadKey> {
+        let row = self.server_store.call( move |conn| { 
+            let mut query = conn.prepare("SELECT id, library_ref, expiry, tags  FROM uploadkeys where id = ?")?;
+
+            let rows = query.query_map(
+            params![key], Self::row_to_uploadkey,
+            )?;
+            let backups:Vec<UploadKey> = rows.collect::<std::result::Result<Vec<UploadKey>, rusqlite::Error>>()?; 
+            Ok(backups)
+        }).await?;
+        let uploadkey = row.get(0).ok_or(Error::NotFound)?;
+        Ok(uploadkey.clone())
     }
 }
     
