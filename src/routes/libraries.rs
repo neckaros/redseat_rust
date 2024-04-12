@@ -23,6 +23,7 @@ pub fn routes(mc: ModelController) -> Router {
 }
 
 async fn handler_libraries(State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	println!("Got library request");
 	let libraries = mc.get_libraries(&user).await?;
 	let body = Json(json!(libraries));
 	Ok(body)

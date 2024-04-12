@@ -1,8 +1,8 @@
 
-use crate::{domain::movie::{Movie, MovieForUpdate}, model::{episodes::EpisodeQuery, movies::MovieQuery, users::ConnectedUser, ModelController}, Error, Result};
+use crate::{domain::{movie::{Movie, MovieForUpdate}, view_progress::{ViewProgressForAdd, ViewProgressLigh}, watched::{WatchedForAdd, WatchedLight}, MediasIds}, model::{episodes::EpisodeQuery, movies::MovieQuery, users::{ConnectedUser, HistoryQuery}, ModelController}, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post, put}, Json, Router};
 use futures::TryStreamExt;
-use rs_plugin_lookup_interfaces::{RsLookupMovie, RsLookupQuery};
+use rs_plugin_common_interfaces::{lookup::{RsLookupMovie, RsLookupQuery}, MediaType};
 use serde_json::{json, Value};
 use tokio::io::AsyncRead;
 use tokio_util::io::{ReaderStream, StreamReader};
@@ -25,6 +25,10 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/:id", delete(handler_delete))
 		.route("/:id/image", get(handler_image))
 		.route("/:id/image", post(handler_post_image))
+		.route("/:id/progress", get(handler_progress_get))
+		.route("/:id/progress", post(handler_progress_set))
+		.route("/:id/watched", get(handler_watched_get))
+		.route("/:id/watched", post(handler_watched_set))
 		.with_state(mc.clone())
         
 }
@@ -90,6 +94,45 @@ async fn handler_delete(Path((library_id, movie_id)): Path<(String, String)>, St
 	let body = Json(json!(library));
 	Ok(body)
 }
+
+
+
+
+async fn handler_progress_get(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	let movie = mc.get_movie(&library_id, movie_id, &user).await?;
+	let progress = mc.get_view_progress(movie.into(), &user).await?.ok_or(Error::NotFound)?;
+	Ok(Json(json!(progress)))
+}
+
+async fn handler_progress_set(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(progress): Json<ViewProgressLigh>) -> Result<()> {
+	let movie = mc.get_movie(&library_id, movie_id, &user).await?;
+	let id = MediasIds::from(movie).into_best_external().ok_or(Error::NotFound)?;
+	let progress = ViewProgressForAdd { kind: MediaType::Movie, id, progress: progress.progress, parent: None };
+	mc.add_view_progress(progress, &user).await?;
+
+	Ok(())
+}
+
+async fn handler_watched_get(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	let movie = mc.get_movie(&library_id, movie_id, &user).await?;
+	let query = HistoryQuery {
+		id: Some(movie.into()),
+		..Default::default()
+	};
+	let progress = mc.get_watched(query, &user).await?.into_iter().next().ok_or(Error::NotFound)?;
+	Ok(Json(json!(progress)))
+}
+
+async fn handler_watched_set(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(watched): Json<WatchedLight>) -> Result<()> {
+	let movie = mc.get_movie(&library_id, movie_id, &user).await?;
+	let id = MediasIds::from(movie).into_best_external().ok_or(Error::NotFound)?;
+	let watched = WatchedForAdd { kind: MediaType::Movie, id, date: watched.date };
+	mc.add_watched(watched, &user).await?;
+
+	Ok(())
+}
+
+
 
 async fn handler_post(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Json(tag): Json<Movie>) -> Result<Json<Value>> {
 	let credential = mc.add_movie(&library_id, tag, &user).await?;

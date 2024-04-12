@@ -41,10 +41,13 @@ impl SqliteStore {
             id: row.get(0)?,
             name: row.get(1)?,
             path:  row.get(2)?,
-            kind:  row.get(3)?,
+            capabilities:  from_comma_separated(row.get(3)?),
             settings:  row.get(4)?,
             libraries: from_comma_separated(row.get(5)?),
             credential:  row.get(6)?,
+            credential_type:  row.get(7)?,
+            description:  row.get(8)?,
+            version:  row.get(9)?,
             installed: true,
             ..Default::default()
         })
@@ -53,7 +56,7 @@ impl SqliteStore {
         let plugin_id = plugin_id.to_string();
             let row = self.server_store.call( move |conn| { 
                 let row = conn.query_row(
-                "SELECT id, name, path, kind, settings, libraries, credential FROM plugins WHERE id = ?1",
+                "SELECT id, name, path, kind, settings, libraries, credential, credtype, desc, version FROM plugins WHERE id = ?1",
                 [&plugin_id],
                 Self::row_to_plugin,
                 ).optional()?;
@@ -68,13 +71,13 @@ impl SqliteStore {
 
             let mut where_query = QueryBuilder::new();
             if let Some(q) = &query.kind {
-                where_query.add_where(super::QueryWhereType::Equal("kind", q));
+                where_query.add_where(super::QueryWhereType::SeparatedContain("kind", ",".to_string(), q));
             }
             if let Some(q) = &query.library {
                 where_query.add_where(super::QueryWhereType::SeparatedContain("libraries", ",".to_string(), q));
             }
 
-            let mut query = conn.prepare(&format!("SELECT id, name, path, kind, settings, libraries, credential FROM plugins 
+            let mut query = conn.prepare(&format!("SELECT id, name, path, kind, settings, libraries, credential, credtype, desc, version FROM plugins 
             {}", where_query.format()))?;
             let rows = query.query_map(
             where_query.values(),
@@ -88,7 +91,7 @@ impl SqliteStore {
 
     pub async fn remove_plugin(&self, plugin_id: String) -> Result<()> {
         self.server_store.call( move |conn| { 
-            conn.execute("DELETE FROM plugins WHERE id = ?", &[&plugin_id])?;
+            conn.execute("DELETE FROM plugins WHERE id = ?", [&plugin_id])?;
             Ok(())
         }).await?;
         Ok(())
@@ -97,15 +100,18 @@ impl SqliteStore {
     pub async fn add_plugin(&self, plugin: PluginForInsert) -> Result<()> {
         self.server_store.call( move |conn| { 
 
-            conn.execute("INSERT INTO plugins (id, name, path, kind, settings, libraries, credential)
+            conn.execute("INSERT INTO plugins (id, name, path, kind, settings, libraries, credential, credtype, desc, version)
             VALUES (?, ?, ? ,?, ?, ?, ?)", params![
                 plugin.id,
                 plugin.plugin.name,
                 plugin.plugin.path,
-                plugin.plugin.kind,
+                to_comma_separated(plugin.plugin.capabilities),
                 plugin.plugin.settings,
                 to_comma_separated(plugin.plugin.libraries),
-                plugin.plugin.credential
+                plugin.plugin.credential,
+                plugin.plugin.credential_type,
+                plugin.plugin.description,
+                plugin.plugin.version
             ])?;
             
             Ok(())
@@ -122,7 +128,15 @@ impl SqliteStore {
             
             where_query.add_update(&update.name, "name");
             where_query.add_update(&update.path, "path");
+            where_query.add_update(&update.description, "desc");
+            where_query.add_update(&update.version, "version");
+            where_query.add_update(&update.credential_type, "credtype");
             where_query.add_update(&update.settings, "settings");
+            where_query.add_update(&update.credential, "credential");
+            
+            let capa = to_comma_separated_optional(update.capabilities);
+            where_query.add_update(&capa, "kind");
+
             where_query.add_update(&update.credential, "credential");
 
             if update.remove_credential {
@@ -135,7 +149,7 @@ impl SqliteStore {
             where_query.add_update(&v, "libraries");
 
             where_query.add_where(QueryWhereType::Equal("id", &plugin_id));
-            if where_query.columns_update.len() > 0 {
+            if !where_query.columns_update.is_empty() {
                 let update_sql = format!("UPDATE plugins SET {} {}", where_query.format_update(), where_query.format());
                 conn.execute(&update_sql, where_query.values())?;
             }

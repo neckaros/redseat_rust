@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::{fs::File, io::{AsyncRead, BufReader}};
 
-use rs_plugin_url_interfaces::RsLink;
+use rs_plugin_common_interfaces::url::RsLink;
 use crate::{domain::{library::LibraryRole, people::{PeopleMessage, Person}, ElementAction, MediasIds}, error::RsResult, plugins::sources::{AsyncReadPinBox, FileStreamResult}, tools::image_tools::{ImageSize, ImageType}};
 
 use super::{error::{Error, Result}, users::ConnectedUser, ModelController};

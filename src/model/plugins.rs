@@ -2,10 +2,8 @@
 
 
 use nanoid::nanoid;
-use plugin_request_interfaces::RsRequest;
-use rs_plugin_common_interfaces::{PluginInformation, PluginType};
-use rs_plugin_lookup_interfaces::{RsLookupQuery, RsLookupResult};
-use rs_plugin_url_interfaces::RsLink;
+use rs_plugin_common_interfaces::{lookup::{RsLookupQuery, RsLookupSourceResult}, request::RsRequest, url::RsLink, PluginInformation, PluginType};
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc::Sender;
@@ -32,7 +30,7 @@ impl ModelController {
         for plugin in all_plugins.read().await.iter() {
             let existing = installed_plugins.iter_mut().find(|r| r.path == plugin.filename);
             if let Some(existing) = existing {
-                existing.description = Some(plugin.infos.description.clone());
+                existing.description = plugin.infos.description.clone();
                 existing.credential_type = plugin.infos.credential_kind.clone();
             } else {
                 installed_plugins.push(plugin.into());
@@ -60,9 +58,11 @@ impl ModelController {
 
     pub async fn reload_plugin(&self, plugin_id: String, requesting_user: &ConnectedUser) -> RsResult<Plugin> {
         requesting_user.check_role(&UserRole::Admin)?;
-        let plugin = self.get_plugin(plugin_id, requesting_user).await?;
+        let plugin = self.get_plugin(plugin_id.clone(), requesting_user).await?;
 
-        self.plugin_manager.load_wasm_plugin(&plugin.path).await?;
+        let infos = self.plugin_manager.load_wasm_plugin(&plugin.path).await?;
+        let update: PluginForUpdate = infos.into();
+        let plugin = self.update_plugin(&plugin_id, update, requesting_user).await?;
 		Ok(plugin)
 	}
 
@@ -150,11 +150,24 @@ impl ModelController {
             requesting_user.check_role(&UserRole::Admin)?;
         }
         let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::Request), ..Default::default() }).await?;
-        Ok(self.plugin_manager.request(request, savable, plugins, progress).await?)
+        self.plugin_manager.request(request, savable, plugins, progress).await
         
     }
 
-    pub async fn exec_lookup(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser) -> RsResult<Vec<RsLookupResult>> {
+    pub async fn exec_permanent(&self, request: RsRequest, library_id: Option<String>, progress: Option<Sender<RsProgress>>, requesting_user: &ConnectedUser) -> RsResult<RsRequest> {
+       
+        if let Some(library_id) = library_id {
+            requesting_user.check_library_role(&library_id, crate::domain::library::LibraryRole::Read)?;
+
+        } else {
+            requesting_user.check_role(&UserRole::Admin)?;
+        }
+        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::Request), ..Default::default() }).await?;
+        self.plugin_manager.request_permanent(request, plugins, progress).await?.ok_or(crate::Error::NotFound)
+        
+    }
+
+    pub async fn exec_lookup(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser) -> RsResult<Vec<RsLookupSourceResult>> {
         if let Some(library_id) = library_id {
             requesting_user.check_library_role(&library_id, crate::domain::library::LibraryRole::Read)?;
         } else {
@@ -162,7 +175,7 @@ impl ModelController {
         }
         let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::Lookup), ..Default::default() }).await?;
 
-        Ok(self.plugin_manager.lookup(query, plugins).await?)
+        self.plugin_manager.lookup(query, plugins).await
         
     }
 }

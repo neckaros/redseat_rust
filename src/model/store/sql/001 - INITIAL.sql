@@ -68,10 +68,11 @@ CREATE TABLE Users (
 
 CREATE TABLE Watched (
   type TEXT    NOT NULL,
-  source TEXT    NOT NULL,
   id TEXT    NOT NULL,
-  user_ref TEXT    , date INTEGER, extid TEXT, 'modified' INTEGER,
-  PRIMARY KEY (source, id, user_ref)
+  user_ref TEXT NOT NULL   , 
+  date INTEGER DEFAULT 0, 
+  'modified' INTEGER DEFAULT 0,
+  PRIMARY KEY (type, id, user_ref)
 );
 
 CREATE TABLE "migrations" (
@@ -81,8 +82,27 @@ CREATE TABLE "migrations" (
   down TEXT    NOT NULL
 );
 
-CREATE TABLE progress (type TEXT, id TEXT, user_ref TEXT, progress INTEGER, ids TEXT, PRIMARY KEY (type, id, user_ref)) WITHOUT ROWID;
+CREATE TABLE progress (type TEXT, id TEXT, user_ref TEXT, parent TEXT, progress INTEGER, modified INTEGER DEFAULT 0, PRIMARY KEY (type, id, user_ref)) WITHOUT ROWID;
 
 
 
 CREATE TABLE uploadkeys (id TEXT PRIMARY KEY, library_ref TEXT NOT NULL, expiry INTEGER, tags INTEGER DEFAULT "0") WITHOUT ROWID;
+
+CREATE TRIGGER inserted_watched AFTER INSERT ON Watched
+            BEGIN
+             update Watched SET modified = round((julianday('now') - 2440587.5)*86400.0 * 1000) WHERE id = NEW.id;
+            END;
+CREATE TRIGGER modified_watched AFTER UPDATE ON Watched
+            BEGIN
+             update Watched SET modified = round((julianday('now') - 2440587.5)*86400.0 * 1000) WHERE id = NEW.id;
+            END;
+
+
+CREATE TRIGGER inserted_progress AFTER INSERT ON progress
+            BEGIN
+             update progress SET modified = round((julianday('now') - 2440587.5)*86400.0 * 1000) WHERE id = NEW.id;
+            END;
+CREATE TRIGGER modified_progress AFTER UPDATE ON progress
+            BEGIN
+             update progress SET modified = round((julianday('now') - 2440587.5)*86400.0 * 1000) WHERE id = NEW.id;
+            END;

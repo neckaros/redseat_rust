@@ -134,10 +134,6 @@ impl MediasIds {
     pub fn as_id_for_trakt(&self) -> Option<String> {
         if let Some(trakt) = self.trakt {
             Some(trakt.to_string())
-        } else if let Some(imdb) = &self.imdb {
-            Some(imdb.to_string())
-        } else {
-            None
-        }
+        } else { self.imdb.as_ref().map(|imdb| imdb.to_string()) }
     }
 }

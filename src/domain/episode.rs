@@ -7,7 +7,7 @@ use super::ElementAction;
 
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "snake_case")] 
+#[serde(rename_all = "camelCase")] 
 pub struct Episode {
     pub serie: String,
     pub season: u32,

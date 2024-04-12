@@ -36,7 +36,7 @@ pub enum Error {
 	NoRangeHeader,
 
 	NotAMediaId(String),
-	NoMediaIdRequired(MediasIds),
+	NoMediaIdRequired(Box<MediasIds>),
 
 	// Prediction Error 
 

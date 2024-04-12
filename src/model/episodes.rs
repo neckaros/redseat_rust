@@ -52,6 +52,7 @@ impl EpisodeQuery {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")] 
 pub struct EpisodeForUpdate {
     pub abs: Option<u32>,
 
@@ -99,13 +100,13 @@ impl ModelController {
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         let mut episodes = store.get_episodes(query).await?;
 
-        self.fill_episodes_watched_imdb(&mut episodes, &requesting_user).await?;
+        self.fill_episodes_watched_imdb(&mut episodes, requesting_user).await?;
 		Ok(episodes)
 	}
 
     pub async fn fill_episode_watched_imdb(&self, episode: &mut Episode, requesting_user: &ConnectedUser) -> RsResult<()> {
-        let watched = self.get_watched(HistoryQuery { types: vec![MediaType::Episode], id: Some(episode.clone().into()), ..Default::default() }, &requesting_user).await?;
-        let watched = watched.get(0);
+        let watched = self.get_watched(HistoryQuery { types: vec![MediaType::Episode], id: Some(episode.clone().into()), ..Default::default() }, requesting_user).await?;
+        let watched = watched.first();
         if let Some(watched) = watched {
             episode.watched = Some(watched.date);
         }
@@ -113,12 +114,12 @@ impl ModelController {
         Ok(())
     }
     pub async fn fill_episodes_watched_imdb(&self, episodes: &mut Vec<Episode>, requesting_user: &ConnectedUser) -> RsResult<()> {
-        let watched = self.get_watched(HistoryQuery { types: vec![MediaType::Episode], ..Default::default() }, &requesting_user).await?.into_iter().map(|e| (e.id.clone(), e)).collect::<HashMap<_, _>>();
+        let watched = self.get_watched(HistoryQuery { types: vec![MediaType::Episode], ..Default::default() }, requesting_user).await?.into_iter().map(|e| (e.id, e.date)).collect::<HashMap<_, _>>();
         for episode in episodes {
             if let Some(trakt) = episode.trakt {
-                let watch = watched.get(&trakt.to_string());
+                let watch = watched.get(&format!("trakt:{}", trakt));
                 if let Some(watch) = watch {
-                    episode.watched = Some(watch.date.clone());
+                    episode.watched = Some(*watch);
                 }
             }
             episode.fill_imdb_ratings(&self.imdb).await;
@@ -130,7 +131,7 @@ impl ModelController {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
 		let mut episodes = store.get_episodes_upcoming(query).await?;
-        self.fill_episodes_watched_imdb(&mut episodes, &requesting_user).await?;
+        self.fill_episodes_watched_imdb(&mut episodes, requesting_user).await?;
 		Ok(episodes)
 	}
 
@@ -138,7 +139,7 @@ impl ModelController {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
 		let mut episodes = store.get_episodes_aired(query).await?;
-        self.fill_episodes_watched_imdb(&mut episodes, &requesting_user).await?;
+        self.fill_episodes_watched_imdb(&mut episodes, requesting_user).await?;
 		let mut episodes = episodes.into_iter().filter(|e| e.watched.is_none()).collect::<Vec<_>>().dedup_key(|e| e.serie.clone());
         episodes.reverse();
 		Ok(episodes)
@@ -148,7 +149,7 @@ impl ModelController {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
 		let mut episode = store.get_episode(&serie_id, season, number).await?.ok_or(Error::NotFound)?;
-        self.fill_episode_watched_imdb(&mut episode, &requesting_user).await?;
+        self.fill_episode_watched_imdb(&mut episode, requesting_user).await?;
 		Ok(episode)
 	}
 
@@ -211,7 +212,7 @@ impl ModelController {
 
     #[async_recursion]
 	pub async fn episode_image(&self, library_id: &str, serie_id: &str, season: &u32, episode: &u32, size: Option<ImageSize>, requesting_user: &ConnectedUser) -> RsResult<FileStreamResult<AsyncReadPinBox>> {
-        if MediasIds::is_id(&serie_id) {
+        if MediasIds::is_id(serie_id) {
             let mut serie_ids: MediasIds = serie_id.to_string().try_into()?;
 
             let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
@@ -226,7 +227,7 @@ impl ModelController {
                     let serie = self.trakt.get_serie(&serie_ids).await?;
                     serie_ids = serie.into();
                 }
-                let image_path = format!("cache/serie-{}-episode-{}x{}.webp", serie_id.replace(":", "-"), season, episode);
+                let image_path = format!("cache/serie-{}-episode-{}x{}.webp", serie_id.replace(':', '-'), season, episode);
 
                 if !local_provider.exists(&image_path).await {
                     let (_, mut writer) = local_provider.get_file_write_stream(&image_path).await?;

@@ -3,7 +3,7 @@ use serde_json::Value;
 
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "snake_case")] 
+#[serde(rename_all = "camelCase")]
 pub struct Backup {
     pub id: String,
 	pub source: String,
@@ -20,7 +20,7 @@ pub struct Backup {
 
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "snake_case")] 
+#[serde(rename_all = "camelCase")]
 pub struct BackupFile {
     pub backup: String,
 	pub library: String,

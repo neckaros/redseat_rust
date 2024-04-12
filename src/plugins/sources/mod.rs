@@ -5,7 +5,7 @@ use futures::{future::BoxFuture, Future, Stream, StreamExt, TryStreamExt};
 use hyper::{header, HeaderMap};
 use mime::{Mime, APPLICATION_OCTET_STREAM};
 use nanoid::nanoid;
-use plugin_request_interfaces::RsRequest;
+use rs_plugin_common_interfaces::request::{RsRequest, RsRequestStatus};
 use serde::{Deserialize, Serialize};
 use tokio::{fs::File, io::{AsyncRead, AsyncWrite, BufReader}, sync::{mpsc::Sender, Mutex}};
 
@@ -145,7 +145,7 @@ impl SourceRead {
             SourceRead::Request(request) => {
 
                 match request.status {
-                    plugin_request_interfaces::RsRequestStatus::Unprocessed | plugin_request_interfaces::RsRequestStatus::NeedParsing => {
+                    RsRequestStatus::Unprocessed | RsRequestStatus::NeedParsing => {
                         if let Some((mc, user)) = mc {
                             let new_request = mc.exec_request(request.clone(), Some(library_id.to_string()), false, progress, user).await?;
                             new_request.into_reader(library_id, range.clone(), None, Some((mc, user))).await
@@ -153,7 +153,7 @@ impl SourceRead {
                             Err(Error::InvalidRsRequestStatus(request.status).into())
                         }
                     },
-                    plugin_request_interfaces::RsRequestStatus::FinalPrivate | plugin_request_interfaces::RsRequestStatus::FinalPublic => {
+                    RsRequestStatus::FinalPrivate | RsRequestStatus::FinalPublic => {
                         let mut headers = reqwest::header::HeaderMap::new();
                         for (key, value) in request.headers.unwrap_or(vec![]) {
                             headers.insert(reqwest::header::HeaderName::from_lowercase(key.to_lowercase().as_bytes()).map_err(|_| Error::UnableToFormatHeaders)?, reqwest::header::HeaderValue::from_str(&value).map_err(|_| Error::UnableToFormatHeaders)?);
@@ -224,7 +224,7 @@ impl SourceRead {
             },
             SourceRead::Request(request) => {
                 match request.status {
-                    plugin_request_interfaces::RsRequestStatus::Unprocessed | plugin_request_interfaces::RsRequestStatus::NeedParsing => {
+                    RsRequestStatus::Unprocessed | RsRequestStatus::NeedParsing => {
                         if let Some((mc, user)) = mc {
                             let new_request = mc.exec_request(request.clone(), Some(library_id.to_string()), false, progress, user).await?;
                             new_request.into_response(library_id, range.clone(), None, Some((mc, user))).await
@@ -232,7 +232,7 @@ impl SourceRead {
                             Err(Error::InvalidRsRequestStatus(request.status).into())
                         }
                     },
-                    plugin_request_interfaces::RsRequestStatus::FinalPrivate => {
+                    RsRequestStatus::FinalPrivate => {
                         let mut headers = reqwest::header::HeaderMap::new();
                         for (key, value) in request.headers.unwrap_or(vec![]) {
                             headers.insert(reqwest::header::HeaderName::from_lowercase(key.to_lowercase().as_bytes()).map_err(|_| Error::UnableToFormatHeaders)?, reqwest::header::HeaderValue::from_str(&value).map_err(|_| Error::UnableToFormatHeaders)?);
@@ -275,7 +275,7 @@ impl SourceRead {
 
 
                     },
-                    plugin_request_interfaces::RsRequestStatus::FinalPublic => {
+                    RsRequestStatus::FinalPublic => {
                         let mut headers = axum::http::HeaderMap::new();
                         headers.append(axum::http::header::LOCATION, request.url.parse().unwrap());
                         let status = axum::http::StatusCode::TEMPORARY_REDIRECT;

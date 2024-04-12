@@ -1,6 +1,6 @@
 use derive_more::From;
 use hyper::StatusCode;
-use plugin_request_interfaces::RsRequestStatus;
+use rs_plugin_common_interfaces::request::RsRequestStatus;
 use serde::Serialize;
 use serde_with::{serde_as, DisplayFromStr};
 

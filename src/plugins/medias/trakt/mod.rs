@@ -52,7 +52,7 @@ impl TraktContext {
 
     pub async fn get_serie(&self, id: &MediasIds) -> crate::Result<Serie> {
 
-        let id = id.as_id_for_trakt().ok_or(Error::NoMediaIdRequired(id.clone()))?;
+        let id = id.as_id_for_trakt().ok_or(Error::NoMediaIdRequired(Box::new(id.clone())))?;
 
         let url = self.base_url.join(&format!("shows/{}?extended=full", id)).unwrap();
         let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
@@ -75,7 +75,7 @@ impl TraktContext {
         } else if let Some(trakt) = &id.trakt {
             Ok(trakt.to_string())
         } else {
-            Err(Error::NoMediaIdRequired(id.clone()))
+            Err(Error::NoMediaIdRequired(Box::new(id.clone())))
         }?;
         let url = self.base_url.join(&format!("shows/{}/seasons?extended=full,episodes", id)).unwrap();
         let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
@@ -90,7 +90,7 @@ impl TraktContext {
         } else if let Some(trakt) = &id.trakt {
             Ok(trakt.to_string())
         } else {
-            Err(Error::NoMediaIdRequired(id.clone()))
+            Err(Error::NoMediaIdRequired(Box::new(id.clone())))
         }?;
         let url = self.base_url.join(&format!("shows/{}/seasons/{}/episodes/{}?extended=full", id, season, episode)).unwrap();
         let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
@@ -124,7 +124,7 @@ impl TraktContext {
 
     pub async fn get_movie_releases(&self, id: &MediasIds) -> crate::Result<Vec<TraktRelease>> {
 
-        let id = id.as_id_for_trakt().ok_or(Error::NoMediaIdRequired(id.clone()))?;
+        let id = id.as_id_for_trakt().ok_or(Error::NoMediaIdRequired(Box::new(id.clone())))?;
 
         let url = self.base_url.join(&format!("movies/{}/releases", id)).unwrap();
 
@@ -135,7 +135,7 @@ impl TraktContext {
 
     pub async fn get_movie(&self, ids: &MediasIds) -> crate::Result<Movie> {
 
-        let id = ids.as_id_for_trakt().ok_or(Error::NoMediaIdRequired(ids.clone()))?;
+        let id = ids.as_id_for_trakt().ok_or(Error::NoMediaIdRequired(Box::new(ids.clone())))?;
 
         let url = self.base_url.join(&format!("movies/{}?extended=full", id)).unwrap();
 

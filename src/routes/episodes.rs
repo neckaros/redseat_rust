@@ -1,15 +1,13 @@
 
-use crate::{domain::{episode::{self, Episode}, media::{FileEpisode, Media, MediaForUpdate}}, model::{episodes::{EpisodeForUpdate, EpisodeQuery}, medias::MediaQuery, users::ConnectedUser, ModelController}, Error, Result};
+use crate::{domain::{episode::{self, Episode}, media::{FileEpisode, Media, MediaForUpdate}, progress, view_progress::{ViewProgressForAdd, ViewProgressLigh}, watched::{WatchedForAdd, WatchedLight}, MediasIds}, model::{episodes::{EpisodeForUpdate, EpisodeQuery}, medias::MediaQuery, users::{ConnectedUser, HistoryQuery}, ModelController}, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
 use futures::TryStreamExt;
-use plugin_request_interfaces::RsRequest;
-use rs_plugin_lookup_interfaces::{RsLookupEpisode, RsLookupQuery};
+use rs_plugin_common_interfaces::{lookup::{RsLookupEpisode, RsLookupQuery}, request::RsRequest, MediaType};
 use serde_json::{json, ser, Value};
 use tokio::io::AsyncRead;
 use tokio_util::io::{ReaderStream, StreamReader};
 
 use super::{ImageRequestOptions, ImageUploadOptions};
-
 
 
 pub fn routes(mc: ModelController) -> Router {
@@ -25,6 +23,10 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/seasons/:season/episodes/:number/search", get(handler_lookup))
 		.route("/seasons/:season/episodes/:number/search", post(handler_lookup_add))
 		.route("/seasons/:season/episodes/:number/medias", get(handler_medias))
+		.route("/seasons/:season/episodes/:number/progress", get(handler_progress_get))
+		.route("/seasons/:season/episodes/:number/progress", post(handler_progress_set))
+		.route("/seasons/:season/episodes/:number/watched", get(handler_watched_get))
+		.route("/seasons/:season/episodes/:number/watched", post(handler_watched_set))
 		.route("/:id/image", post(handler_post_image))
 		.with_state(mc)
         
@@ -116,6 +118,44 @@ async fn handler_post(Path((library_id, _)): Path<(String, String)>, State(mc): 
 	let body = Json(json!(credential));
 	Ok(body)
 }
+
+
+async fn handler_progress_get(Path((library_id, serie_id, season, number)): Path<(String, String, u32, u32)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	let episode = mc.get_episode(&library_id, serie_id, season, number, &user).await?;
+	let progress = mc.get_view_progress(episode.into(), &user).await?.ok_or(Error::NotFound)?;
+	Ok(Json(json!(progress)))
+}
+
+async fn handler_progress_set(Path((library_id, serie_id, season, number)): Path<(String, String, u32, u32)>, State(mc): State<ModelController>, user: ConnectedUser, Json(progress): Json<ViewProgressLigh>) -> Result<()> {
+	let episode = mc.get_episode(&library_id, serie_id.clone(), season, number, &user).await?;
+	let serie = mc.get_serie(&library_id, serie_id, &user).await?.ok_or(Error::NotFound)?;
+	let id = MediasIds::from(episode).into_best_external().ok_or(Error::NotFound)?;
+	let serie_id = MediasIds::from(serie).into_best_external().ok_or(Error::NotFound)?;
+	let progress = ViewProgressForAdd { kind: MediaType::Episode, id, progress: progress.progress, parent: Some(serie_id) };
+	mc.add_view_progress(progress, &user).await?;
+
+	Ok(())
+}
+
+async fn handler_watched_get(Path((library_id, serie_id, season, number)): Path<(String, String, u32, u32)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	let episode = mc.get_episode(&library_id, serie_id, season, number, &user).await?;
+	let query = HistoryQuery {
+		id: Some(episode.into()),
+		..Default::default()
+	};
+	let progress = mc.get_watched(query, &user).await?.into_iter().next().ok_or(Error::NotFound)?;
+	Ok(Json(json!(progress)))
+}
+
+async fn handler_watched_set(Path((library_id, serie_id, season, number)): Path<(String, String, u32, u32)>, State(mc): State<ModelController>, user: ConnectedUser, Json(watched): Json<WatchedLight>) -> Result<()> {
+	let episode = mc.get_episode(&library_id, serie_id.clone(), season, number, &user).await?;
+	let id = MediasIds::from(episode).into_best_external().ok_or(Error::NotFound)?;
+	let watched = WatchedForAdd { kind: MediaType::Episode, id, date: watched.date };
+	mc.add_watched(watched, &user).await?;
+
+	Ok(())
+}
+
 
 
 async fn handler_image(Path((library_id, serie_id, season, number)): Path<(String, String, u32, u32)>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ImageRequestOptions>) -> Result<Response> {
