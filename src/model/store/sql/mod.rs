@@ -59,6 +59,112 @@ pub fn add_for_sql_update<'a, T: ToSql + 'a,>(optional: Option<T>, name: &str, c
 }
 
 
+pub enum SqlWhereType {
+    Like(String, Box<dyn ToSql>),
+    Equal(String, Box<dyn ToSql>),
+    After(String, Box<dyn ToSql>),
+    Before(String, Box<dyn ToSql>),
+    Custom(String, Box<dyn ToSql>),
+    In(String, Vec<Box<dyn ToSql>>),
+    NotIn(String, Vec<Box<dyn ToSql>>),
+    Static(String),
+    SeparatedContain(String, String, Box<dyn ToSql>),
+    InStringList(String, String, Box<dyn ToSql>),
+    EqualWithAlt(String, String, String, Box<dyn ToSql>),
+    Or(Vec<SqlWhereType>),
+    And(Vec<SqlWhereType>),
+}
+
+
+impl SqlWhereType {
+    pub fn expand(&self) -> Result<(String, Vec<&Box<dyn ToSql>>)> {
+        let mut values: Vec<&Box<dyn ToSql>> = vec![];
+        let text = match self {
+            SqlWhereType::Equal(name, value) => {
+                values.push(value);
+                format!("{} = ?", name)
+            },
+            SqlWhereType::Like(name, value) => {
+                values.push(value);
+                format!("{} like ?", name)
+            },
+            SqlWhereType::Custom(custom, value) => {
+                values.push(value);
+                custom.to_string()
+            },
+            SqlWhereType::After(name, value) => {
+                values.push(value);
+                format!("{} > ?", name)
+            },
+            SqlWhereType::Before(name, value) => {
+                values.push(value);
+                format!("{} < ?", name)
+            },
+            SqlWhereType::In(name, ins) => {
+
+                for value in ins {
+                    values.push(value);
+                }
+                format!("{} in ({})", name, ins.iter().map(|_| "?").collect::<Vec<_>>().join(", "))
+            },
+            SqlWhereType::NotIn(name, ins) => {
+
+                for value in ins {
+                    values.push(value);
+                }
+                format!("{} not in ({})", name, ins.iter().map(|_| "?").collect::<Vec<_>>().join(", "))
+            },
+            
+            SqlWhereType::InStringList(name, separator, value) => {
+
+                values.push(value);
+
+                format!("('{}' || {} || '{}' LIKE '%{}' || ? || '{}%')", separator, name, separator, separator, separator)
+            },
+            SqlWhereType::EqualWithAlt(name, alt, separator, value) => {
+
+                values.push(value);
+                values.push(value);
+
+                format!("( {} = ? COLLATE NOCASE or  '{}' || {} || '{}' LIKE '%{}' || ? || '{}%')", name, separator, alt, separator, separator, separator)
+            },
+            SqlWhereType::SeparatedContain(name, separator, value) => {
+                values.push(value);
+
+                format!("'{}' || {} || '{}' LIKE '%{}' || ? || '{}%'", separator, name, separator, separator, separator)
+            },
+            SqlWhereType::Static(s) => {
+                s.to_string()
+            },
+            SqlWhereType::Or(sub_queries) => {
+                let mut texts: Vec<String> = vec![];
+                for query in sub_queries {
+                    let (t, mut v) = query.expand()?;
+                    texts.push(t);
+                    values.append(&mut v);
+                }
+                format!("({})", texts.join(" or "))
+            },
+            SqlWhereType::And(sub_queries) => {
+                let mut texts: Vec<String> = vec![];
+                for query in sub_queries {
+                    let (t, mut v) = query.expand()?;
+                    texts.push(t);
+                    values.append(&mut v);
+                }
+                format!("({})", texts.join(" and "))
+            },
+        };
+        Ok((text, values))
+    }
+}
+
+
+
+
+
+
+
 pub enum QueryWhereType<'a> {
     Like(&'a str, &'a dyn ToSql),
     Equal(&'a str, &'a dyn ToSql),
@@ -169,6 +275,7 @@ pub enum SqlOrder {
     DESC
 }
 
+#[derive(Debug)]
 pub struct OrderBuilder {
     column: String,
     order: SqlOrder
@@ -185,6 +292,102 @@ impl OrderBuilder {
         }
     }
 }
+
+#[derive(Default)]
+pub struct RsQueryBuilder {
+
+    wheres: Vec<SqlWhereType>,
+
+    columns_recursive: Vec<String>,
+    values_recursive: Vec<Box<dyn ToSql>>,
+
+    columns_update: Vec<String>,
+    values_update: Vec<Box<dyn ToSql>>,
+
+    columns_orders: Vec<OrderBuilder>,
+}
+
+impl RsQueryBuilder {
+    pub fn new() -> Self {
+        RsQueryBuilder::default()
+    }
+    pub fn add_where(&mut self, kind: SqlWhereType) {
+        self.wheres.push(kind);
+    }    
+    pub fn add_update<T: ToSql>(&mut self, optional: Option<Box<dyn ToSql>>, column: &str)  {
+        if let Some(value) = optional {
+            self.columns_update.push(format!("{} = ?", column));
+            self.values_update.push(value);
+        }
+    }
+
+    pub fn add_nullify(&mut self, column: &str)  {
+        self.columns_update.push(format!("{} = NULL", column));
+    }
+
+
+    pub fn add_recursive<T: ToSql + Display + 'static>(&mut self, table: String, mapping_table: String, map_key: String, map_field: String, id: Box<T>) {
+        let table_name = format!("{}_{}", table, id.to_string().replace("-", "_"));
+
+        let sql = format!("{}(n) AS (
+            VALUES(?)
+            UNION
+            SELECT id FROM {}, {}
+             WHERE {}.parent={}.n)", table_name, table, table_name, table, table_name);
+        self.columns_recursive.push(sql);
+        self.values_recursive.push(id);
+        self.wheres.push(SqlWhereType::Static(format!("id IN (SELECT tm.{} FROM {} tm WHERE {} IN {})", map_key, mapping_table, map_field, table_name)));
+    }    
+    pub fn format_recursive(&self) -> String {
+        if !self.columns_recursive.is_empty() {
+            format!("WITH RECURSIVE {} ", self.columns_recursive.join(", "))
+        } else {
+            "".to_string()
+        }
+    }
+
+
+    pub fn format(&self) -> String {
+        if !self.wheres.is_empty() {
+            let mut columns = vec![];
+            for w in &self.wheres {
+                let (t, _) = w.expand().unwrap();
+                columns.push(t);
+            }
+            format!("WHERE {}", columns.join(" and "))
+        } else {
+            "".to_string()
+        }
+    }
+    pub fn values(&mut self) -> ParamsFromIter<Vec<&Box<dyn ToSql>>> {
+        let mut all_values = vec![];
+        all_values.append(&mut self.values_recursive.iter().collect());
+        //all_values.append(&mut self.values_update);
+
+        for w in &self.wheres {
+            let r = w.expand();
+            let (_, mut v) = r.unwrap();
+            all_values.append(&mut v);
+        }
+        /*for value in &mut *all_values {
+            println!("{:?}", value.to_sql())
+        }*/
+        params_from_iter(all_values)
+    }
+
+    pub fn add_oder(&mut self, order: OrderBuilder) {
+        self.columns_orders.push(order);
+    }
+    pub fn format_order(&self) -> String {
+        if self.columns_orders.len() > 0 {
+            format!(" ORDER BY {}", self.columns_orders.iter().map(|o| o.format()).collect::<Vec<String>>().join(", "))
+        } else {
+            "".to_string()
+        }
+    }
+
+}
+
 
 pub struct QueryBuilder<'a> {
 

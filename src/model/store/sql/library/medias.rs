@@ -1,7 +1,7 @@
-use rs_plugin_url_interfaces::RsLink;
+use rs_plugin_common_interfaces::url::RsLink;
 use rusqlite::{params, params_from_iter, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, Row, ToSql};
 
-use crate::{domain::media::{FileEpisode, FileType, Media, MediaForInsert, MediaForUpdate, MediaItemReference, RsGpsPosition}, model::{medias::{MediaQuery, MediaSource, RsSort}, people::PeopleQuery, store::{from_comma_separated_optional, from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_comma_separated_optional, to_pipe_separated_optional}, tags::TagQuery}, tools::{array_tools::AddOrSetArray, log::{log_info, LogServiceType}, text_tools::{extract_people, extract_tags}}};
+use crate::{domain::{media::{FileEpisode, FileType, Media, MediaForInsert, MediaForUpdate, MediaItemReference, RsGpsPosition}, MediasIds}, error::RsResult, model::{medias::{MediaQuery, MediaSource, RsSort}, people::PeopleQuery, store::{from_comma_separated_optional, from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType}, to_comma_separated_optional, to_pipe_separated_optional}, tags::TagQuery}, tools::{array_tools::AddOrSetArray, log::{log_info, LogServiceType}, text_tools::{extract_people, extract_tags}}};
 use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
 
@@ -13,8 +13,8 @@ impl FromSql for RsGpsPosition {
             let lat = splitted.next().and_then(|f| f.parse::<f64>().ok()).ok_or(FromSqlError::InvalidType)?;
             let long = splitted.next().and_then(|f| f.parse::<f64>().ok()).ok_or(FromSqlError::InvalidType)?;
             Ok(RsGpsPosition {
-                lat: lat,
-                long: long,
+                lat,
+                long,
             })
         })
     }
@@ -39,10 +39,46 @@ impl RsSort {
     pub fn to_media_query(&self) -> String {
         match self {
             RsSort::Rating => "rating".to_owned(),
-            _ => format!("m.{}", self.to_string()),
+            _ => format!("m.{}", self),
         }
     }
 }
+
+impl TryFrom<Vec<String>> for MediasIds {
+    type Error = crate::Error;
+    
+    fn try_from(values: Vec<String>) -> RsResult<Self> {
+        let mut ids = Self::default();
+        for value in values {
+            ids.try_add(value)?;
+        }
+        Ok(ids)
+    }
+}
+
+impl From<MediasIds> for Vec<String> {
+    
+    fn from(value: MediasIds) -> Self {
+        let mut ids = vec![];
+        if let Some(id) = value.as_redseat() {
+            ids.push(id)
+        }
+        if let Some(id) = value.as_imdb() {
+            ids.push(id)
+        }
+        if let Some(id) = value.as_tmdb() {
+            ids.push(id.to_string())
+        }
+        if let Some(id) = value.as_trakt() {
+            ids.push(id.to_string())
+        }
+        if let Some(id) = value.as_tvdb() {
+            ids.push(id.to_string())
+        }
+        ids
+    }
+}
+
 
 const MEDIA_QUERY: &str = "SELECT 
         m.id, m.source, m.name, m.description, m.type, m.mimetype, m.size, avg(ratings.rating) as rating, m.md5, m.params, 

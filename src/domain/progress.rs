@@ -8,7 +8,7 @@ pub type RsProgressCallback = Option<Sender<RsProgress>>;
 
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, PartialOrd, Default)]
-#[serde(rename_all = "snake_case")] 
+#[serde(rename_all = "camelCase")]
 pub struct RsProgress {
     pub id: String,
 	pub total: Option<u64>,
@@ -17,7 +17,7 @@ pub struct RsProgress {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, PartialOrd, Default)]
-#[serde(rename_all = "snake_case")] 
+#[serde(rename_all = "camelCase")]
 pub enum RsProgressType {
     Download,
     #[default]

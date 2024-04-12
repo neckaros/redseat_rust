@@ -1,9 +1,9 @@
-use rusqlite::{params, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, Row, ToSql};
+use rusqlite::{params, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, Row, ToSql};
 use serde::{Deserialize, Serialize};
 
-use crate::{domain::watched::Watched, model::{store::{from_comma_separated, sql::library, SqliteStore}, users::{HistoryQuery, ServerUser, ServerUserForUpdate, ServerUserLibrariesRights, ServerUserLibrariesRightsWithUser, ServerUserPreferences, UploadKey, UserRole}}};
+use crate::{domain::{view_progress::{ViewProgress, ViewProgressForAdd}, watched::{Watched, WatchedForAdd}, MediasIds}, model::{store::{from_comma_separated, sql::library, SqliteStore}, users::{HistoryQuery, ServerUser, ServerUserForUpdate, ServerUserLibrariesRights, ServerUserLibrariesRightsWithUser, ServerUserPreferences, UploadKey, UserRole, ViewProgressQuery}}};
 
-use super::{super::Error, OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder};
+use super::{super::Error, OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType};
 use super::Result;
 
 
@@ -15,6 +15,7 @@ pub struct WatchedQuery {
     pub after: Option<u64>,
 }
 
+/// User object store
 impl SqliteStore {
     // region:    --- Users
     pub async fn get_user(&self, user_id: &str) -> Result<ServerUser> {
@@ -107,7 +108,7 @@ impl SqliteStore {
 
     pub async fn update_user(&self, connected_user: &ServerUser, update_user: ServerUserForUpdate) -> Result<()> {
             if connected_user.id != update_user.id && connected_user.role != UserRole::Admin {
-                return Err(Error::UserUpdateNotAuthorized { user: connected_user.clone(), update_user: update_user })
+                return Err(Error::UserUpdateNotAuthorized { user: connected_user.clone(), update_user })
             }
     
             if update_user.role.is_some() && connected_user.role != UserRole::Admin {
@@ -131,7 +132,7 @@ impl SqliteStore {
                 if let Some(preferences) = update_user.preferences {
                     conn.execute(
                         "UPDATE Users SET role = ?1 WHERE ID = ?2",
-                        (serde_json::to_string(&preferences).or_else(|err| Err(tokio_rusqlite::Error::Other(Box::new(err))))?, &update_user.id),
+                        (serde_json::to_string(&preferences).map_err(|err| tokio_rusqlite::Error::Other(Box::new(err)))?, &update_user.id),
                     )?;
                 }
                 Ok(())
@@ -142,65 +143,11 @@ impl SqliteStore {
         }
     // endregion:    --- Users
 
+}
 
-
-    fn row_to_watched(row: &Row) -> rusqlite::Result<Watched> {
-        Ok(Watched {
-            kind: row.get(0)?,
-            source: row.get(1)?,
-            id: row.get(2)?,
-            user_ref: row.get(3)?,
-            date: row.get(4)?,
-            modified: row.get(5)?,
-            
-        })
-    }
-    fn row_to_uploadkey(row: &Row) -> rusqlite::Result<UploadKey> {
-        Ok(UploadKey {
-            id: row.get(0)?,
-            library: row.get(1)?,
-            expiry: row.get(2)?,
-            tags: row.get(3)?,
-            
-        })
-    }
-
-    pub async fn get_watched(&self, query: HistoryQuery) -> Result<Vec<Watched>> {
-        let row = self.server_store.call( move |conn| { 
-            let mut where_query = QueryBuilder::new();
-            if let Some(q) = &query.after {
-                where_query.add_where(QueryWhereType::After("modified", q));
-            }
-            if query.types.len() > 0 {
-                let mut types = vec![];
-                for kind in &query.types {
-                    types.push(QueryWhereType::Equal("type", kind));
-                }
-                where_query.add_where(QueryWhereType::Or(types));
-            }
-
-            where_query.add_oder(OrderBuilder::new(query.sort.to_string(), query.order));
-            
-            let source_name = "trakt".to_string();
-            let trakt = query.id.and_then(|i| i.trakt);
-            if let Some(trakt) = &trakt {
-                let mut list = vec![];
-                list.push(QueryWhereType::Equal("source", &source_name ));
-                list.push(QueryWhereType::Equal("id", trakt));
-                where_query.add_where(QueryWhereType::And(list));
-                
-            }
-            let mut query = conn.prepare(&format!("SELECT type, source, id, user_ref, date, modified  FROM Watched {}{}", where_query.format(), where_query.format_order()))?;
-
-            let rows = query.query_map(
-            where_query.values(), Self::row_to_watched,
-            )?;
-            let backups:Vec<Watched> = rows.collect::<std::result::Result<Vec<Watched>, rusqlite::Error>>()?; 
-            Ok(backups)
-        }).await?;
-        Ok(row)
-    }
-
+///Upload key store
+impl SqliteStore {
+    
     pub async fn get_upload_key(&self, key: String) -> Result<UploadKey> {
         let row = self.server_store.call( move |conn| { 
             let mut query = conn.prepare("SELECT id, library_ref, expiry, tags  FROM uploadkeys where id = ?")?;
@@ -211,9 +158,144 @@ impl SqliteStore {
             let backups:Vec<UploadKey> = rows.collect::<std::result::Result<Vec<UploadKey>, rusqlite::Error>>()?; 
             Ok(backups)
         }).await?;
-        let uploadkey = row.get(0).ok_or(Error::NotFound)?;
+        let uploadkey = row.first().ok_or(Error::NotFound)?;
         Ok(uploadkey.clone())
     }
+
+    fn row_to_uploadkey(row: &Row) -> rusqlite::Result<UploadKey> {
+        Ok(UploadKey {
+            id: row.get(0)?,
+            library: row.get(1)?,
+            expiry: row.get(2)?,
+            tags: row.get(3)?,
+            
+        })
+    }
+}
+
+/// Watched store
+impl SqliteStore {
+    fn row_to_watched(row: &Row) -> rusqlite::Result<Watched> {
+        Ok(Watched {
+            kind: row.get(0)?,
+            id: row.get(1)?,
+            user_ref: row.get(2)?,
+            date: row.get(3)?,
+            modified: row.get(4)?,
+            
+        })
+    }
+
+
+    pub async fn get_watched(&self, query: HistoryQuery) -> Result<Vec<Watched>> {
+        let row = self.server_store.call( move |conn| { 
+            let mut where_query = RsQueryBuilder::new();
+            if let Some(q) = query.after {
+                where_query.add_where(SqlWhereType::After("modified".to_owned(), Box::new(q)));
+            }
+            if !query.types.is_empty() {
+                let mut types = vec![];
+                for kind in query.types {
+                    types.push(SqlWhereType::Equal("type".to_owned(), Box::new(kind)));
+                }
+                where_query.add_where(SqlWhereType::Or(types));
+            }
+
+            if let Some(ids) = query.id {
+                let ids: Vec<String> = ids.into();
+                let ids = ids.into_iter().map(|f| Box::new(f) as Box<dyn ToSql>).collect();
+                where_query.add_where(SqlWhereType::In("id".to_owned(), ids));
+            }
+
+            where_query.add_oder(OrderBuilder::new(query.sort.to_string(), query.order));
+
+            let mut query = conn.prepare(&format!("SELECT type, id, user_ref, date, modified  FROM Watched {}{}", where_query.format(), where_query.format_order()))?;
+
+            let rows = query.query_map(
+            where_query.values(), Self::row_to_watched,
+            )?;
+            let backups:Vec<Watched> = rows.collect::<std::result::Result<Vec<Watched>, rusqlite::Error>>()?; 
+            Ok(backups)
+        }).await?;
+        Ok(row)
+    }
+
+
+    pub async fn add_watched(&self, watched: WatchedForAdd, user_id: String) -> Result<()> {
+        self.server_store.call( move |conn| { 
+
+            conn.execute("INSERT OR REPLACE INTO Watched (type, id, user_ref, date)
+            VALUES (?, ? ,?, ?)", params![
+                watched.kind,
+                watched.id,
+                user_id,
+                watched.date
+            ])?;
+            
+            Ok(())
+        }).await?;
+        Ok(())
+    }
+
+
+}
+
+/// Progress Store
+impl SqliteStore {
+    
+    fn row_to_view_progress(row: &Row) -> rusqlite::Result<ViewProgress> {
+        Ok(ViewProgress {
+            kind: row.get(0)?,
+            id: row.get(1)?,
+            user_ref: row.get(2)?,
+            progress: row.get(3)?,
+            parent: row.get(4)?,
+            modified: row.get(5)?,
+            
+        })
+    }
+
+    
+
+    pub async fn get_view_progess(&self, ids: MediasIds, user_id: String) -> Result<Option<ViewProgress>> {
+        let row = self.server_store.call( move |conn| { 
+            let mut builder_query = RsQueryBuilder::new();
+
+            builder_query.add_where(SqlWhereType::Equal("user_ref".to_owned(), Box::new(user_id)));
+ 
+            let ids: Vec<String> = ids.into();
+            let ids = ids.into_iter().map(|f| Box::new(f) as Box<dyn ToSql>).collect();
+            builder_query.add_where(SqlWhereType::In("id".to_owned(), ids));
+
+            let mut query = conn.prepare(&format!("SELECT type, id, user_ref, progress, parent, modified  FROM progress {}", builder_query.format()))?;
+   
+            let row = query.query_row(
+                builder_query.values(), Self::row_to_view_progress,
+            ).optional()?;
+            Ok(row)
+        }).await?;
+        Ok(row)
+    }
+
+    pub async fn add_view_progress(&self, progress: ViewProgressForAdd, user_ref: String) -> Result<()> {
+        self.server_store.call( move |conn| { 
+
+            conn.execute("INSERT OR REPLACE INTO progress (type, id, user_ref, progress, parent)
+            VALUES (?, ?, ? ,?,?)", params![
+                progress.kind,
+                progress.id,
+                user_ref,
+                progress.progress,
+                progress.parent
+            ])?;
+            
+            Ok(())
+        }).await?;
+        Ok(())
+    }
+
+
+
 }
     
     

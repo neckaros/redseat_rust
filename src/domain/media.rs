@@ -1,12 +1,12 @@
 use std::str::FromStr;
 
 use nanoid::nanoid;
-use plugin_request_interfaces::{RsCookie, RsRequest, RsRequestStatus};
+use rs_plugin_common_interfaces::{request::{RsCookie, RsRequest, RsRequestStatus}, url::RsLink};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use strum_macros::EnumString;
 
-use rs_plugin_url_interfaces::RsLink;
+
 use crate::plugins::sources::SourceRead;
 
 use super::{progress::RsProgress, ElementAction};

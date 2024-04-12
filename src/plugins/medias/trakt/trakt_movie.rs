@@ -1,5 +1,5 @@
 use chrono::{DateTime, NaiveDate, Utc};
-use rs_plugin_url_interfaces::{RsLink, RsLinkType};
+use rs_plugin_common_interfaces::url::{RsLink, RsLinkType};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::movie::Movie;

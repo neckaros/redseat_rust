@@ -5,7 +5,7 @@ use stream_map_any::StreamMapAny;
 use futures::{AsyncRead, Stream};
 
 use nanoid::nanoid;
-use plugin_request_interfaces::{RsCookie, RsRequest};
+use rs_plugin_common_interfaces::request::{RsCookie, RsRequest};
 use tokio::{fs::{remove_file, File}, io::{AsyncWrite, AsyncWriteExt, BufReader}, process::{Child, ChildStderr, ChildStdout, Command}};
 use tokio_util::io::{ReaderStream, StreamReader};
 use youtube_dl::{download_yt_dlp, YoutubeDl};
@@ -107,9 +107,9 @@ impl YydlContext {
         let path = if let Some(cookies) = &request.cookies {
             let p = get_server_temp_file_path().await?;
             let mut file = File::create(&p).await?;
-            file.write("# Netscape HTTP Cookie File\n".as_bytes()).await?;
+            file.write_all("# Netscape HTTP Cookie File\n".as_bytes()).await?;
             for cookie in cookies {
-                file.write(format!("{}\n", cookie.netscape()).as_bytes()).await?;
+                file.write_all(format!("{}\n", cookie.netscape()).as_bytes()).await?;
             }
             file.flush().await?;
             process.cookies(&p.as_os_str().to_str().ok_or(Error::Error("unable to parse cookies path".to_owned()))?.to_owned());
@@ -202,9 +202,9 @@ impl YtDlCommandBuilder {
     pub async fn set_cookies(&mut self, cookies: &Vec<RsCookie>) -> RsResult<&mut Self> {
         let p = get_server_temp_file_path().await?;
         let mut file = File::create(&p).await?;
-        file.write("# Netscape HTTP Cookie File\n".as_bytes()).await?;
+        file.write_all("# Netscape HTTP Cookie File\n".as_bytes()).await?;
         for cookie in cookies {
-            file.write(format!("{}\n", cookie.netscape()).as_bytes()).await?;
+            file.write_all(format!("{}\n", cookie.netscape()).as_bytes()).await?;
         }
         file.flush().await?;
 

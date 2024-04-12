@@ -2,11 +2,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::ElementAction;
-use rs_plugin_url_interfaces::RsLink;
+use rs_plugin_common_interfaces::url::RsLink;
 
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "snake_case")] 
+#[serde(rename_all = "camelCase")]
 pub struct Person {
     pub id: String,
 	pub name: String,

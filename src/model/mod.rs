@@ -18,8 +18,7 @@ use std::{collections::HashMap, io::Read, path::PathBuf, pin::Pin, sync::Arc};
 use futures::lock::Mutex;
 use nanoid::nanoid;
 use strum::IntoEnumIterator;
-use rs_plugin_url_interfaces::RsLink;
-use crate::{domain::{library::{LibraryMessage, LibraryRole, ServerLibrary}, serie::Serie}, error::RsResult, plugins::{medias::{imdb::ImdbContext, tmdb::TmdbContext, trakt::TraktContext}, sources::{error::SourcesError, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, LocalSource, Source, SourceRead}, PluginManager}, routes::mw_range::RangeDefinition, server::get_server_file_path_array, tools::{clock::SECONDS_IN_HOUR, image_tools::{resize_image_path, ImageSize, ImageSizeIter, ImageType}, log::log_info, scheduler::{self, refresh::RefreshTask, RsScheduler, RsTaskType}}};
+use crate::{domain::{library::{LibraryMessage, LibraryRole, ServerLibrary}, serie::Serie}, error::RsResult, plugins::{medias::{fanart::FanArtContext, imdb::ImdbContext, tmdb::TmdbContext, trakt::TraktContext}, sources::{error::SourcesError, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, LocalSource, Source, SourceRead}, PluginManager}, routes::mw_range::RangeDefinition, server::get_server_file_path_array, tools::{clock::SECONDS_IN_HOUR, image_tools::{resize_image_path, ImageSize, ImageSizeIter, ImageType}, log::log_info, scheduler::{self, refresh::RefreshTask, RsScheduler, RsTaskType}}};
 
 use self::{medias::CRYPTO_HEADER_SIZE, store::SqliteStore, users::{ConnectedUser, UserRole}};
 use error::{Result, Error};
@@ -33,6 +32,7 @@ pub struct ModelController {
 	pub plugin_manager: Arc<PluginManager>,
 	pub trakt: Arc<TraktContext>,
 	pub tmdb: Arc<TmdbContext>,
+	pub fanart: Arc<FanArtContext>,
 	pub imdb: Arc<ImdbContext>,
 	pub scheduler: Arc<RsScheduler>,
 
@@ -44,6 +44,7 @@ pub struct ModelController {
 impl ModelController {
 	pub async fn new(store: SqliteStore, plugin_manager: PluginManager) -> crate::Result<Self> {
 		let tmdb = TmdbContext::new("4a01db3a73eed5cf17e9c7c27fd9d008".to_string()).await?;
+		let fanart = FanArtContext::new("a6eb2f1acb7b54550e498a9b37a574fa".to_string());
 		let scheduler = RsScheduler::new();
 
 		let mc = Self {
@@ -52,6 +53,7 @@ impl ModelController {
 			plugin_manager: Arc::new(plugin_manager),
 			trakt: Arc::new(TraktContext::new("455f81b3409a8dd140a941e9250ff22b2ed92d68003491c3976363fe752a9024".to_string())),
 			tmdb: Arc::new(tmdb),
+			fanart: Arc::new(fanart),
 			imdb: Arc::new(ImdbContext::new()),
 			scheduler: Arc::new(scheduler),
 			chache_libraries: Arc::new(RwLock::new(HashMap::new()))
@@ -146,16 +148,14 @@ impl  ModelController {
 		let path = if library.source == "virtual" {
 			let path = get_server_file_path_array(vec!["libraries", &library.id]).await.map_err(|_| Error::FileNotFound("Unable to get virtual library local path".into()))?;
 			path
-		} else {
-			if let Some(existing) = &library.root {
-				let mut path = PathBuf::from(existing);
-				path.push(".redseat");
-				let new_path = path;
-				new_path
-			} else {
-				get_server_file_path_array(vec!["libraries", &library.id]).await.map_err(|_| Error::FileNotFound("Unable to get virtual library local path".into()))?
-			}
-		};
+		} else if let Some(existing) = &library.root {
+  				let mut path = PathBuf::from(existing);
+  				path.push(".redseat");
+  				let new_path = path;
+  				new_path
+  			} else {
+  				get_server_file_path_array(vec!["libraries", &library.id]).await.map_err(|_| Error::FileNotFound("Unable to get virtual library local path".into()))?
+  			};
 		let source = PathProvider::new_for_local(path);
 		Ok(source)
 	}
@@ -166,6 +166,7 @@ impl  ModelController {
 
         let m = self.library_source_for_library(&library_id).await?;
 		let source_filepath = format!("{}/{}{}{}.webp", folder, id, ImageType::optional_to_filename_element(&kind), ImageSize::optional_to_filename_element(&size));
+		println!("sfp {}", source_filepath);
 		let reader_response = m.get_file(&source_filepath, None).await;
 		if let Some(int_size) = size {
 			if let Err(error) = &reader_response {

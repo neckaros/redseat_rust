@@ -4,7 +4,7 @@ use std::{fs::{remove_file, File}, io::{Seek, Write}, num::ParseIntError, path::
 use image::{ColorType, DynamicImage, ImageEncoder, ImageOutputFormat};
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr};
-use strum_macros::EnumIter;
+use strum_macros::{Display, EnumIter, EnumString};
 use tokio::{io::{AsyncRead, AsyncWrite, AsyncWriteExt}, process::{Child, Command}};
 use webp::WebPEncodingError;
 use derive_more::From;
@@ -21,7 +21,7 @@ pub type ImageResult<T> = core::result::Result<T, ImageError>;
 
 
 #[derive(Debug, Serialize, Deserialize, Clone, EnumIter, PartialEq)]
-#[serde(rename_all = "snake_case")] 
+#[serde(rename_all = "camelCase")]
 pub enum ImageSize {
     Thumb,
     Small,
@@ -80,8 +80,8 @@ impl ImageSize {
 
 
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-#[serde(rename_all = "snake_case")] 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Display)]
+#[serde(rename_all = "lowercase")] 
 pub enum ImageType {
     Poster,
     Background,
@@ -92,34 +92,6 @@ pub enum ImageType {
     Custom(String)
 }
 
-impl fmt::Display for ImageType {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            ImageType::Poster => write!(f, "poster"),
-            ImageType::Background => write!(f, "background"),
-            ImageType::Still => write!(f, "still"),
-            ImageType::Card => write!(f, "card"),
-            ImageType::ClearLogo => write!(f, "clearlogo"),
-            ImageType::ClearArt => write!(f, "clearart"),
-            ImageType::Custom(text) => write!(f, "{}", text),
-        }
-    }
-}
-impl FromStr for ImageType {
-    type Err = ();
-
-    fn from_str(input: &str) -> std::result::Result<ImageType, ()> {
-        match input {
-                "poster"  => Ok(ImageType::Poster),
-                "background"  => Ok(ImageType::Background),
-                "still"  => Ok(ImageType::Still),
-                "card"  => Ok(ImageType::Poster),
-                "clearlogo"  => Ok(ImageType::Background),
-                "clearart"  => Ok(ImageType::Still),
-                text      => Ok(ImageType::Custom(text.into())),
-        }
-    }
-}
 impl ImageType {
     pub fn to_filename_element(&self) -> String {
         format!(".{}", self.to_string())

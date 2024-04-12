@@ -3,8 +3,8 @@ use std::{io, path::PathBuf, pin::Pin, str::FromStr, sync::Arc};
 
 use axum::async_trait;
 use chrono::{Datelike, Utc};
-use plugin_request_interfaces::RsRequest;
 use query_external_ip::SourceError;
+use rs_plugin_common_interfaces::request::RsRequest;
 use tokio::{fs::File, io::{AsyncRead, AsyncWrite, BufReader, BufWriter}};
 
 use crate::{domain::{library::ServerLibrary, media::MediaForUpdate}, model::ModelController, plugins::PluginManager, routes::mw_range::RangeDefinition, server::get_server_file_path_array};

@@ -2785,21 +2785,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2900ede94e305130c13ddd391e0ab7cbaeb783945ae07a279c268cb05109c6cb"
 
 [[package]]
-name = "plugin-request-interfaces"
-version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c40cd370e6b48b7806ea749bf0aca1693b502de0c7d09fdd65eaa0c6ef6ec580"
-dependencies = [
- "regex",
- "rs-plugin-common-interfaces",
- "rusqlite",
- "serde",
- "serde_json",
- "strum",
- "strum_macros",
-]
-
-[[package]]
 name = "png"
 version = "0.17.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3152,15 +3137,12 @@ dependencies = [
  "nanoid",
  "ndarray",
  "ort",
- "plugin-request-interfaces",
  "query_external_ip",
  "rand",
  "rcgen",
  "regex",
  "reqwest",
  "rs-plugin-common-interfaces",
- "rs-plugin-lookup-interfaces",
- "rs-plugin-url-interfaces",
  "rsa",
  "rusqlite",
  "serde",
@@ -3335,37 +3317,11 @@ dependencies = [
 
 [[package]]
 name = "rs-plugin-common-interfaces"
-version = "0.11.1"
+version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc6ad4a2aa45e252341a2fa4478ec2791d1497fbe3c60d89d66dba8bdc1d5138"
+checksum = "9cb9a16cbec230ad7b19d8463441c2f8b4cf0fcfe7902169afae4df9c757a07c"
 dependencies = [
- "rusqlite",
- "serde",
- "serde_json",
- "strum",
- "strum_macros",
-]
-
-[[package]]
-name = "rs-plugin-lookup-interfaces"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0bdfd162d3f3b7db301acf616774900430c8c7e2dc734b60d9a1bfe16a61d592"
-dependencies = [
- "plugin-request-interfaces",
- "rs-plugin-common-interfaces",
- "serde",
- "serde_json",
- "strum",
- "strum_macros",
-]
-
-[[package]]
-name = "rs-plugin-url-interfaces"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "45b5376949651293f6359ecf1ee69142be7f0979d999c4a0c601d93d3df028a8"
-dependencies = [
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",

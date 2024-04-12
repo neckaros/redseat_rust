@@ -1,4 +1,4 @@
-use rs_plugin_url_interfaces::RsLink;
+use rs_plugin_common_interfaces::url::RsLink;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

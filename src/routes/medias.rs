@@ -5,7 +5,7 @@ use crate::{domain::media::{GroupMediaDownload, MediaDownloadUrl, MediaForUpdate
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
 use futures::TryStreamExt;
 use hyper::{header::ACCEPT_RANGES, StatusCode};
-use plugin_request_interfaces::RsRequest;
+use rs_plugin_common_interfaces::request::RsRequest;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::io::{AsyncRead, AsyncReadExt};

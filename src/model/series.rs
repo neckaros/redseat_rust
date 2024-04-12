@@ -66,12 +66,13 @@ impl SerieForUpdate {
 }
 
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct ExternalSerieImages {
     pub backdrop: Option<String>,
     pub logo: Option<String>,
     pub poster: Option<String>,
     pub still: Option<String>,
+    pub card: Option<String>,
 }
 
 impl ExternalSerieImages {
@@ -80,7 +81,7 @@ impl ExternalSerieImages {
             ImageType::Poster => self.poster,
             ImageType::Background => self.backdrop,
             ImageType::Still => self.still,
-            ImageType::Card => None,
+            ImageType::Card => self.card,
             ImageType::ClearLogo => self.logo,
             ImageType::ClearArt => None,
             ImageType::Custom(_) => None,
@@ -295,7 +296,7 @@ impl ModelController {
     
 	pub async fn serie_image(&self, library_id: &str, serie_id: &str, kind: Option<ImageType>, size: Option<ImageSize>, requesting_user: &ConnectedUser) -> crate::Result<FileStreamResult<AsyncReadPinBox>> {
         let kind = kind.unwrap_or(ImageType::Poster);
-        if MediasIds::is_id(&serie_id) {
+        if MediasIds::is_id(serie_id) {
             let mut serie_ids: MediasIds = serie_id.to_string().try_into()?;
 
             let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
@@ -311,7 +312,7 @@ impl ModelController {
                     let serie = self.trakt.get_serie(&serie_ids).await?;
                     serie_ids = serie.into();
                 }
-                let image_path = format!("cache/serie-{}-{}.webp", serie_id.replace(":", "-"), kind);
+                let image_path = format!("cache/serie-{}-{}.webp", serie_id.replace(':', "'"), kind);
 
                 if !local_provider.exists(&image_path).await {
                     let (_, mut writer) = local_provider.get_file_write_stream(&image_path).await?;
@@ -350,8 +351,20 @@ impl ModelController {
         self.update_serie_image(library_id, serie_id, kind, reader, requesting_user).await?;
         Ok(())
 	}
+
+    pub async fn get_serie_image_url(&self, ids: &MediasIds, kind: &ImageType) -> RsResult<Option<String>> {
+        let images = self.tmdb.serie_image(ids.clone()).await?.into_kind(kind.clone());
+        if images.is_none() {
+            let images = self.fanart.serie_image(ids.clone()).await?.into_kind(kind.clone());
+            Ok(images)
+        } else {
+            Ok(images)
+        }
+        
+    }
+
     pub async fn download_serie_image(&self, ids: &MediasIds, kind: &ImageType) -> crate::Result<AsyncReadPinBox> {
-        let images = self.tmdb.serie_image(ids.clone()).await?.into_kind(kind.clone()).ok_or(crate::Error::NotFound)?;
+        let images = self.get_serie_image_url(ids, kind).await?.ok_or(crate::Error::NotFound)?;
         let image_reader = reqwest::get(images).await?;
         let stream = image_reader.bytes_stream();
         let body_with_io_error = stream.map_err(|err| io::Error::new(io::ErrorKind::Other, err));

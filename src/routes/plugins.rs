@@ -1,11 +1,9 @@
 
 use crate::{domain::plugin::{PluginForAdd, PluginForInstall, PluginForUpdate}, model::{plugins::PluginQuery, users::ConnectedUser}, ModelController, Result};
 use axum::{extract::{Path, Query, State}, routing::{delete, get, patch, post}, Json, Router};
-use plugin_request_interfaces::RsRequest;
-use rs_plugin_common_interfaces::PluginType;
+use rs_plugin_common_interfaces::{request::RsRequest, url::RsLink, PluginType};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use rs_plugin_url_interfaces::RsLink;
 
 
 

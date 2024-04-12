@@ -55,6 +55,7 @@ impl TmdbImageResponse {
             logo: self.logos.and_then(|l| l.into_best()).and_then(|p| Some(p.full_path(&configuration.images.secure_base_url))),
             poster:  self.posters.and_then(|l| l.into_best()).and_then(|p| Some(p.full_path(&configuration.images.secure_base_url))),
             still: self.stills.and_then(|l| l.into_best()).and_then(|p| Some(p.full_path(&configuration.images.secure_base_url))),
+            ..Default::default()
         }
     }
 }

@@ -8,7 +8,7 @@ use rusqlite::{
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
 
-use crate::{domain::{library::{LibraryRole, LibraryType}, watched::Watched, MediasIds}, error::RsResult, tools::auth::{ClaimsLocal, ClaimsLocalType}};
+use crate::{domain::{library::{LibraryRole, LibraryType}, view_progress::{ViewProgress, ViewProgressForAdd}, watched::{Watched, WatchedForAdd}, MediasIds}, error::RsResult, tools::auth::{ClaimsLocal, ClaimsLocalType}};
 
 use super::{error::{Error, Result}, libraries::ServerLibraryForRead, medias::RsSort, store::sql::{users::WatchedQuery, SqlOrder}, ModelController};
 
@@ -173,19 +173,7 @@ impl PartialOrd for UserRole {
         Some(a.cmp(&b))
     }
 }
-/*
-impl FromStr for UserRole {
-    type Err = Error;
 
-    fn from_str(input: &str) -> Result<UserRole> {
-        match input {
-            "admin" => Ok(UserRole::Admin),
-            "read" => Ok(UserRole::Read),
-            "write" => Ok(UserRole::Write),
-            _ => Ok(UserRole::None),
-        }
-    }
-}*/
 impl FromSql for UserRole {
     fn column_result(value: ValueRef) -> FromSqlResult<Self> {
         String::column_result(value).and_then(|as_string| {
@@ -319,12 +307,57 @@ pub struct HistoryQuery {
     pub page_key: Option<u64>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")] 
+pub struct ViewProgressQuery {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub id: String,
+}
+
+
 
 
 impl ModelController {
     pub async fn get_watched(&self, query: HistoryQuery, user: &ConnectedUser) -> RsResult<Vec<Watched>> {
         user.check_role(&UserRole::Read)?;
         Ok(self.store.get_watched(query).await?)
+    }
+
+    pub async fn add_watched(&self, watched: WatchedForAdd, user: &ConnectedUser) -> RsResult<()> {
+        user.check_role(&UserRole::Read)?;
+        if let ConnectedUser::Server(user) = user {
+            self.store.add_watched(watched, user.id.clone()).await?
+        }
+        ;
+        Ok(())
+    }
+
+    pub async fn add_view_progress(&self, progress: ViewProgressForAdd, user: &ConnectedUser) -> RsResult<()> {
+        user.check_role(&UserRole::Read)?;
+        if let ConnectedUser::Server(user) = user {
+           self.store.add_view_progress(progress, user.id.clone()).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn get_view_progress(&self, ids: MediasIds, user: &ConnectedUser) -> RsResult<Option<ViewProgress>> {
+        user.check_role(&UserRole::Read)?;
+        let progress = match user {
+            ConnectedUser::Server(user) => self.store.get_view_progess( ids, user.id.clone()).await?,
+            _ => None
+        };
+        Ok(progress)
+    }
+
+    pub async fn get_view_progress_by_id(&self, id: String, user: &ConnectedUser) -> RsResult<Option<ViewProgress>> {
+        user.check_role(&UserRole::Read)?;
+        let media_id = MediasIds::try_from(id)?;
+        let progress = match user {
+            ConnectedUser::Server(user) => self.store.get_view_progess( media_id, user.id.clone()).await?,
+            _ => None
+        };
+        Ok(progress)
     }
 
     pub async fn get_upload_key(&self, key: String) -> RsResult<UploadKey> {

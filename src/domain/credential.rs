@@ -4,7 +4,7 @@ use serde_json::Value;
 
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "snake_case")] 
+#[serde(rename_all = "camelCase")]
 pub struct Credential {
     pub id: String,
 	pub name: String,

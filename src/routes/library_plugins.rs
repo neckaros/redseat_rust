@@ -1,11 +1,9 @@
 
 use crate::{domain::plugin::{PluginForAdd, PluginForInstall, PluginForUpdate}, model::{plugins::PluginQuery, users::ConnectedUser}, ModelController, Result};
 use axum::{extract::{Path, Query, State}, routing::{delete, get, patch, post}, Json, Router};
-use plugin_request_interfaces::RsRequest;
-use rs_plugin_common_interfaces::PluginType;
+use rs_plugin_common_interfaces::{request::RsRequest, url::RsLink, PluginType};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use rs_plugin_url_interfaces::RsLink;
 
 
 
@@ -15,6 +13,7 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/url/expand", post(handler_expand))
 
 		.route("/requests/process", post(handler_request_process))
+		.route("/requests/permanent", post(handler_request_permanent))
 		.route("/requests/url", get(handler_request_url))
 
 		.with_state(mc)
@@ -45,12 +44,12 @@ async fn handler_expand(Path(library_id): Path<String>, State(mc): State<ModelCo
 }
 
 
-async fn handler_request_url(State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ExpandQuery>) -> Result<Json<Value>> {
+async fn handler_request_url(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ExpandQuery>) -> Result<Json<Value>> {
 	let request = RsRequest {
 		url: query.url,
 		..Default::default()
 	};
-	let wasm = mc.exec_request(request, None, false, None, &user).await?;
+	let wasm = mc.exec_request(request, Some(library_id), false, None, &user).await?;
 	let body = match wasm {
 		crate::plugins::sources::SourceRead::Stream(_) => Json(json!({"stream": true})),
 		crate::plugins::sources::SourceRead::Request(r) => Json(json!(r)),
@@ -58,11 +57,17 @@ async fn handler_request_url(State(mc): State<ModelController>, user: ConnectedU
 	Ok(body)
 }
 
-async fn handler_request_process(State(mc): State<ModelController>, user: ConnectedUser, Json(request): Json<RsRequest>) -> Result<Json<Value>> {
-	let wasm = mc.exec_request(request, None, false, None, &user).await?;
+async fn handler_request_process(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Json(request): Json<RsRequest>) -> Result<Json<Value>> {
+	let wasm = mc.exec_request(request, Some(library_id), false, None, &user).await?;
 	let body = match wasm {
 		crate::plugins::sources::SourceRead::Stream(_) => Json(json!({"stream": true})),
 		crate::plugins::sources::SourceRead::Request(r) => Json(json!(r)),
 	};
+	Ok(body)
+}
+
+async fn handler_request_permanent(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Json(request): Json<RsRequest>) -> Result<Json<Value>> {
+	let request = mc.exec_permanent(request, Some(library_id), None, &user).await?;
+	let body = Json(json!(request));
 	Ok(body)
 }
