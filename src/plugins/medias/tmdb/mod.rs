@@ -34,7 +34,7 @@ impl TmdbContext {
 }
 
 impl MediasIds {
-    fn try_tmdb(self) -> crate::Result<u64> {
+    pub fn try_tmdb(self) -> crate::Result<u64> {
         self.tmdb.ok_or(crate::Error::NoMediaIdRequired(Box::new(self.clone())))
     }
 }

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use async_recursion::async_recursion;
 use extism::convert::Json;
 use futures::future::ok;
 use http::header::{CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE};
@@ -78,7 +79,10 @@ impl PluginManager {
 
     }
 
-    pub async fn request(&self, mut request: RsRequest, _savable: bool, plugins: impl Iterator<Item = PluginWithCredential>, progress: RsProgressCallback) -> RsResult<SourceRead> {
+    #[async_recursion]
+    pub async fn request(&self, mut request: RsRequest, _savable: bool, plugins: Vec<PluginWithCredential>, progress: RsProgressCallback) -> RsResult<SourceRead> {
+        let initial_request = request.clone();
+        
         let client = reqwest::Client::new();
         let r = client.head(&request.url).send().await;
         if let Ok(heads) = r {
@@ -96,7 +100,8 @@ impl PluginManager {
                 //println!("filename {}", filename);
             }
         }
-        for plugin_with_cred in plugins {
+        let mut processed_request = None;
+        for plugin_with_cred in plugins.iter() {
             if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
                 let mut plugin_m = plugin.plugin.lock().unwrap();
                 if plugin.infos.capabilities.contains(&PluginType::Request) {
@@ -110,7 +115,8 @@ impl PluginManager {
                         if res.mime.is_none() {
                             res.mime = get_mime_from_filename(&res.url);
                         }
-                        return Ok(SourceRead::Request(res));
+
+                        processed_request = Some(res);
                     } else if let Err((error, code)) = res {
                         if code != 404 {
                             log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request {} {:?}", code, error))
@@ -118,6 +124,16 @@ impl PluginManager {
                     }
                     
                 }
+            }
+        }
+        if let Some(processed) = processed_request {
+
+            if processed.status == RsRequestStatus::Intermediate && processed != initial_request {
+                println!("recurs");
+                let recursed = self.request(processed, false, plugins, progress).await?;
+                return Ok(recursed);
+            } else {
+                return Ok(SourceRead::Request(processed));
             }
         }
         if request.status == RsRequestStatus::NeedParsing || request.url.ends_with(".m3u8") || request.mime.as_deref().unwrap_or("no") == "application/vnd.apple.mpegurl" {
@@ -168,7 +184,7 @@ impl PluginManager {
         }
     }
 
-    pub async fn lookup(&self, query: RsLookupQuery, plugins: impl Iterator<Item = PluginWithCredential>) -> RsResult<Vec<RsLookupSourceResult>> {
+    pub async fn lookup(&self, query: RsLookupQuery, plugins: impl Iterator<Item = PluginWithCredential>) -> RsResult<Vec<RsRequest>> {
         let mut results = vec![];
         for plugin_with_cred in plugins {
             if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
@@ -184,7 +200,10 @@ impl PluginManager {
                     //println!("request {}", serde_json::to_string(&wrapped_query).unwrap());
                     let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<RsLookupSourceResult>>("lookup", Json(wrapped_query));
                     if let Ok(Json(res)) = res {
-                        results.push(res);
+                        match res {
+                            RsLookupSourceResult::Requests(mut request) => results.append(&mut request),
+                            _ => (),
+                        }
                     } else if let Err((error, code)) = res {
                         if code != 404 {
                             log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request {} {:?}", code, error))

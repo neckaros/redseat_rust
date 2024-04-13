@@ -105,7 +105,12 @@ impl ModelController {
 	}
 
     pub async fn fill_episode_watched_imdb(&self, episode: &mut Episode, requesting_user: &ConnectedUser) -> RsResult<()> {
-        let watched = self.get_watched(HistoryQuery { types: vec![MediaType::Episode], id: Some(episode.clone().into()), ..Default::default() }, requesting_user).await?;
+        let ids: MediasIds = episode.clone().into();
+        let watched = self.get_watched(HistoryQuery { types: vec![MediaType::Episode], id: Some(ids.clone()), ..Default::default() }, requesting_user).await?; 
+        let progress = self.get_view_progress(ids, requesting_user).await?;
+        if let Some(progress) = progress {
+            episode.progress = Some(progress.progress);
+        }
         let watched = watched.first();
         if let Some(watched) = watched {
             episode.watched = Some(watched.date);
@@ -115,11 +120,16 @@ impl ModelController {
     }
     pub async fn fill_episodes_watched_imdb(&self, episodes: &mut Vec<Episode>, requesting_user: &ConnectedUser) -> RsResult<()> {
         let watched = self.get_watched(HistoryQuery { types: vec![MediaType::Episode], ..Default::default() }, requesting_user).await?.into_iter().map(|e| (e.id, e.date)).collect::<HashMap<_, _>>();
+        let progresses = self.get_all_view_progress(HistoryQuery { types: vec![MediaType::Episode], ..Default::default() }, requesting_user).await?.into_iter().map(|e| (e.id, e.progress)).collect::<HashMap<_, _>>();
         for episode in episodes {
             if let Some(trakt) = episode.trakt {
                 let watch = watched.get(&format!("trakt:{}", trakt));
                 if let Some(watch) = watch {
                     episode.watched = Some(*watch);
+                }
+                let progress = progresses.get(&format!("trakt:{}", trakt));
+                if let Some(watch) = progress {
+                    episode.progress = Some(*watch);
                 }
             }
             episode.fill_imdb_ratings(&self.imdb).await;
@@ -227,11 +237,11 @@ impl ModelController {
                     let serie = self.trakt.get_serie(&serie_ids).await?;
                     serie_ids = serie.into();
                 }
-                let image_path = format!("cache/serie-{}-episode-{}x{}.webp", serie_id.replace(':', "'"), season, episode);
+                let image_path = format!("cache/serie-{}-episode-{}x{}.webp", serie_id.replace(':', "-"), season, episode);
 
                 if !local_provider.exists(&image_path).await {
-                    let (_, mut writer) = local_provider.get_file_write_stream(&image_path).await?;
                     let images = self.tmdb.episode_image(serie_ids, season, episode).await?.into_kind(ImageType::Still).ok_or(crate::Error::NotFound)?;
+                    let (_, mut writer) = local_provider.get_file_write_stream(&image_path).await?;
                     let image_reader = reqwest::get(images).await?;
                     let stream = image_reader.bytes_stream();
                     let body_with_io_error = stream.map_err(|err| io::Error::new(io::ErrorKind::Other, err));

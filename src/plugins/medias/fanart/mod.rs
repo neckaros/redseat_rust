@@ -118,7 +118,7 @@ impl FanArtContext {
 
 
     pub async fn movie_image(&self, ids: MediasIds) -> crate::Result<ExternalSerieImages> {
-        let id = ids.try_tvdb()?;
+        let id = ids.try_tmdb()?;
         let request = self.get_request_builder(&format!("movies/{}", id));
 
         let response = request.send().await?;

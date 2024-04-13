@@ -321,7 +321,12 @@ pub struct ViewProgressQuery {
 impl ModelController {
     pub async fn get_watched(&self, query: HistoryQuery, user: &ConnectedUser) -> RsResult<Vec<Watched>> {
         user.check_role(&UserRole::Read)?;
-        Ok(self.store.get_watched(query).await?)
+        if let ConnectedUser::Server(user) = user {
+            Ok(self.store.get_watched(query, user.id.clone()).await?)
+        } else {
+            Ok(vec![])
+        }
+        
     }
 
     pub async fn add_watched(&self, watched: WatchedForAdd, user: &ConnectedUser) -> RsResult<()> {
@@ -346,6 +351,15 @@ impl ModelController {
         let progress = match user {
             ConnectedUser::Server(user) => self.store.get_view_progess( ids, user.id.clone()).await?,
             _ => None
+        };
+        Ok(progress)
+    }
+
+    pub async fn get_all_view_progress(&self, query: HistoryQuery, user: &ConnectedUser) -> RsResult<Vec<ViewProgress>> {
+        user.check_role(&UserRole::Read)?;
+        let progress = match user {
+            ConnectedUser::Server(user) => self.store.get_all_view_progress( query, user.id.clone()).await?,
+            _ => vec![]
         };
         Ok(progress)
     }

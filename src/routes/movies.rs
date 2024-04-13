@@ -1,5 +1,5 @@
 
-use crate::{domain::{movie::{Movie, MovieForUpdate}, view_progress::{ViewProgressForAdd, ViewProgressLigh}, watched::{WatchedForAdd, WatchedLight}, MediasIds}, model::{episodes::EpisodeQuery, movies::MovieQuery, users::{ConnectedUser, HistoryQuery}, ModelController}, Error, Result};
+use crate::{domain::{movie::{Movie, MovieForUpdate}, view_progress::{ViewProgressForAdd, ViewProgressLigh}, watched::{WatchedForAdd, WatchedLight}, MediasIds}, model::{episodes::EpisodeQuery, movies::MovieQuery, users::{ConnectedUser, HistoryQuery}, ModelController}, tools::image_tools::ImageType, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post, put}, Json, Router};
 use futures::TryStreamExt;
 use rs_plugin_common_interfaces::{lookup::{RsLookupMovie, RsLookupQuery}, MediaType};
@@ -142,13 +142,26 @@ async fn handler_post(Path(library_id): Path<String>, State(mc): State<ModelCont
 
 
 async fn handler_image(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ImageRequestOptions>) -> Result<Response> {
-	let reader_response = mc.movie_image(&library_id, &movie_id, query.kind, query.size, &user).await?;
+	let reader_response = mc.movie_image(&library_id, &movie_id, query.kind.clone(), query.size.clone(), &user).await;
 
-	let headers = reader_response.hearders().map_err(|_| Error::GenericRedseatError)?;
-    let stream = ReaderStream::new(reader_response.stream);
-    let body = Body::from_stream(stream);
+	if let Ok(reader_response) =reader_response {
+		let headers = reader_response.hearders().map_err(|_| Error::GenericRedseatError)?;
+		let stream = ReaderStream::new(reader_response.stream);
+		let body = Body::from_stream(stream);
+		
+		Ok((headers, body).into_response())
+	} else if query.kind.as_ref().unwrap_or(&ImageType::Poster) == &ImageType::Card {
+		let reader_response = mc.movie_image(&library_id, &movie_id, Some(ImageType::Background), query.size, &user).await?;
+		let headers = reader_response.hearders().map_err(|_| Error::GenericRedseatError)?;
+		let stream = ReaderStream::new(reader_response.stream);
+		let body = Body::from_stream(stream);
+		
+		Ok((headers, body).into_response())
+	} else {
+		Err(Error::NotFound)
+	}
+
 	
-    Ok((headers, body).into_response())
 }
 
 #[debug_handler]

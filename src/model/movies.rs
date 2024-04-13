@@ -3,6 +3,7 @@
 
 use std::{collections::HashMap, io::{self, Read}, pin::Pin};
 
+use async_recursion::async_recursion;
 use futures::TryStreamExt;
 use nanoid::nanoid;
 use rs_plugin_common_interfaces::MediaType;
@@ -277,7 +278,7 @@ impl ModelController {
         Ok(new_movie)        
 	}
 
-    
+    #[async_recursion]
 	pub async fn movie_image(&self, library_id: &str, movie_id: &str, kind: Option<ImageType>, size: Option<ImageSize>, requesting_user: &ConnectedUser) -> crate::Result<FileStreamResult<AsyncReadPinBox>> {
         let kind = kind.unwrap_or(ImageType::Poster);
         if MediasIds::is_id(movie_id) {
@@ -286,7 +287,7 @@ impl ModelController {
             let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
             let existing_movie = store.get_movie_by_external_id(movie_ids.clone()).await?;
             if let Some(existing_movie) = existing_movie {
-                let image = self.library_image(library_id, ".movies", &existing_movie.id, Some(kind), size, requesting_user).await?;
+                let image = self.movie_image(library_id, &existing_movie.id, Some(kind), size, requesting_user).await?;
                 Ok(image)
             } else {
 
@@ -296,10 +297,10 @@ impl ModelController {
                     let movie = self.trakt.get_movie(&movie_ids).await?;
                     movie_ids = movie.into();
                 }
-                let image_path = format!("cache/movie-{}-{}.webp", movie_id.replace(':', "'"), kind);
+                let image_path = format!("cache/movie-{}-{}.webp", movie_id.replace(':', "-"), kind);
 
                 if !local_provider.exists(&image_path).await {
-                    let images = self.tmdb.movie_image(movie_ids).await?.into_kind(kind).ok_or(crate::Error::NotFound)?;
+                    let images = self.get_movie_image_url(&movie_ids, &kind).await?.ok_or(crate::Error::NotFound)?;
                     let (_, mut writer) = local_provider.get_file_write_stream(&image_path).await?;
                     let image_reader = reqwest::get(images).await?;
                     let stream = image_reader.bytes_stream();
@@ -335,8 +336,24 @@ impl ModelController {
         self.update_movie_image(library_id, movie_id, kind, reader, requesting_user).await?;
         Ok(())
 	}
+
+    pub async fn get_movie_image_url(&self, ids: &MediasIds, kind: &ImageType) -> RsResult<Option<String>> {
+        let images = if kind == &ImageType::Card {
+            None
+        } else { 
+            self.tmdb.movie_image(ids.clone()).await?.into_kind(kind.clone())
+        };
+        if images.is_none() {
+            let images = self.fanart.movie_image(ids.clone()).await?.into_kind(kind.clone());
+            Ok(images)
+        } else {
+            Ok(images)
+        }
+    }
+
+
     pub async fn download_movie_image(&self, ids: &MediasIds, kind: &ImageType) -> crate::Result<AsyncReadPinBox> {
-        let images = self.tmdb.movie_image(ids.clone()).await?.into_kind(kind.clone()).ok_or(crate::Error::NotFound)?;
+        let images = self.get_movie_image_url(ids, kind).await?.ok_or(crate::Error::NotFound)?;
         let image_reader = reqwest::get(images).await?;
         let stream = image_reader.bytes_stream();
         let body_with_io_error = stream.map_err(|err| io::Error::new(io::ErrorKind::Other, err));

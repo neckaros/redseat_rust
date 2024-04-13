@@ -187,7 +187,7 @@ impl SqliteStore {
     }
 
 
-    pub async fn get_watched(&self, query: HistoryQuery) -> Result<Vec<Watched>> {
+    pub async fn get_watched(&self, query: HistoryQuery, user_id: String) -> Result<Vec<Watched>> {
         let row = self.server_store.call( move |conn| { 
             let mut where_query = RsQueryBuilder::new();
             if let Some(q) = query.after {
@@ -200,7 +200,7 @@ impl SqliteStore {
                 }
                 where_query.add_where(SqlWhereType::Or(types));
             }
-
+            where_query.add_where(SqlWhereType::Equal("user_ref".to_owned(), Box::new(user_id)));
             if let Some(ids) = query.id {
                 let ids: Vec<String> = ids.into();
                 let ids = ids.into_iter().map(|f| Box::new(f) as Box<dyn ToSql>).collect();
@@ -231,6 +231,12 @@ impl SqliteStore {
                 user_id,
                 watched.date
             ])?;
+
+            conn.execute("DELETE FROM progress where type = ? and id = ? and user_ref = ?", params![
+                watched.kind,
+                watched.id,
+                user_id,
+            ])?;
             
             Ok(())
         }).await?;
@@ -256,6 +262,39 @@ impl SqliteStore {
     }
 
     
+    pub async fn get_all_view_progress(&self, query: HistoryQuery, user_id: String) -> Result<Vec<ViewProgress>> {
+        let row = self.server_store.call( move |conn| { 
+            let mut where_query = RsQueryBuilder::new();
+            if let Some(q) = query.after {
+                where_query.add_where(SqlWhereType::After("modified".to_owned(), Box::new(q)));
+            }
+            if !query.types.is_empty() {
+                let mut types = vec![];
+                for kind in query.types {
+                    types.push(SqlWhereType::Equal("type".to_owned(), Box::new(kind)));
+                }
+                where_query.add_where(SqlWhereType::Or(types));
+            }
+            where_query.add_where(SqlWhereType::Equal("user_ref".to_owned(), Box::new(user_id)));
+            if let Some(ids) = query.id {
+                let ids: Vec<String> = ids.into();
+                let ids = ids.into_iter().map(|f| Box::new(f) as Box<dyn ToSql>).collect();
+                where_query.add_where(SqlWhereType::In("id".to_owned(), ids));
+            }
+
+            where_query.add_oder(OrderBuilder::new(query.sort.to_string(), query.order));
+
+            let mut query = conn.prepare(&format!("SELECT type, id, user_ref, progress, parent, modified  FROM progress {}{}", where_query.format(), where_query.format_order()))?;
+
+            let rows = query.query_map(
+            where_query.values(), Self::row_to_view_progress,
+            )?;
+            let backups:Vec<ViewProgress> = rows.collect::<std::result::Result<Vec<ViewProgress>, rusqlite::Error>>()?; 
+            Ok(backups)
+        }).await?;
+        Ok(row)
+    }
+
 
     pub async fn get_view_progess(&self, ids: MediasIds, user_id: String) -> Result<Option<ViewProgress>> {
         let row = self.server_store.call( move |conn| { 
