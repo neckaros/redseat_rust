@@ -26,7 +26,7 @@ pub fn routes(mc: ModelController) -> Router {
 }
 
 async fn handler_list(State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<PluginQuery>) -> Result<Json<Value>> {
-	let libraries = mc.get_plugins(query, &user).await?;
+	let libraries = mc.get_all_plugins(query, &user).await?;
 	let body = Json(json!(libraries));
 	Ok(body)
 }

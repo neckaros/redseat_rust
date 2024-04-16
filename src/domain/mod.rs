@@ -25,7 +25,7 @@ pub mod progress;
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")] 
 pub enum ElementAction {
-    Removed,
+    Deleted,
     Added,
     Updated
 }

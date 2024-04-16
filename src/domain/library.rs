@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
-use strum_macros::EnumString;
+use strum_macros::{Display, EnumString};
 
 use super::ElementAction;
 
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct ServerLibrary {
     pub id: String,
 	pub name: String,
@@ -13,7 +13,10 @@ pub struct ServerLibrary {
     #[serde(rename = "type")]
     pub kind: LibraryType,
     pub crypt: Option<bool>,
-    pub settings: ServerLibrarySettings
+    pub settings: ServerLibrarySettings,
+
+    #[serde(default)]
+    pub hidden: bool,
 }
 
 
@@ -28,17 +31,20 @@ pub enum LibraryRole {
 	None,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default, EnumString, Display)]
 #[serde(rename_all = "camelCase")] 
+#[strum(serialize_all = "camelCase")]
 pub enum LibraryType {
 	Photos,
 	Shows,
 	Movies,
 	Iptv,
+    #[default]
+    Other,
 }
 
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")] 
 pub struct ServerLibrarySettings {
     #[serde(skip_serializing_if = "Option::is_none")]

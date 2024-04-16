@@ -3,7 +3,7 @@ use chrono::DateTime;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use crate::domain::movie::Movie;
-use crate::domain::serie::Serie;
+use crate::domain::serie::{Serie, SerieStatus};
 use crate::model::episodes::{EpisodeForUpdate, EpisodeQuery};
 use crate::model::movies::MovieQuery;
 use crate::model::series::SerieForUpdate;
@@ -68,7 +68,7 @@ impl RsSchedulerTask for RefreshTask {
                         } else {
                             log_info(crate::tools::log::LogServiceType::Scheduler, format!("Refreshed serie {}", serie.name));
                         }
-                        if serie.status != Some("ended".to_string()) && serie.status != Some("canceled".to_string()) {
+                        if serie.status != Some(SerieStatus::Ended) && serie.status != Some(SerieStatus::Canceled) {
                             let episodes = mc.refresh_episodes(&library.id, &serie.id, &connected_user).await;
                             if let Err(error) = episodes {
                                 log_error(crate::tools::log::LogServiceType::Scheduler, format!("Error refreshing serie {}: {:#}", serie.name, error));
@@ -129,6 +129,7 @@ impl RsSchedulerTask for RefreshTask {
                     stream.flush().await?
                 },
                 library::LibraryType::Iptv => {},
+                library::LibraryType::Other => {},
             }
         }
                 

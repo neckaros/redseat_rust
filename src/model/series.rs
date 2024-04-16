@@ -6,15 +6,32 @@ use std::{io::{self, Read}, pin::Pin};
 use async_recursion::async_recursion;
 use futures::TryStreamExt;
 use nanoid::nanoid;
+use rs_plugin_common_interfaces::lookup::RsLookupMovie;
+use rusqlite::{types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, ToSql};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::{fs::File, io::{AsyncRead, AsyncWriteExt, BufReader}};
 use tokio_util::io::StreamReader;
 
 
-use crate::{domain::{library::LibraryRole, people::{PeopleMessage, Person}, serie::{Serie, SeriesMessage}, ElementAction, MediaElement, MediasIds}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source}}, server::get_server_folder_path_array, tools::{image_tools::{resize_image_reader, ImageSize, ImageType}, log::log_info}};
+use crate::{domain::{library::LibraryRole, people::{PeopleMessage, Person}, serie::{Serie, SerieStatus, SerieWithAction, SeriesMessage}, ElementAction, MediaElement, MediasIds}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source}}, server::get_server_folder_path_array, tools::{image_tools::{resize_image_reader, ImageSize, ImageType}, log::log_info}};
 
 use super::{episodes::{EpisodeForUpdate, EpisodeQuery}, error::{Error, Result}, users::ConnectedUser, ModelController};
+
+
+impl FromSql for SerieStatus {
+    fn column_result(value: ValueRef) -> FromSqlResult<Self> {
+        String::column_result(value).and_then(|as_string| {
+            SerieStatus::try_from(&*as_string).map_err(|_| FromSqlError::InvalidType)
+        })
+    }
+}
+
+impl ToSql for SerieStatus {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        Ok(ToSqlOutput::from(self.to_string()))
+    }
+}
 
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -36,7 +53,7 @@ pub struct SerieForUpdate {
 	pub name: Option<String>,
     #[serde(rename = "type")]
     pub kind: Option<String>,
-    pub status: Option<String>,
+    pub status: Option<SerieStatus>,
     pub alt: Option<Vec<String>>,
     pub add_alts: Option<Vec<String>>,
     pub remove_alts: Option<Vec<String>>,
@@ -93,7 +110,7 @@ impl ExternalSerieImages {
 impl Serie {
     pub async fn fill_imdb_ratings(&mut self, imdb_context: &ImdbContext) {
         if let Some(imdb) = &self.imdb {
-            let rating = imdb_context.get_rating(&imdb).await.unwrap_or(None);
+            let rating = imdb_context.get_rating(imdb).await.unwrap_or(None);
             if let Some(rating) = rating {
                 self.imdb_rating = Some(rating.0);
                 self.imdb_votes = Some(rating.1);
@@ -150,6 +167,11 @@ impl ModelController {
         self.trakt.trending_shows().await
     }
 
+    pub async fn search_serie(&self, library_id: &str, query: RsLookupMovie, requesting_user: &ConnectedUser) -> RsResult<Vec<Serie>> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        let searched = self.trakt.search_show(&query).await?;
+		Ok(searched)
+	}
 
 
 
@@ -161,9 +183,9 @@ impl ModelController {
         if update.has_update() {
             let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
             store.update_serie(&serie_id, update).await?;
-            let person = store.get_serie(&serie_id).await?.ok_or(Error::NotFound)?;
-            self.send_serie(SeriesMessage { library: library_id.to_string(), action: ElementAction::Updated, series: vec![person.clone()] });
-            Ok(person)
+            let serie = store.get_serie(&serie_id).await?.ok_or(Error::NotFound)?;
+            self.send_serie(SeriesMessage { library: library_id.to_string(), series: vec![SerieWithAction { action: ElementAction::Updated, serie: serie.clone() }] });
+            Ok(serie)
         } else {
             let serie = self.get_serie(library_id, serie_id, requesting_user).await?.ok_or(Error::NotFound)?;
             Ok(serie)
@@ -175,7 +197,7 @@ impl ModelController {
 		self.for_connected_users(&message, |user, socket, message| {
             let r = user.check_library_role(&message.library, LibraryRole::Read);
 			if r.is_ok() {
-				let _ = socket.emit("tags", message);
+				let _ = socket.emit("series", message);
 			}
 		});
 	}
@@ -193,13 +215,14 @@ impl ModelController {
         new_serie.id = id.clone();
 		store.add_serie(new_serie).await?;
         let inserted_serie = self.get_serie(library_id, id, requesting_user).await?.ok_or(Error::NotFound)?;
-        self.send_serie(SeriesMessage { library: library_id.to_string(), action: ElementAction::Added, series: vec![inserted_serie.clone()] });
+        self.send_serie(SeriesMessage { library: library_id.to_string(), series: vec![SerieWithAction { action: ElementAction::Added, serie: inserted_serie.clone() }] });
         
         let mc = self.clone();
         let inserted_serie_id = inserted_serie.id.clone();
         let library_id = library_id.to_string();
         let requesting_user = requesting_user.clone();
         tokio::spawn(async move {
+            mc.refresh_serie(&library_id, &inserted_serie_id, &requesting_user).await.unwrap();
             mc.refresh_episodes(&library_id, &inserted_serie_id, &requesting_user).await.unwrap();
         });
 		Ok(inserted_serie)
@@ -208,14 +231,14 @@ impl ModelController {
 
     pub async fn remove_serie(&self, library_id: &str, serie_id: &str, requesting_user: &ConnectedUser) -> Result<Serie> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
-        if MediasIds::is_id(&serie_id) {
+        if MediasIds::is_id(serie_id) {
             return Err(Error::InvalidIdForAction("remove".to_string(), serie_id.to_string()))
         }
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
-        let existing = store.get_serie(&serie_id).await?;
+        let existing = store.get_serie(serie_id).await?;
         if let Some(existing) = existing { 
             store.remove_serie(serie_id.to_string()).await?;
-            self.send_serie(SeriesMessage { library: library_id.to_string(), action: ElementAction::Removed, series: vec![existing.clone()] });
+            self.send_serie(SeriesMessage { library: library_id.to_string(), series: vec![SerieWithAction { action: ElementAction::Deleted, serie: existing.clone() }] });
             Ok(existing)
         } else {
             Err(Error::NotFound)
@@ -257,18 +280,18 @@ impl ModelController {
         let all_series = self.get_series(&library_id, SerieQuery::default(), &requesting_user).await?;
         //Imdb rating
         for mut serie in all_series {
-            let existing_votes = serie.imdb_votes.unwrap_or(0).clone();
+            let existing_votes = serie.imdb_votes.unwrap_or(0);
             serie.fill_imdb_ratings(&self.imdb).await;
             let serieid = serie.id.clone();
             if existing_votes != serie.imdb_votes.unwrap_or(0) {
-                self.update_serie(&library_id, serie.id, SerieForUpdate { imdb_rating: serie.imdb_rating, imdb_votes: serie.imdb_votes, ..Default::default()}, &ConnectedUser::ServerAdmin).await?;
+                self.update_serie(library_id, serie.id, SerieForUpdate { imdb_rating: serie.imdb_rating, imdb_votes: serie.imdb_votes, ..Default::default()}, &ConnectedUser::ServerAdmin).await?;
             }
-            let episodes = self.get_episodes(&library_id, EpisodeQuery {serie_ref: Some(serieid.clone()), ..Default::default() }, &ConnectedUser::ServerAdmin).await?;
+            let episodes = self.get_episodes(library_id, EpisodeQuery {serie_ref: Some(serieid.clone()), ..Default::default() }, &ConnectedUser::ServerAdmin).await?;
             for mut episode in episodes {
-                let existing_votes = episode.imdb_votes.unwrap_or(0).clone();
+                let existing_votes = episode.imdb_votes.unwrap_or(0);
                 episode.fill_imdb_ratings(&self.imdb).await;
                 if existing_votes != episode.imdb_votes.unwrap_or(0) {
-                    self.update_episode(&library_id, serieid.clone(), episode.season, episode.number, EpisodeForUpdate { imdb_rating: serie.imdb_rating, imdb_votes: serie.imdb_votes, ..Default::default()}, &ConnectedUser::ServerAdmin).await?;
+                    self.update_episode(library_id, serieid.clone(), episode.season, episode.number, EpisodeForUpdate { imdb_rating: serie.imdb_rating, imdb_votes: serie.imdb_votes, ..Default::default()}, &ConnectedUser::ServerAdmin).await?;
                 }
             }
         }
@@ -378,7 +401,7 @@ impl ModelController {
     }
 
     pub async fn update_serie_image<T: AsyncRead>(&self, library_id: &str, serie_id: &str, kind: &ImageType, reader: T, requesting_user: &ConnectedUser) -> Result<()> {
-        if MediasIds::is_id(&serie_id) {
+        if MediasIds::is_id(serie_id) {
             return Err(Error::InvalidIdForAction("udpate image".to_string(), serie_id.to_string()))
         }
         self.update_library_image(library_id, ".series", serie_id, &Some(kind.clone()), reader, requesting_user).await

@@ -55,7 +55,8 @@ impl PeopleQuery {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct PersonForUpdate {
 	pub name: Option<String>,
     pub socials: Option<Vec<RsLink>>,
@@ -67,7 +68,7 @@ pub struct PersonForUpdate {
     pub add_alts: Option<Vec<String>>,
     pub remove_alts: Option<Vec<String>>,
 
-    
+    pub add_social_url: Option<String>,
     pub add_socials: Option<Vec<RsLink>>,
     pub remove_socials: Option<Vec<RsLink>>,
 
@@ -94,9 +95,14 @@ impl ModelController {
 		Ok(tag)
 	}
 
-    pub async fn update_person(&self, library_id: &str, tag_id: String, update: PersonForUpdate, requesting_user: &ConnectedUser) -> Result<Person> {
+    pub async fn update_person(&self, library_id: &str, tag_id: String, mut update: PersonForUpdate, requesting_user: &ConnectedUser) -> RsResult<Person> {
         requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        if let Some(origin) = &update.add_social_url {
+            let mut new_socials = update.add_socials.unwrap_or_default();
+            new_socials.push(self.exec_parse(Some(library_id.to_owned()), origin.to_owned(), requesting_user).await?);
+            update.add_socials = Some(new_socials);
+        }
 		store.update_person(&tag_id, update).await?;
         let person = store.get_person(&tag_id).await?.ok_or(Error::NotFound)?;
         self.send_people(PeopleMessage { library: library_id.to_string(), action: ElementAction::Updated, people: vec![person.clone()] });
@@ -108,7 +114,7 @@ impl ModelController {
 		self.for_connected_users(&message, |user, socket, message| {
             let r = user.check_library_role(&message.library, LibraryRole::Read);
 			if r.is_ok() {
-				let _ = socket.emit("tags", message);
+				let _ = socket.emit("people", message);
 			}
 		});
 	}
@@ -140,7 +146,7 @@ impl ModelController {
         let existing = store.get_person(&tag_id).await?;
         if let Some(existing) = existing { 
             store.remove_person(tag_id.to_string()).await?;
-            self.send_people(PeopleMessage { library: library_id.to_string(), action: ElementAction::Removed, people: vec![existing.clone()] });
+            self.send_people(PeopleMessage { library: library_id.to_string(), action: ElementAction::Deleted, people: vec![existing.clone()] });
             Ok(existing)
         } else {
             Err(Error::NotFound)

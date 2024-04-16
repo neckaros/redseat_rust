@@ -378,16 +378,25 @@ impl SqliteLibraryStore {
                 update.add_tags.add_or_set(found_tags);
             }
         }
+
+        if let Some(user) = update.origin.as_ref().and_then(|o| o.user.clone()) {
+            println!("user! {user}");
+            let mut ppl = update.people_lookup.unwrap_or_default();
+            ppl.push(user.to_owned());
+            update.people_lookup = Some(ppl);
+            println!("user! {:?}", update.people_lookup);
+        }
+        
         // Find people with lookup 
         if let Some(lookup_people) = update.people_lookup {
             let mut found_people: Vec<MediaItemReference> = vec![];
             for lookup_tag in lookup_people {
                 let found = self.get_people(PeopleQuery::from_name(&lookup_tag)).await?;
-                if let Some(person) = found.get(0) {
+                if let Some(person) = found.first() {
                     found_people.push(MediaItemReference { id: person.id.clone(), conf: Some(100) });
                 }
             }
-            if found_people.len() > 0 {
+            if !found_people.is_empty() {
                 update.add_people.add_or_set(found_people);
             }
         }
@@ -431,16 +440,16 @@ impl SqliteLibraryStore {
             where_query.add_update(&update.uploadkey, "uploaderkey");
 
             where_query.add_where(QueryWhereType::Equal("id", &id));
-            if where_query.columns_update.len() > 0 {
+            if !where_query.columns_update.is_empty() {
                 let update_sql = format!("UPDATE medias SET {} {}", where_query.format_update(), where_query.format());
                 conn.execute(&update_sql, where_query.values())?;
             }
 
-            let all_tags: Vec<String> = existing.tags.clone().unwrap_or(vec![]).into_iter().map(|t| t.id).collect();
+            let all_tags: Vec<String> = existing.tags.clone().unwrap_or(vec![]).into_iter().filter(|t| t.conf.unwrap_or(1) == 1).map(|t| t.id).collect();
             if let Some(add_tags) = update.add_tags {
                 for tag in add_tags {
                     if !all_tags.contains(&tag.id) {
-                        let r = conn.execute("INSERT INTO media_tag_mapping (media_ref, tag_ref, confidence) VALUES (? ,? , ?) ", params![id, tag.id, tag.conf]);
+                        let r = conn.execute("INSERT OR REPLACE INTO media_tag_mapping (media_ref, tag_ref, confidence) VALUES (? ,? , ?) ", params![id, tag.id, tag.conf]);
                         if let Err(error) = r {
                             log_info(LogServiceType::Source, format!("unable to add tag {:?}: {:?}", tag, error));
                         }

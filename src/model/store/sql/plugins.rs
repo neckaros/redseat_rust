@@ -79,6 +79,7 @@ impl SqliteStore {
 
             let mut query = conn.prepare(&format!("SELECT id, name, path, kind, settings, libraries, credential, credtype, desc, version FROM plugins 
             {}", where_query.format()))?;
+            //println!("query {:?}", query.expanded_sql());
             let rows = query.query_map(
             where_query.values(),
             Self::row_to_plugin,

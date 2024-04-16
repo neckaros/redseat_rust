@@ -1,10 +1,27 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use strum_macros::{Display, EnumString};
 
 use crate::{model::series::SerieForUpdate, tools::serialization_tools::rating_serializer};
 
 use super::ElementAction;
 
+#[derive(Serialize, Deserialize, Default, Debug, PartialEq, Clone, Display, EnumString)]
+#[serde(rename_all = "camelCase")]
+#[strum(serialize_all = "camelCase")]
+pub enum SerieStatus {
+    Returning,
+    InProduction,
+    PostProduction,
+    Planned,
+    Rumored,
+    Ended,
+    Released,
+    Canceled,
+    Pilot,
+    #[strum(default)] Other(String),
+    #[default] Unknown,
+}
 
 #[derive(Debug, Serialize, PartialEq, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -20,7 +37,7 @@ pub struct Serie {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alt: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub status: Option<String>,
+    pub status: Option<SerieStatus>,
     pub params: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub imdb: Option<String>,
@@ -55,8 +72,14 @@ pub struct Serie {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")] 
+pub struct SerieWithAction {
+    pub action: ElementAction,
+    pub serie: Serie
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")] 
 pub struct SeriesMessage {
     pub library: String,
-    pub action: ElementAction,
-    pub series: Vec<Serie>
+    pub series: Vec<SerieWithAction>
 }

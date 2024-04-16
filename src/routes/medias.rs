@@ -23,6 +23,7 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/download", post(handler_download))
 		.route("/request", post(handler_add_request))
 		.route("/:id/metadata", get(handler_get))
+		.route("/:id/metadata/refresh", get(handler_refresh))
 		.route("/:id/sharetoken", get(handler_sharetoken))
 		.route("/:id/predict", get(handler_predict))
 		.route("/:id", get(handler_get_file))
@@ -68,6 +69,14 @@ async fn handler_get(Path((library_id, media_id)): Path<(String, String)>, State
 	let body = Json(json!(library));
 	Ok(body)
 }
+
+async fn handler_refresh(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	mc.process_media(&library_id, &media_id, &user).await?;
+	let media = mc.get_media(&library_id, media_id, &user).await?;
+	let body = Json(json!(media));
+	Ok(body)
+}
+
 
 async fn handler_sharetoken(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<String> {
 	let sharetoken = mc.get_file_share_token(&library_id, &media_id, 6 * 60 * 60,  &user).await?;

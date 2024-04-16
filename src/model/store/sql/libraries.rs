@@ -33,8 +33,7 @@ impl ToSql for LibraryRole {
 impl FromSql for LibraryType {
     fn column_result(value: ValueRef) -> FromSqlResult<Self> {
         String::column_result(value).and_then(|as_string| {
-            let r = LibraryType::from_str(&as_string).map_err(|_| FromSqlError::InvalidType);
-            r
+            LibraryType::from_str(&as_string).map_err(|_| FromSqlError::InvalidType)
         })
     }
 }
@@ -89,6 +88,8 @@ impl SqliteStore {
                         kind:  row.get(4)?,
                         crypt:  row.get(5)?,
                         settings:  row.get(6)?,
+
+                        ..Default::default()
                     })
                 },
                 ).optional()?;
@@ -112,6 +113,8 @@ impl SqliteStore {
                     kind:  row.get(4)?,
                     crypt:  row.get(5)?,
                     settings:  row.get(6)?,
+
+                    ..Default::default()
                 })
             },
             )?;

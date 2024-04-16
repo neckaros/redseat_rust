@@ -81,7 +81,7 @@ impl ImageSize {
 
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Display)]
-#[serde(rename_all = "lowercase")] 
+#[serde(rename_all = "camelCase")]
 pub enum ImageType {
     Poster,
     Background,
@@ -189,6 +189,7 @@ impl ImageCommandBuilder {
         let output = cmd.wait_with_output().await?;
         
         let str = from_utf8(&output.stdout).map_err(|e| Error::Error(format!("Unable to parse output to string: {:?}", e)))?;
+
         let info: Vec<ImageMagickInfo> = serde_json::from_str(str)?;
         
         //writer.write_all(&output.stdout).await?;

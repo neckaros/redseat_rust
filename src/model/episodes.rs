@@ -13,7 +13,7 @@ use tokio::{fs::File, io::{AsyncRead, AsyncWriteExt, BufReader}};
 use tokio_util::io::StreamReader;
 
 
-use crate::{domain::{episode::{self, Episode, EpisodeWithShow, EpisodesMessage}, library::LibraryRole, people::{PeopleMessage, Person}, serie::{self, Serie, SeriesMessage}, ElementAction, MediasIds}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{AsyncReadPinBox, FileStreamResult, Source}}, tools::{array_tools::Dedup, clock::now, image_tools::{resize_image_reader, ImageSize, ImageType}, log::log_info}};
+use crate::{domain::{episode::{self, Episode, EpisodeWithAction, EpisodeWithShow, EpisodesMessage}, library::LibraryRole, people::{PeopleMessage, Person}, serie::{self, Serie, SeriesMessage}, ElementAction, MediasIds}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{AsyncReadPinBox, FileStreamResult, Source}}, tools::{array_tools::Dedup, clock::now, image_tools::{resize_image_reader, ImageSize, ImageType}, log::log_info}};
 
 use super::{error::{Error, Result}, medias::{RsSort, RsSortOrder}, store::sql::SqlOrder, users::{ConnectedUser, HistoryQuery}, ModelController};
 
@@ -96,9 +96,35 @@ impl Episode {
 impl ModelController {
 
 	pub async fn get_episodes(&self, library_id: &str, query: EpisodeQuery, requesting_user: &ConnectedUser) -> RsResult<Vec<Episode>> {
+        if let Some(serie_id) = &query.serie_ref {
+            println!("rfsdef");
+            return self.get_episodes_by_id(library_id, serie_id.to_owned(), query, requesting_user).await;
+        }
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         let mut episodes = store.get_episodes(query).await?;
+
+        self.fill_episodes_watched_imdb(&mut episodes, requesting_user).await?;
+		Ok(episodes)
+	}
+
+    pub async fn get_episodes_by_id(&self, library_id: &str, serie_id: String, mut query: EpisodeQuery, requesting_user: &ConnectedUser) -> RsResult<Vec<Episode>> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let mut episodes = if MediasIds::is_id(&serie_id) {
+            let id: MediasIds = serie_id.try_into().map_err(|_| Error::NotFound)?;
+            let serie = store.get_serie_by_external_id(id.clone()).await?;
+            println!("rfsdef {:?}, {:?}", serie, id);
+            if let Some(serie) = serie {
+                query.serie_ref = Some(serie.id);
+                store.get_episodes(query).await?
+            } else {
+                self.trakt.all_episodes(&id).await.map_err(|_| Error::NotFound)?
+                
+            }
+        } else {
+            store.get_episodes(query).await?
+        };
 
         self.fill_episodes_watched_imdb(&mut episodes, requesting_user).await?;
 		Ok(episodes)
@@ -163,12 +189,12 @@ impl ModelController {
 		Ok(episode)
 	}
 
-    pub async fn update_episode(&self, library_id: &str, serie_id: String, season: u32, number: u32, update: EpisodeForUpdate, requesting_user: &ConnectedUser) -> Result<Episode> {
+    pub async fn update_episode(&self, library_id: &str, serie_id: String, season: u32, number: u32, update: EpisodeForUpdate, requesting_user: &ConnectedUser) -> RsResult<Episode> {
         requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
 		store.update_episode(&serie_id, season, number, update).await?;
-        let episode = store.get_episode(&serie_id, season, number).await?.ok_or(Error::NotFound)?;
-        self.send_episode(EpisodesMessage { library: library_id.to_string(), action: ElementAction::Updated, episodes: vec![episode.clone()] });
+        let episode = self.get_episode(library_id, serie_id, season, number, requesting_user).await?;
+        self.send_episode(EpisodesMessage { library: library_id.to_string(), episodes: vec![EpisodeWithAction {action: ElementAction::Updated, episode: episode.clone()}] });
         Ok(episode)
 	}
 
@@ -177,7 +203,7 @@ impl ModelController {
 		self.for_connected_users(&message, |user, socket, message| {
             let r = user.check_library_role(&message.library, LibraryRole::Read);
 			if r.is_ok() {
-				let _ = socket.emit("tags", message);
+				let _ = socket.emit("episodes", message);
 			}
 		});
 	}
@@ -188,7 +214,7 @@ impl ModelController {
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
 		store.add_episode(new_serie.clone()).await?;
         let new_episode = self.get_episode(library_id, new_serie.serie, new_serie.season, new_serie.number, requesting_user).await?;
-        self.send_episode(EpisodesMessage { library: library_id.to_string(), action: ElementAction::Added, episodes: vec![new_episode.clone()] });
+        self.send_episode(EpisodesMessage { library: library_id.to_string(), episodes: vec![EpisodeWithAction {action: ElementAction::Added, episode: new_episode.clone()}] });
 		Ok(new_episode)
 	}
 
@@ -199,7 +225,7 @@ impl ModelController {
         let existing = store.get_episode(serie_id, season, number).await?;
         if let Some(existing) = existing { 
             store.remove_episode(serie_id.to_string(), season, number).await?;
-            self.send_episode(EpisodesMessage { library: library_id.to_string(), action: ElementAction::Removed, episodes: vec![existing.clone()] });
+            self.send_episode(EpisodesMessage { library: library_id.to_string(), episodes: vec![EpisodeWithAction {action: ElementAction::Deleted, episode: existing.clone()}] });
             Ok(existing)
         } else {
             Err(Error::NotFound)
@@ -208,7 +234,7 @@ impl ModelController {
 
     pub async fn refresh_episodes(&self, library_id: &str, serie_id: &str, requesting_user: &ConnectedUser) -> RsResult<Vec<Episode>> {
         let ids = self.get_serie_ids(library_id, serie_id, requesting_user).await?;
-        let all_episodes = self.trakt.all_episodes(&ids).await?;
+        let all_episodes: Vec<Episode> = self.trakt.all_episodes(&ids).await?.into_iter().map(|mut e| {e.serie = serie_id.to_owned(); e}).collect();
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         store.remove_all_serie_episodes(serie_id.to_string()).await?;
         let mut new_episodes: Vec<Episode> = vec![];

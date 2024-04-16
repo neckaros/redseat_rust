@@ -1,10 +1,12 @@
 use chrono::{DateTime, FixedOffset};
 use reqwest::{Client, Url};
+use rs_plugin_common_interfaces::lookup::RsLookupMovie;
 use tower::Service;
 use crate::{domain::{episode::Episode, movie::Movie, serie::Serie, MediasIds}, plugins::medias::trakt::{trakt_episode::TraktSeasonWithEpisodes, trakt_show::TraktFullShow}, tools::clock::{Clock, RsNaiveDate}, Error, Result};
 
-use self::{trakt_episode::TraktFullEpisode, trakt_movie::{TraktFullMovie, TraktRelease, TraktReleaseType, TraktReleases, TraktTrendingMoviesResult}, trakt_show::TraktTrendingShowResult};
+use self::{trakt_episode::TraktFullEpisode, trakt_movie::{TraktFullMovie, TraktMovieSearchElement, TraktRelease, TraktReleaseType, TraktReleases, TraktTrendingMoviesResult}, trakt_show::{TraktShowSearchElement, TraktTrendingShowResult}};
 // Context required for all requests
+use unidecode::unidecode;
 
 mod trakt_show;
 mod trakt_episode;
@@ -57,9 +59,22 @@ impl TraktContext {
         let url = self.base_url.join(&format!("shows/{}?extended=full", id)).unwrap();
         let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
         let show = r.json::<TraktFullShow>().await?;
+        
         let show_nous: Serie = show.into();
         Ok(show_nous)
     }
+
+    pub async fn search_show(&self, search: &RsLookupMovie) -> crate::Result<Vec<Serie>> {
+
+        let url = self.base_url.join(&format!("search/show?extended=full&query={}", unidecode(&search.name))).unwrap();
+
+        let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
+
+        let shows: Vec<Serie> = r.json::<Vec<TraktShowSearchElement>>().await?.into_iter().map(|m| Serie::from(m.show)).collect();
+      
+        Ok(shows)
+    }
+
 
     pub async fn trending_shows(&self) -> crate::Result<Vec<Serie>> {
         let url = self.base_url.join("shows/trending?extended=full").unwrap();
@@ -69,17 +84,11 @@ impl TraktContext {
     }
 
     pub async fn all_episodes(&self, id: &MediasIds) -> crate::Result<Vec<Episode>> {
-        let serie_id = id.redseat.as_ref().ok_or(Error::NotFound)?;
-        let id = if let Some(imdb) = &id.imdb {
-            Ok(imdb.to_string())
-        } else if let Some(trakt) = &id.trakt {
-            Ok(trakt.to_string())
-        } else {
-            Err(Error::NoMediaIdRequired(Box::new(id.clone())))
-        }?;
-        let url = self.base_url.join(&format!("shows/{}/seasons?extended=full,episodes", id)).unwrap();
+        let serie_id = id.clone().as_id_for_trakt().ok_or(Error::Error(format!("Unable to request trakt. No imdb or trakt id for: {:?}", id)))?;
+        let url = self.base_url.join(&format!("shows/{}/seasons?extended=full,episodes", serie_id)).unwrap();
         let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
-        let episodes = r.json::<Vec<TraktSeasonWithEpisodes>>().await?.into_iter().flat_map(|s| s.episodes).map(|e| e.into_trakt(serie_id.clone())).collect::<Vec<_>>();
+        let best_serie_id = id.clone().into_best().unwrap_or(serie_id.to_owned());
+        let episodes = r.json::<Vec<TraktSeasonWithEpisodes>>().await?.into_iter().flat_map(|s| s.episodes).map(|e| e.into_trakt(best_serie_id.clone())).collect::<Vec<_>>();
         Ok(episodes)
     }
 
@@ -152,6 +161,16 @@ impl TraktContext {
             movie_nous.airdate = theatrical.and_then(|t| Some(t.utc().ok()?.timestamp_millis()));
         }
         Ok(movie_nous)
+    }
+
+    pub async fn search_movie(&self, search: &RsLookupMovie) -> crate::Result<Vec<Movie>> {
+
+        let url = self.base_url.join(&format!("search/movie?extended=full&query={}", unidecode(&search.name))).unwrap();
+
+        let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
+        let movies: Vec<Movie> = r.json::<Vec<TraktMovieSearchElement>>().await?.into_iter().map(|m| Movie::from(m.movie)).collect();
+      
+        Ok(movies)
     }
 
 

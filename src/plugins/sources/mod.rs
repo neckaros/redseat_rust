@@ -1,11 +1,12 @@
 use std::{fmt::{self, Debug}, fs::{remove_dir, remove_dir_all, remove_file}, io, path::PathBuf, pin::Pin, str::FromStr, sync::Arc};
 use async_recursion::async_recursion;
-use axum::{async_trait, body::Body, response::IntoResponse};
+use axum::{async_trait, body::Body, extract::Request, response::IntoResponse};
 use futures::{future::BoxFuture, Future, Stream, StreamExt, TryStreamExt};
 use hyper::{header, HeaderMap};
 use mime::{Mime, APPLICATION_OCTET_STREAM};
 use nanoid::nanoid;
-use rs_plugin_common_interfaces::request::{RsRequest, RsRequestStatus};
+use reqwest::RequestBuilder;
+use rs_plugin_common_interfaces::request::{RsCookies, RsRequest, RsRequestStatus};
 use serde::{Deserialize, Serialize};
 use tokio::{fs::File, io::{AsyncRead, AsyncWrite, BufReader}, sync::{mpsc::Sender, Mutex}};
 
@@ -135,15 +136,47 @@ pub enum SourceRead {
 
 type FuncResult = dyn Future<Output=crate::model::error::Result<RsRequest>>;
 
+pub trait RsRequestHeader {
+    fn add_request_headers(self, request: &RsRequest, range: &Option<RangeDefinition>) -> RsResult<RequestBuilder>;
+}
+impl RsRequestHeader for RequestBuilder {
+    fn add_request_headers(self, request: &RsRequest, range: &Option<RangeDefinition>) -> RsResult<Self> {
+        let mut headers = reqwest::header::HeaderMap::new();
+        if let Some(cookies) = &request.cookies {
+            let (key, value) = cookies.headers();
+            headers.insert(reqwest::header::HeaderName::from_lowercase(key.to_lowercase().as_bytes()).map_err(|_| Error::UnableToFormatHeaders)?, reqwest::header::HeaderValue::from_str(&value).map_err(|_| Error::UnableToFormatHeaders)?);
+        }
+        for (key, value) in request.headers.as_ref().unwrap_or(&vec![]) {
+            headers.insert(reqwest::header::HeaderName::from_lowercase(key.to_lowercase().as_bytes()).map_err(|_| Error::UnableToFormatHeaders)?, reqwest::header::HeaderValue::from_str(value).map_err(|_| Error::UnableToFormatHeaders)?);
+        }
+        
+
+        if let Some(referer) = &request.referer {
+
+            headers.insert(reqwest::header::REFERER, reqwest::header::HeaderValue::from_str(referer).map_err(|_| Error::UnableToFormatHeaders)?);
+        }
+        if let Some(range) = range {
+            let (key, val) = range.header();
+            headers.insert(key, val);
+        }
+
+        headers.insert(reqwest::header::USER_AGENT, reqwest::header::HeaderValue::from_str("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36").map_err(|_| Error::UnableToFormatHeaders)?);
+        
+        let request = self.headers(headers);
+        Ok(request)
+    }
+}
+
+
 impl SourceRead { 
     #[async_recursion]
     pub async fn into_reader(self, library_id: &str, range: Option<RangeDefinition>, progress: Option<Sender<RsProgress>>, mc: Option<(ModelController, &ConnectedUser)>) -> RsResult<FileStreamResult<AsyncReadPinBox>> {
+
         match self {
             SourceRead::Stream(reader) => {
                 Ok(reader)
             },
             SourceRead::Request(request) => {
-
                 match request.status {
                     RsRequestStatus::Unprocessed | RsRequestStatus::NeedParsing => {
                         if let Some((mc, user)) = mc {
@@ -154,26 +187,14 @@ impl SourceRead {
                         }
                     },
                     RsRequestStatus::FinalPrivate | RsRequestStatus::FinalPublic => {
-                        let mut headers = reqwest::header::HeaderMap::new();
-                        for (key, value) in request.headers.unwrap_or(vec![]) {
-                            headers.insert(reqwest::header::HeaderName::from_lowercase(key.to_lowercase().as_bytes()).map_err(|_| Error::UnableToFormatHeaders)?, reqwest::header::HeaderValue::from_str(&value).map_err(|_| Error::UnableToFormatHeaders)?);
-                        }
-                         if let Some(range) = range {
-                             let (key, val) = range.header();
-                             headers.insert(key, val);
-                         }
-                        
+                      
                         let client = reqwest::Client::new();
-                        let r = client.get(request.url)
-                            .headers(headers)
+                        let r = client.get(request.url.clone())
+                            .add_request_headers(&request, &range)?
                             .send().await?;
 
                         let result_headers: &reqwest::header::HeaderMap = r.headers();
-                        let accept_range = if result_headers.get(reqwest::header::ACCEPT_RANGES).is_some() {
-                            true
-                        } else {
-                            false
-                        };
+                        let accept_range = result_headers.get(reqwest::header::ACCEPT_RANGES).is_some();
                         let range_response = if let Some(range) = result_headers.get(reqwest::header::CONTENT_RANGE) {
                             RangeResponse::from_str(range.to_str().map_err(|_| crate::Error::Error("Unable to get range header".to_owned()))?).ok()  
                         } else {

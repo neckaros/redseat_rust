@@ -217,6 +217,7 @@ pub struct MediaForUpdate {
     pub lat: Option<usize>,
 
     pub origin: Option<RsLink>,
+    pub origin_url: Option<String>,
     pub movie: Option<String>,
 
     pub lang: Option<String>,

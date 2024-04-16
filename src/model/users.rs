@@ -128,6 +128,13 @@ impl ConnectedUser {
             Err(Error::NotServerConnected)
         }
     }
+
+    pub fn has_hidden_library(&self, library_id: String) -> bool {
+        match self {
+            ConnectedUser::Server(user) => user.preferences.hidden_libraries.contains(&library_id),
+            _ => false,
+        }
+    }
 }
 
 // region:    --- User Role

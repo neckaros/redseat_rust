@@ -28,6 +28,8 @@ pub struct ImageRequestOptions {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct ImageUploadOptions {
+    #[serde(rename = "type")]
     kind: ImageType
 }

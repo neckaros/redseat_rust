@@ -9,33 +9,7 @@ use crate::{domain::{library::{LibraryMessage, LibraryRole, LibraryType, ServerL
 use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
 
 
-// region:    --- Library type
 
-impl FromStr for LibraryType {
-    type Err = Error;
-    fn from_str(input: &str) -> Result<LibraryType> {
-        match input {
-            "photos"  => Ok(LibraryType::Photos),
-            "shows"  => Ok(LibraryType::Shows),
-            "movies"  => Ok(LibraryType::Movies),
-            "iptv"     => Ok(LibraryType::Iptv),
-            _      => Err(Error::UnableToParseEnum),
-        }
-    }
-}
-
-impl ToString for LibraryType {
-    fn to_string(&self) -> String {
-        match &self {
-            LibraryType::Photos => "photos",
-            LibraryType::Shows => "shows",
-            LibraryType::Movies => "movies",
-            LibraryType::Iptv => "iptv",
-        }.to_string()
-    }
-}
-
-// endregion:    --- 
 
 // region:    --- Library Role
 
@@ -95,7 +69,7 @@ pub struct ServerLibraryInvitation {
 }
 
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct ServerLibraryForRead {
     pub id: String,
 	pub name: String,
@@ -110,7 +84,11 @@ pub struct ServerLibraryForRead {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub settings: Option<ServerLibrarySettings>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub roles: Option<Vec<LibraryRole>>
+    pub roles: Option<Vec<LibraryRole>>,
+
+    
+    #[serde(default)]
+    pub hidden: bool,
 }
 impl From<ServerLibrary> for ServerLibraryForRead {
     fn from(lib: ServerLibrary) -> Self {
@@ -122,7 +100,9 @@ impl From<ServerLibrary> for ServerLibraryForRead {
             kind: lib.kind,
             crypt: lib.crypt,
             settings:Some(lib.settings),
-            roles: None
+            roles: None,
+
+            ..Default::default()
         }
     }
 }
@@ -136,7 +116,8 @@ impl ServerLibraryForRead {
             kind: lib.kind,
             crypt: lib.crypt,
             settings:Some(lib.settings),
-            roles: Some(roles.to_owned())
+            roles: Some(roles.to_owned()),
+            ..Default::default()
         }
     }
 }
@@ -162,11 +143,14 @@ pub struct ServerLibraryForAdd {
 }
  
 pub(super) fn map_library_for_user(library: ServerLibrary, user: &ConnectedUser) -> Option<ServerLibraryForRead> {
+    
+    let hidden = user.has_hidden_library(library.id.clone());
     match user {
         ConnectedUser::Server(user) => {
             let rights = user.libraries.iter().find(|x| x.id == library.id);
             if let Some(rights) = rights {
                 let mut library_out = ServerLibraryForRead::into_with_role(library, &rights.roles);
+                library_out.hidden = hidden;
                 if !rights.has_role(&LibraryRole::Admin) {
                     library_out.root = None;
                     library_out.settings = None;
@@ -271,6 +255,8 @@ impl ModelController {
                 kind: library_for_add.kind,
                 crypt: library_for_add.crypt,
                 settings: library_for_add.settings,
+
+                ..Default::default()
             };
         self.store.add_library(library).await?;
         let user_id = requesting_user.user_id()?;
@@ -291,7 +277,7 @@ impl ModelController {
         if let Some(library) = library { 
             self.cache_remove_library(&library.id).await;
             self.store.remove_library(library_id.to_string()).await?;
-            self.send_library(LibraryMessage { action: crate::domain::ElementAction::Removed, library: library.clone() });
+            self.send_library(LibraryMessage { action: crate::domain::ElementAction::Deleted, library: library.clone() });
             Ok(ServerLibraryForRead::from(library))
         } else {
             Err(Error::NotFound)

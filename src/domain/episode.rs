@@ -73,11 +73,17 @@ pub struct EpisodeWithShow {
     pub episode: Episode
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")] 
+pub struct EpisodeWithAction {
+    pub action: ElementAction,
+    pub episode: Episode
+}
+
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")] 
 pub struct EpisodesMessage {
     pub library: String,
-    pub action: ElementAction,
-    pub episodes: Vec<Episode>
+    pub episodes: Vec<EpisodeWithAction>
 }

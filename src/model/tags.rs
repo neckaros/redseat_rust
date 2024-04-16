@@ -243,7 +243,7 @@ impl ModelController {
             let mut children = self.get_tags(library_id, TagQuery::new_with_path(existing.childs_path()), requesting_user).await?;
             children.push(existing.clone());
             store.remove_tag(tag_id.to_string()).await?;
-            self.send_tags(TagMessage { library: library_id.to_string(), action: ElementAction::Removed, tags: children });
+            self.send_tags(TagMessage { library: library_id.to_string(), action: ElementAction::Deleted, tags: children });
             Ok(existing)
         } else {
             Err(Error::NotFound)

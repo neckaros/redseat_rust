@@ -6,29 +6,56 @@ use std::{collections::HashMap, io::{self, Read}, pin::Pin};
 use async_recursion::async_recursion;
 use futures::TryStreamExt;
 use nanoid::nanoid;
-use rs_plugin_common_interfaces::MediaType;
+use rs_plugin_common_interfaces::{lookup::RsLookupMovie, MediaType};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use strum_macros::EnumString;
 use tokio::{fs::File, io::{AsyncRead, AsyncWriteExt, BufReader}};
 use tokio_util::io::StreamReader;
 
 
 use crate::{domain::{library::LibraryRole, movie::{Movie, MovieForUpdate, MoviesMessage}, people::{PeopleMessage, Person}, ElementAction, MediaElement, MediasIds}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source}}, server::get_server_folder_path_array, tools::{image_tools::{resize_image_reader, ImageSize, ImageType}, log::log_info}};
 
-use super::{error::{Error, Result}, users::{ConnectedUser, HistoryQuery}, ModelController};
+use super::{error::{Error, Result}, store::sql::SqlOrder, users::{ConnectedUser, HistoryQuery}, ModelController};
+
+
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, strum_macros::Display,EnumString, Default)]
+#[strum(serialize_all = "camelCase")]
+#[serde(rename_all = "camelCase")]
+#[serde(untagged)]
+pub enum RsMovieSort {
+
+    Modified,
+    Added,
+    Created,
+    #[default]
+    Name,
+    Digitalairdate,
+    #[strum(default)]
+    Custom(String)
+}
 
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct MovieQuery {
-    pub after: Option<u64>
+    pub after: Option<u64>,
+    pub in_digital: Option<bool>,
+
+    pub watched: Option<bool>,
+
+    #[serde(default)]
+    pub sort: RsMovieSort,
+    pub order: Option<SqlOrder>,
 }
+
 
 impl MovieQuery {
     pub fn new_empty() -> MovieQuery {
-        MovieQuery { after: None }
+        MovieQuery { after: None, ..Default::default() }
     }
     pub fn from_after(after: u64) -> MovieQuery {
-        MovieQuery { after: Some(after) }
+        MovieQuery { after: Some(after), ..Default::default() }
     }
 }
 
@@ -73,9 +100,13 @@ impl ModelController {
 	pub async fn get_movies(&self, library_id: &str, query: MovieQuery, requesting_user: &ConnectedUser) -> RsResult<Vec<Movie>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let watched_query = query.watched;
 		let mut movies = store.get_movies(query).await?;
 
         self.fill_movies_watched(&mut movies, requesting_user).await?;
+        if let Some(watched) = watched_query {
+            movies.retain(|m| if watched { m.watched.is_some() } else { m.watched.is_none() });
+        }
 		Ok(movies)
 	}
 
@@ -91,7 +122,6 @@ impl ModelController {
                 Ok(movie)
             } else {
                 let mut trakt_movie = self.trakt.get_movie(&id).await.map_err(|_| Error::NotFound)?;
-                trakt_movie.fill_imdb_ratings(&self.imdb).await;
                 self.fill_movie_watched(&mut trakt_movie, requesting_user).await?;
                 Ok(trakt_movie)
             }
@@ -102,7 +132,15 @@ impl ModelController {
         }
 	}
 
+    
+    pub async fn search_movie(&self, library_id: &str, query: RsLookupMovie, requesting_user: &ConnectedUser) -> RsResult<Vec<Movie>> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        let searched = self.trakt.search_movie(&query).await?;
+		Ok(searched)
+	}
+
     pub async fn fill_movie_watched(&self, movie: &mut Movie, requesting_user: &ConnectedUser) -> RsResult<()> {
+        movie.fill_imdb_ratings(&self.imdb).await;
         let watched = self.get_watched(HistoryQuery { types: vec![MediaType::Movie], id: Some(movie.clone().into()), ..Default::default() }, requesting_user).await?;
         let watched = watched.first();
         if let Some(watched) = watched {
@@ -113,6 +151,7 @@ impl ModelController {
     pub async fn fill_movies_watched(&self, movies: &mut Vec<Movie>, requesting_user: &ConnectedUser) -> RsResult<()> {
         let watched = self.get_watched(HistoryQuery { types: vec![MediaType::Movie], ..Default::default() }, requesting_user).await?.into_iter().map(|e| (e.id, e.date)).collect::<HashMap<_, _>>();
         for movie in movies {
+            movie.fill_imdb_ratings(&self.imdb).await;
             if let Some(trakt) = movie.trakt {
                 let watch = watched.get(&format!("trakt:{}", trakt));
                 if let Some(watch) = watch {
@@ -139,6 +178,7 @@ impl ModelController {
 
     pub async fn trending_movies(&self, requesting_user: &ConnectedUser )  -> RsResult<Vec<Movie>> {
         let mut movies = self.trakt.trending_movies().await?;
+        
         self.fill_movies_watched(&mut movies, requesting_user).await?;
         Ok(movies)
     }
@@ -183,7 +223,7 @@ impl ModelController {
 		self.for_connected_users(&message, |user, socket, message| {
             let r = user.check_library_role(&message.library, LibraryRole::Read);
 			if r.is_ok() {
-				let _ = socket.emit("tags", message);
+				let _ = socket.emit("movies", message);
 			}
 		});
 	}
@@ -215,7 +255,7 @@ impl ModelController {
         let existing = store.get_movie(movie_id).await?;
         if let Some(existing) = existing { 
             store.remove_movie(movie_id.to_string()).await?;
-            self.send_movie(MoviesMessage { library: library_id.to_string(), action: ElementAction::Removed, movies: vec![existing.clone()] });
+            self.send_movie(MoviesMessage { library: library_id.to_string(), action: ElementAction::Deleted, movies: vec![existing.clone()] });
             Ok(existing)
         } else {
             Err(Error::NotFound)

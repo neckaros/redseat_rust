@@ -106,7 +106,6 @@ pub fn predict_net(path: PathBuf, bgr: bool, normalize: bool, buffer_image: Vec<
     };
     let size = size.ok_or(Error::Error("Unable to get dimensions".into()))?;
     let resized = prepare_image(buffer_image, size, size)?;
-
     let image_rgb = if bgr {
         rgb_to_bgr(resized)
     } else {

@@ -1,7 +1,21 @@
 use rusqlite::{params, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, Row, ToSql};
 
 use super::{Result, SqliteLibraryStore};
-use crate::{domain::{movie::{Movie, MovieForUpdate}, MediasIds}, model::{movies::MovieQuery, store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_pipe_separated_optional}, Error}, tools::array_tools::replace_add_remove_from_array};
+use crate::{domain::{movie::{Movie, MovieForUpdate, MovieStatus}, MediasIds}, model::{movies::MovieQuery, store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType}, to_pipe_separated_optional}, Error}, tools::{array_tools::replace_add_remove_from_array, clock::now}};
+
+impl FromSql for MovieStatus {
+    fn column_result(value: ValueRef) -> FromSqlResult<Self> {
+        String::column_result(value).and_then(|as_string| {
+            MovieStatus::try_from(&*as_string).map_err(|_| FromSqlError::InvalidType)
+        })
+    }
+}
+
+impl ToSql for MovieStatus {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        Ok(ToSqlOutput::from(self.to_string()))
+    }
+}
 
 
 
@@ -48,13 +62,23 @@ impl SqliteLibraryStore {
 
     pub async fn get_movies(&self, query: MovieQuery) -> Result<Vec<Movie>> {
         let row = self.connection.call( move |conn| { 
-            let mut where_query = QueryBuilder::new();
-            if let Some(q) = &query.after {
-                where_query.add_where(QueryWhereType::After("modified", q));
+            let mut where_query = RsQueryBuilder::new();
+            if let Some(q) = query.after {
+                where_query.add_where(SqlWhereType::After("modified".to_owned(), Box::new(q)));
             }
-            if query.after.is_some() {
-                where_query.add_oder(OrderBuilder::new("modified".to_string(), SqlOrder::ASC))
+
+            if let Some(in_digital) = query.in_digital {
+                let now = now().timestamp_millis();
+                if in_digital {
+                    where_query.add_where(SqlWhereType::Before("digitalairdate".to_owned(), Box::new(now)))
+                } else {
+                    where_query.add_where(SqlWhereType::After("digitalairdate".to_owned(), Box::new(now)))
+                }
             }
+
+
+            where_query.add_oder(OrderBuilder { column: query.sort.to_string(), order: query.order.unwrap_or(SqlOrder::ASC) });
+
 
 
             let mut query = conn.prepare(&format!("SELECT 
@@ -187,7 +211,7 @@ impl SqliteLibraryStore {
 
     pub async fn remove_movie(&self, movie_id: String) -> Result<()> {
         self.connection.call( move |conn| { 
-            conn.execute("DELETE FROM movies WHERE id = ?", &[&movie_id])?;
+            conn.execute("DELETE FROM movies WHERE id = ?", [&movie_id])?;
             Ok(())
         }).await?;
         Ok(())

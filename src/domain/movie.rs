@@ -1,11 +1,27 @@
 use rs_plugin_common_interfaces::url::RsLink;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use strum_macros::{Display, EnumString};
 
 use crate::tools::serialization_tools::rating_serializer;
 
 use super::ElementAction;
 
+#[derive(Serialize, Deserialize, Default, Debug, PartialEq, Clone, Display, EnumString)]
+#[serde(rename_all = "camelCase")]
+#[strum(serialize_all = "camelCase")]
+pub enum MovieStatus {
+    Returning,
+    Released,
+    InProduction,
+    PostProduction,
+    Planned,
+    Rumored,
+    Canceled,
+    #[strum(default)] Other(String),
+    #[default] Unknown,
+
+}
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,7 +40,7 @@ pub struct Movie {
     pub duration: Option<u32>,
     pub overview: Option<String>,
     pub country: Option<String>,
-    pub status: Option<String>,
+    pub status: Option<MovieStatus>,
 
     pub imdb: Option<String>,
     pub slug: Option<String>,
@@ -36,14 +52,10 @@ pub struct Movie {
     pub original: Option<String>,
 
     #[serde(serialize_with = "rating_serializer")]
-    #[serde(rename = "imdb_rating")]
     pub imdb_rating: Option<f32>,
-    #[serde(rename = "imdb_votes")]
     pub imdb_votes: Option<u64>,
     #[serde(serialize_with = "rating_serializer")]
-    #[serde(rename = "trakt_rating")]
     pub trakt_rating: Option<f32>,
-    #[serde(rename = "trakt_votes")]
     pub trakt_votes: Option<u32>,
 
     pub trailer: Option<RsLink>,
@@ -75,7 +87,7 @@ pub struct MovieForUpdate {
     pub duration: Option<u64>,
     pub overview: Option<String>,
     pub country: Option<String>,
-    pub status: Option<String>,
+    pub status: Option<MovieStatus>,
 
     pub imdb: Option<String>,
     pub slug: Option<String>,

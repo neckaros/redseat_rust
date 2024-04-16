@@ -10,12 +10,12 @@ use mime::{Mime, APPLICATION_OCTET_STREAM};
 use mime_guess::get_mime_extensions_str;
 use nanoid::nanoid;
 use query_external_ip::SourceError;
-use rs_plugin_common_interfaces::{request::{RsRequest, RsRequestStatus}, PluginType};
+use rs_plugin_common_interfaces::{request::{RsRequest, RsRequestStatus}, url::{RsLink, RsLinkType}, PluginType};
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
 use tokio::{io::{copy, AsyncRead, AsyncReadExt}, sync::mpsc};
 use tokio_util::io::StreamReader;
-use crate::{domain::{media::{RsGpsPosition, DEFAULT_MIME}, MediaElement}, model::store::sql::SqlOrder, tools::image_tools::convert_image_reader};
+use crate::{domain::{media::{RsGpsPosition, DEFAULT_MIME}, plugin, MediaElement}, model::store::sql::SqlOrder, tools::image_tools::convert_image_reader};
 
 use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaItemReference, MediaWithAction, MediasMessage, ProgressMessage}, progress::{RsProgress, RsProgressType}, ElementAction}, error::RsResult, plugins::{get_plugin_fodler, sources::{async_reader_progress::ProgressReader, error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{self, resize_image, resize_image_reader, ImageSize, ImageType}, log::{log_error, log_info, LogServiceType}, prediction::{predict_net, preload_model, PredictionTagResult}, video_tools::{self, probe_video, VideoTime}}};
 
@@ -70,8 +70,7 @@ pub enum RsSort {
     Rating,
     Name,
     Size,
-    #[strum(default)]
-    Custom(String)
+    
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
@@ -145,9 +144,12 @@ impl ModelController {
 		Ok(media)
 	}
 
-    pub async fn update_media(&self, library_id: &str, media_id: String, update: MediaForUpdate, requesting_user: &ConnectedUser) -> Result<Media> {
+    pub async fn update_media(&self, library_id: &str, media_id: String, mut update: MediaForUpdate, requesting_user: &ConnectedUser) -> RsResult<Media> {
         requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        if let Some(origin) = &update.origin_url {
+            update.origin = Some(self.exec_parse(Some(library_id.to_owned()), origin.to_owned(), requesting_user).await?)
+        }
 		store.update_media(&media_id, update).await?;
         let media = store.get_media(&media_id).await?.ok_or(Error::NotFound)?;
         self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media: media.clone(), action: ElementAction::Updated}] });
@@ -192,7 +194,7 @@ impl ModelController {
         let existing = store.get_media(&media_id).await?;
         if let Some(existing) = existing { 
             self.remove_library_file(&library_id, &media_id, &requesting_user).await?;
-            self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media: existing.clone(), action: ElementAction::Removed}] });
+            self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media: existing.clone(), action: ElementAction::Deleted}] });
             Ok(existing)
         } else {
             Err(Error::NotFound)
@@ -328,8 +330,9 @@ impl ModelController {
         }
 
 
-
-        let _ = self.prediction(library_id, media_id, true, requesting_user).await;
+        println!("predict");
+        self.prediction(library_id, media_id, true, requesting_user).await?;
+        
         Ok(())
     }
 
@@ -390,7 +393,7 @@ impl ModelController {
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         let mut medias: Vec<Media> = vec![];
         let origin = if let Some(origin) = &files.origin_url {
-            self.exec_parse(Some(library_id.to_owned()), origin.to_owned(), &requesting_user).await.ok()
+            Some(self.exec_parse(Some(library_id.to_owned()), origin.to_owned(), &requesting_user).await.ok().unwrap_or(RsLink {platform: "link".to_owned(), kind: Some(RsLinkType::Post), id: origin.to_owned(), ..Default::default()}))
         } else {
             None
         };
@@ -626,15 +629,15 @@ impl ModelController {
 
     pub async fn prediction(&self, library_id: &str, media_id: &str, insert_tags: bool, requesting_user: &ConnectedUser) -> crate::Result<Vec<PredictionTagResult>> {
 
-        let plugins = self.get_plugins(PluginQuery { kind: Some(PluginType::ImageClassification), library: Some(library_id.to_string()), ..Default::default() }, requesting_user).await?;
-        if plugins.len() > 0 {
+
+        let plugins = self.get_plugins(PluginQuery { kind: Some(PluginType::ImageClassification), library: Some(library_id.to_string()), ..Default::default() }, &ConnectedUser::ServerAdmin).await?;
+        if !plugins.is_empty() {
             let mut all_predictions: Vec<PredictionTagResult> = vec![];
             let media = self.get_media(library_id, media_id.to_string(), requesting_user).await?.ok_or(Error::NotFound)?;
 
             let mut reader_response = self.media_image(&library_id, &media_id, None, &requesting_user).await?;
             let mut buffer = Vec::new();
             reader_response.stream.read_to_end(&mut buffer).await?;
-
             let mut images = vec![buffer];
             if media.kind == FileType::Video {
                 let percents = vec![15, 30, 45, 60, 75, 95];
@@ -643,13 +646,11 @@ impl ModelController {
                     images.push(thumb);
                 }
             }
-            
             for plugin in plugins.clone() {
                 let mut path = get_plugin_fodler().await?;
                     path.push(&plugin.path);
                 let model: ort::Session = preload_model(&path)?;
                 for buffer in &images {
-                    
                     let mut prediction = predict_net(path.clone(), plugin.settings.bgr.unwrap_or(false), plugin.settings.normalize.unwrap_or(false), buffer.clone(), Some(&model))?;
                     prediction.sort_by(|a, b| b.probability.partial_cmp(&a.probability).unwrap());
                     if insert_tags {
@@ -710,7 +711,7 @@ impl ModelController {
         let mut m = self.library_file(library_id, media_id, None, MediaFileQuery::default() , requesting_user).await?.into_reader(library_id, None, None, Some((self.clone(), &requesting_user))).await?;
 
         let images_infos = image_tools::ImageCommandBuilder::new().infos(&mut m.stream).await?;
-        if let Some(infos) = images_infos.get(0) {
+        if let Some(infos) = images_infos.first() {
             let mut update = MediaForUpdate::default();
 
             update.width = Some(infos.image.geometry.width);

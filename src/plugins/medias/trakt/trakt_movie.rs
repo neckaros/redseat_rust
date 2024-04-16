@@ -1,8 +1,11 @@
+use std::str::FromStr;
+
 use chrono::{DateTime, NaiveDate, Utc};
 use rs_plugin_common_interfaces::url::{RsLink, RsLinkType};
 use serde::{Deserialize, Serialize};
+use strum_macros::{Display, EnumString};
 
-use crate::domain::movie::Movie;
+use crate::domain::movie::{Movie, MovieStatus};
 
 use super::trakt_show::TraktIds;
 
@@ -34,6 +37,38 @@ pub enum TraktReleaseType {
     Other,
 }
 
+
+#[derive(Serialize, Deserialize, Default, Debug, PartialEq, Clone, Display, EnumString)]
+#[serde(rename_all = "lowercase")]
+pub enum TraktMovieStatus {
+    Released,
+    #[serde(rename = "in production")]
+    InProduction,
+    #[serde(rename = "post production")]
+    PostProduction,
+    Planned,
+    Rumored,
+    Canceled,
+    #[serde(other)]
+    #[default]
+    Other,
+}
+
+impl From<TraktMovieStatus> for MovieStatus {
+    fn from(value: TraktMovieStatus) -> Self {
+        match value {
+            TraktMovieStatus::Released => MovieStatus::Released,
+            TraktMovieStatus::InProduction => MovieStatus::InProduction,
+            TraktMovieStatus::PostProduction => MovieStatus::PostProduction,
+            TraktMovieStatus::Planned => MovieStatus::Planned,
+            TraktMovieStatus::Rumored => MovieStatus::Rumored,
+            TraktMovieStatus::Canceled => MovieStatus::Canceled,
+            TraktMovieStatus::Other => MovieStatus::Unknown,
+        }
+    }
+}
+//released, in production, post production, planned, rumored, or canceled.
+
 pub trait TraktReleases {
     fn earliest_for(&self, kind: TraktReleaseType) -> Option<NaiveDate>;
 }
@@ -56,6 +91,7 @@ pub struct TraktFullMovie {
     pub overview: String,
     pub released: NaiveDate,
     pub runtime: Option<u32>,
+    pub status: Option<TraktMovieStatus>,
     pub country: Option<String>,
     pub trailer: Option<String>,
     pub homepage: Option<String>,
@@ -82,7 +118,7 @@ impl From<TraktFullMovie> for Movie {
             duration: value.runtime,
             overview: Some(value.overview),
             country: value.country,
-            status: None,
+            status: value.status.map(MovieStatus::from),
             imdb: value.ids.imdb,
             slug: value.ids.slug,
             tmdb: value.ids.tmdb,
@@ -94,12 +130,12 @@ impl From<TraktFullMovie> for Movie {
             imdb_votes: None,
             trakt_rating: Some(value.rating),
             trakt_votes: Some(value.votes),
-            trailer: value.trailer.and_then(|t| Some(RsLink {
+            trailer: value.trailer.map(|t| RsLink {
                 platform: "link".into(),
                 kind: Some(RsLinkType::Post),
                 id: t,
                 ..Default::default()
-            })),
+            }),
             
             ..Default::default()
         }
@@ -109,5 +145,11 @@ impl From<TraktFullMovie> for Movie {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TraktTrendingMoviesResult {
     pub watchers: u64,
+    pub movie: TraktFullMovie
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TraktMovieSearchElement {
+    pub score: f64,
     pub movie: TraktFullMovie
 }

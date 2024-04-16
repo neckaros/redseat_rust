@@ -8,7 +8,7 @@ use rs_plugin_common_interfaces::{lookup::{RsLookupQuery, RsLookupSourceResult, 
 
 use crate::{domain::{plugin::PluginWithCredential, progress::RsProgressCallback}, error::RsResult, plugins::sources::{AsyncReadPinBox, FileStreamResult}, tools::{array_tools::AddOrSetArray, file_tools::get_mime_from_filename, http_tools::{extract_header, guess_filename, parse_content_disposition}, log::log_error, video_tools::ytdl::YydlContext}, Error};
 
-use super::{sources::SourceRead, PluginManager};
+use super::{sources::{RsRequestHeader, SourceRead}, PluginManager};
 
 
 impl PluginManager {
@@ -84,7 +84,9 @@ impl PluginManager {
         let initial_request = request.clone();
         
         let client = reqwest::Client::new();
-        let r = client.head(&request.url).send().await;
+        let r = client.head(&request.url).add_request_headers(&request, &None)?;
+
+        let r = r.send().await;
         if let Ok(heads) = r {
             let headers = heads.headers();
             if let Some(mime) = extract_header(headers, CONTENT_TYPE) {

@@ -1,5 +1,5 @@
 
-use crate::{domain::{movie::{Movie, MovieForUpdate}, view_progress::{ViewProgressForAdd, ViewProgressLigh}, watched::{WatchedForAdd, WatchedLight}, MediasIds}, model::{episodes::EpisodeQuery, movies::MovieQuery, users::{ConnectedUser, HistoryQuery}, ModelController}, tools::image_tools::ImageType, Error, Result};
+use crate::{domain::{movie::{Movie, MovieForUpdate}, view_progress::{ViewProgressForAdd, ViewProgressLigh}, watched::{WatchedForAdd, WatchedLight}, MediasIds}, model::{episodes::EpisodeQuery, movies::{MovieQuery, RsMovieSort}, store::sql::SqlOrder, users::{ConnectedUser, HistoryQuery}, ModelController}, tools::{clock::now, image_tools::ImageType}, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post, put}, Json, Router};
 use futures::TryStreamExt;
 use rs_plugin_common_interfaces::{lookup::{RsLookupMovie, RsLookupQuery}, MediaType};
@@ -15,8 +15,10 @@ pub fn routes(mc: ModelController) -> Router {
 	Router::new()
 		.route("/", get(handler_list))
 		.route("/trending", get(handler_trending))
+		.route("/ondeck", get(handler_ondeck))
 		.route("/upcoming", get(handler_upcoming))
 		.route("/", post(handler_post))
+		.route("/search", get(handler_seach_movies))
 		.route("/:id", get(handler_get))
 		.route("/:id/search", get(handler_lookup))
 		.route("/:id", patch(handler_patch))
@@ -45,8 +47,13 @@ async fn handler_trending(State(mc): State<ModelController>, user: ConnectedUser
 	Ok(body)
 }
 
-async fn handler_upcoming(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<EpisodeQuery>) -> Result<Json<Value>> {
-	let libraries = mc.get_episodes_upcoming(&library_id, query, &user).await?;
+async fn handler_upcoming(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	let libraries = mc.get_movies(&library_id, MovieQuery { in_digital: Some(false), sort: RsMovieSort::Digitalairdate, order: Some(SqlOrder::ASC), ..Default::default() }, &user).await?;
+	let body = Json(json!(libraries));
+	Ok(body)
+}
+async fn handler_ondeck(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	let libraries = mc.get_movies(&library_id, MovieQuery { in_digital: Some(true), watched: Some(false), sort: RsMovieSort::Digitalairdate, order: Some(SqlOrder::DESC), ..Default::default() }, &user).await?;
 	let body = Json(json!(libraries));
 	Ok(body)
 }
@@ -54,6 +61,12 @@ async fn handler_upcoming(Path(library_id): Path<String>, State(mc): State<Model
 async fn handler_get(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
 	let movie = mc.get_movie(&library_id, movie_id, &user).await?;
 	let body = Json(json!(movie));
+	Ok(body)
+}
+
+async fn handler_seach_movies(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<RsLookupMovie>) -> Result<Json<Value>> {
+	let libraries = mc.search_movie(&library_id, query, &user).await?;
+	let body = Json(json!(libraries));
 	Ok(body)
 }
 

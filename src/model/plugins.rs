@@ -2,7 +2,7 @@
 
 
 use nanoid::nanoid;
-use rs_plugin_common_interfaces::{lookup::{RsLookupQuery, RsLookupSourceResult}, request::RsRequest, url::RsLink, PluginInformation, PluginType};
+use rs_plugin_common_interfaces::{lookup::{RsLookupQuery, RsLookupSourceResult}, request::RsRequest, url::{RsLink, RsLinkType}, PluginInformation, PluginType};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -23,7 +23,7 @@ pub struct PluginQuery {
 
 impl ModelController {
 
-	pub async fn get_plugins(&self, query: PluginQuery, requesting_user: &ConnectedUser) -> Result<Vec<Plugin>> {
+	pub async fn get_all_plugins(&self, query: PluginQuery, requesting_user: &ConnectedUser) -> Result<Vec<Plugin>> {
         requesting_user.check_role(&UserRole::Admin)?;
 		let mut installed_plugins = self.store.get_plugins(query).await?;
         let all_plugins = &self.plugin_manager.plugins;
@@ -38,6 +38,19 @@ impl ModelController {
             }
         }
 		Ok(installed_plugins)
+	}
+
+
+    pub async fn get_plugins(&self, query: PluginQuery, requesting_user: &ConnectedUser) -> Result<Vec<Plugin>> {
+        if let Some(library_id) = &query.library {
+            requesting_user.check_library_role(library_id, crate::domain::library::LibraryRole::Write)?;
+        } else {
+            requesting_user.check_role(&UserRole::Write)?;
+        }
+
+		let plugins = self.store.get_plugins(query).await?;
+		
+		Ok(plugins)
 	}
 
     async fn get_plugins_with_credential(&self, query: PluginQuery) -> Result<impl Iterator<Item = PluginWithCredential>> {
@@ -125,7 +138,7 @@ impl ModelController {
         }
         let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::UrlParser), ..Default::default() }).await?;
 
-        Ok(self.plugin_manager.parse(url, plugins).await.ok_or(Error::NotFound)?)
+        Ok(self.plugin_manager.parse(url.clone(), plugins).await.unwrap_or(RsLink { platform: "link".to_owned(), kind: Some(RsLinkType::Other), id: url, ..Default::default() }))
 	}
 
     pub async fn exec_expand(&self, library_id: Option<String>, link: RsLink, requesting_user: &ConnectedUser) -> RsResult<String> {

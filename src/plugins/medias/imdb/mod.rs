@@ -1,6 +1,6 @@
 use std::{collections::{BTreeMap, HashMap}, io::{self, ErrorKind}, ops::Add, sync::Arc, time::{Duration, SystemTime, UNIX_EPOCH}};
 use futures::TryStreamExt;
-use tokio::{fs::File, io::{AsyncReadExt, AsyncWriteExt, BufReader}, sync::RwLock};
+use tokio::{fs::File, io::{AsyncReadExt, AsyncWriteExt, BufReader}, sync::{Mutex, RwLock}};
 use tokio_util::io::StreamReader;
 use crate::{error::RsResult, server::get_server_file_path_array, tools::{get_time, log::{log_info, LogServiceType}}, Error};
 use async_compression::tokio::bufread::GzipDecoder;
@@ -8,12 +8,12 @@ use async_compression::tokio::bufread::GzipDecoder;
 #[derive(Debug, Clone)]
 pub struct ImdbContext {
     ratings: Arc<RwLock<HashMap<String, (f32, u64)>>>,
-    freshness: Arc<RwLock<u64>>
+    freshness: Arc<Mutex<u64>>
 }
 
 impl ImdbContext {
     pub fn new() -> Self {
-        Self { ratings: Arc::new(RwLock::new(HashMap::new())), freshness: Arc::new(RwLock::new(0)) }
+        Self { ratings: Arc::new(RwLock::new(HashMap::new())), freshness: Arc::new(Mutex::new(0)) }
     }
 }
 
@@ -21,26 +21,24 @@ impl ImdbContext {
     pub async fn get_sync_rating(&self, imdb: &str) -> Option<(f32, u64)> {
         let ratings =self.ratings.read().await;
            let r = ratings.get(imdb);
-           if let Some(r) = r {
-            Some((r.0.clone(), r.1.clone()))
-           } else {
-            None
-           }
+           r.map(|r| (r.0, r.1))
     }
 
     pub async fn get_rating(&self, imdb: &str) -> RsResult<Option<(f32, u64)>> {
+        let mut freshness = self.freshness.lock().await;
         let stale = get_time() - Duration::from_secs(86400);
-        let freshness = self.freshness.read().await;
+
         if freshness.lt(&stale.as_secs()) {
-            drop(freshness);
-            self.refresh().await?;
+            
+            let fresh = self.refresh().await?;
+            *freshness = fresh;
             Ok(self.get_sync_rating(imdb).await)
         } else {
             Ok(self.get_sync_rating(imdb).await)
         }
     }
 
-    pub async fn refresh(&self) -> RsResult<()> {
+    pub async fn refresh(&self) -> RsResult<u64> {
         let mut map_write = self.ratings.write().await;
         let local_path = get_server_file_path_array(vec!["imdb_cache.tsv"]).await?;
         let now = get_time().as_secs();
@@ -74,8 +72,6 @@ impl ImdbContext {
                 map_write.insert(separated.get(0).unwrap().to_string(), (separated.get(1).unwrap().parse().map_err(|_| Error::GenericRedseatError)?, separated.get(2).unwrap().parse().map_err(|_| Error::GenericRedseatError)?));
             }
         }
-        let mut freshness = self.freshness.write().await;
-        *freshness = now;
-        Ok(())
+        Ok(now)
     }
 }

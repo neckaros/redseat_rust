@@ -4,9 +4,10 @@ use serde::{Serialize, Deserialize};
 use chrono::{DateTime, Utc};
 use strum_macros::{Display, EnumString};
 
-use crate::domain::{serie::Serie, MediasIds};
+use crate::domain::{serie::{Serie, SerieStatus}, MediasIds};
 
-#[derive(Debug, Serialize, Deserialize, EnumString, Display)]
+#[derive(Debug, Serialize, Deserialize, EnumString, Display, Default)]
+#[serde(rename_all = "lowercase")]
 pub enum TraktShowStatus {
     #[serde(rename = "returning series")]
     Returning,
@@ -14,20 +15,34 @@ pub enum TraktShowStatus {
     InProduction,
     #[serde(rename = "post production")]
     PostProduction,
-    #[serde(rename = "planned")]
     Planned,
-    #[serde(rename = "rumored")]
     Rumored,
-    #[serde(rename = "cancelled")]
     Cancelled,
-    #[serde(rename = "ended")]
     Ended,
-    #[serde(rename = "released")]
     Released,
-    #[serde(rename = "canceled")]
     Canceled,
-    #[serde(rename = "pilot")]
-    Pilot
+    Pilot,
+    #[strum(default)] Other(String),
+    #[default] Unknown,
+}
+
+impl From<TraktShowStatus> for SerieStatus {
+    fn from(value: TraktShowStatus) -> Self {
+        match value {
+            TraktShowStatus::Returning => SerieStatus::Returning,
+            TraktShowStatus::InProduction => SerieStatus::InProduction,
+            TraktShowStatus::PostProduction => SerieStatus::PostProduction,
+            TraktShowStatus::Planned => SerieStatus::Planned,
+            TraktShowStatus::Rumored => SerieStatus::Rumored,
+            TraktShowStatus::Cancelled => SerieStatus::Canceled,
+            TraktShowStatus::Ended => SerieStatus::Ended,
+            TraktShowStatus::Released => SerieStatus::Released,
+            TraktShowStatus::Canceled => SerieStatus::Canceled,
+            TraktShowStatus::Pilot => SerieStatus::Pilot,
+            TraktShowStatus::Other(s) => SerieStatus::Other(s),
+            TraktShowStatus::Unknown => SerieStatus::Unknown,
+        }
+    }
 }
 
 /// Airing information of a [show]. Used in [FullShow]
@@ -108,7 +123,7 @@ impl From<TraktFullShow> for Serie {
             id: format!("trakt:{}", value.ids.trakt.unwrap()),
             name: value.title,
             kind: None,
-            status: value.status.and_then(|f| Some(f.to_string())),
+            status: value.status.map(SerieStatus::from),
             alt: None,
             params: None,
             imdb: value.ids.imdb,
@@ -130,6 +145,13 @@ impl From<TraktFullShow> for Serie {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TraktShowSearchElement {
+    pub score: f64,
+    pub show: TraktFullShow
+}
+
+
 impl MediasIds {
     pub fn as_id_for_trakt(&self) -> Option<String> {
         if let Some(trakt) = self.trakt {
@@ -137,3 +159,4 @@ impl MediasIds {
         } else { self.imdb.as_ref().map(|imdb| imdb.to_string()) }
     }
 }
+
