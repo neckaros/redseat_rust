@@ -13,9 +13,10 @@ use query_external_ip::SourceError;
 use rs_plugin_common_interfaces::{request::{RsRequest, RsRequestStatus}, url::{RsLink, RsLinkType}, PluginType};
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
-use tokio::{io::{copy, AsyncRead, AsyncReadExt}, sync::mpsc};
-use tokio_util::io::StreamReader;
-use crate::{domain::{media::{RsGpsPosition, DEFAULT_MIME}, plugin, MediaElement}, model::store::sql::SqlOrder, tools::image_tools::convert_image_reader};
+use tokio::{io::{copy, AsyncRead, AsyncReadExt, AsyncWriteExt}, sync::mpsc};
+use tokio_stream::StreamExt;
+use tokio_util::io::{ReaderStream, StreamReader};
+use crate::{domain::{media::{RsGpsPosition, DEFAULT_MIME}, plugin, MediaElement}, model::store::sql::SqlOrder, tools::{file_tools::filename_from_path, image_tools::convert_image_reader}};
 
 use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaItemReference, MediaWithAction, MediasMessage, ProgressMessage}, progress::{RsProgress, RsProgressType}, ElementAction}, error::RsResult, plugins::{get_plugin_fodler, sources::{async_reader_progress::ProgressReader, error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{self, resize_image, resize_image_reader, ImageSize, ImageType}, log::{log_error, log_info, LogServiceType}, prediction::{predict_net, preload_model, PredictionTagResult}, video_tools::{self, probe_video, VideoTime}}};
 
@@ -144,15 +145,28 @@ impl ModelController {
 		Ok(media)
 	}
 
-    pub async fn update_media(&self, library_id: &str, media_id: String, mut update: MediaForUpdate, requesting_user: &ConnectedUser) -> RsResult<Media> {
-        requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
+    pub async fn get_media_by_hash(&self, library_id: &str, hash: String, requesting_user: &ConnectedUser) -> RsResult<Media> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+		let mut media = store.get_media_by_hash(hash).await.ok_or(Error::NotFound)?;
+        
+        if requesting_user.is_admin() {
+            media.source = None;
+        }
+		Ok(media)
+	}
+
+    pub async fn update_media(&self, library_id: &str, media_id: String, mut update: MediaForUpdate, notif: bool, requesting_user: &ConnectedUser) -> RsResult<Media> {
+        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         if let Some(origin) = &update.origin_url {
             update.origin = Some(self.exec_parse(Some(library_id.to_owned()), origin.to_owned(), requesting_user).await?)
         }
-		store.update_media(&media_id, update).await?;
+		store.update_media(&media_id, update, requesting_user.user_id().ok()).await?;
         let media = store.get_media(&media_id).await?.ok_or(Error::NotFound)?;
-        self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media: media.clone(), action: ElementAction::Updated}] });
+        if notif {
+            self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media: media.clone(), action: ElementAction::Updated}] });
+        }
         Ok(media)
 	}
 
@@ -235,16 +249,10 @@ impl ModelController {
 
         let result = self.library_image(library_id, ".thumbs", media_id, None, size.clone(), requesting_user).await;
         if let Err(error) = result {
-            if let crate::Error::Source(s) = &error {
-                if let SourcesError::NotFound(_) = s {
-                    println!("regen");
-                    self.generate_thumb(library_id, media_id, requesting_user).await.map_err(|_| Error::NotFound)?;
-                    println!("regened");
-                    let result = self.library_image(library_id, ".thumbs", media_id, None, size, requesting_user).await;
-                    result
-                } else {
-                    Err(error)
-                }
+            if let crate::Error::Source(SourcesError::NotFound(_)) = &error {
+                self.generate_thumb(library_id, media_id, requesting_user).await.map_err(|_| Error::NotFound)?;
+                self.library_image(library_id, ".thumbs", media_id, None, size, requesting_user).await
+
             } else {
                 Err(error)
             }
@@ -255,7 +263,14 @@ impl ModelController {
 	}
 
     pub async fn update_media_image<T: AsyncRead>(&self, library_id: &str, media_id: &str, reader: T, requesting_user: &ConnectedUser) -> Result<()> {
-        self.update_library_image(library_id, ".thumbs", media_id, &None, reader, requesting_user).await
+        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        self.update_library_image(library_id, ".thumbs", media_id, &None, reader, requesting_user).await?;
+        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        store.update_media_thumb(media_id.to_owned()).await?;
+        let media = self.get_media(library_id, media_id.to_owned(), requesting_user).await?.ok_or(Error::NotFound)?;
+        self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media: media, action: ElementAction::Updated}] });
+        Ok(())
+
 	}
 
     
@@ -328,9 +343,7 @@ impl ModelController {
                 log_error(LogServiceType::Source, format!("unable to get photos infos for {}: {:?}", media_id, r));
             }
         }
-
-
-        println!("predict");
+    
         self.prediction(library_id, media_id, true, requesting_user).await?;
         
         Ok(())
@@ -338,20 +351,43 @@ impl ModelController {
 
 
     
-    pub async fn add_library_file<T: AsyncRead>(&self, library_id: &str, filename: &str, infos: Option<MediaForUpdate>, reader: T, requesting_user: &ConnectedUser) -> Result<Media> {
+    pub async fn add_library_file<T: AsyncRead>(&self, library_id: &str, filename: &str, infos: Option<MediaForUpdate>, reader: T, requesting_user: &ConnectedUser) -> RsResult<Media> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        let mut infos = infos.unwrap_or_default();
+        let upload_id = infos.upload_id.clone().unwrap_or_else(|| nanoid!());
         let crypted = self.cache_get_library_crypt(library_id).await;
         let m = self.source_for_library(&library_id).await?;
 
 
 		let (source, writer) = m.get_file_write_stream(filename).await?;
 
-		tokio::pin!(reader);
+        tokio::pin!(reader);
 		tokio::pin!(writer);
-		copy(&mut reader, &mut writer).await?;
+        let mut stream = ReaderStream::new(reader);
+        let mut current: u64 = 0;
+        let mut current_buffer = 0u64;
+        while let Some(chunk) = stream.next().await {
+            let chunck = chunk?;
+            current_buffer += chunck.len() as u64;
+            if current_buffer > 5000000 {
+                current += current_buffer;
+                current_buffer = 0;
+                let message = ProgressMessage {
+                    library: library_id.to_owned(),
+                    name: filename.to_string(),
+                    progress: RsProgress { id: upload_id.clone(), total: infos.size, current: Some(current), kind: RsProgressType::Finished, filename: Some(filename.to_owned()) },
+                };
+                self.send_progress(message);
+            }
+            
+            writer.write_all(&chunck).await?;
+         }
 
+         writer.shutdown().await?;
 
-        let mut infos = infos.unwrap_or_else(|| MediaForUpdate::default());
+         drop(stream);
+		//copy(&mut reader, &mut writer).await?;
+
         if !crypted {
             let _ = m.fill_infos(&source, &mut infos).await;
         }
@@ -361,6 +397,13 @@ impl ModelController {
         new_file.source = Some(source.to_string());
         new_file.mimetype = infos.mimetype.clone();
         new_file.created = Some(infos.created.unwrap_or_else(|| Utc::now().timestamp_millis() as u64));
+
+        let message = ProgressMessage {
+            library: library_id.to_owned(),
+            name: filename.to_string(),
+            progress: RsProgress { id: upload_id, total: infos.size.clone(), current: infos.size.clone(), kind: RsProgressType::Finished, filename: Some(new_file.name.clone()) },
+        };
+        self.send_progress(message);
         
         if let Some(ref mime) = new_file.mimetype {
             new_file.kind = file_type_from_mime(&mime);
@@ -369,8 +412,7 @@ impl ModelController {
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         let id = nanoid!();
         store.add_media(MediaForInsert { id: id.clone(), media: new_file }).await?;
-        
-        store.update_media(&id, infos).await?;
+        self.update_media(library_id, id.to_owned(), infos, false, requesting_user).await?;
 
         if !crypted {
             let _ = self.generate_thumb(&library_id, &id, &requesting_user).await;
@@ -389,11 +431,11 @@ impl ModelController {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         self.cache_check_library_notcrypt(library_id).await?;
 
-        let m = self.source_for_library(&library_id).await?;
+        let m = self.source_for_library(library_id).await?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         let mut medias: Vec<Media> = vec![];
         let origin = if let Some(origin) = &files.origin_url {
-            Some(self.exec_parse(Some(library_id.to_owned()), origin.to_owned(), &requesting_user).await.ok().unwrap_or(RsLink {platform: "link".to_owned(), kind: Some(RsLinkType::Post), id: origin.to_owned(), ..Default::default()}))
+            Some(self.exec_parse(Some(library_id.to_owned()), origin.to_owned(), requesting_user).await.ok().unwrap_or(RsLink {platform: "link".to_owned(), kind: Some(RsLinkType::Post), id: origin.to_owned(), ..Default::default()}))
         } else {
             None
         };
@@ -408,7 +450,13 @@ impl ModelController {
             let mut infos: MediaForUpdate = request.clone().into();
             infos.origin = origin.clone();
             
-            if let Some(origin) = &origin {
+            
+            
+            
+            if let Some(origin) = &mut infos.origin {
+                let origin_filename = filename_from_path(&request.url);
+                origin.file = origin_filename;
+
                 let existing = store.get_media_by_origin(origin.clone()).await;
                 if let Some(existing) = existing {
                     return Err(Error::Duplicate(existing.id.to_owned(), MediaElement::Media(existing)).into())
@@ -446,8 +494,7 @@ impl ModelController {
             let reader = SourceRead::Request(request).into_reader(library_id, None, 
                 Some(tx_progress.clone()), Some((self.clone(), &ConnectedUser::ServerAdmin))).await?;
 
-            let name = infos.name.clone();
-            let mut filename = name.or_else(|| reader.name).unwrap_or(nanoid!());
+            let mut filename = infos.name.clone().or_else(|| reader.name).unwrap_or(nanoid!());
             if infos.mimetype.is_none() {
                 infos.mimetype = reader.mime;
             }
@@ -460,7 +507,7 @@ impl ModelController {
             }
             
             let (source, writer) = m.get_file_write_stream(&filename).await?;
-            let mut progress_reader = ProgressReader::new(reader.stream, RsProgress { id: upload_id.clone(), total: reader.size, current: Some(0), kind: RsProgressType::Transfert }, tx_progress.clone());
+            let mut progress_reader = ProgressReader::new(reader.stream, RsProgress { id: upload_id.clone(), total: reader.size, current: Some(0), kind: RsProgressType::Transfert, filename: Some(filename.clone()) }, tx_progress.clone());
             tokio::pin!(writer);
 
             copy(&mut progress_reader, &mut writer).await?;
@@ -484,7 +531,7 @@ impl ModelController {
             new_file.mimetype = infos.mimetype.clone();
             new_file.created = Some(infos.created.unwrap_or_else(|| Utc::now().timestamp_millis() as u64));
 
-            let final_progress = tx_progress.send(RsProgress { id: upload_id.clone(), total: infos.size, current: infos.size, kind: RsProgressType::Finished }).await;
+            let final_progress = tx_progress.send(RsProgress { id: upload_id.clone(), total: infos.size, current: infos.size, kind: RsProgressType::Finished, filename: Some(filename.to_owned()) }).await;
             if let Err(error) = final_progress {
                 log_error(LogServiceType::Source, format!("Unable to send final progress message: {:?}", error));
             }
@@ -495,8 +542,7 @@ impl ModelController {
 
             let id = nanoid!();
             store.add_media(MediaForInsert { id: id.clone(), media: new_file }).await?;
-            
-            store.update_media(&id, infos).await?;
+            self.update_media(library_id, id.to_owned(), infos, false, requesting_user).await?;
 
             let r = self.generate_thumb(&library_id, &id, &ConnectedUser::ServerAdmin).await;
             self.process_media_spawn(library_id.to_string(), id.clone(), ConnectedUser::ServerAdmin);
@@ -545,7 +591,7 @@ impl ModelController {
         store.add_media(MediaForInsert { id: id.clone(), media: new_file }).await?;
         
         if let Some(update) = additional_infos {
-            self.update_media(&library_id, id.clone(), update, &requesting_user).await?;
+            self.update_media(&library_id, id.clone(), update, false, &requesting_user).await?;
         }
 
         let media = store.get_media(&id).await?.ok_or(Error::NotFound)?;
@@ -656,7 +702,7 @@ impl ModelController {
                     if insert_tags {
                         for tag in &prediction {
                             let db_tag = self.get_ai_tag(&library_id, tag.tag.clone(), &requesting_user).await?;
-                            self.update_media(&library_id, media_id.to_string(), MediaForUpdate { add_tags: Some(vec![MediaItemReference { id: db_tag.id, conf: Some(tag.probability as u16) }]), ..Default::default() }, &requesting_user).await?;
+                            self.update_media(&library_id, media_id.to_string(), MediaForUpdate { add_tags: Some(vec![MediaItemReference { id: db_tag.id, conf: Some(tag.probability as u16) }]), ..Default::default() }, true, &requesting_user).await?;
                         }
                     }
                     all_predictions.append(&mut prediction);
@@ -699,7 +745,7 @@ impl ModelController {
             update.bitrate = video_stream.bitrate().clone();
         }
 
-        self.update_media(library_id, media_id.to_owned(), update, requesting_user).await?;
+        self.update_media(library_id, media_id.to_owned(), update, true, requesting_user).await?;
 
         println!("videos infos {:?}", videos_infos);
         Ok(())
@@ -722,7 +768,7 @@ impl ModelController {
             }
         
     
-            self.update_media(library_id, media_id.to_owned(), update, requesting_user).await?;
+            self.update_media(library_id, media_id.to_owned(), update, true, requesting_user).await?;
         }
         Ok(())
     }

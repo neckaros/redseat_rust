@@ -8,7 +8,7 @@ use axum::{
 use axum_server::tls_rustls::RustlsConfig;
 
 use domain::MediasIds;
-use hyper::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
+use hyper::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, REFERRER_POLICY, REFERER};
 use model::{store::SqliteStore, ModelController};
 use plugins::{medias::{imdb::ImdbContext, tmdb::{tmdb_configuration::TmdbConfiguration, TmdbContext}, trakt::TraktContext}, PluginManager};
 use routes::{mw_auth, mw_range};
@@ -92,13 +92,13 @@ async fn app() -> Result<Router> {
     let cors: CorsLayer = CorsLayer::new()
     // allow `GET` and `POST` when accessing the resource
     .allow_methods(vec![Method::GET, Method::PATCH, Method::DELETE, Method::HEAD, Method::OPTIONS, Method::POST])
-    .allow_headers([AUTHORIZATION, ACCEPT, CONTENT_TYPE])
+    .allow_headers([AUTHORIZATION, ACCEPT, CONTENT_TYPE,REFERRER_POLICY,REFERER])
     // allow requests from any origin
     .allow_origin(Any);
     let (iolayer, io) = SocketIo::builder().with_state(mc.clone()).build_layer();
     io.ns("/", routes::socket::on_connect);
     mc.set_socket(io.clone());
-
+    
     Ok(Router::new()
         .nest("/ping", routes::ping::routes())
         .nest("/libraries", routes::libraries::routes(mc.clone()))
@@ -119,7 +119,6 @@ async fn app() -> Result<Router> {
         .layer(DefaultBodyLimit::disable())
         .layer(
             ServiceBuilder::new()
-                .layer(CorsLayer::permissive()) // Enable CORS policy
                 .layer(iolayer),
         )
         .layer(

@@ -86,10 +86,15 @@ pub mod url;
 
 impl PluginManager {
     pub async fn new() -> Result<Self> {
-        let plugins: Vec<PluginWasm> = list_plugins().await?.collect();
         Ok(
-            PluginManager { plugins: RwLock::new(plugins) }
+            PluginManager { plugins: RwLock::new(vec![]) }
         )
+    }
+
+    pub async fn reload(&self) -> Result<()> {
+        let mut plugins: Vec<PluginWasm> = list_plugins().await?.collect();
+        self.plugins.write().await.append(&mut plugins);
+        Ok(())
     }
 
 

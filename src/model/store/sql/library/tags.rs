@@ -84,22 +84,28 @@ impl SqliteLibraryStore {
 
             where_query.add_update(&update.thumb, "thumb");
             where_query.add_update(&update.params, "params");
-            where_query.add_update(&update.generated, "generated");
+            
+            let generated = Some(update.generated.unwrap_or_default());
+            where_query.add_update(&generated, "generated");
+            
 
 
             where_query.add_where(QueryWhereType::Equal("id", &id));
             
 
             let update_sql = format!("UPDATE Tags SET {} {}", where_query.format_update(), where_query.format());
-
             tx.execute(&update_sql, where_query.values())?;
+
+            if let Some(migrate_to) = &update.migrate_to {
+                tx.execute("UPDATE media_tag_mapping SET tag_ref = ? where tag_ref = ?", params![&id, migrate_to])?;
+            }
             
             if let Some(new_name) = &update.name {
                 tx.execute("UPDATE tags SET path = REPLACE(path, ?, ?) where path like ?", params![existing_tag.childs_path(), format!("{}{}/", existing_tag.path, new_name), existing_tag.childs_path()])?;
             } 
             if let Some(new_parent) = update.parent {
                 let mut query_parent = tx.prepare("SELECT id, name, parent, type, alt, thumb, params, modified, added, generated, path FROM tags WHERE id = ?")?;
-                let parent = query_parent.query_row(&[&new_parent],Self::row_to_tag)?;
+                let parent = query_parent.query_row([&new_parent],Self::row_to_tag)?;
                 
                 tx.execute("UPDATE tags SET path = ? where id = ?", params![parent.childs_path(), &existing_tag.id])?;
 
@@ -112,6 +118,8 @@ impl SqliteLibraryStore {
 
         Ok(())
     }
+
+    
 
     pub async fn add_tag(&self, tag: TagForInsert) -> Result<()> {
         self.connection.call( move |conn| { 

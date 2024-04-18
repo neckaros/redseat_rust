@@ -1,6 +1,14 @@
 use mime_guess::get_mime_extensions_str;
-
+use nanoid::nanoid;
 use crate::domain::media::FileType;
+
+pub fn filename_from_path(path: &str) -> Option<String> {
+    let escaped = path.replace('\\', "/");
+    escaped.split('/').last().and_then(|last| {
+        last.split('?').next().map(|c| c.to_owned())
+    })
+}
+
 
 pub fn get_mime_from_filename(path: &str) -> Option<String> {
     let mime = mime_guess::from_path(&path);

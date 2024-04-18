@@ -1,18 +1,21 @@
 
 
 
+use std::vec;
+
 use nanoid::nanoid;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use x509_parser::nom::branch::alt;
 
 
-use crate::{domain::{library::LibraryRole, tag::{Tag, TagMessage}, ElementAction}, tools::prediction::PredictionTag};
+use crate::{domain::{library::LibraryRole, tag::{Tag, TagMessage}, ElementAction}, error::RsResult, tools::prediction::PredictionTag};
 
 use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
 
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct TagForAdd {
 	pub name: String,
     pub parent: Option<String>,
@@ -28,6 +31,7 @@ pub struct TagForAdd {
     pub generated: bool,
 }
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct TagForInsert {
     pub id: String,
 	pub name: String,
@@ -42,6 +46,7 @@ pub struct TagForInsert {
 
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct TagQuery {
     pub name: Option<String>,
     pub parent: Option<String>,
@@ -70,7 +75,8 @@ impl TagQuery {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct TagForUpdate {
 	pub name: Option<String>,
     pub parent: Option<String>,
@@ -84,6 +90,8 @@ pub struct TagForUpdate {
     pub thumb: Option<String>,
     pub params: Option<Value>,
     pub generated: Option<bool>,
+    
+    pub migrate_to: Option<String>,
 }
 
 
@@ -103,7 +111,7 @@ impl ModelController {
         if let Some(existing_tag) = existing_tag {
             return Ok(existing_tag);
         }
-        let tag = self.get_or_create_path(&library_id, vec!["ai", &tag.name], Some(tag.alts), &requesting_user).await?;
+        let tag = self.get_or_create_path(&library_id, vec!["ai", &tag.name], TagForUpdate { alt: Some(tag.alts), generated: Some(true), ..Default::default()}, &requesting_user).await?;
 
 		Ok(tag)
 	}
@@ -128,7 +136,7 @@ impl ModelController {
 		Ok(tag)
 	}
 
-    pub async fn get_or_create_path(&self, library_id: &str, mut path: Vec<&str>, alts: Option<Vec<String>>, requesting_user: &ConnectedUser) -> Result<Tag> {
+    pub async fn get_or_create_path(&self, library_id: &str, mut path: Vec<&str>, template: TagForUpdate, requesting_user: &ConnectedUser) -> Result<Tag> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let path_string = path.join("/");
         let tag_by_path = self.get_tags(&library_id, TagQuery::new_with_path(path_string), &requesting_user).await?.into_iter().nth(0);
@@ -146,12 +154,12 @@ impl ModelController {
             parent = if let Some(parent) = tag_by_name_and_parent {
                 Some(parent.clone())
             } else {
-                let new_tag = self.add_tag(&library_id, TagForAdd { name: element.to_string(), parent: previous_parent, ..Default::default() } , &requesting_user).await?;
+                let new_tag = self.add_tag(&library_id, TagForAdd { name: element.to_string(), parent: previous_parent, generated: template.generated.unwrap_or(false), alt: template.alt.clone(), ..Default::default() } , &requesting_user).await?;
                 Some(new_tag)
             }
         }
 
-        let mut all_names = alts.clone().unwrap_or(vec![]);
+        let mut all_names = template.alt.clone().unwrap_or(vec![]);
         all_names.insert(0, last_element.to_string());
 
         for name in all_names {
@@ -161,7 +169,7 @@ impl ModelController {
             }
         }
         
-        let result_tag = self.add_tag(&library_id, TagForAdd { name: last_element.to_string(), parent: parent.and_then(|t| Some(t.id.clone())), alt: alts, ..Default::default() } , &requesting_user).await?;
+        let result_tag = self.add_tag(&library_id, TagForAdd { name: last_element.to_string(), parent: parent.and_then(|t| Some(t.id.clone())), generated: template.generated.unwrap_or(false), alt: template.alt.clone(), ..Default::default() } , &requesting_user).await?;
 
         Ok(result_tag)
 	}
@@ -202,6 +210,29 @@ impl ModelController {
         } else {
             Err(Error::NotFound)
         }
+	}
+
+    pub async fn merge_tag(&self, library_id: &str, old_id: String, into: String, requesting_user: &ConnectedUser) -> RsResult<Tag> {
+        requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
+		let old_tag = self.get_tag(library_id, old_id.to_owned(), requesting_user).await?.ok_or(Error::TagNotFound(old_id.to_owned()))?;
+		let new_tag = self.get_tag(library_id, into.to_owned(), requesting_user).await?.ok_or(Error::TagNotFound(into.to_owned()))?;
+        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        if old_tag.name.to_lowercase() != new_tag.name.to_lowercase() {
+            store.update_tag(&into, TagForUpdate { add_alts: Some(vec![old_tag.name.to_owned()]), ..Default::default()}).await?
+        }
+        if let Some(alts) = old_tag.alt {
+            store.update_tag(&into, TagForUpdate { add_alts: Some(alts), ..Default::default()}).await?
+        }
+        store.update_tag(&old_id, TagForUpdate { migrate_to : Some(into.to_owned()), ..Default::default()}).await?;
+        self.remove_tag(library_id, &old_id, requesting_user).await?;
+
+        
+
+        let new_tag = self.get_tag(library_id, into, requesting_user).await?.ok_or(Error::TagNotFound(old_id.to_owned()))?;
+
+        self.send_tags(TagMessage { library: library_id.to_string(), action: ElementAction::Updated, tags: vec![new_tag.clone()] });
+
+        Ok(new_tag)
 	}
 
 

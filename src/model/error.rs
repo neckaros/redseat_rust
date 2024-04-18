@@ -30,6 +30,10 @@ pub enum Error {
 	ServiceError(String, Option<String>),
 
 	NotFound,
+	TagNotFound(String),
+	MediaNotFound(String),
+	PersonNotFound(String),
+
 	HeaderParseFail,
 	UnableToGetFileStream,
 	FileNotFound(String),

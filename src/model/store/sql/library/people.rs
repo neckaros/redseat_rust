@@ -86,6 +86,7 @@ impl SqliteLibraryStore {
             let alts = replace_add_remove_from_array(existing.alt, update.alt, update.add_alts, update.remove_alts);
             let v = to_pipe_separated_optional(alts);
             where_query.add_update(&v, "alt");
+            println!("socialtsdd {:?}", v);
 
             let socials = replace_add_remove_from_array(existing.socials, update.socials, update.add_socials, update.remove_socials);
             let socials = optional_serde_to_string(socials).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;

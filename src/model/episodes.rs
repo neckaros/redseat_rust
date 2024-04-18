@@ -97,7 +97,6 @@ impl ModelController {
 
 	pub async fn get_episodes(&self, library_id: &str, query: EpisodeQuery, requesting_user: &ConnectedUser) -> RsResult<Vec<Episode>> {
         if let Some(serie_id) = &query.serie_ref {
-            println!("rfsdef");
             return self.get_episodes_by_id(library_id, serie_id.to_owned(), query, requesting_user).await;
         }
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
@@ -114,7 +113,7 @@ impl ModelController {
         let mut episodes = if MediasIds::is_id(&serie_id) {
             let id: MediasIds = serie_id.try_into().map_err(|_| Error::NotFound)?;
             let serie = store.get_serie_by_external_id(id.clone()).await?;
-            println!("rfsdef {:?}, {:?}", serie, id);
+
             if let Some(serie) = serie {
                 query.serie_ref = Some(serie.id);
                 store.get_episodes(query).await?

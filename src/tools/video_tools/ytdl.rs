@@ -147,7 +147,8 @@ impl RsProgress {
                 id: nanoid!(),
                 current: parts.next().and_then(|p| p.parse::<u64>().ok()),
                 total: parts.next().and_then(|p| p.replace("\"", "").parse::<u64>().ok()),
-                kind: RsProgressType::Download
+                kind: RsProgressType::Download,
+                filename: None
             })
         } else {
             None
@@ -237,7 +238,7 @@ impl YtDlCommandBuilder {
         .spawn()?;
         
         let mut out = ReaderStream::new(child.stdout.take().unwrap()).filter_map(|f| { 
-                let r = f.ok().and_then(|b| from_utf8(&b).ok().and_then(|b| RsProgress::from_ytdl(b)));
+                let r = f.ok().and_then(|b| from_utf8(&b).ok().and_then(RsProgress::from_ytdl));
                 r
             }
         );
@@ -255,7 +256,7 @@ impl YtDlCommandBuilder {
             return Err(error.into());
         }
         if let Some(p) = &self.cookies_path {
-            remove_file(p).await.expect("unable to delete file");
+            remove_file(p).await?;
         }
   
         let file = temp_path.read_dir()?.into_iter().filter_map(|f|{
@@ -311,6 +312,9 @@ impl YtDlCommandBuilder {
         .output().await?;
 
         let processed = YtDlCommandBuilder::process_json_output(output.stdout)?.into_single_video();
+        if let Some(p) = &self.cookies_path {
+            remove_file(p).await?;
+        }
         Ok(processed)
     } 
 

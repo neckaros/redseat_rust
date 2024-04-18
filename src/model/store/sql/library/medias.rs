@@ -1,3 +1,5 @@
+use std::u64;
+
 use rs_plugin_common_interfaces::url::RsLink;
 use rusqlite::{params, params_from_iter, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, Row, ToSql};
 
@@ -87,7 +89,7 @@ const MEDIA_QUERY: &str = "SELECT
         m.thumb, m.thumbv, m.thumbsize, m.iv, m.origin, m.movie, m.lang, m.uploader, m.uploadkey, m.modified, 
         m.added, m.created,
         
-        GROUP_CONCAT(distinct a.tag_ref || '|' || IFNULL(a.confidence, 101)) tags,
+        GROUP_CONCAT(distinct a.tag_ref || '|' || IFNULL(a.confidence, 100)) tags,
         GROUP_CONCAT(distinct b.people_ref) people,
         GROUP_CONCAT(distinct c.serie_ref || '|' || printf('%04d', c.season) || '|' || printf('%04d', c.episode) ) series
         
@@ -255,7 +257,7 @@ impl SqliteLibraryStore {
             m.acodecs, m.achan, m.vcodecs, m.fps, m.bitrate, m.long, m.lat, m.model, m.pages, m.progress, 
             m.thumb, m.thumbv, m.thumbsize, m.iv, m.origin, m.movie, m.lang, m.uploader, m.uploadkey, m.modified, 
             m.added, m.created
-			,(select GROUP_CONCAT(tag_ref || '|' || IFNULL(confidence, 101)) from media_tag_mapping where media_ref = m.id and (confidence != -1 or confidence IS NULL)) as tags
+			,(select GROUP_CONCAT(tag_ref || '|' || IFNULL(confidence, 100)) from media_tag_mapping where media_ref = m.id and (confidence != -1 or confidence IS NULL)) as tags
 			,(select GROUP_CONCAT(people_ref ) from media_people_mapping where media_ref = m.id) as people
 			,(select GROUP_CONCAT(serie_ref || '|' || printf('%04d', season) || '|' || printf('%04d', episode)) from media_serie_mapping where media_ref = m.id) as series
 			
@@ -346,9 +348,28 @@ impl SqliteLibraryStore {
         Ok(rows)
     }
 
-    pub async fn update_media(&self, media_id: &str, mut update: MediaForUpdate) -> Result<()> {
+    pub async fn update_media_thumb(&self, media_id: String) -> Result<()> {
+        self.connection.call( move |conn| { 
+            conn.execute("update medias set thumbv = ifnull(thumbv, 0) + 1 WHERE id = ?", params![media_id])?;
+            Ok(())
+        }).await?;
+        Ok(())
+    }
+
+    pub async fn update_media(&self, media_id: &str, mut update: MediaForUpdate, user_id: Option<String>) -> Result<()> {
         let id = media_id.to_string();
         let existing = self.get_media(media_id).await?.ok_or_else( || Error::NotFound)?;
+
+
+        if let Some(gps) = &update.gps {
+            let splited: Vec<&str> = gps.split(',').map(|t| t.trim()).collect();
+            let lat = splited.first().and_then(|s| s.parse::<f64>().ok()).ok_or(Error::ServiceError("updating media".to_owned(), Some(format!("invalid latitude: {}", gps))))?;
+            let long = splited.get(1).and_then(|s| s.parse::<f64>().ok()).ok_or(Error::ServiceError("updating media".to_owned(), Some(format!("invalid longitude: {}", gps))))?;
+            update.lat = Some(lat);
+            update.long = Some(long);
+        }
+        
+
 
         //add tags in description to lookups
         if let Some(description) = &update.description {
@@ -444,6 +465,16 @@ impl SqliteLibraryStore {
                 let update_sql = format!("UPDATE medias SET {} {}", where_query.format_update(), where_query.format());
                 conn.execute(&update_sql, where_query.values())?;
             }
+
+
+            if let Some(user_id) = user_id {
+                if let Some(rating) = update.rating {
+
+                    conn.execute("INSERT OR REPLACE INTO ratings (media_ref, user_ref, rating) VALUES (? ,? , ?)", params![id, user_id, rating])?;
+
+                }
+            }
+
 
             let all_tags: Vec<String> = existing.tags.clone().unwrap_or(vec![]).into_iter().filter(|t| t.conf.unwrap_or(1) == 1).map(|t| t.id).collect();
             if let Some(add_tags) = update.add_tags {

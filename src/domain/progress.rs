@@ -13,6 +13,7 @@ pub struct RsProgress {
     pub id: String,
 	pub total: Option<u64>,
     pub current: Option<u64>,
+    pub filename: Option<String>,
     pub kind: RsProgressType,
 }
 

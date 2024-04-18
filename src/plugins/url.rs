@@ -6,7 +6,7 @@ use futures::future::ok;
 use http::header::{CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE};
 use rs_plugin_common_interfaces::{lookup::{RsLookupQuery, RsLookupSourceResult, RsLookupWrapper}, request::{RsRequest, RsRequestPluginRequest, RsRequestStatus}, url::RsLink, PluginCredential, PluginType};
 
-use crate::{domain::{plugin::PluginWithCredential, progress::RsProgressCallback}, error::RsResult, plugins::sources::{AsyncReadPinBox, FileStreamResult}, tools::{array_tools::AddOrSetArray, file_tools::get_mime_from_filename, http_tools::{extract_header, guess_filename, parse_content_disposition}, log::log_error, video_tools::ytdl::YydlContext}, Error};
+use crate::{domain::{plugin::PluginWithCredential, progress::RsProgressCallback}, error::RsResult, plugins::sources::{AsyncReadPinBox, FileStreamResult}, tools::{array_tools::AddOrSetArray, file_tools::{filename_from_path, get_mime_from_filename}, http_tools::{extract_header, guess_filename, parse_content_disposition}, log::log_error, video_tools::ytdl::YydlContext}, Error};
 
 use super::{sources::{RsRequestHeader, SourceRead}, PluginManager};
 
@@ -117,7 +117,9 @@ impl PluginManager {
                         if res.mime.is_none() {
                             res.mime = get_mime_from_filename(&res.url);
                         }
-
+                        if res.filename.is_none() {
+                            res.filename = filename_from_path(&res.url);
+                        }
                         processed_request = Some(res);
                     } else if let Err((error, code)) = res {
                         if code != 404 {
@@ -168,6 +170,9 @@ impl PluginManager {
                         if let Ok(Json(mut res)) = res {
                             if res.mime.is_none() {
                                 res.mime = get_mime_from_filename(&res.url);
+                            }
+                            if res.filename.is_none() {
+                                res.filename = filename_from_path(&res.url);
                             }
                             if res.permanent {
                                 return Ok(Some(res));

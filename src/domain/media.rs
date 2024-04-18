@@ -50,7 +50,7 @@ impl FromStr for MediaItemReference {
     type Err = crate::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let splitted: Vec<&str> = s.split("|").collect();
+        let splitted: Vec<&str> = s.split('|').collect();
         if splitted.len() == 2 {
             Ok(MediaItemReference { id: splitted[0].to_string(), conf: splitted[1].parse::<u16>().ok().and_then(|e| if e == 100 {None} else {Some(e)}) })
         } else {
@@ -213,8 +213,9 @@ pub struct MediaForUpdate {
     pub remove_people: Option<Vec<String>>,
     pub people_lookup: Option<Vec<String>>,
 
-    pub long: Option<usize>,
-    pub lat: Option<usize>,
+    pub long: Option<f64>,
+    pub lat: Option<f64>,
+    pub gps: Option<String>,
 
     pub origin: Option<RsLink>,
     pub origin_url: Option<String>,
@@ -222,8 +223,11 @@ pub struct MediaForUpdate {
 
     pub lang: Option<String>,
 
+    pub rating: Option<u16>,
+
     pub uploader: Option<String>,
     pub uploadkey: Option<String>,
+    pub upload_id: Option<String>,
 
 } 
 

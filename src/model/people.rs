@@ -7,7 +7,7 @@ use serde_json::Value;
 use tokio::{fs::File, io::{AsyncRead, BufReader}};
 
 use rs_plugin_common_interfaces::url::RsLink;
-use crate::{domain::{library::LibraryRole, people::{PeopleMessage, Person}, ElementAction, MediasIds}, error::RsResult, plugins::sources::{AsyncReadPinBox, FileStreamResult}, tools::image_tools::{ImageSize, ImageType}};
+use crate::{domain::{library::LibraryRole, people::{PeopleMessage, Person}, tag::Tag, ElementAction, MediasIds}, error::RsResult, plugins::sources::{AsyncReadPinBox, FileStreamResult}, tools::image_tools::{ImageSize, ImageType}};
 
 use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
 
@@ -103,6 +103,7 @@ impl ModelController {
             new_socials.push(self.exec_parse(Some(library_id.to_owned()), origin.to_owned(), requesting_user).await?);
             update.add_socials = Some(new_socials);
         }
+        println!("socialts {:?}", update);
 		store.update_person(&tag_id, update).await?;
         let person = store.get_person(&tag_id).await?.ok_or(Error::NotFound)?;
         self.send_people(PeopleMessage { library: library_id.to_string(), action: ElementAction::Updated, people: vec![person.clone()] });
@@ -159,11 +160,13 @@ impl ModelController {
         self.library_image(library_id, ".portraits", person_id, kind, size, requesting_user).await
 	}
 
-    pub async fn update_person_image<T: AsyncRead>(&self, library_id: &str, person_id: &str, kind: &Option<ImageType>, reader: T, requesting_user: &ConnectedUser) -> Result<()> {
+    pub async fn update_person_image<T: AsyncRead>(&self, library_id: &str, person_id: &str, kind: &Option<ImageType>, reader: T, requesting_user: &ConnectedUser) -> Result<Tag> {
         if MediasIds::is_id(&person_id) {
             return Err(Error::InvalidIdForAction("udpate person image".to_string(), person_id.to_string()))
         }
-        self.update_library_image(library_id, ".portraits", person_id, kind, reader, requesting_user).await
+        self.update_library_image(library_id, ".portraits", person_id, kind, reader, requesting_user).await?;
+
+        self.get_tag(library_id, person_id.to_owned(), requesting_user).await?.ok_or(Error::PersonNotFound(person_id.to_owned()))
 	}
 
     

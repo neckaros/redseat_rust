@@ -49,6 +49,7 @@ impl SerieQuery {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct SerieForUpdate {
 	pub name: Option<String>,
     #[serde(rename = "type")]
