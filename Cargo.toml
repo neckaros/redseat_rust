@@ -50,7 +50,7 @@ strum = "0.26.1"
 futures = "0.3.30"
 
 ndarray = "0.15.6"
-ort = "2.0.0-rc.0"
+ort = "2.0.0-rc.1"
 sha256 = "1.5.0"
 axum-extra = { version = "0.9.2", features = ["query"] }
 http = "1.1.0"

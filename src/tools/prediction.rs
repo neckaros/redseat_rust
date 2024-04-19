@@ -68,7 +68,7 @@ pub fn preload_model(path: &PathBuf) -> Result<Session> {
     Ok(Session::builder()?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
             .with_intra_threads(4)?
-            .with_model_from_file(path)?)
+            .commit_from_file(path)?)
 }
 
 pub fn predict_net(path: PathBuf, bgr: bool, normalize: bool, buffer_image: Vec<u8>, model: Option<&Session>) -> Result<Vec<PredictionTagResult>> {
@@ -81,7 +81,7 @@ pub fn predict_net(path: PathBuf, bgr: bool, normalize: bool, buffer_image: Vec<
         Some(Session::builder()?
         .with_optimization_level(GraphOptimizationLevel::Level3)?
         .with_intra_threads(4)?
-        .with_model_from_file(path)?)
+        .commit_from_file(path)?)
     } else {
         None
     };
@@ -131,7 +131,7 @@ pub fn predict_net(path: PathBuf, bgr: bool, normalize: bool, buffer_image: Vec<
     //let outputs: SessionOutputs = model.run(inputs!["images" => input.view()]?)?;
     let outputs: SessionOutputs = model.run(inputs![input_info.name.to_string() => input_tensor]?)?;
 
-    let binding = outputs[output_info.name.clone()].extract_tensor::<f32>()?;
+    let binding = outputs[output_info.name.clone()].try_extract_tensor::<f32>()?;
     let output = binding.view();
     let a = output.axis_iter(Axis(0)).next().ok_or(crate::Error::NotFound)?;
     //println!("{:?}", a);
@@ -159,7 +159,7 @@ pub fn predict_wd(path: PathBuf, buffer_image: Vec<u8>) -> Result<Vec<Prediction
     let model = Session::builder()?
     .with_optimization_level(GraphOptimizationLevel::Level3)?
     .with_intra_threads(4)?
-    .with_model_from_file(path)?;
+    .commit_from_file(path)?;
 
     let width = 448;
     let height = 448;
@@ -177,12 +177,12 @@ pub fn predict_wd(path: PathBuf, buffer_image: Vec<u8>) -> Result<Vec<Prediction
     //let outputs: SessionOutputs = model.run(inputs!["images" => input.view()]?)?;
     let outputs: SessionOutputs = model.run(inputs!["input_1:0" => input_tensor]?)?;
 
-    let binding = outputs["predictions_sigmoid"].extract_tensor::<f32>()?;
+    let binding = outputs["predictions_sigmoid"].try_extract_tensor::<f32>()?;
     let output = binding.view();
     let a = output.axis_iter(Axis(0)).next().ok_or(crate::Error::NotFound)?;
 
         let row: Vec<_> = a.iter().copied().enumerate().filter(|(_i, p)| p > &(0.3 as f32)).map(|(index, proba)| {
-            let element = tags.get(index);
+            let element: Option<&PredictionTag> = tags.get(index);
             if let Some(element) = element {
                 let tag = PredictionTagResult {
                     tag: element.clone(),
