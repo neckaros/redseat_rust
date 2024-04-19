@@ -185,7 +185,10 @@ impl SqliteLibraryStore {
 
     pub async fn get_medias(&self, mut query: MediaQuery) -> Result<Vec<Media>> {
         let row = self.connection.call( move |conn| { 
+
+
             let mut where_query = QueryBuilder::new();
+            
             let sort = query.sort.to_media_query();
             if let Some(page_key) = query.page_key {
                 if query.order == SqlOrder::DESC {

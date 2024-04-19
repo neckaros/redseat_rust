@@ -17,6 +17,7 @@ pub mod episode;
 pub mod plugin;
 pub mod movie;
 pub mod watched;
+pub mod deleted;
 pub mod view_progress;
 
 pub mod progress;

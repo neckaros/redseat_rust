@@ -283,7 +283,7 @@ impl YtDlCommandBuilder {
             }
         })?;
         let metadata = file.metadata().await?;
-        let mime = final_path.to_str().and_then(|p| get_mime_from_filename(p));
+        let mime = final_path.to_str().and_then(get_mime_from_filename);
         let size = metadata.len();
 
         let filereader = BufReader::new(file);
@@ -296,7 +296,7 @@ impl YtDlCommandBuilder {
             accept_range: false,
             range: None,
             mime,
-            name: final_path.file_name().and_then(|p| p.to_str()).and_then(|f| Some(f.to_owned())),
+            name: final_path.file_name().and_then(|p| p.to_str()).map(|f| f.to_owned()),
             cleanup: Some(Box::new(cleanup)),
         };
     

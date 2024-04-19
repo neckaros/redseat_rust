@@ -16,7 +16,7 @@ use strum_macros::EnumString;
 use tokio::{io::{copy, AsyncRead, AsyncReadExt, AsyncWriteExt}, sync::mpsc};
 use tokio_stream::StreamExt;
 use tokio_util::io::{ReaderStream, StreamReader};
-use crate::{domain::{media::{RsGpsPosition, DEFAULT_MIME}, plugin, MediaElement}, model::store::sql::SqlOrder, tools::{file_tools::filename_from_path, image_tools::convert_image_reader}};
+use crate::{domain::{deleted::RsDeleted, media::{self, RsGpsPosition, DEFAULT_MIME}, plugin, MediaElement}, model::store::sql::SqlOrder, tools::{file_tools::filename_from_path, image_tools::convert_image_reader}};
 
 use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaItemReference, MediaWithAction, MediasMessage, ProgressMessage}, progress::{RsProgress, RsProgressType}, ElementAction}, error::RsResult, plugins::{get_plugin_fodler, sources::{async_reader_progress::ProgressReader, error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{self, resize_image, resize_image_reader, ImageSize, ImageType}, log::{log_error, log_info, LogServiceType}, prediction::{predict_net, preload_model, PredictionTagResult}, video_tools::{self, probe_video, VideoTime}}};
 
@@ -202,16 +202,17 @@ impl ModelController {
 		Ok(new_file)
 	}
 
-    pub async fn remove_media(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> Result<Media> {
+    pub async fn remove_media(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> RsResult<Media> {
         requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
-        let existing = store.get_media(&media_id).await?;
+        let existing = store.get_media(media_id).await?;
         if let Some(existing) = existing { 
-            self.remove_library_file(&library_id, &media_id, &requesting_user).await?;
+            self.remove_library_file(library_id, media_id, requesting_user).await?;
+            self.add_deleted(library_id, RsDeleted::media(media_id.to_owned()), requesting_user).await?;
             self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media: existing.clone(), action: ElementAction::Deleted}] });
             Ok(existing)
         } else {
-            Err(Error::NotFound)
+            Err(Error::NotFound.into())
         }
 	}
 

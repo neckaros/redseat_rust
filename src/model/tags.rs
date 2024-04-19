@@ -9,7 +9,7 @@ use serde_json::Value;
 use x509_parser::nom::branch::alt;
 
 
-use crate::{domain::{library::LibraryRole, tag::{Tag, TagMessage}, ElementAction}, error::RsResult, tools::prediction::PredictionTag};
+use crate::{domain::{deleted::RsDeleted, library::LibraryRole, tag::{self, Tag, TagMessage}, ElementAction}, error::RsResult, tools::prediction::PredictionTag};
 
 use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
 
@@ -266,18 +266,19 @@ impl ModelController {
 	}
 
 
-    pub async fn remove_tag(&self, library_id: &str, tag_id: &str, requesting_user: &ConnectedUser) -> Result<Tag> {
+    pub async fn remove_tag(&self, library_id: &str, tag_id: &str, requesting_user: &ConnectedUser) -> RsResult<Tag> {
         requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
-        let existing = store.get_tag(&tag_id).await?;
+        let existing = store.get_tag(tag_id).await?;
         if let Some(existing) = existing { 
             let mut children = self.get_tags(library_id, TagQuery::new_with_path(existing.childs_path()), requesting_user).await?;
             children.push(existing.clone());
             store.remove_tag(tag_id.to_string()).await?;
+            self.add_deleted(library_id, RsDeleted::serie(tag_id.to_owned()), requesting_user).await?;
             self.send_tags(TagMessage { library: library_id.to_string(), action: ElementAction::Deleted, tags: children });
             Ok(existing)
         } else {
-            Err(Error::NotFound)
+            Err(Error::NotFound.into())
         }
 	}
     

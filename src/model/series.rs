@@ -14,7 +14,7 @@ use tokio::{fs::File, io::{AsyncRead, AsyncWriteExt, BufReader}};
 use tokio_util::io::StreamReader;
 
 
-use crate::{domain::{library::LibraryRole, people::{PeopleMessage, Person}, serie::{Serie, SerieStatus, SerieWithAction, SeriesMessage}, ElementAction, MediaElement, MediasIds}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source}}, server::get_server_folder_path_array, tools::{image_tools::{resize_image_reader, ImageSize, ImageType}, log::log_info}};
+use crate::{domain::{deleted::RsDeleted, library::LibraryRole, people::{PeopleMessage, Person}, serie::{Serie, SerieStatus, SerieWithAction, SeriesMessage}, ElementAction, MediaElement, MediasIds}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source}}, server::get_server_folder_path_array, tools::{image_tools::{resize_image_reader, ImageSize, ImageType}, log::log_info}};
 
 use super::{episodes::{EpisodeForUpdate, EpisodeQuery}, error::{Error, Result}, users::ConnectedUser, ModelController};
 
@@ -230,19 +230,20 @@ impl ModelController {
 	}
 
 
-    pub async fn remove_serie(&self, library_id: &str, serie_id: &str, requesting_user: &ConnectedUser) -> Result<Serie> {
+    pub async fn remove_serie(&self, library_id: &str, serie_id: &str, requesting_user: &ConnectedUser) -> RsResult<Serie> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         if MediasIds::is_id(serie_id) {
-            return Err(Error::InvalidIdForAction("remove".to_string(), serie_id.to_string()))
+            return Err(Error::InvalidIdForAction("remove".to_string(), serie_id.to_string()).into())
         }
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         let existing = store.get_serie(serie_id).await?;
         if let Some(existing) = existing { 
             store.remove_serie(serie_id.to_string()).await?;
+            self.add_deleted(library_id, RsDeleted::serie(serie_id.to_owned()), requesting_user).await?;
             self.send_serie(SeriesMessage { library: library_id.to_string(), series: vec![SerieWithAction { action: ElementAction::Deleted, serie: existing.clone() }] });
             Ok(existing)
         } else {
-            Err(Error::NotFound)
+            Err(Error::NotFound.into())
         }
 	}
 

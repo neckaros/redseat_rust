@@ -10,6 +10,7 @@ pub mod series;
 pub mod episodes;
 pub mod medias;
 pub mod movie;
+pub mod deleted;
 
 pub struct SqliteLibraryStore {
 	connection: Connection,

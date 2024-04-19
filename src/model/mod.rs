@@ -13,6 +13,7 @@ pub mod series;
 pub mod episodes;
 pub mod medias;
 pub mod movies;
+pub mod deleted;
 
 use std::{collections::HashMap, io::Read, path::PathBuf, pin::Pin, sync::Arc};
 use futures::lock::Mutex;

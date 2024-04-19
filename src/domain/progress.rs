@@ -14,6 +14,7 @@ pub struct RsProgress {
 	pub total: Option<u64>,
     pub current: Option<u64>,
     pub filename: Option<String>,
+    #[serde(rename = "type")]
     pub kind: RsProgressType,
 }
 

@@ -1,5 +1,5 @@
 
-use crate::{domain::library::LibraryRole, model::{libraries::{ServerLibraryForAdd, ServerLibraryForUpdate}, users::ConnectedUser, ModelController}, Error, Result};
+use crate::{domain::library::LibraryRole, model::{deleted::DeletedQuery, libraries::{ServerLibraryForAdd, ServerLibraryForUpdate}, users::ConnectedUser, ModelController}, Error, Result};
 use axum::{extract::{Path, Query, State}, response::Response, routing::{delete, get, patch, post}, Json, Router};
 use hyper::StatusCode;
 use serde::Deserialize;
@@ -15,6 +15,7 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/:id", get(handler_id))
 		.route("/:id", patch(handler_patch))
 		.route("/:id", delete(handler_delete))
+		.route("/:id/deleted", get(handler_list_deleted))
 		.route("/", post(handler_post))
 		
 		.route("/:id/invitation", post(handler_invitation))
@@ -37,7 +38,7 @@ async fn handler_watermarks(Path(library_id): Path<String>, State(mc): State<Mod
 async fn handler_watermarks_get(Path((library_id, watermark)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Response> {
 	let reader = mc.get_watermark(&library_id, &watermark, &user).await?;
 	
-	Ok(reader.into_response(&library_id, None, None, Some((mc.clone(), &user))).await?)
+	reader.into_response(&library_id, None, None, Some((mc.clone(), &user))).await
 }
 
 
@@ -66,6 +67,13 @@ async fn handler_post(State(mc): State<ModelController>, user: ConnectedUser, Js
 	Ok(Json(json!(new_library)))
 }
 
+async fn handler_list_deleted(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<DeletedQuery>) -> Result<Json<Value>> {
+	let deleted = mc.get_deleted(&library_id, query, &user).await?;
+
+	let body = Json(json!(deleted));
+	Ok(body)
+	
+}
 
 #[derive(Deserialize)]
 struct HandlerInvitationQuery {

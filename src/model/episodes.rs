@@ -13,7 +13,7 @@ use tokio::{fs::File, io::{AsyncRead, AsyncWriteExt, BufReader}};
 use tokio_util::io::StreamReader;
 
 
-use crate::{domain::{episode::{self, Episode, EpisodeWithAction, EpisodeWithShow, EpisodesMessage}, library::LibraryRole, people::{PeopleMessage, Person}, serie::{self, Serie, SeriesMessage}, ElementAction, MediasIds}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{AsyncReadPinBox, FileStreamResult, Source}}, tools::{array_tools::Dedup, clock::now, image_tools::{resize_image_reader, ImageSize, ImageType}, log::log_info}};
+use crate::{domain::{deleted::RsDeleted, episode::{self, Episode, EpisodeWithAction, EpisodeWithShow, EpisodesMessage}, library::LibraryRole, people::{PeopleMessage, Person}, serie::{self, Serie, SeriesMessage}, ElementAction, MediasIds}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{AsyncReadPinBox, FileStreamResult, Source}}, tools::{array_tools::Dedup, clock::now, image_tools::{resize_image_reader, ImageSize, ImageType}, log::log_info}};
 
 use super::{error::{Error, Result}, medias::{RsSort, RsSortOrder}, store::sql::SqlOrder, users::{ConnectedUser, HistoryQuery}, ModelController};
 
@@ -218,16 +218,17 @@ impl ModelController {
 	}
 
 
-    pub async fn remove_episode(&self, library_id: &str, serie_id: &str, season: u32, number: u32, requesting_user: &ConnectedUser) -> Result<Episode> {
+    pub async fn remove_episode(&self, library_id: &str, serie_id: &str, season: u32, number: u32, requesting_user: &ConnectedUser) -> RsResult<Episode> {
         requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         let existing = store.get_episode(serie_id, season, number).await?;
         if let Some(existing) = existing { 
             store.remove_episode(serie_id.to_string(), season, number).await?;
+            self.add_deleted(library_id, RsDeleted::episode(serie_id.to_owned()), requesting_user).await?;
             self.send_episode(EpisodesMessage { library: library_id.to_string(), episodes: vec![EpisodeWithAction {action: ElementAction::Deleted, episode: existing.clone()}] });
             Ok(existing)
         } else {
-            Err(Error::NotFound)
+            Err(Error::NotFound.into())
         }
 	}
 

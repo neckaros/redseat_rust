@@ -7,7 +7,7 @@ use serde_json::Value;
 use tokio::{fs::File, io::{AsyncRead, BufReader}};
 
 use rs_plugin_common_interfaces::url::RsLink;
-use crate::{domain::{library::LibraryRole, people::{PeopleMessage, Person}, tag::Tag, ElementAction, MediasIds}, error::RsResult, plugins::sources::{AsyncReadPinBox, FileStreamResult}, tools::image_tools::{ImageSize, ImageType}};
+use crate::{domain::{deleted::RsDeleted, library::LibraryRole, people::{PeopleMessage, Person}, tag::Tag, ElementAction, MediasIds}, error::RsResult, plugins::sources::{AsyncReadPinBox, FileStreamResult}, tools::image_tools::{ImageSize, ImageType}};
 
 use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
 
@@ -141,16 +141,17 @@ impl ModelController {
 	}
 
 
-    pub async fn remove_person(&self, library_id: &str, tag_id: &str, requesting_user: &ConnectedUser) -> Result<Person> {
+    pub async fn remove_person(&self, library_id: &str, tag_id: &str, requesting_user: &ConnectedUser) -> RsResult<Person> {
         requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
-        let existing = store.get_person(&tag_id).await?;
+        let existing = store.get_person(tag_id).await?;
         if let Some(existing) = existing { 
             store.remove_person(tag_id.to_string()).await?;
+            self.add_deleted(library_id, RsDeleted::person(tag_id.to_owned()), requesting_user).await?;
             self.send_people(PeopleMessage { library: library_id.to_string(), action: ElementAction::Deleted, people: vec![existing.clone()] });
             Ok(existing)
         } else {
-            Err(Error::NotFound)
+            Err(Error::NotFound.into())
         }
 	}
 

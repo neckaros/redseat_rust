@@ -14,7 +14,7 @@ use tokio::{fs::File, io::{AsyncRead, AsyncWriteExt, BufReader}};
 use tokio_util::io::StreamReader;
 
 
-use crate::{domain::{library::LibraryRole, movie::{Movie, MovieForUpdate, MoviesMessage}, people::{PeopleMessage, Person}, ElementAction, MediaElement, MediasIds}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source}}, server::get_server_folder_path_array, tools::{image_tools::{resize_image_reader, ImageSize, ImageType}, log::log_info}};
+use crate::{domain::{deleted::RsDeleted, library::LibraryRole, movie::{Movie, MovieForUpdate, MoviesMessage}, people::{PeopleMessage, Person}, ElementAction, MediaElement, MediasIds}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source}}, server::get_server_folder_path_array, tools::{image_tools::{resize_image_reader, ImageSize, ImageType}, log::log_info}};
 
 use super::{error::{Error, Result}, store::sql::SqlOrder, users::{ConnectedUser, HistoryQuery}, ModelController};
 
@@ -246,19 +246,20 @@ impl ModelController {
 	}
 
 
-    pub async fn remove_movie(&self, library_id: &str, movie_id: &str, requesting_user: &ConnectedUser) -> Result<Movie> {
+    pub async fn remove_movie(&self, library_id: &str, movie_id: &str, requesting_user: &ConnectedUser) -> RsResult<Movie> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         if MediasIds::is_id(movie_id) {
-            return Err(Error::InvalidIdForAction("remove".to_string(), movie_id.to_string()))
+            return Err(Error::InvalidIdForAction("remove".to_string(), movie_id.to_string()).into())
         }
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         let existing = store.get_movie(movie_id).await?;
         if let Some(existing) = existing { 
             store.remove_movie(movie_id.to_string()).await?;
+            self.add_deleted(library_id, RsDeleted::movie(movie_id.to_owned()), requesting_user).await?;
             self.send_movie(MoviesMessage { library: library_id.to_string(), action: ElementAction::Deleted, movies: vec![existing.clone()] });
             Ok(existing)
         } else {
-            Err(Error::NotFound)
+            Err(Error::NotFound.into())
         }
 	}
 
