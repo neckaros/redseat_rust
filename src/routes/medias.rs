@@ -18,6 +18,7 @@ use super::{mw_range::RangeDefinition, ImageRequestOptions, ImageUploadOptions};
 pub fn routes(mc: ModelController) -> Router {
 	Router::new()
 		.route("/", get(handler_list))
+		.route("/count", get(handler_count))
 		.route("/loc", get(handler_locs))
 		.route("/", post(handler_post))
 		.route("/", patch(handler_multi_patch))
@@ -41,13 +42,27 @@ pub fn routes(mc: ModelController) -> Router {
 
 async fn handler_list(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<MediaQuery>) -> Result<Json<Value>> {
 	if let Some(filter) = &query.filter {
-		let old_query = serde_json::from_str::<MediaQuery>(&filter)?;
+		let old_query = serde_json::from_str::<MediaQuery>(filter)?;
 		//old_query.page_key = query.page_key;
 		let libraries = mc.get_medias(&library_id, old_query, &user).await?;
 		let body = Json(json!(libraries));
 		Ok(body)
 	} else {
 		let libraries = mc.get_medias(&library_id, query, &user).await?;
+		let body = Json(json!(libraries));
+		Ok(body)
+	}
+}
+
+async fn handler_count(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<MediaQuery>) -> Result<Json<Value>> {
+	if let Some(filter) = &query.filter {
+		let old_query = serde_json::from_str::<MediaQuery>(filter)?;
+		//old_query.page_key = query.page_key;
+		let libraries = mc.count_medias(&library_id, old_query, &user).await?;
+		let body = Json(json!(libraries));
+		Ok(body)
+	} else {
+		let libraries = mc.count_medias(&library_id, query, &user).await?;
 		let body = Json(json!(libraries));
 		Ok(body)
 	}

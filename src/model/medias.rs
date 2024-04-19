@@ -47,6 +47,7 @@ pub struct MediaQuery {
     
     pub page_key: Option<u64>,
 
+    /// For legacy if user put serialized query in filter field
     pub filter: Option<String>,
 }
 
@@ -125,6 +126,12 @@ impl ModelController {
 		Ok(people)
 	}
 
+	pub async fn count_medias(&self, library_id: &str, query: MediaQuery, requesting_user: &ConnectedUser) -> Result<u64> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+		let count = store.count_medias(query).await?;
+		Ok(count)
+	}
     pub async fn get_locs(&self, library_id: &str, precision: Option<u32>, requesting_user: &ConnectedUser) -> Result<Vec<RsGpsPosition>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;

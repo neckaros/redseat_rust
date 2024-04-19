@@ -183,12 +183,10 @@ impl SqliteLibraryStore {
         })
     }
 
-    pub async fn get_medias(&self, mut query: MediaQuery) -> Result<Vec<Media>> {
-        let row = self.connection.call( move |conn| { 
 
+    fn build_media_query(mut query: MediaQuery) -> RsQueryBuilder {
+        let mut where_query = RsQueryBuilder::new();
 
-            let mut where_query = QueryBuilder::new();
-            
             let sort = query.sort.to_media_query();
             if let Some(page_key) = query.page_key {
                 if query.order == SqlOrder::DESC {
@@ -198,40 +196,39 @@ impl SqliteLibraryStore {
                 }
             }
 
-            if let Some(q) = &query.after {
+            if let Some(q) = query.after {
                 if query.sort == RsSort::Added || query.sort == RsSort::Modified || query.sort == RsSort::Created {
-                    where_query.add_where(QueryWhereType::After(&sort, q));
+                    where_query.add_where(SqlWhereType::After(sort.clone(), Box::new(q)));
                 } else {
-                    where_query.add_where(QueryWhereType::After("modified", q));
+                    where_query.add_where(SqlWhereType::After("modified".to_owned(), Box::new(q)));
                 }
-            }
-            if let Some(q) = &query.before {
+            } else if let Some(q) = query.before {
                 if query.sort == RsSort::Added || query.sort == RsSort::Modified || query.sort == RsSort::Created {
-                    where_query.add_where(QueryWhereType::Before(&sort, q));
+                    where_query.add_where(SqlWhereType::Before(sort.clone(), Box::new(q)));
                 } else {
-                    where_query.add_where(QueryWhereType::Before("modified", q));
+                    where_query.add_where(SqlWhereType::Before("modified".to_owned(), Box::new(q)));
                 }
             }
 
 
-            if query.types.len() > 0 {
+            if !query.types.is_empty() {
                 let mut types = vec![];
-                for kind in &query.types {
-                    types.push(QueryWhereType::Equal("type", kind));
+                for kind in query.types {
+                    types.push(SqlWhereType::Equal("type".to_owned(), Box::new(kind)));
                 }
-                where_query.add_where(QueryWhereType::Or(types));
+                where_query.add_where(SqlWhereType::Or(types));
             }
 
-            for person in &query.people {
-                where_query.add_where(QueryWhereType::InStringList("people", ",", person));
+            for person in query.people {
+                where_query.add_where(SqlWhereType::InStringList("people".to_owned(), ",".to_owned(), Box::new(person)));
             }
 
             //let series_formated = &query.series.iter().map(|s| format!("{}|", s)).collect::<Vec<String>>();
-            for serie in &query.series {
-                if serie.contains("|") {
-                    where_query.add_where(QueryWhereType::Custom("series like '%' || ? || '%'", serie));
+            for serie in query.series {
+                if serie.contains('|') {
+                    where_query.add_where(SqlWhereType::Custom("series like '%' || ? || '%'".to_owned(), Box::new(serie)));
                 } else {
-                    where_query.add_where(QueryWhereType::Custom("(',' || series || ',' LIKE '%,' || ? || '|%')", serie));
+                    where_query.add_where(SqlWhereType::Custom("(',' || series || ',' LIKE '%,' || ? || '|%')".to_owned(), Box::new(serie)));
                 }
                 
             }
@@ -244,10 +241,18 @@ impl SqliteLibraryStore {
 
 
 
-            for tag in &query.tags {
-                where_query.add_recursive("tags", "media_tag_mapping", "media_ref", "tag_ref", tag);
+            for tag in query.tags {
+                where_query.add_recursive("tags".to_owned(), "media_tag_mapping".to_owned(), "media_ref".to_owned(), "tag_ref".to_owned(), Box::new(tag));
             }
             
+            where_query
+    }
+
+    pub async fn get_medias(&self, query: MediaQuery) -> Result<Vec<Media>> {
+        let row = self.connection.call( move |conn| { 
+
+            let limit = query.limit.unwrap_or(200);
+            let mut where_query = Self::build_media_query(query);
 
 
             let mut query = conn.prepare(&format!("
@@ -267,7 +272,7 @@ impl SqliteLibraryStore {
             FROM medias as m
              {}
                           {}
-             LIMIT {}", where_query.format_recursive(), where_query.format(), where_query.format_order(), query.limit.unwrap_or(200)))?;
+             LIMIT {}", where_query.format_recursive(), where_query.format(), where_query.format_order(), limit))?;
 
             //println!("query {:?}", query.expanded_sql());
 
@@ -277,6 +282,36 @@ impl SqliteLibraryStore {
             )?;
             let backups:Vec<Media> = rows.collect::<std::result::Result<Vec<Media>, rusqlite::Error>>()?; 
             Ok(backups)
+        }).await?;
+        Ok(row)
+    }
+
+    
+    pub async fn count_medias(&self, query: MediaQuery) -> Result<u64> {
+        let row = self.connection.call( move |conn| { 
+
+            let limit = query.limit.unwrap_or(200);
+            let mut where_query = Self::build_media_query(query);
+
+
+            let mut query = conn.prepare(&format!("
+            {}
+            SELECT 
+            count(m.id)
+			
+            FROM medias as m
+             {}
+                          {}
+             LIMIT {}", where_query.format_recursive(), where_query.format(), where_query.format_order(), limit))?;
+
+            //println!("query {:?}", query.expanded_sql());
+
+
+            let row: u64 = query.query_row(
+            where_query.values(), |row| row.get(0),
+            )?;
+            
+            Ok(row)
         }).await?;
         Ok(row)
     }
