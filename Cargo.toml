@@ -26,9 +26,9 @@ rsa = "0.9.6"
 rand = "0.8.5"
 instant-acme = "0.4.2"
 rcgen = "0.12.1"
-x509-parser = "0.15.1"
+x509-parser = "0.16.0"
 chrono = { version = "0.4.33", features = ["serde"]}
-reqwest = { version = "0.11.23", features = ["stream", "gzip"]}
+reqwest = { version = "0.12.3", features = ["stream", "gzip"]}
 query_external_ip = "0.1.1"
 axum-server-dual-protocol = "0.6.0"
 
@@ -53,12 +53,12 @@ ndarray = "0.15.6"
 ort = "2.0.0-rc.0"
 sha256 = "1.5.0"
 axum-extra = { version = "0.9.2", features = ["query"] }
-http = "0.2.0"
+http = "1.1.0"
 extism = "1.2.0"
 rs-plugin-common-interfaces = { version = "0.12.5", features = ["rusqlite",] }
 async-recursion = "1.1.0"
 async-compression = { version = "0.4.6", features = ["tokio"] }
-youtube_dl = { version = "0.9.0", features = ["tokio", "downloader-rustls-tls"] }
+youtube_dl = { version = "0.10.0", features = ["tokio", "downloader-rustls-tls"] }
 stream-map-any = "0.2.2"
 human_bytes = "0.4.3"
 regex = "1.10.4"

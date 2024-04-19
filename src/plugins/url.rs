@@ -75,8 +75,6 @@ impl PluginManager {
                 }
             }
         }
-        
-
     }
 
     #[async_recursion]
