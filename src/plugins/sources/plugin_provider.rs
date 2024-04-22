@@ -13,18 +13,18 @@ use crate::{domain::{library::ServerLibrary, media::MediaForUpdate}, model::Mode
 
 use super::{error::{SourcesError, SourcesResult}, AsyncReadPinBox, FileStreamResult, Source, SourceRead};
 
-pub struct VirtualProvider {
+pub struct PluginProvider {
     root: PathBuf,
     library: ServerLibrary,
-    plugin_manager: Arc<PluginManager>
+    plugin: PluginWithCredential
 }
 
 
 #[async_trait]
-impl Source for VirtualProvider {
+impl Source for PluginProvider {
     async fn new(library: ServerLibrary, controller: ModelController) -> SourcesResult<Self> {
         if let Some(root) = &library.root {
-            Ok(VirtualProvider {
+            Ok(Self {
                 root: PathBuf::from_str(&root).map_err(|_| SourcesError::Error)?,
                 library,
                 plugin_manager: controller.plugin_manager.clone()

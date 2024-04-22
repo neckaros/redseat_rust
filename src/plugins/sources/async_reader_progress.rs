@@ -12,6 +12,20 @@ pub struct ProgressReader<R> {
     pub sender: Sender<RsProgress>
 }
 
+
+impl<R> Drop for ProgressReader<R> {
+    fn drop(&mut self) {
+        let sender = self.sender.clone();
+        let mut new_progress = self.progress_template.clone();
+        new_progress.current = Some(self.bytes_read as u64); 
+        new_progress.total = Some(self.bytes_read as u64);
+
+        tokio::spawn(async move {
+            sender.send(new_progress).await.unwrap();
+        });
+    }
+}
+
 impl<R> ProgressReader<R> {
     pub fn new(inner: R, progress_template: RsProgress, sender: Sender<RsProgress>) -> Self {
         Self {

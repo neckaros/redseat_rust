@@ -51,6 +51,7 @@ CREATE TABLE Libraries (
   root TEXT    NOT NULL,
   settings TEXT    NOT NULL,
   crypt INTEGER DEFAULT 0
+  credentials TEXT ,
 );
 
 CREATE TABLE Libraries_Users_Rights (

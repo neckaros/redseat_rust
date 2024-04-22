@@ -603,7 +603,6 @@ impl SqliteLibraryStore {
 
     pub async fn add_media(&self, insert: MediaForInsert) -> Result<()> {
         self.connection.call( move |conn| { 
-            println!("{:?} size", insert.media.thumbsize);
             conn.execute("INSERT INTO medias (
             id, source, name, description, type, mimetype, size, md5, params, width, 
             height, phash, thumbhash, focal, iso, colorSpace, icc, mp, sspeed, fnumber, orientation, duration, acodecs, 

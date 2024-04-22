@@ -165,7 +165,6 @@ async fn handler_post(Path(library_id): Path<String>, State(mc): State<ModelCont
         let name = field.name().unwrap().to_string();
 		if name == "info" {
 			let text = &field.text().await?;
-			println!("INFOS! {:?}", text);
 			info = serde_json::from_str(&text)?;
 		} else if name == "file" {
 			let filename = field.file_name().unwrap().to_string();
@@ -175,6 +174,9 @@ async fn handler_post(Path(library_id): Path<String>, State(mc): State<ModelCont
 			let reader = StreamReader::new(field.map_err(|multipart_error| {
 				std::io::Error::new(std::io::ErrorKind::Other, multipart_error)
 			}));
+
+
+			
 			let media = mc.add_library_file(&library_id, &filename, Some(info), reader, &user).await?;
 			return Ok(Json(json!(media)))
 		}

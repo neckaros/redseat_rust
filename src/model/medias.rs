@@ -4,7 +4,7 @@
 use std::{io::{self, Cursor, Read}, path::PathBuf, pin::Pin, result, str::FromStr};
 
 use chrono::{Datelike, Utc};
-use futures::TryStreamExt;
+use futures::{channel::mpsc::Sender, TryStreamExt};
 use http::header::CONTENT_TYPE;
 use mime::{Mime, APPLICATION_OCTET_STREAM};
 use mime_guess::get_mime_extensions_str;
@@ -245,17 +245,7 @@ impl ModelController {
 		}
 
 
-        let size = if let Some(s) = size {
-                if s == ImageSize::Large {
-                    None
-                } else if s == ImageSize::Small {
-                    None
-                } else {
-                    Some(s)
-                }
-            } else {
-                None
-            };
+        let size = size.filter(|s| !(s == &ImageSize::Large || s == &ImageSize::Small));
 
         let result = self.library_image(library_id, ".thumbs", media_id, None, size.clone(), requesting_user).await;
         if let Err(error) = result {
@@ -278,7 +268,7 @@ impl ModelController {
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         store.update_media_thumb(media_id.to_owned()).await?;
         let media = self.get_media(library_id, media_id.to_owned(), requesting_user).await?.ok_or(Error::NotFound)?;
-        self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media: media, action: ElementAction::Updated}] });
+        self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media, action: ElementAction::Updated}] });
         Ok(())
 
 	}
@@ -290,8 +280,8 @@ impl ModelController {
         let existing = store.get_media_source(&media_id).await?;
         let crypted = self.cache_get_library(library_id).await.and_then(|l| l.crypt).unwrap_or(false);
         if let Some(existing) = existing {
-            let m = self.source_for_library(&library_id).await?;
-            if crypted && query.raw == false {
+            let m = self.source_for_library(library_id).await?;
+            if crypted && !query.raw {
                 range = Some(RangeDefinition { start: Some(CRYPTO_HEADER_SIZE + existing.thumb_size.unwrap_or(0)), end: None })
             }
             let mut reader_response = m.get_file(&existing.source, range.clone()).await?;
@@ -361,63 +351,38 @@ impl ModelController {
 
 
     
-    pub async fn add_library_file<T: AsyncRead>(&self, library_id: &str, filename: &str, infos: Option<MediaForUpdate>, reader: T, requesting_user: &ConnectedUser) -> RsResult<Media> {
+    pub async fn add_library_file<'a, T: Sized + AsyncRead + Send + 'a >(&self, library_id: &str, filename: &str, infos: Option<MediaForUpdate>, reader: T, requesting_user: &ConnectedUser) -> RsResult<Media> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         let mut infos = infos.unwrap_or_default();
         let upload_id = infos.upload_id.clone().unwrap_or_else(|| nanoid!());
         let crypted = self.cache_get_library_crypt(library_id).await;
         let m = self.source_for_library(&library_id).await?;
 
+        let tx_progress = self.create_progress_sender(library_id.to_owned());
 
-		let (source, writer) = m.get_file_write_stream(filename).await?;
-
-        tokio::pin!(reader);
-		tokio::pin!(writer);
-
+        tokio::pin!(reader); 
+        let progress_reader = ProgressReader::new(reader, RsProgress { id: upload_id.clone(), total: infos.size, current: Some(0), kind: RsProgressType::Transfert, filename: Some(filename.to_owned()) }, tx_progress.clone());
+           
         
+        let source = m.write(filename, Box::pin(progress_reader)).await?;
 
-
-        let mut stream = ReaderStream::new(reader);
-        let mut current: u64 = 0;
-        let mut current_buffer = 0u64;
-        while let Some(chunk) = stream.next().await {
-            let chunck = chunk?;
-            current_buffer += chunck.len() as u64;
-            if current_buffer > 5000000 {
-                current += current_buffer;
-                current_buffer = 0;
-                let message = ProgressMessage {
-                    library: library_id.to_owned(),
-                    name: filename.to_string(),
-                    progress: RsProgress { id: upload_id.clone(), total: infos.size, current: Some(current), kind: RsProgressType::Finished, filename: Some(filename.to_owned()) },
-                };
-                self.send_progress(message);
-            }
-            
-            writer.write_all(&chunck).await?;
-         }
-
-         writer.shutdown().await?;
-
-         drop(stream);
-		//copy(&mut reader, &mut writer).await?;
 
         if !crypted {
             let _ = m.fill_infos(&source, &mut infos).await;
         }
 
-        let mut new_file = MediaForAdd::default();
-        new_file.name = filename.to_string();
-        new_file.source = Some(source.to_string());
-        new_file.mimetype = infos.mimetype.clone().unwrap_or(DEFAULT_MIME.to_owned());
-        new_file.created = Some(infos.created.unwrap_or_else(|| Utc::now().timestamp_millis() as u64));
-        new_file.iv = infos.iv.clone();
-        new_file.thumbsize = infos.thumbsize;
-        new_file.uploader = requesting_user.user_id().ok();
+        let mut new_file = MediaForAdd {
+            name: filename.to_string(), 
+            source: Some(source.to_string()),
+            mimetype: infos.mimetype.clone().unwrap_or(DEFAULT_MIME.to_owned()),
+            created: Some(infos.created.unwrap_or_else(|| Utc::now().timestamp_millis() as u64)),
+            iv: infos.iv.clone(),
+            thumbsize: infos.thumbsize,
+            uploader: requesting_user.user_id().ok(),
+            ..Default::default() };
 
         let message = ProgressMessage {
             library: library_id.to_owned(),
-            name: filename.to_string(),
             progress: RsProgress { id: upload_id, total: infos.size, current: infos.size, kind: RsProgressType::Finished, filename: Some(new_file.name.clone()) },
         };
         self.send_progress(message);
@@ -479,31 +444,7 @@ impl ModelController {
             }
 
             //Progress
-            let lib_progress = library_id.to_string();
-            let mc_progress = self.clone();
-            let name_progress = infos.name.clone().unwrap_or(upload_id.clone());
-            let (tx_progress, mut rx_progress) = mpsc::channel::<RsProgress>(100);
-            let progress_id = upload_id.clone();
-            tokio::spawn(async move {
-                let mut last_send = 0;
-                let mut last_type: Option<RsProgressType> = None;
-                
-                while let Some(mut progress) = rx_progress.recv().await {
-                    let current = progress.current.unwrap_or(1);
-                    if last_send == 0 || current < last_send || current - last_send  > 1000000 || Some(&progress.kind) != last_type.as_ref() {
-                        last_type = Some(progress.kind.clone());
-                        last_send = current.clone();
-                        progress.id = progress_id.clone();
-                        let message = ProgressMessage {
-                            library: lib_progress.clone(),
-                            name: name_progress.clone(),
-                            progress,
-                        };
-                        mc_progress.send_progress(message);
-                    }
-                }
-            });
-
+            let tx_progress = self.create_progress_sender(library_id.to_owned());
 
 
             let reader = SourceRead::Request(request).into_reader(library_id, None, 
@@ -521,11 +462,12 @@ impl ModelController {
                 }
             }
             
-            let (source, writer) = m.get_file_write_stream(&filename).await?;
-            let mut progress_reader = ProgressReader::new(reader.stream, RsProgress { id: upload_id.clone(), total: reader.size, current: Some(0), kind: RsProgressType::Transfert, filename: Some(filename.clone()) }, tx_progress.clone());
-            tokio::pin!(writer);
+            
+            let progress_reader = ProgressReader::new(reader.stream, RsProgress { id: upload_id.clone(), total: reader.size, current: Some(0), kind: RsProgressType::Transfert, filename: Some(filename.clone()) }, tx_progress.clone());
+           
+            let source = m.write(&filename, Box::pin(progress_reader)).await?;
 
-            copy(&mut progress_reader, &mut writer).await?;
+
 
             
 
@@ -572,6 +514,31 @@ impl ModelController {
         }
         Ok(medias)
 	}
+
+
+    pub fn create_progress_sender(&self, library_id: String) -> mpsc::Sender<RsProgress> {
+        //Progress
+        let mc_progress = self.clone();
+        let (tx_progress, mut rx_progress) = mpsc::channel::<RsProgress>(100);
+        tokio::spawn(async move {
+            let mut last_send = 0;
+            let mut last_type: Option<RsProgressType> = None;
+            
+            while let Some(progress) = rx_progress.recv().await {
+                let current = progress.current.unwrap_or(1);
+                if progress.current == progress.total || last_send == 0 || current < last_send || current - last_send  > 1000000 || Some(&progress.kind) != last_type.as_ref() {
+                    last_type = Some(progress.kind.clone());
+                    last_send = current;
+                    let message = ProgressMessage {
+                        library: library_id.clone(),
+                        progress,
+                    };
+                    mc_progress.send_progress(message);
+                }
+            }
+        });
+        tx_progress
+    }
     
     pub async fn medias_add_request(&self, library_id: &str, request: RsRequest, additional_infos: Option<MediaForUpdate>, requesting_user: &ConnectedUser) -> RsResult<Media> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
@@ -589,10 +556,10 @@ impl ModelController {
 
      
         let mut new_file = MediaForAdd::default();
-        new_file.name = final_infos.name.or_else(|| infos.name).unwrap_or(nanoid!());
-        new_file.source = Some(request.url);
-        new_file.mimetype = final_infos.mimetype.or_else(|| infos.mimetype).unwrap_or(DEFAULT_MIME.to_owned());
-        new_file.size = final_infos.size.or_else(|| infos.size);
+        new_file.name = final_infos.name.or(infos.name).unwrap_or(nanoid!());
+        new_file.source = if let Some(selected) = request.selected_file { Some(format!("{}|{}",request.url, selected)) } else { Some(request.url) };
+        new_file.mimetype = final_infos.mimetype.or(infos.mimetype).unwrap_or(DEFAULT_MIME.to_owned());
+        new_file.size = final_infos.size.or(infos.size);
         new_file.created = Some(infos.created.unwrap_or_else(|| Utc::now().timestamp_millis() as u64));
         
         new_file.kind = file_type_from_mime(&new_file.mimetype);
@@ -616,16 +583,18 @@ impl ModelController {
     pub async fn generate_thumb(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> crate::error::Result<()> {
         self.cache_check_library_notcrypt(library_id).await?;
 
-        let m = self.source_for_library(&library_id).await?; 
+        let m = self.source_for_library(library_id).await?; 
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
-        let media = store.get_media(&media_id).await?.ok_or(Error::NotFound)?;
+        let media = store.get_media(media_id).await?.ok_or(Error::NotFound)?;
         
         let thumb = match media.kind {
             FileType::Photo => { 
                 let media_source: MediaSource = media.try_into()?;
                 println!("Photo {}", &media_source.source);
-                let th = m.thumb(&media_source.source).await?;
-                Ok(th)
+                let reader = m.get_file(&media_source.source, None).await?;
+                let mut reader = reader.into_reader(library_id, None, None, Some((self.clone(), &requesting_user))).await?;
+                let image = resize_image_reader(&mut reader.stream, 512).await?;
+                Ok(image)
             },
             FileType::Video => { 
                 let th = self.get_video_thumb(library_id, media_id, VideoTime::Percent(5), requesting_user).await?;
