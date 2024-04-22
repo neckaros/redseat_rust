@@ -50,22 +50,32 @@ pub struct FfprobeStream {
 	pub color_space: Option<String>,
 	pub bit_rate: Option<String>,
 	pub nb_frames: Option<String>,
-	pub tags: Option<StreamTags>
+	pub tags: Option<StreamTags>,
+	pub r_frame_rate: Option<String>,
 }
 
 impl FfprobeStream {
 	pub fn number_of_frames(&self) ->  Option<isize>{
 		if let Some(nb) = &self.nb_frames  {
-			let ivalue = nb.parse::<isize>().ok();
-			ivalue
+			nb.parse::<isize>().ok()
 		} else if let Some(nb) = self.tags.as_ref().and_then(|t| t.number_of_frames.as_ref())  {
-			let ivalue = nb.parse::<isize>().ok();
-			ivalue
+			nb.parse::<isize>().ok()
 		} else {
 			None
 		}
 	}
 
+	pub fn fps(&self) ->  Option<f64>{
+		if let Some(fr) = &self.r_frame_rate {
+			let mut splitted = fr.split('/').map(|s| s.trim());
+			let a = splitted.next().and_then(|m| m.parse::<f64>().ok());
+			let b = splitted.next().and_then(|m| m.parse::<f64>().ok());
+			a.map(|a| a / b.unwrap_or(1.0))
+			
+		} else {
+			None
+		}
+	}
 	
 	pub fn bitrate(&self) ->  Option<u64>{
 		let ivalue = self.bit_rate.as_ref().and_then(|b| b.parse::<u64>().ok());

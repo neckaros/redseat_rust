@@ -112,7 +112,7 @@ impl TryFrom<Media> for MediaSource {
             kind: value.kind,
             thumb_size: value.thumbsize,
             size: value.size,
-            mime: value.mimetype.unwrap_or(DEFAULT_MIME.to_owned()),
+            mime: value.mimetype,
         })
     }
 }
@@ -152,13 +152,15 @@ impl ModelController {
 		Ok(media)
 	}
 
-    pub async fn get_media_by_hash(&self, library_id: &str, hash: String, requesting_user: &ConnectedUser) -> RsResult<Media> {
+    pub async fn get_media_by_hash(&self, library_id: &str, hash: String, requesting_user: &ConnectedUser) -> RsResult<Option<Media>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
-		let mut media = store.get_media_by_hash(hash).await.ok_or(Error::NotFound)?;
+		let mut media = store.get_media_by_hash(hash).await;
         
-        if requesting_user.is_admin() {
-            media.source = None;
+        if let Some(media) = &mut media {
+            if requesting_user.is_admin() {
+                media.source = None;
+            }
         }
 		Ok(media)
 	}
@@ -371,6 +373,10 @@ impl ModelController {
 
         tokio::pin!(reader);
 		tokio::pin!(writer);
+
+        
+
+
         let mut stream = ReaderStream::new(reader);
         let mut current: u64 = 0;
         let mut current_buffer = 0u64;
@@ -403,19 +409,20 @@ impl ModelController {
         let mut new_file = MediaForAdd::default();
         new_file.name = filename.to_string();
         new_file.source = Some(source.to_string());
-        new_file.mimetype = infos.mimetype.clone();
+        new_file.mimetype = infos.mimetype.clone().unwrap_or(DEFAULT_MIME.to_owned());
         new_file.created = Some(infos.created.unwrap_or_else(|| Utc::now().timestamp_millis() as u64));
+        new_file.iv = infos.iv.clone();
+        new_file.thumbsize = infos.thumbsize;
+        new_file.uploader = requesting_user.user_id().ok();
 
         let message = ProgressMessage {
             library: library_id.to_owned(),
             name: filename.to_string(),
-            progress: RsProgress { id: upload_id, total: infos.size.clone(), current: infos.size.clone(), kind: RsProgressType::Finished, filename: Some(new_file.name.clone()) },
+            progress: RsProgress { id: upload_id, total: infos.size, current: infos.size, kind: RsProgressType::Finished, filename: Some(new_file.name.clone()) },
         };
         self.send_progress(message);
         
-        if let Some(ref mime) = new_file.mimetype {
-            new_file.kind = file_type_from_mime(&mime);
-        }
+        new_file.kind = file_type_from_mime(&new_file.mimetype);
 
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         let id = nanoid!();
@@ -536,7 +543,7 @@ impl ModelController {
             let mut new_file = MediaForAdd::default();
             new_file.name = filename.to_string();
             new_file.source = Some(source.to_string());
-            new_file.mimetype = infos.mimetype.clone();
+            new_file.mimetype = infos.mimetype.clone().unwrap_or(DEFAULT_MIME.to_owned());
             new_file.created = Some(infos.created.unwrap_or_else(|| Utc::now().timestamp_millis() as u64));
 
             let final_progress = tx_progress.send(RsProgress { id: upload_id.clone(), total: infos.size, current: infos.size, kind: RsProgressType::Finished, filename: Some(filename.to_owned()) }).await;
@@ -544,9 +551,7 @@ impl ModelController {
                 log_error(LogServiceType::Source, format!("Unable to send final progress message: {:?}", error));
             }
             
-            if let Some(ref mime) = new_file.mimetype {
-                new_file.kind = file_type_from_mime(&mime);
-            }
+            new_file.kind = file_type_from_mime(&new_file.mimetype);
 
             let id = nanoid!();
             store.add_media(MediaForInsert { id: id.clone(), media: new_file }).await?;
@@ -586,13 +591,12 @@ impl ModelController {
         let mut new_file = MediaForAdd::default();
         new_file.name = final_infos.name.or_else(|| infos.name).unwrap_or(nanoid!());
         new_file.source = Some(request.url);
-        new_file.mimetype = final_infos.mimetype.or_else(|| infos.mimetype);
+        new_file.mimetype = final_infos.mimetype.or_else(|| infos.mimetype).unwrap_or(DEFAULT_MIME.to_owned());
         new_file.size = final_infos.size.or_else(|| infos.size);
         new_file.created = Some(infos.created.unwrap_or_else(|| Utc::now().timestamp_millis() as u64));
         
-        if let Some(ref mime) = new_file.mimetype {
-            new_file.kind = file_type_from_mime(&mime);
-        }
+        new_file.kind = file_type_from_mime(&new_file.mimetype);
+        
 
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         let id = nanoid!();
@@ -749,8 +753,9 @@ impl ModelController {
 
         if let Some(video_stream) = videos_infos.video_stream() {
             update.color_space = video_stream.color_space.clone();
-            update.vcodecs = video_stream.codec_name.clone().and_then(|c| Some(vec![c]));
-            update.bitrate = video_stream.bitrate().clone();
+            update.vcodecs = video_stream.codec_name.clone().map(|c| vec![c]);
+            update.bitrate = video_stream.bitrate();
+            update.fps = video_stream.fps()
         }
 
         self.update_media(library_id, media_id.to_owned(), update, true, requesting_user).await?;
@@ -768,8 +773,19 @@ impl ModelController {
         if let Some(infos) = images_infos.first() {
             let mut update = MediaForUpdate::default();
 
+            update.mp = Some(u32::from(infos.image.geometry.width * infos.image.geometry.height / 1000000));
+
+
             update.width = Some(infos.image.geometry.width);
             update.height = Some(infos.image.geometry.height);
+            update.orientation = infos.image.orientation();
+            update.iso = infos.image.iso();
+            update.focal = infos.image.focal();
+            update.f_number = infos.image.f_number();
+            update.model = infos.image.properties.exif_model.clone();
+            update.sspeed = infos.image.properties.exif_exposure_time.clone();
+            update.icc = infos.image.properties.icc_description.clone();
+            
 
             if let Some(color_space) = &infos.image.colorspace {
                 update.color_space = Some(color_space.clone());

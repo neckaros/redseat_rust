@@ -55,6 +55,18 @@ impl PluginManager {
     }
 
 
+    pub async fn renew_crendentials(&self, plugin_with_cred: PluginWithCredential) -> crate::Result<PluginCredential>{
+        if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
+            let mut plugin_m = plugin.plugin.lock().unwrap();
+            let Json(res) = plugin_m.call::<Json<Option<PluginCredential>>, Json<PluginCredential>>("renew_crendentials", Json(plugin_with_cred.credential.map(PluginCredential::from)))?;
+            Ok(res)
+        } else {
+            Err(crate::Error::Error(format!("Plugin not found: {}", plugin_with_cred.plugin.path)))
+        }
+
+        
+    }
+
 
     pub async fn fill_infos(&self, request: &mut RsRequest) {
         let ctx = YydlContext::new().await;
@@ -68,7 +80,7 @@ impl PluginManager {
                     request.people.add_or_set(vec![person]);
                 }
                 if let Some(description) = video.description {
-                    if request.description == None {
+                    if request.description.is_none() {
                         request.description = Some(description);
                     }
                     

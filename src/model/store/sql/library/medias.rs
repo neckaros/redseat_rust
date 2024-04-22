@@ -91,7 +91,8 @@ const MEDIA_QUERY: &str = "SELECT
         
         GROUP_CONCAT(distinct a.tag_ref || '|' || IFNULL(a.confidence, 100)) tags,
         GROUP_CONCAT(distinct b.people_ref) people,
-        GROUP_CONCAT(distinct c.serie_ref || '|' || printf('%04d', c.season) || '|' || printf('%04d', c.episode) ) series
+        GROUP_CONCAT(distinct c.serie_ref || '|' || printf('%04d', c.season) || '|' || printf('%04d', c.episode) ) series,
+        m.fnumber, m.icc, m.mp
         
         FROM medias as m
             LEFT JOIN ratings on ratings.media_ref = m.id
@@ -179,6 +180,11 @@ impl SqliteLibraryStore {
             tags: from_comma_separated_optional(row.get(42)?),
             people: from_comma_separated_optional(row.get(43)?),
             series: from_comma_separated_optional(row.get(44)?),
+
+            
+            f_number: row.get(45)?,
+            icc: row.get(46)?,
+            mp: row.get(47)?,
             //series: None,
         })
     }
@@ -267,7 +273,8 @@ impl SqliteLibraryStore {
             m.added, m.created
 			,(select GROUP_CONCAT(tag_ref || '|' || IFNULL(confidence, 100)) from media_tag_mapping where media_ref = m.id and (confidence != -1 or confidence IS NULL)) as tags
 			,(select GROUP_CONCAT(people_ref ) from media_people_mapping where media_ref = m.id) as people
-			,(select GROUP_CONCAT(serie_ref || '|' || printf('%04d', season) || '|' || printf('%04d', episode)) from media_serie_mapping where media_ref = m.id) as series
+			,(select GROUP_CONCAT(serie_ref || '|' || printf('%04d', season) || '|' || printf('%04d', episode)) from media_serie_mapping where media_ref = m.id) as series,
+            m.fnumber, m.icc, m.mp
 			
             FROM medias as m
              {}
@@ -474,7 +481,16 @@ impl SqliteLibraryStore {
             where_query.add_update(&update.width, "width");
             where_query.add_update(&update.height, "height");
             where_query.add_update(&update.color_space, "colorSpace");
+            where_query.add_update(&update.icc, "icc");
+            where_query.add_update(&update.mp, "mp");
+            where_query.add_update(&update.fps, "fps");
             where_query.add_update(&update.bitrate, "bitrate");
+            where_query.add_update(&update.orientation, "orientation");
+            where_query.add_update(&update.iso, "iso");
+            where_query.add_update(&update.focal, "focal");
+            where_query.add_update(&update.sspeed, "sspeed");
+            where_query.add_update(&update.f_number, "fnumber");
+            where_query.add_update(&update.model, "model");
             
             let v = to_comma_separated_optional(update.vcodecs);
             where_query.add_update(&v, "vcodecs");
@@ -587,16 +603,16 @@ impl SqliteLibraryStore {
 
     pub async fn add_media(&self, insert: MediaForInsert) -> Result<()> {
         self.connection.call( move |conn| { 
-
+            println!("{:?} size", insert.media.thumbsize);
             conn.execute("INSERT INTO medias (
             id, source, name, description, type, mimetype, size, md5, params, width, 
-            height, phash, thumbhash, focal, iso, colorSpace, sspeed, orientation, duration, acodecs, 
+            height, phash, thumbhash, focal, iso, colorSpace, icc, mp, sspeed, fnumber, orientation, duration, acodecs, 
             achan, vcodecs, fps, bitrate, long, lat, model, pages, progress, thumb, 
             thumbv, thumbsize, iv, origin, movie, lang, uploader, uploadkey
 
             )
             VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, 
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
                 ?, ?, ?, ?, ?, ?, ?, ?)", params![
                 insert.id,
@@ -616,7 +632,10 @@ impl SqliteLibraryStore {
                 insert.media.focal,
                 insert.media.iso,
                 insert.media.color_space,
+                insert.media.icc,
+                insert.media.mp,
                 insert.media.sspeed,
+                insert.media.f_number,
                 insert.media.orientation,
                 insert.media.duration,
                 to_pipe_separated_optional(insert.media.acodecs),

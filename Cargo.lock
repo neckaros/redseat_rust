@@ -1139,11 +1139,11 @@ dependencies = [
 
 [[package]]
 name = "engineioxide"
-version = "0.10.2"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa7ba0ad7e728cb176b1d3e473ce038844af4377b545c7928634335714a5afe3"
+checksum = "1e3c9367e41ac7c507d52b3949552aacb853466393001e2720c913c91e0eaef0"
 dependencies = [
- "base64 0.21.7",
+ "base64 0.22.0",
  "bytes",
  "futures",
  "http 1.1.0",
@@ -1151,14 +1151,17 @@ dependencies = [
  "http-body-util",
  "hyper 1.1.0",
  "hyper-util",
+ "memchr",
  "pin-project-lite",
  "rand",
  "serde",
  "serde_json",
+ "smallvec",
  "thiserror",
  "tokio",
  "tokio-tungstenite",
  "tower",
+ "unicode-segmentation",
 ]
 
 [[package]]
@@ -3370,9 +3373,9 @@ dependencies = [
 
 [[package]]
 name = "rs-plugin-common-interfaces"
-version = "0.12.5"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cbe354abdbaf33de159faf14c781d03de39bb89e89d9fb15d26e262d11c289de"
+checksum = "c208d5726237571a0347df3efd35d31110fa72c7d62c6a074be4d5f3a7993877"
 dependencies = [
  "regex",
  "rusqlite",
@@ -3904,9 +3907,9 @@ dependencies = [
 
 [[package]]
 name = "socketioxide"
-version = "0.10.2"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ea516f6cfd7a4aefa7f3e58410c81e330d99126f7cca00f350bdea2f3f75e55"
+checksum = "9d3458d2a9ec1f4050ded69f47a661e3fa7814f474ee68db8445c1fde8167956"
 dependencies = [
  "dashmap",
  "engineioxide",
@@ -4554,6 +4557,12 @@ checksum = "5c5713f0fc4b5db668a2ac63cdb7bb4469d8c9fed047b1d0292cc7b0ce2ba921"
 dependencies = [
  "tinyvec",
 ]
+
+[[package]]
+name = "unicode-segmentation"
+version = "1.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d4c87d22b6e3f4a18d4d40ef354e97c90fcb14dd91d7dc0aa9d8a1172ebf7202"
 
 [[package]]
 name = "unicode-width"

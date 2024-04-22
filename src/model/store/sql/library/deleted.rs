@@ -41,7 +41,7 @@ impl SqliteLibraryStore {
         self.connection.call( move |conn| { 
 
             conn.execute("INSERT OR REPLACE INTO deleted (type, id, date)
-            VALUES (?, ? ,?, ?)", params![
+            VALUES (?, ? ,?)", params![
                 deleted.kind,
                 deleted.id,
                 deleted.date

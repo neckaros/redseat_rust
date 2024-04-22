@@ -75,13 +75,22 @@ impl SqliteLibraryStore {
                 Ok((initial_version, version))
         }).await?;
 
-        /*self.connection.call( |conn| {
-            conn.execute("CREATE TRIGGER inserted_deleted AFTER INSERT ON deleted
-            BEGIN
-             update deleted SET date = round((julianday('now') - 2440587.5)*86400.0 * 1000) WHERE id = NEW.id and type = NEW.type;
-            END;", params![])?;
+       /* self.connection.call( |conn| {
+
+            conn.execute("ALTER TABLE medias ADD COLUMN iso_new INTEGER;", params![])?;
+            conn.execute("UPDATE medias SET iso_new = CAST(iso as INTEGER);", params![])?;
+            conn.execute("ALTER TABLE medias DROP COLUMN iso;", params![])?;
+            conn.execute("ALTER TABLE medias RENAME COLUMN iso_new TO iso;", params![])?;
+
+            conn.execute("ALTER TABLE medias ADD COLUMN focal_new INTEGER;", params![])?;
+            conn.execute("UPDATE medias SET focal_new = CAST(focal as INTEGER);", params![])?;
+            conn.execute("ALTER TABLE medias DROP COLUMN focal;", params![])?;
+            conn.execute("ALTER TABLE medias RENAME COLUMN focal_new TO focal;", params![])?;
+
             Ok(())
         }).await?;*/
+
+
 
         if initial_version == 30 {
             log_info(LogServiceType::Database, format!("Update Library Database adding tag paths"));                   

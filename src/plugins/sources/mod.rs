@@ -1,6 +1,7 @@
 use std::{fmt::{self, Debug}, fs::{remove_dir, remove_dir_all, remove_file}, io, path::PathBuf, pin::Pin, str::FromStr, sync::Arc};
 use async_recursion::async_recursion;
 use axum::{async_trait, body::Body, extract::Request, response::IntoResponse};
+use bytes::Bytes;
 use futures::{future::BoxFuture, Future, Stream, StreamExt, TryStreamExt};
 use hyper::{header, HeaderMap};
 use mime::{Mime, APPLICATION_OCTET_STREAM};
@@ -323,6 +324,9 @@ pub trait Source: Send {
     async fn thumb(&self, source: &str) -> SourcesResult<Vec<u8>>;
     fn local_path(&self, source: &str) -> Option<PathBuf>;
     async fn get_file(&self, source: &str, range: Option<RangeDefinition>) -> SourcesResult<SourceRead>;
+    
+    async fn write(&self, name: &str, read: Pin<Box<dyn AsyncRead + Send>>) -> SourcesResult<String>;
+    
     async fn get_file_write_stream(&self, name: &str) -> SourcesResult<(String, Pin<Box<dyn AsyncWrite + Send>>)>;
     //async fn fill_file_information(&self, file: &mut ServerFile) -> SourcesResult<()>;
 }

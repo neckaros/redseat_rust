@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{collections::HashMap, str::FromStr};
 
 
 use nanoid::nanoid;
@@ -39,6 +39,18 @@ pub struct CredentialForUpdate {
 
 
 impl ModelController {
+	pub async fn get_credentials_available(&self, requesting_user: &ConnectedUser) -> Result<HashMap<String, CredentialType>> {
+        requesting_user.check_role(&UserRole::Admin)?;
+        let mut all_types: HashMap<String, CredentialType> = HashMap::new();
+		let all_plugins = &self.plugin_manager.plugins;
+        for plugin in all_plugins.read().await.iter() {
+            if let Some(cred_type) = plugin.infos.credential_kind.clone() {
+                all_types.insert(format!("plugin:{}", plugin.filename.clone()), cred_type);
+            }
+        }
+		Ok(all_types)
+	}
+
 
 	pub async fn get_credentials(&self, requesting_user: &ConnectedUser) -> Result<Vec<Credential>> {
         requesting_user.check_role(&UserRole::Admin)?;

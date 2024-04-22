@@ -2,10 +2,12 @@ use std::{path::PathBuf, pin::Pin, str::FromStr};
 
 
 use axum::async_trait;
+use bytes::Bytes;
 use chrono::{Datelike, Utc};
+use futures::Stream;
 use query_external_ip::SourceError;
 use sha256::try_async_digest;
-use tokio::{fs::{create_dir_all, remove_file, File}, io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, BufReader, BufWriter}};
+use tokio::{fs::{create_dir_all, remove_file, File}, io::{copy, AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, BufReader, BufWriter}};
 
 use crate::{domain::{library::ServerLibrary, media::MediaForUpdate}, model::ModelController, routes::mw_range::RangeDefinition, tools::{file_tools::get_mime_from_filename, image_tools::resize_image_reader, log::log_info}};
 
@@ -58,20 +60,6 @@ impl Source for PathProvider {
         Ok(())
     }
 
-    async fn thumb(&self, source: &str) -> SourcesResult<Vec<u8>> {
-        let reader = self.get_file(source, None).await?;
-        if let SourceRead::Stream(mut reader) = reader {
-        let image = resize_image_reader(&mut reader.stream, 512).await?;
-        Ok(image)
-        } else {
-            Err(SourcesError::Error)
-        }
-    }
-
-    fn local_path(&self, source: &str) -> Option<PathBuf> {
-        Some(self.get_gull_path(&source))
-    }
-
     async fn fill_infos(&self, source: &str, infos: &mut MediaForUpdate) -> SourcesResult<()> {
         let path = self.get_gull_path(&source);
         let metadata = path.metadata()?;
@@ -86,6 +74,20 @@ impl Source for PathProvider {
             infos.mimetype = Some(mime);
         }
         Ok(())
+    }
+
+    async fn thumb(&self, source: &str) -> SourcesResult<Vec<u8>> {
+        let reader = self.get_file(source, None).await?;
+        if let SourceRead::Stream(mut reader) = reader {
+        let image = resize_image_reader(&mut reader.stream, 512).await?;
+        Ok(image)
+        } else {
+            Err(SourcesError::Error)
+        }
+    }
+
+    fn local_path(&self, source: &str) -> Option<PathBuf> {
+        Some(self.get_gull_path(&source))
     }
 
     async fn get_file(&self, source: &str, range: Option<RangeDefinition>) -> SourcesResult<SourceRead> {
@@ -205,6 +207,52 @@ impl Source for PathProvider {
         Ok((source.to_string(), Box::pin(file)))
     }
 
+    async fn write(&self, name: &str, mut read: Pin<Box<dyn AsyncRead + Send>>) -> SourcesResult<String> {
+        let path = self.root.clone();
+        let mut sourcepath = PathBuf::new();
+
+        if !self.for_local {
+            let year = Utc::now().year().to_string();
+            sourcepath.push(year);
+            let month = Utc::now().month().to_string();
+            sourcepath.push(month);
+        }
+        let mut folder = path.clone();
+        folder.push(&sourcepath);
+       
+
+        let mut file_path = path.clone();
+        let original_source = sourcepath.clone();
+        sourcepath.push(&name);
+        file_path.push(&sourcepath);
+        
+        if let Some(p) = file_path.parent() {
+            create_dir_all(&p).await?;
+        }
+        
+
+        let original_name = name;
+        let mut i = 1;
+        while file_path.exists() {
+            i = i + 1;
+            let extension = file_path.extension().and_then(|r| r.to_str());
+            let new_name = if let Some(extension) = extension {
+                original_name.replace(&format!(".{}", extension), &format!("-{}.{}", i, extension))
+            } else {
+                format!("{}-{}", original_name, i)
+            };
+            file_path = path.clone();
+            sourcepath = original_source.clone();
+            sourcepath.push(new_name);
+            file_path.push(&sourcepath);
+        }
+    
+    
+        let source = sourcepath.to_str().ok_or(SourcesError::Other("Unable to convert path to string".into()))?.to_string();
+        let mut file = BufWriter::new(File::create(&file_path).await?);
+        copy(&mut read, &mut file).await?;
+        Ok(source.to_string())
+    }
 }
 
 impl PathProvider {

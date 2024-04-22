@@ -85,7 +85,7 @@ pub struct Media {
 
     #[serde(rename = "type")]
     pub kind: FileType,
-    pub mimetype: Option<String>,
+    pub mimetype: String,
     pub size: Option<u64>,
     
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -110,13 +110,19 @@ pub struct Media {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thumbhash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub focal: Option<f32>,
+    pub focal: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub iso: Option<usize>,
+    pub iso: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color_space: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub icc: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mp: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub sspeed: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub f_number: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub orientation: Option<usize>,
 
@@ -129,7 +135,7 @@ pub struct Media {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vcodecs: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub fps: Option<f32>,
+    pub fps: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bitrate: Option<u64>,
 
@@ -193,11 +199,20 @@ pub struct MediaForUpdate {
 
     pub width: Option<u32>,
     pub height: Option<u32>,
+    pub orientation: Option<u8>,
     pub color_space: Option<String>,
+    pub icc: Option<String>,
+    pub mp: Option<u32>,
     pub vcodecs: Option<Vec<String>>,
     pub acodecs: Option<Vec<String>>,
+    pub fps: Option<f64>,
     pub bitrate: Option<u64>,
-  
+    pub focal: Option<u64>,
+    pub iso: Option<u64>,
+    pub model: Option<String>,
+    pub sspeed: Option<String>,
+    pub f_number: Option<f64>,
+
     pub duration: Option<u64>,
  
     pub progress: Option<usize>,
@@ -225,6 +240,9 @@ pub struct MediaForUpdate {
 
     pub rating: Option<u16>,
 
+    pub thumbsize: Option<usize>,
+    pub iv: Option<String>,
+
     pub uploader: Option<String>,
     pub uploadkey: Option<String>,
     pub upload_id: Option<String>,
@@ -240,7 +258,7 @@ pub struct MediaForAdd {
 
     #[serde(rename = "type")]
     pub kind: FileType,
-    pub mimetype: Option<String>,
+    pub mimetype: String,
     pub size: Option<u64>,
     
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -253,17 +271,20 @@ pub struct MediaForAdd {
     pub height: Option<usize>,
     pub phash: Option<String>,
     pub thumbhash: Option<String>,
-    pub focal: Option<usize>,
-    pub iso: Option<usize>,
+    pub focal: Option<u64>,
+    pub iso: Option<u64>,
     pub color_space: Option<String>,
+    pub icc: Option<String>,
+    pub mp: Option<u32>,
     pub sspeed: Option<String>,
+    pub f_number: Option<f64>,
     pub orientation: Option<usize>,
 
     pub duration: Option<usize>,
     pub acodecs: Option<Vec<String>>,
     pub achan: Option<Vec<usize>>,
     pub vcodecs: Option<Vec<String>>,
-    pub fps: Option<f32>,
+    pub fps: Option<f64>,
     pub bitrate: Option<u64>,
 
     pub long: Option<f64>,

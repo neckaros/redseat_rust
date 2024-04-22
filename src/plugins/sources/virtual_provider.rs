@@ -2,7 +2,9 @@ use std::{io, path::PathBuf, pin::Pin, str::FromStr, sync::Arc};
 
 
 use axum::async_trait;
+use bytes::Bytes;
 use chrono::{Datelike, Utc};
+use futures::Stream;
 use query_external_ip::SourceError;
 use rs_plugin_common_interfaces::request::RsRequest;
 use tokio::{fs::File, io::{AsyncRead, AsyncWrite, BufReader, BufWriter}};
@@ -52,9 +54,10 @@ impl Source for VirtualProvider {
         Ok(())
     }
     async fn get_file(&self, source: &str, _range: Option<RangeDefinition>) -> SourcesResult<SourceRead> {
-      
+        let splitted: Vec<String> = source.split('|').map(ToString::to_string).collect();
         Ok(SourceRead::Request( RsRequest {
-            url: source.to_string(),
+            url: splitted.first().cloned().unwrap_or(source.to_owned()),
+            selected_file: splitted.get(1).cloned(),
             ..Default::default()
         }))
     }
@@ -68,6 +71,10 @@ impl Source for VirtualProvider {
         let file = BufWriter::new(File::create(path).await.map_err(|_| SourcesError::Error)?);
         
         Ok(("".to_string(), Box::pin(file)))
+    }
+
+    async fn write(&self, name: &str, read: Pin<Box<dyn AsyncRead + Send>>) -> SourcesResult<String> {
+        Ok("test".to_owned())
     }
 
 }

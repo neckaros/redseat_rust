@@ -49,6 +49,8 @@ impl SqliteLibraryStore {
                 where_query.add_oder(OrderBuilder::new("modified".to_string(), SqlOrder::ASC))
             }
 
+            where_query.add_oder(OrderBuilder::new(query.sort.to_string(), query.order));
+
 
             let mut query = conn.prepare(&format!("SELECT id, name, type, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, year, modified, added, imdb_rating, imdb_votes, trailer, maxCreated, trakt_rating, trakt_votes, status  FROM series {}{}", where_query.format(), where_query.format_order()))?;
             let rows = query.query_map(

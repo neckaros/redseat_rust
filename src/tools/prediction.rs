@@ -100,7 +100,7 @@ pub fn predict_net(path: PathBuf, bgr: bool, normalize: bool, buffer_image: Vec<
 
        let size = match &input_info.input_type {
 
-        ValueType::Tensor { ty: _, dimensions } => dimensions.get(1).and_then(|i| Some(*i as u32)),
+        ValueType::Tensor { ty: _, dimensions } => dimensions.get(1).map(|i| *i as u32),
         ValueType::Sequence(_) => None,
         ValueType::Map { key: _, value: _ } => None,
     };
@@ -125,7 +125,7 @@ pub fn predict_net(path: PathBuf, bgr: bool, normalize: bool, buffer_image: Vec<
         }).collect();
 
     // Convertir le tableau 1D en un tableau 4D
-    let input = Array4::from_shape_vec((1 as usize, size as usize, size as usize, 3  as usize), image_data)?;
+    let input = Array4::from_shape_vec((1_usize, size as usize, size as usize, 3_usize), image_data)?;
     let input_tensor = input.view();
 
     //let outputs: SessionOutputs = model.run(inputs!["images" => input.view()]?)?;
@@ -135,7 +135,7 @@ pub fn predict_net(path: PathBuf, bgr: bool, normalize: bool, buffer_image: Vec<
     let output = binding.view();
     let a = output.axis_iter(Axis(0)).next().ok_or(crate::Error::NotFound)?;
     //println!("{:?}", a);
-        let row: Vec<_> = a.iter().copied().enumerate().filter(|(_i, p)| p > &(0.3 as f32)).map(|(index, proba)| {
+        let row: Vec<_> = a.iter().copied().enumerate().filter(|(_i, p)| p > &(0.3_f32)).filter_map(|(index, proba)| {
             //println!("{:?}", index);
             let element = tags.get(index);
             if let Some(element) = element {
@@ -147,7 +147,7 @@ pub fn predict_net(path: PathBuf, bgr: bool, normalize: bool, buffer_image: Vec<
             } else {
                 None
             }
-        }).flatten().collect();
+        }).collect();
         Ok(row)
 }
 
@@ -181,7 +181,7 @@ pub fn predict_wd(path: PathBuf, buffer_image: Vec<u8>) -> Result<Vec<Prediction
     let output = binding.view();
     let a = output.axis_iter(Axis(0)).next().ok_or(crate::Error::NotFound)?;
 
-        let row: Vec<_> = a.iter().copied().enumerate().filter(|(_i, p)| p > &(0.3 as f32)).map(|(index, proba)| {
+        let row: Vec<_> = a.iter().copied().enumerate().filter(|(_i, p)| p > &0.3_f32).filter_map(|(index, proba)| {
             let element: Option<&PredictionTag> = tags.get(index);
             if let Some(element) = element {
                 let tag = PredictionTagResult {
@@ -192,7 +192,7 @@ pub fn predict_wd(path: PathBuf, buffer_image: Vec<u8>) -> Result<Vec<Prediction
             } else {
                 None
             }
-        }).flatten().collect();
+        }).collect();
         Ok(row)
 }
 
@@ -234,7 +234,7 @@ pub enum PredictionTagKind {
 impl  PredictionTag {
     pub fn from_csv(line: (usize, &str)) -> Self {
         let (index, tag) = line;
-        let splitted = tag.split(",");
+        let splitted = tag.split(',');
         let elements: Vec<&str> = splitted.collect();
         let kind_value = elements.get(2).unwrap_or(&"0").to_string();
         let kind = if kind_value == "9" {
@@ -244,8 +244,8 @@ impl  PredictionTag {
         } else {
             PredictionTagKind::Tag
         };
-        let name = elements[1].replace("_", " ").replace("\"", "");
-        let mut names: VecDeque<String> = VecDeque::from_iter(name.split("|").map(|t| t.trim().to_string()));
+        let name = elements[1].replace('_', " ").replace('\"', "");
+        let mut names: VecDeque<String> = VecDeque::from_iter(name.split('|').map(|t| t.trim().to_string()));
         let name = names.pop_front().unwrap_or(name);
         let preduction = PredictionTag { index, id: format!("wd-v1-4-tags:{}", elements[0]), name, kind, alts: names.make_contiguous().to_vec()};
         preduction

@@ -59,6 +59,54 @@ pub struct Image {
     pub version: Option<String>,
 }
 
+impl Image {
+    pub fn orientation(&self) -> Option<u8> {
+        if let Some(orientation) = self.orientation.as_ref().map(|s| s.as_str()) {
+            match orientation {
+                "TopLeft" => Some(1),
+                "TopRight" => Some(2),
+                "BottomRight" => Some(3),
+                "BottomLeft" => Some(4),
+                "LeftTop" => Some(5),
+                "RightTop" => Some(6),
+                "RightBottom" => Some(7),
+                "LeftBottom" => Some(8),
+                _ => None
+            }
+        } else {
+            None
+        }
+    }
+
+    pub fn f_number(&self) -> Option<f64> {
+        if let Some(focals) = &self.properties.exif_fnumber {
+            let mut splitted = focals.split('/').map(|s| s.trim());
+            let a = splitted.next().and_then(|m| m.parse::<f64>().ok());
+            let b = splitted.next().and_then(|m| m.parse::<f64>().ok());
+            a.map(|a| a / b.unwrap_or(1.0))
+        } else {
+            None
+        }
+    }
+
+    pub fn focal(&self) -> Option<u64> {
+        if let Some(focals) = &self.properties.exif_focal_length_in35mm_film {
+            let mut splitted = focals.split(',').map(|s| s.trim());
+            splitted.next().and_then(|m| m.parse::<u64>().ok())
+        } else {
+            None
+        }
+    }
+    pub fn iso(&self) -> Option<u64> {
+        if let Some(focals) = &self.properties.exif_photographic_sensitivity {
+            let mut splitted = focals.split(',').map(|s| s.trim());
+            splitted.next().and_then(|m| m.parse::<u64>().ok())
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Geometry {

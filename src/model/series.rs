@@ -16,7 +16,7 @@ use tokio_util::io::StreamReader;
 
 use crate::{domain::{deleted::RsDeleted, library::LibraryRole, people::{PeopleMessage, Person}, serie::{Serie, SerieStatus, SerieWithAction, SeriesMessage}, ElementAction, MediaElement, MediasIds}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source}}, server::get_server_folder_path_array, tools::{image_tools::{resize_image_reader, ImageSize, ImageType}, log::log_info}};
 
-use super::{episodes::{EpisodeForUpdate, EpisodeQuery}, error::{Error, Result}, users::ConnectedUser, ModelController};
+use super::{episodes::{EpisodeForUpdate, EpisodeQuery}, error::{Error, Result}, medias::RsSort, store::sql::SqlOrder, users::ConnectedUser, ModelController};
 
 
 impl FromSql for SerieStatus {
@@ -36,15 +36,20 @@ impl ToSql for SerieStatus {
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct SerieQuery {
-    pub after: Option<u64>
+    pub after: Option<u64>,
+
+    #[serde(default)]
+    pub sort: RsSort,
+    #[serde(default)]
+    pub order: SqlOrder,
 }
 
 impl SerieQuery {
     pub fn new_empty() -> SerieQuery {
-        SerieQuery { after: None }
+        SerieQuery { after: None, ..Default::default() }
     }
     pub fn from_after(after: u64) -> SerieQuery {
-        SerieQuery { after: Some(after) }
+        SerieQuery { after: Some(after), ..Default::default() }
     }
 }
 

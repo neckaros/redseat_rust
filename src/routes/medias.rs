@@ -22,7 +22,7 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/loc", get(handler_locs))
 		.route("/", post(handler_post))
 		.route("/", patch(handler_multi_patch))
-		.route("/exist", get(handler_list))
+		.route("/exist", get(handler_exist))
 		.route("/download", post(handler_download))
 		.route("/request", post(handler_add_request))
 		.route("/:id/metadata", get(handler_get))
@@ -58,12 +58,12 @@ async fn handler_count(Path(library_id): Path<String>, State(mc): State<ModelCon
 	if let Some(filter) = &query.filter {
 		let old_query = serde_json::from_str::<MediaQuery>(filter)?;
 		//old_query.page_key = query.page_key;
-		let libraries = mc.count_medias(&library_id, old_query, &user).await?;
-		let body = Json(json!(libraries));
+		let count = mc.count_medias(&library_id, old_query, &user).await?;
+		let body = Json(json!({"count": count}));
 		Ok(body)
 	} else {
-		let libraries = mc.count_medias(&library_id, query, &user).await?;
-		let body = Json(json!(libraries));
+		let count = mc.count_medias(&library_id, query, &user).await?;
+		let body = Json(json!({"count": count}));
 		Ok(body)
 	}
 
@@ -77,8 +77,9 @@ struct ExistQuery {
 
 async fn handler_exist(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ExistQuery>) -> Result<Json<Value>> {
 	
-	let libraries = mc.get_media_by_hash(&library_id, query.hash, &user).await?;
-	let body = Json(json!(libraries));
+	let media = mc.get_media_by_hash(&library_id, query.hash, &user).await?;
+	
+	let body = Json(json!({"exist": media.is_some(), "media": media}));
 	Ok(body)
 	
 
@@ -163,7 +164,9 @@ async fn handler_post(Path(library_id): Path<String>, State(mc): State<ModelCont
 	while let Some(field) = multipart.next_field().await.unwrap() {
         let name = field.name().unwrap().to_string();
 		if name == "info" {
-			info = serde_json::from_str(&field.text().await?)?;
+			let text = &field.text().await?;
+			println!("INFOS! {:?}", text);
+			info = serde_json::from_str(&text)?;
 		} else if name == "file" {
 			let filename = field.file_name().unwrap().to_string();
 			let mime = field.content_type().map(|c| c.to_owned());
@@ -176,7 +179,7 @@ async fn handler_post(Path(library_id): Path<String>, State(mc): State<ModelCont
 			return Ok(Json(json!(media)))
 		}
     }
-	Ok(Json(json!({"message": "No media found"})))
+	Err(Error::Error("No media provided".to_owned()))
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

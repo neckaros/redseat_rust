@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 
 pub fn routes(mc: ModelController) -> Router {
 	Router::new()
+	.route("/available", get(handler_available))
 		.route("/", get(handler_list))
 		.route("/", post(handler_post))
 		.route("/:id", get(handler_get))
@@ -15,6 +16,13 @@ pub fn routes(mc: ModelController) -> Router {
 		.with_state(mc)
         
 }
+
+async fn handler_available(State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	let libraries = mc.get_credentials_available(&user).await?;
+	let body = Json(json!(libraries));
+	Ok(body)
+}
+
 
 async fn handler_list(State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
 	let libraries = mc.get_credentials(&user).await?;

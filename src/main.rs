@@ -8,6 +8,7 @@ use axum::{
 use axum_server::tls_rustls::RustlsConfig;
 
 use domain::MediasIds;
+use http::{StatusCode, Uri};
 use hyper::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, REFERRER_POLICY, REFERER};
 use model::{store::SqliteStore, ModelController};
 use plugins::{medias::{imdb::ImdbContext, tmdb::{tmdb_configuration::TmdbConfiguration, TmdbContext}, trakt::TraktContext}, PluginManager};
@@ -113,6 +114,7 @@ async fn app() -> Result<Router> {
         .nest("/credentials", routes::credentials::routes(mc.clone()))
         .nest("/backups", routes::backups::routes(mc.clone()))
         .nest("/plugins", routes::plugins::routes(mc.clone()))
+        .fallback(fallback)
         .layer(middleware::from_fn(mw_range::mw_range))
         //.layer(middleware::map_response(main_response_mapper))
         .layer(middleware::from_fn_with_state(mc.clone(), mw_auth::mw_token_resolver))
@@ -130,7 +132,10 @@ async fn app() -> Result<Router> {
         
 
 }
-
+async fn fallback(uri: Uri) -> (StatusCode, &'static str) {
+    log_info(LogServiceType::Other, format!("Route not found: {}", uri));
+    (StatusCode::NOT_FOUND, "Not Found")
+}
 struct RegisterInfo {
     cert_paths: Option<(PathBuf, PathBuf)>,
     ips: Option<(String, String)>
@@ -179,6 +184,7 @@ async fn register() -> Result<RegisterInfo>{
         
         let client = reqwest::Client::new();
         println!("server: {}", format!("https://{}/servers/{}/register", config.redseat_home, config.id));
+        
         let res = client.post(format!("https://{}/servers/{}/register", config.redseat_home, config.id))
             .json(&public_config)
             .send()
@@ -187,8 +193,6 @@ async fn register() -> Result<RegisterInfo>{
         let register_response = res.text().await?;
         println!("repsonse: {}", register_response);
     } 
-
-    //const register = await axios.post(`https://${process.env.REDSEAT_HOME}/servers/${serverId}/register`, publicInfo)
 
     Ok(register_info)
 
