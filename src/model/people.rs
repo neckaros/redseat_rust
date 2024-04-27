@@ -161,13 +161,13 @@ impl ModelController {
         self.library_image(library_id, ".portraits", person_id, kind, size, requesting_user).await
 	}
 
-    pub async fn update_person_image<T: AsyncRead>(&self, library_id: &str, person_id: &str, kind: &Option<ImageType>, reader: T, requesting_user: &ConnectedUser) -> Result<Tag> {
+    pub async fn update_person_image<T: AsyncRead>(&self, library_id: &str, person_id: &str, kind: &Option<ImageType>, reader: T, requesting_user: &ConnectedUser) -> Result<Person> {
         if MediasIds::is_id(&person_id) {
             return Err(Error::InvalidIdForAction("udpate person image".to_string(), person_id.to_string()))
         }
         self.update_library_image(library_id, ".portraits", person_id, kind, reader, requesting_user).await?;
 
-        self.get_tag(library_id, person_id.to_owned(), requesting_user).await?.ok_or(Error::PersonNotFound(person_id.to_owned()))
+        self.get_person(library_id, person_id.to_owned(), requesting_user).await?.ok_or(Error::PersonNotFound(person_id.to_owned()))
 	}
 
     

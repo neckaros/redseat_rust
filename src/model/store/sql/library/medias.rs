@@ -193,65 +193,97 @@ impl SqliteLibraryStore {
     fn build_media_query(mut query: MediaQuery) -> RsQueryBuilder {
         let mut where_query = RsQueryBuilder::new();
 
-            let sort = query.sort.to_media_query();
-            if let Some(page_key) = query.page_key {
-                if query.order == SqlOrder::DESC {
-                    query.before = Some(page_key);
-                } else {
-                    query.after = Some(page_key);
-                }
+        if let Some(text) = query.text {
+            let text = format!("%{}%", text);
+            where_query.add_where(SqlWhereType::Or(vec![SqlWhereType::Like("name".to_owned(), Box::new(text.clone())), SqlWhereType::Like("description".to_owned(), Box::new(text.clone()))]));
+        }
+        let sort = query.sort.to_media_query();
+        if let Some(page_key) = query.page_key {
+            if query.order == SqlOrder::DESC {
+                query.before = Some(page_key);
+            } else {
+                query.after = Some(page_key);
             }
+        }
 
-            if let Some(q) = query.after {
-                if query.sort == RsSort::Added || query.sort == RsSort::Modified || query.sort == RsSort::Created {
-                    where_query.add_where(SqlWhereType::After(sort.clone(), Box::new(q)));
-                } else {
-                    where_query.add_where(SqlWhereType::After("modified".to_owned(), Box::new(q)));
-                }
-            } else if let Some(q) = query.before {
-                if query.sort == RsSort::Added || query.sort == RsSort::Modified || query.sort == RsSort::Created {
-                    where_query.add_where(SqlWhereType::Before(sort.clone(), Box::new(q)));
-                } else {
-                    where_query.add_where(SqlWhereType::Before("modified".to_owned(), Box::new(q)));
-                }
+        if let Some(q) = query.after {
+            if query.sort == RsSort::Added || query.sort == RsSort::Modified || query.sort == RsSort::Created {
+                where_query.add_where(SqlWhereType::After(sort.clone(), Box::new(q)));
+            } else {
+                where_query.add_where(SqlWhereType::After("modified".to_owned(), Box::new(q)));
             }
-
-
-            if !query.types.is_empty() {
-                let mut types = vec![];
-                for kind in query.types {
-                    types.push(SqlWhereType::Equal("type".to_owned(), Box::new(kind)));
-                }
-                where_query.add_where(SqlWhereType::Or(types));
+        } else if let Some(q) = query.before {
+            if query.sort == RsSort::Added || query.sort == RsSort::Modified || query.sort == RsSort::Created {
+                where_query.add_where(SqlWhereType::Before(sort.clone(), Box::new(q)));
+            } else {
+                where_query.add_where(SqlWhereType::Before("modified".to_owned(), Box::new(q)));
             }
+        }
 
-            for person in query.people {
-                where_query.add_where(SqlWhereType::InStringList("people".to_owned(), ",".to_owned(), Box::new(person)));
+        if let Some(added) = query.added_before {
+            where_query.add_where(SqlWhereType::Before("added".to_owned(), Box::new(added)));
+        }
+        if let Some(added) = query.added_after {
+            where_query.add_where(SqlWhereType::After("added".to_owned(), Box::new(added)));
+        }
+
+        
+        if let Some(long) = query.long {
+            let distance = query.distance.map(|d| d * 0.008).unwrap_or(0.1);
+            where_query.add_where(SqlWhereType::Between("long".to_owned(), Box::new(long - distance), Box::new(long + distance)));
+        }      
+        if let Some(lat) = query.lat {
+            let distance = query.distance.map(|d| d * 0.008).unwrap_or(0.1);
+            where_query.add_where(SqlWhereType::Between("lat".to_owned(), Box::new(lat - distance), Box::new(lat + distance)));
+        }
+
+        if query.gps_square.len() == 4 {
+            let longb = query.gps_square.first().unwrap().to_owned();
+            let latb = query.gps_square.get(1).unwrap().to_owned();
+            let longt = query.gps_square.get(2).unwrap().to_owned();
+            let latt = query.gps_square.get(3).unwrap().to_owned();
+            where_query.add_where(SqlWhereType::Between("lat".to_owned(), Box::new(latb), Box::new(latt)));
+            where_query.add_where(SqlWhereType::Between("long".to_owned(), Box::new(longb), Box::new(longt)));
+            println!("{} {} {} {}", latb, latt, longb, longt);
+        }
+
+
+
+        if !query.types.is_empty() {
+            let mut types = vec![];
+            for kind in query.types {
+                types.push(SqlWhereType::Equal("type".to_owned(), Box::new(kind)));
             }
+            where_query.add_where(SqlWhereType::Or(types));
+        }
 
-            //let series_formated = &query.series.iter().map(|s| format!("{}|", s)).collect::<Vec<String>>();
-            for serie in query.series {
-                if serie.contains('|') {
-                    where_query.add_where(SqlWhereType::Custom("series like '%' || ? || '%'".to_owned(), Box::new(serie)));
-                } else {
-                    where_query.add_where(SqlWhereType::Custom("(',' || series || ',' LIKE '%,' || ? || '|%')".to_owned(), Box::new(serie)));
-                }
-                
+        for person in query.people {
+            where_query.add_where(SqlWhereType::InStringList("people".to_owned(), ",".to_owned(), Box::new(person)));
+        }
+
+        //let series_formated = &query.series.iter().map(|s| format!("{}|", s)).collect::<Vec<String>>();
+        for serie in query.series {
+            if serie.contains('|') {
+                where_query.add_where(SqlWhereType::Custom("series like '%' || ? || '%'".to_owned(), Box::new(serie)));
+            } else {
+                where_query.add_where(SqlWhereType::Custom("(',' || series || ',' LIKE '%,' || ? || '|%')".to_owned(), Box::new(serie)));
             }
             
+        }
+        
 
 
 
-            
-            where_query.add_oder(OrderBuilder::new(sort.to_owned(), query.order));
+        
+        where_query.add_oder(OrderBuilder::new(sort.to_owned(), query.order));
 
 
 
-            for tag in query.tags {
-                where_query.add_recursive("tags".to_owned(), "media_tag_mapping".to_owned(), "media_ref".to_owned(), "tag_ref".to_owned(), Box::new(tag));
-            }
-            
-            where_query
+        for tag in query.tags {
+            where_query.add_recursive("tags".to_owned(), "media_tag_mapping".to_owned(), "media_ref".to_owned(), "tag_ref".to_owned(), Box::new(tag));
+        }
+        
+        where_query
     }
 
     pub async fn get_medias(&self, query: MediaQuery) -> Result<Vec<Media>> {
@@ -446,11 +478,11 @@ impl SqliteLibraryStore {
         }
 
         if let Some(user) = update.origin.as_ref().and_then(|o| o.user.clone()) {
-            println!("user! {user}");
+
             let mut ppl = update.people_lookup.unwrap_or_default();
             ppl.push(user.to_owned());
             update.people_lookup = Some(ppl);
-            println!("user! {:?}", update.people_lookup);
+
         }
         
         // Find people with lookup 
@@ -552,8 +584,8 @@ impl SqliteLibraryStore {
             let all_people: Vec<String> = existing.people.clone().unwrap_or(vec![]).into_iter().map(|t| t.id).collect();
             if let Some(add_people) = update.add_people {
                 for person in add_people {
-                    if !all_people.contains(&person.id) {
-                        let r = conn.execute("INSERT INTO media_people_mapping (media_ref, people_ref, confidence) VALUES (? ,? , ?) ", params![id, person.id, person.conf]);
+                    if !all_people.contains(&person.id)  {
+                        let r = conn.execute("INSERT OR REPLACE INTO media_people_mapping (media_ref, people_ref, confidence) VALUES (? ,? , ?) ", params![id, person.id, person.conf]);
                         if let Err(error) = r {
                             log_info(LogServiceType::Source, format!("unable to add person {:?}: {:?}", person, error));
                         }

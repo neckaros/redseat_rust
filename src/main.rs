@@ -10,7 +10,7 @@ use axum_server::tls_rustls::RustlsConfig;
 use domain::MediasIds;
 use http::{StatusCode, Uri};
 use hyper::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, REFERRER_POLICY, REFERER};
-use model::{store::SqliteStore, ModelController};
+use model::{server::AuthMessage, store::SqliteStore, ModelController};
 use plugins::{medias::{imdb::ImdbContext, tmdb::{tmdb_configuration::TmdbConfiguration, TmdbContext}, trakt::TraktContext}, PluginManager};
 use routes::{mw_auth, mw_range};
 
@@ -21,7 +21,7 @@ use tools::{auth::{sign_local, Claims}, log::LogServiceType, prediction};
 use tower::ServiceBuilder;
 use tower_http::cors::{CorsLayer, Any};
 use crate::{server::{get_config, update_ip}, tools::{auth::{get_or_init_keys, verify_local, ClaimsLocal}, image_tools::resize_image_path, log::log_info}};
-use socketioxide::SocketIo;
+use socketioxide::{extract::{SocketRef, TryData}, SocketIo};
 pub use self::error::{Result, Error};
 
 mod model;
@@ -97,9 +97,15 @@ async fn app() -> Result<Router> {
     // allow requests from any origin
     .allow_origin(Any);
     let (iolayer, io) = SocketIo::builder().with_state(mc.clone()).build_layer();
-    io.ns("/", routes::socket::on_connect);
+    //io.ns("/", routes::socket::on_connect);
     mc.set_socket(io.clone());
-    
+
+    let mc_forsocket = mc.clone();
+    io.ns("/", {
+        |socket: SocketRef, TryData(data): TryData<AuthMessage>| async move { routes::socket::on_connect(socket, mc_forsocket, data).await }
+      });
+
+       
     Ok(Router::new()
         .nest("/ping", routes::ping::routes())
         .nest("/libraries", routes::libraries::routes(mc.clone()))

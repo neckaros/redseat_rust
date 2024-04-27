@@ -25,6 +25,12 @@ impl PathProvider {
         path
     }
 
+    pub async fn ensure_filepath(full_file_path: &PathBuf) -> SourcesResult<()> {
+        if let Some(p) = full_file_path.parent() {
+            create_dir_all(&p).await?;
+        }
+        Ok(())
+    }
     
 
     pub async fn get_file_write_stream(&self, name: &str) -> SourcesResult<(String, Pin<Box<dyn AsyncWrite + Send>>)> {

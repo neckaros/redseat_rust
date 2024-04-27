@@ -18,6 +18,7 @@ use self::error::{SourcesError, SourcesResult};
 
 pub mod path_provider;
 pub mod virtual_provider;
+pub mod plugin_provider;
 pub mod error;
 pub mod async_reader_progress;
 
@@ -172,17 +173,26 @@ impl RsRequestHeader for RequestBuilder {
 impl SourceRead { 
     #[async_recursion]
     pub async fn into_reader(self, library_id: &str, range: Option<RangeDefinition>, progress: Option<Sender<RsProgress>>, mc: Option<(ModelController, &ConnectedUser)>) -> RsResult<FileStreamResult<AsyncReadPinBox>> {
-
+        println!("into_reader");
         match self {
             SourceRead::Stream(reader) => {
                 Ok(reader)
             },
             SourceRead::Request(request) => {
+                println!("into_reader req {:?}", request);
                 match request.status {
-                    RsRequestStatus::Unprocessed | RsRequestStatus::NeedParsing => {
+                    RsRequestStatus::Unprocessed => {
                         if let Some((mc, user)) = mc {
-                            let new_request = mc.exec_request(request.clone(), Some(library_id.to_string()), false, progress, user).await?;
-                            new_request.into_reader(library_id, range.clone(), None, Some((mc, user))).await
+                            let new_request = mc.exec_request(request.clone(), Some(library_id.to_string()), false, progress.clone(), user).await?;
+                            new_request.into_reader(library_id, range.clone(), progress.clone(), Some((mc, user))).await
+                        } else {
+                            Err(Error::InvalidRsRequestStatus(request.status).into())
+                        }
+                    },
+                    RsRequestStatus::NeedParsing => {
+                        if let Some((mc, user)) = mc {
+                            let new_request = mc.parse_request(request, progress.clone()).await?;
+                            new_request.into_reader(library_id, range.clone(), progress.clone(), Some((mc, user))).await
                         } else {
                             Err(Error::InvalidRsRequestStatus(request.status).into())
                         }

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 
 use async_recursion::async_recursion;
 use extism::convert::Json;
@@ -51,7 +51,11 @@ impl PluginManager {
                 }
             }
         }
-        None
+        if link.platform == "link" && link.id.starts_with("http") {
+            Some(link.id)
+        } else {
+            None
+        }
     }
 
 
@@ -91,12 +95,12 @@ impl PluginManager {
 
     #[async_recursion]
     pub async fn request(&self, mut request: RsRequest, _savable: bool, plugins: Vec<PluginWithCredential>, progress: RsProgressCallback) -> RsResult<SourceRead> {
+        println!("Plugins request");
         let initial_request = request.clone();
         
         let client = reqwest::Client::new();
         let r = client.head(&request.url).add_request_headers(&request, &None)?;
-
-        let r = r.send().await;
+        let r = r.timeout(Duration::from_secs(3)).send().await;
         if let Ok(heads) = r {
             let headers = heads.headers();
             if let Some(mime) = extract_header(headers, CONTENT_TYPE) {
@@ -112,10 +116,12 @@ impl PluginManager {
                 //println!("filename {}", filename);
             }
         }
+        println!("Plugins requesting");
         let mut processed_request = None;
         for plugin_with_cred in plugins.iter() {
             if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
                 let mut plugin_m = plugin.plugin.lock().unwrap();
+                println!("plugin: {}", plugin.filename);
                 if plugin.infos.capabilities.contains(&PluginType::Request) {
                     let req = RsRequestPluginRequest {
                         request: request.clone(),
@@ -123,6 +129,7 @@ impl PluginManager {
                     };
                     //println!("request {}", serde_json::to_string(&req).unwrap());
                     let res = plugin_m.call_get_error_code::<Json<RsRequestPluginRequest>, Json<RsRequest>>("process", Json(req));
+                    println!("res: {:?}", res);
                     if let Ok(Json(mut res)) = res {
                         if res.mime.is_none() {
                             res.mime = get_mime_from_filename(&res.url);
@@ -143,18 +150,16 @@ impl PluginManager {
         if let Some(processed) = processed_request {
 
             if processed.status == RsRequestStatus::Intermediate && processed != initial_request {
-                println!("recurs");
                 let recursed = self.request(processed, false, plugins, progress).await?;
                 return Ok(recursed);
             } else {
                 return Ok(SourceRead::Request(processed));
             }
         }
-        if request.status == RsRequestStatus::NeedParsing || request.url.ends_with(".m3u8") || request.mime.as_deref().unwrap_or("no") == "application/vnd.apple.mpegurl" {
-            let ctx = YydlContext::new().await?;
-            let result = ctx.request(&request, progress).await?;
-
-            return Ok(result);
+        if request.status == RsRequestStatus::NeedParsing || request.url.contains(".m3u8") || request.mime.as_deref().unwrap_or("no") == "application/vnd.apple.mpegurl" {
+            let mut result = request.clone();
+            result.status = RsRequestStatus::NeedParsing;
+            return Ok(SourceRead::Request(result));
 
         } else {
             request.status = RsRequestStatus::FinalPublic;

@@ -14,7 +14,6 @@ use crate::{domain::{library::ServerLibrary, media::MediaForUpdate}, model::Mode
 use super::{error::{SourcesError, SourcesResult}, AsyncReadPinBox, FileStreamResult, Source, SourceRead};
 
 pub struct VirtualProvider {
-    root: PathBuf,
     library: ServerLibrary,
     plugin_manager: Arc<PluginManager>
 }
@@ -23,15 +22,11 @@ pub struct VirtualProvider {
 #[async_trait]
 impl Source for VirtualProvider {
     async fn new(library: ServerLibrary, controller: ModelController) -> SourcesResult<Self> {
-        if let Some(root) = &library.root {
-            Ok(VirtualProvider {
-                root: PathBuf::from_str(&root).map_err(|_| SourcesError::Error)?,
-                library,
-                plugin_manager: controller.plugin_manager.clone()
-            })
-        } else {
-            Err(SourcesError::Error)
-        }
+
+        Ok(VirtualProvider {
+            library,
+            plugin_manager: controller.plugin_manager.clone()
+        })
     }
 
     async fn exists(&self, _source: &str) -> bool {
@@ -60,7 +55,7 @@ impl Source for VirtualProvider {
     }
 
 
-    async fn write<'a>(&self, name: &str, read: Pin<Box<dyn AsyncRead + Send + 'a>>) -> SourcesResult<String> {
+    async fn write<'a>(&self, _name: &str, _read: Pin<Box<dyn AsyncRead + Send + 'a>>) -> SourcesResult<String> {
         Ok("test".to_owned())
     }
 

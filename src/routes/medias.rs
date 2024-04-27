@@ -1,7 +1,7 @@
 
 use std::{path::PathBuf, str::FromStr};
 
-use crate::{domain::{media::{GroupMediaDownload, MediaDownloadUrl, MediaForUpdate, MediaItemReference, MediaWithAction, MediasMessage}, ElementAction}, model::{medias::{MediaFileQuery, MediaQuery}, series::{SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, plugins::sources::SourceRead, tools::prediction::predict_net, Error, Result};
+use crate::{domain::{media::{GroupMediaDownload, MediaDownloadUrl, MediaForUpdate, MediaItemReference, MediaWithAction, MediasMessage}, ElementAction}, model::{medias::{MediaFileQuery, MediaQuery}, series::{SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, plugins::sources::SourceRead, tools::{prediction::predict_net, video_tools::VideoConvertRequest}, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
 use futures::TryStreamExt;
 use hyper::{header::ACCEPT_RANGES, StatusCode};
@@ -20,6 +20,7 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/", get(handler_list))
 		.route("/count", get(handler_count))
 		.route("/loc", get(handler_locs))
+		.route("/", delete(handler_multi_delete))
 		.route("/", post(handler_post))
 		.route("/", patch(handler_multi_patch))
 		.route("/exist", get(handler_exist))
@@ -29,6 +30,7 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/:id/metadata/refresh", get(handler_refresh))
 		.route("/:id/sharetoken", get(handler_sharetoken))
 		.route("/:id/predict", get(handler_predict))
+		.route("/:id/convert", post(handler_convert))
 		.route("/:id", get(handler_get_file))
 		.route("/:id/backup/metadatas", get(handler_get_backup_medata))
 		.route("/:id", patch(handler_patch))
@@ -138,6 +140,13 @@ async fn handler_predict(Path((library_id, media_id)): Path<(String, String)>, S
 	Ok(body)
 }
 
+async fn handler_convert(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(query): Json<VideoConvertRequest>) -> Result<Json<Value>> {
+	let prediction = mc.convert(&library_id, &media_id, query, &user).await?;
+	let body = Json(json!(prediction));
+	//println!("BODY {:?}", body);
+	Ok(body)
+}
+
 async fn handler_get_file(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, range: Option<RangeDefinition>, Query(query): Query<MediaFileQuery>) -> Result<Response> {
 	let reader = mc.library_file(&library_id, &media_id, range.clone(), query, &user).await?;
 	Ok(reader.into_response(&library_id, range, None, Some((mc.clone(), &user))).await?)
@@ -185,10 +194,25 @@ async fn handler_post(Path(library_id): Path<String>, State(mc): State<ModelCont
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+struct MediasRemoveRequest {
+	ids: Vec<String>,
+}
+
+async fn handler_multi_delete(Path(library_id): Path<String>, State(mc): State<ModelController>, requesting_user: ConnectedUser, Json(updates): Json<MediasRemoveRequest>) -> Result<Json<Value>> {
+	let mut removed = vec![];
+	for id in updates.ids {
+        removed.push(mc.remove_media(&library_id, &id, &requesting_user).await?);
+    }
+	mc.send_media(MediasMessage { library: library_id.to_string(), medias: removed.iter().map(|m| MediaWithAction { media: m.clone(), action: ElementAction::Deleted}).collect()});
+	Ok(Json(json!(removed)))
+}
+#[derive(Debug, Serialize, Deserialize, Clone)]
 struct MediasUpdateRequest {
 	ids: Vec<String>,
 	update: MediaForUpdate
 }
+
+
 async fn handler_multi_patch(Path(library_id): Path<String>, State(mc): State<ModelController>, requesting_user: ConnectedUser, Json(updates): Json<MediasUpdateRequest>) -> Result<Json<Value>> {
 	let mut updated = vec![];
 	for id in updates.ids {

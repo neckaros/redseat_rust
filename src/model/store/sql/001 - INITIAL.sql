@@ -52,6 +52,7 @@ CREATE TABLE Libraries (
   settings TEXT    NOT NULL,
   crypt INTEGER DEFAULT 0
   credentials TEXT ,
+  plugin TEXT ,
 );
 
 CREATE TABLE Libraries_Users_Rights (

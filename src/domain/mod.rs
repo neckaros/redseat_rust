@@ -21,6 +21,7 @@ pub mod deleted;
 pub mod view_progress;
 
 pub mod progress;
+pub mod player;
 
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

@@ -25,6 +25,7 @@ pub enum RsProgressType {
     #[default]
     Transfert,
     Finished,
+    Duplicate(String),
 }
 
 impl RsProgress {

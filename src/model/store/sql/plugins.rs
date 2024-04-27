@@ -102,7 +102,7 @@ impl SqliteStore {
         self.server_store.call( move |conn| { 
 
             conn.execute("INSERT INTO plugins (id, name, path, kind, settings, libraries, credential, credtype, desc, version)
-            VALUES (?, ?, ? ,?, ?, ?, ?)", params![
+            VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?)", params![
                 plugin.id,
                 plugin.plugin.name,
                 plugin.plugin.path,

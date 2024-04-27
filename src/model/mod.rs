@@ -14,28 +14,32 @@ pub mod episodes;
 pub mod medias;
 pub mod movies;
 pub mod deleted;
+pub mod player;
 
 use std::{collections::HashMap, io::Read, path::PathBuf, pin::Pin, sync::Arc};
 use futures::lock::Mutex;
 use nanoid::nanoid;
 use strum::IntoEnumIterator;
-use crate::{domain::{library::{LibraryMessage, LibraryRole, ServerLibrary}, plugin::PluginWasm, serie::Serie}, error::RsResult, plugins::{list_plugins, medias::{fanart::FanArtContext, imdb::ImdbContext, tmdb::TmdbContext, trakt::TraktContext}, sources::{error::SourcesError, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, LocalSource, Source, SourceRead}, PluginManager}, routes::mw_range::RangeDefinition, server::get_server_file_path_array, tools::{clock::SECONDS_IN_HOUR, image_tools::{resize_image_path, ImageSize, ImageSizeIter, ImageType}, log::log_info, scheduler::{self, refresh::RefreshTask, RsScheduler, RsTaskType}}};
+use crate::{domain::{library::{LibraryMessage, LibraryRole, ServerLibrary}, player::{RsPlayer, RsPlayerAvailable}, plugin::PluginWasm, serie::Serie}, error::RsResult, plugins::{list_plugins, medias::{fanart::FanArtContext, imdb::ImdbContext, tmdb::TmdbContext, trakt::TraktContext}, sources::{error::SourcesError, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, LocalSource, Source, SourceRead}, PluginManager}, routes::mw_range::RangeDefinition, server::get_server_file_path_array, tools::{clock::SECONDS_IN_HOUR, image_tools::{resize_image_path, ImageSize, ImageSizeIter, ImageType}, log::log_info, scheduler::{self, refresh::RefreshTask, RsScheduler, RsTaskType}}};
 
 use self::{medias::CRYPTO_HEADER_SIZE, store::SqliteStore, users::{ConnectedUser, UserRole}};
 use error::{Result, Error};
 use socketioxide::{extract::SocketRef, SocketIo};
 use tokio::{fs::{self, remove_file, File}, io::{copy, AsyncRead, BufReader}, sync::RwLock};
 
+
 #[derive(Clone)]
 pub struct ModelController {
 	store: Arc<SqliteStore>,
-	io: Option<SocketIo>,
+	pub io: Arc<Option<SocketIo>>,
 	pub plugin_manager: Arc<PluginManager>,
 	pub trakt: Arc<TraktContext>,
 	pub tmdb: Arc<TmdbContext>,
 	pub fanart: Arc<FanArtContext>,
 	pub imdb: Arc<ImdbContext>,
 	pub scheduler: Arc<RsScheduler>,
+
+	pub players: Arc<RwLock<Vec<RsPlayerAvailable>>>,
 
 	pub chache_libraries: Arc<RwLock<HashMap<String, ServerLibrary>>>
 }
@@ -50,14 +54,15 @@ impl ModelController {
 
 		let mc = Self {
 			store: Arc::new(store),
-			io: None,
+			io: Arc::new(None),
 			plugin_manager: Arc::new(plugin_manager),
 			trakt: Arc::new(TraktContext::new("455f81b3409a8dd140a941e9250ff22b2ed92d68003491c3976363fe752a9024".to_string())),
 			tmdb: Arc::new(tmdb),
 			fanart: Arc::new(fanart),
 			imdb: Arc::new(ImdbContext::new()),
 			scheduler: Arc::new(scheduler),
-			chache_libraries: Arc::new(RwLock::new(HashMap::new()))
+			chache_libraries: Arc::new(RwLock::new(HashMap::new())),
+			players: Arc::new(RwLock::new(vec![]))
 		};
 
 		let pm_forload = mc.plugin_manager.clone();
@@ -251,14 +256,19 @@ impl  ModelController {
 impl  ModelController {
 
 	pub fn set_socket(&mut self, io: SocketIo) {
-		self.io = Some(io);
+		println!("==SET Socket==");
+		self.io = Arc::new(Some(io));
 	}
 
 	fn for_connected_users<T: Clone>(&self, message: &T, action: fn(user: &ConnectedUser, socket: &SocketRef, message: T) -> ()) {
 		let io = self.io.clone();
-		if let Some(io) = io {
+		println!("socket {:?}", io);
+		if let Some(ref io) = *io {
+			println!("socketa");
 			if let Ok(sockets) = io.sockets() {
+				println!("socketb");
 				for socket in sockets {
+					println!("sockety");
 					if let Some(user) = socket.extensions.get::<ConnectedUser>() {
 						action(&user, &socket, message.clone())
 					}

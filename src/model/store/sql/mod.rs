@@ -64,6 +64,7 @@ pub enum SqlWhereType {
     Equal(String, Box<dyn ToSql>),
     After(String, Box<dyn ToSql>),
     Before(String, Box<dyn ToSql>),
+    Between(String, Box<dyn ToSql>, Box<dyn ToSql>),
     Custom(String, Box<dyn ToSql>),
     In(String, Vec<Box<dyn ToSql>>),
     NotIn(String, Vec<Box<dyn ToSql>>),
@@ -99,6 +100,12 @@ impl SqlWhereType {
             SqlWhereType::Before(name, value) => {
                 values.push(value);
                 format!("{} < ?", name)
+            },
+            
+            SqlWhereType::Between(name, down, up) => {
+                values.push(down);
+                values.push(up);
+                format!("{} BETWEEN ? and ?", name)
             },
             SqlWhereType::In(name, ins) => {
 

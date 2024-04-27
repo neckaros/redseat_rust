@@ -14,6 +14,8 @@ pub struct ServerLibrary {
     pub kind: LibraryType,
     pub crypt: Option<bool>,
     pub settings: ServerLibrarySettings,
+    pub credentials: Option<String>,
+    pub plugin: Option<String>,
 
     #[serde(default)]
     pub hidden: bool,

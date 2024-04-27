@@ -9,12 +9,11 @@ use query_external_ip::SourceError;
 use rs_plugin_common_interfaces::request::RsRequest;
 use tokio::{fs::File, io::{AsyncRead, AsyncWrite, BufReader, BufWriter}};
 
-use crate::{domain::{library::ServerLibrary, media::MediaForUpdate}, model::ModelController, plugins::PluginManager, routes::mw_range::RangeDefinition, server::get_server_file_path_array};
+use crate::{domain::{library::ServerLibrary, media::MediaForUpdate, plugin::PluginWithCredential}, model::{users::ConnectedUser, ModelController}, plugins::PluginManager, routes::mw_range::RangeDefinition, server::get_server_file_path_array};
 
 use super::{error::{SourcesError, SourcesResult}, AsyncReadPinBox, FileStreamResult, Source, SourceRead};
 
 pub struct PluginProvider {
-    root: PathBuf,
     library: ServerLibrary,
     plugin: PluginWithCredential
 }
@@ -23,15 +22,17 @@ pub struct PluginProvider {
 #[async_trait]
 impl Source for PluginProvider {
     async fn new(library: ServerLibrary, controller: ModelController) -> SourcesResult<Self> {
-        if let Some(root) = &library.root {
-            Ok(Self {
-                root: PathBuf::from_str(&root).map_err(|_| SourcesError::Error)?,
-                library,
-                plugin_manager: controller.plugin_manager.clone()
-            })
-        } else {
-            Err(SourcesError::Error)
-        }
+        let plugin_id = library.plugin.clone().ok_or(SourcesError::Other(format!("Plugin library need a plugin: {:?}", library)))?;
+        let credential_id = library.credentials.clone();
+        let plugin = controller.get_plugin(plugin_id, &ConnectedUser::ServerAdmin).await.map_err(|_| SourcesError::Other(format!("Plugin library need a plugin: {:?}", library)))?;
+        let credential = if let Some(credential_id) = credential_id { controller.get_credential(credential_id, &ConnectedUser::ServerAdmin).await.map_err(|_| SourcesError::Other(format!("Unable to get credential: {:?}", library)))? } else { None};
+        let plugin_with_credentials = PluginWithCredential { plugin, credential };
+
+        
+        Ok(Self {
+            library,
+            plugin: plugin_with_credentials
+        })
     }
 
     async fn exists(&self, _source: &str) -> bool {
@@ -60,7 +61,7 @@ impl Source for PluginProvider {
     }
 
 
-    async fn write<'a>(&self, name: &str, read: Pin<Box<dyn AsyncRead + Send + 'a>>) -> SourcesResult<String> {
+    async fn write<'a>(&self, _name: &str, _read: Pin<Box<dyn AsyncRead + Send + 'a>>) -> SourcesResult<String> {
         Ok("test".to_owned())
     }
 

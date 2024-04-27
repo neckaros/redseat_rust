@@ -129,6 +129,8 @@ pub struct ServerLibraryForUpdate {
 	pub source: Option<String>,
 	pub root: Option<String>,
 	pub settings: Option<ServerLibrarySettings>,
+	pub credentials: Option<String>,
+    pub plugin: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -140,6 +142,8 @@ pub struct ServerLibraryForAdd {
     #[serde(rename = "type")]
     pub kind: LibraryType,
     pub crypt: Option<bool>,
+	pub credentials: Option<String>,
+    pub plugin: Option<String>,
 }
  
 pub(super) fn map_library_for_user(library: ServerLibrary, user: &ConnectedUser) -> Option<ServerLibraryForRead> {

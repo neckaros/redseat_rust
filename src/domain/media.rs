@@ -7,7 +7,7 @@ use serde_json::Value;
 use strum_macros::EnumString;
 
 
-use crate::plugins::sources::SourceRead;
+use crate::{plugins::sources::SourceRead, tools::video_tools::VideoConvertRequest};
 
 use super::{progress::RsProgress, ElementAction};
 
@@ -195,7 +195,7 @@ pub struct MediaForUpdate {
     pub md5: Option<String>,
     
     pub modified: Option<u64>,
-    pub created: Option<u64>,
+    pub created: Option<i64>,
 
     pub width: Option<u32>,
     pub height: Option<u32>,
@@ -307,7 +307,7 @@ pub struct MediaForAdd {
     pub uploader: Option<String>,
     pub uploadkey: Option<String>,
 
-    pub created: Option<u64>,
+    pub created: Option<i64>,
 } 
 
 
@@ -412,6 +412,40 @@ impl From<GroupMediaDownload<MediaDownloadUrl>> for Vec<RsRequest> {
     }
 }
 
+
+impl From<Media> for MediaForAdd {
+    fn from(value: Media) -> Self {
+        MediaForAdd {
+            name: value.name,
+            description: value.description,
+            people: value.people.map(|e| e.iter().map(|p| p.id.to_string()).collect::<Vec<String>>()),
+            tags: value.tags.map(|e| e.iter().map(|p| p.id.to_string()).collect::<Vec<String>>()),
+            long: value.long,
+            lat: value.lat,
+            created: value.created,
+            origin: value.origin,
+            series: value.series,
+            ..Default::default()
+        }
+    }
+}
+
+impl From<Media> for MediaForUpdate {
+    fn from(value: Media) -> Self {
+        MediaForUpdate {
+            description: value.description,
+            add_people: value.people,
+            add_tags: value.tags,
+            long: value.long,
+            lat: value.lat,
+            created: value.created,
+            origin: value.origin,
+            add_series: value.series,
+            ..Default::default()
+        }
+    }
+}
+
 impl From<RsRequest> for MediaForUpdate {
     fn from(value: RsRequest) -> Self {
         MediaForUpdate {
@@ -470,4 +504,23 @@ pub struct MediasMessage {
 pub struct ProgressMessage {
     pub library: String,
     pub progress: RsProgress
+}
+
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")] 
+pub struct ConvertProgress {
+    pub id: String,
+    pub filename: String,
+    pub converted_id: Option<String>,
+    pub done: bool,
+    pub percent: f64,
+    pub request: Option<VideoConvertRequest>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")] 
+pub struct ConvertMessage {
+    pub library: String,
+    pub progress: ConvertProgress
 }

@@ -4,9 +4,9 @@ use extism::{convert::Json, Manifest, PluginBuilder, Wasm};
 use rs_plugin_common_interfaces::{PluginInformation, PluginType};
 
 use extism::Plugin as ExtismPlugin;
-use tokio::sync::RwLock;
+use tokio::{fs::File, io::AsyncReadExt, sync::RwLock};
 
-use crate::{domain::{library::ServerLibrary, plugin::{self, PluginWasm}}, error::RsResult, model::ModelController, server::get_server_folder_path_array, tools::log::{log_error, log_info}, Error, Result};
+use crate::{domain::{library::ServerLibrary, plugin::{self, PluginWasm}}, error::RsResult, model::ModelController, server::get_server_folder_path_array, tools::log::{log_error, log_info, LogServiceType}, Error, Result};
 
 use self::sources::{error::SourcesResult, path_provider::PathProvider, virtual_provider::VirtualProvider, Source};
 
@@ -71,7 +71,38 @@ pub async fn list_plugins() -> crate::Result<impl Iterator<Item = PluginWasm>> {
        
 }
 
+pub async fn list_other_plugins() -> crate::Result<Vec<PluginInformation>> {
+    let folder = get_plugin_fodler().await?;
+    let files = std::fs::read_dir(folder)?
+        // Filter out all those directory entries which couldn't be read
+        .filter_map(|res| res.ok())
+        // Map the directory entries to paths
+        .map(|dir_entry| dir_entry.path())
+        // Filter out all paths with extensions other than `csv`
+        .filter_map(|path| {
+            if path.extension().map_or(false, |ext| ext == "rsplugin") {
+                Some(path)
+            } else {
+                None
+            }
+        });
+    
+    let mut plugins = vec![];
+    for path in files.into_iter() {
+        let mut file = File::open(path).await?;
+  
+        let mut manifest_string = String::new();
+        file.read_to_string(&mut manifest_string).await?;
+        let info: PluginInformation = serde_json::from_str(&manifest_string)?;
+        plugins.push(info);
+        
+      
+    }
 
+    Ok(plugins)
+
+       
+}
 
 
 /*pub fn parse_url_plugin(url: String, plugin: PluginInformation) {

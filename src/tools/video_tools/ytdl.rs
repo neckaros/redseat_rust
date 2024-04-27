@@ -243,11 +243,12 @@ impl YtDlCommandBuilder {
             }
         );
         if let Some(progress) = progress {
-            tokio::spawn(async move {
+                println!("Progress==");
                 while let Some(p) = &mut out.next().await {
+
                     progress.send(p.to_owned()).await.unwrap();
                 }
-            });
+         
         }
 
         let r = child.wait().await;

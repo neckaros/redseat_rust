@@ -9,7 +9,7 @@ use serde_json::Value;
 use tokio::sync::mpsc::Sender;
 
 
-use crate::{domain::{backup::Backup, plugin::{Plugin, PluginForAdd, PluginForInsert, PluginForInstall, PluginForUpdate, PluginWasm, PluginWithCredential}, progress::{RsProgress, RsProgressCallback}}, error::RsResult, plugins::sources::SourceRead};
+use crate::{domain::{backup::Backup, plugin::{Plugin, PluginForAdd, PluginForInsert, PluginForInstall, PluginForUpdate, PluginWasm, PluginWithCredential}, progress::{RsProgress, RsProgressCallback}}, error::RsResult, plugins::sources::SourceRead, tools::video_tools::ytdl::YydlContext};
 
 use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
 
@@ -165,6 +165,13 @@ impl ModelController {
         let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::Request), ..Default::default() }).await?.collect();
         self.plugin_manager.request(request, savable, plugins, progress).await
         
+    }
+
+    pub async fn parse_request(&self, request: RsRequest, progress: RsProgressCallback) -> RsResult<SourceRead> {
+        let ctx = YydlContext::new().await?;
+        let result = ctx.request(&request, progress).await?;
+
+        return Ok(result);
     }
 
     pub async fn exec_permanent(&self, request: RsRequest, library_id: Option<String>, progress: Option<Sender<RsProgress>>, requesting_user: &ConnectedUser) -> RsResult<RsRequest> {

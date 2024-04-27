@@ -13,10 +13,10 @@ use query_external_ip::SourceError;
 use rs_plugin_common_interfaces::{request::{RsRequest, RsRequestStatus}, url::{RsLink, RsLinkType}, PluginType};
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
-use tokio::{io::{copy, AsyncRead, AsyncReadExt, AsyncWriteExt}, sync::mpsc};
+use tokio::{fs::File, io::{copy, AsyncRead, AsyncReadExt, AsyncWriteExt}, sync::mpsc};
 use tokio_stream::StreamExt;
 use tokio_util::io::{ReaderStream, StreamReader};
-use crate::{domain::{deleted::RsDeleted, media::{self, RsGpsPosition, DEFAULT_MIME}, plugin, MediaElement}, model::store::sql::SqlOrder, tools::{file_tools::filename_from_path, image_tools::convert_image_reader}};
+use crate::{domain::{deleted::RsDeleted, media::{self, ConvertMessage, ConvertProgress, RsGpsPosition, DEFAULT_MIME}, plugin, MediaElement}, model::store::sql::SqlOrder, plugins::sources::{path_provider::PathProvider, Source}, tools::{file_tools::filename_from_path, image_tools::convert_image_reader, video_tools::{VideoCommandBuilder, VideoConvertRequest, VideoOverlayPosition}}};
 
 use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaItemReference, MediaWithAction, MediasMessage, ProgressMessage}, progress::{RsProgress, RsProgressType}, ElementAction}, error::RsResult, plugins::{get_plugin_fodler, sources::{async_reader_progress::ProgressReader, error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{self, resize_image, resize_image_reader, ImageSize, ImageType}, log::{log_error, log_info, LogServiceType}, prediction::{predict_net, preload_model, PredictionTagResult}, video_tools::{self, probe_video, VideoTime}}};
 
@@ -33,6 +33,10 @@ pub struct MediaQuery {
     #[serde(default)]
     pub order: SqlOrder,
 
+    pub added_before: Option<u64>,
+    pub added_after: Option<u64>,
+
+
     pub before: Option<u64>,
     pub after: Option<u64>,
     #[serde(default)]
@@ -44,6 +48,15 @@ pub struct MediaQuery {
     pub limit: Option<usize>,
     #[serde(default)]
     pub types: Vec<FileType>,
+
+    
+    pub text: Option<String>,
+
+    pub long: Option<f64>,
+    pub lat: Option<f64>,
+    pub distance: Option<f64>,
+    #[serde(default)]
+    pub gps_square: Vec<f64>,
     
     pub page_key: Option<u64>,
 
@@ -197,6 +210,16 @@ impl ModelController {
 			}
 		});
 	}
+
+    pub fn send_convert_progress(&self, message: ConvertMessage) {
+		self.for_connected_users(&message, |user, socket, message| {
+            let r = user.check_library_role(&message.library, LibraryRole::Read);
+			if r.is_ok() {
+				let _ = socket.emit("convert_progress", message);
+			}
+		});
+	}
+
 
 
     pub async fn add_media(&self, library_id: &str, new_media: MediaForAdd, notif: bool, requesting_user: &ConnectedUser) -> Result<Media> {
@@ -358,7 +381,7 @@ impl ModelController {
         let crypted = self.cache_get_library_crypt(library_id).await;
         let m = self.source_for_library(&library_id).await?;
 
-        let tx_progress = self.create_progress_sender(library_id.to_owned());
+        let tx_progress = self.create_progress_sender(library_id.to_owned(), Some(upload_id.clone()));
 
         tokio::pin!(reader); 
         let progress_reader = ProgressReader::new(reader, RsProgress { id: upload_id.clone(), total: infos.size, current: Some(0), kind: RsProgressType::Transfert, filename: Some(filename.to_owned()) }, tx_progress.clone());
@@ -375,7 +398,7 @@ impl ModelController {
             name: filename.to_string(), 
             source: Some(source.to_string()),
             mimetype: infos.mimetype.clone().unwrap_or(DEFAULT_MIME.to_owned()),
-            created: Some(infos.created.unwrap_or_else(|| Utc::now().timestamp_millis() as u64)),
+            created: Some(infos.created.unwrap_or_else(|| Utc::now().timestamp_millis())),
             iv: infos.iv.clone(),
             thumbsize: infos.thumbsize,
             uploader: requesting_user.user_id().ok(),
@@ -432,6 +455,9 @@ impl ModelController {
             
             
             
+            //Progress
+            let tx_progress = self.create_progress_sender(library_id.to_owned(), Some(upload_id.clone()));
+
             
             if let Some(origin) = &mut infos.origin {
                 let origin_filename = filename_from_path(&request.url);
@@ -439,12 +465,10 @@ impl ModelController {
 
                 let existing = store.get_media_by_origin(origin.clone()).await;
                 if let Some(existing) = existing {
+                    let _ = tx_progress.send(RsProgress { id: upload_id.clone(), total: existing.size, current: existing.size, kind: RsProgressType::Duplicate(existing.id.clone()), filename: Some(existing.name.to_owned()) }).await;
                     return Err(Error::Duplicate(existing.id.to_owned(), MediaElement::Media(existing)).into())
                 }
             }
-
-            //Progress
-            let tx_progress = self.create_progress_sender(library_id.to_owned());
 
 
             let reader = SourceRead::Request(request).into_reader(library_id, None, 
@@ -478,6 +502,7 @@ impl ModelController {
                 let existing = store.get_media_by_hash(hash.to_owned()).await;
                 if let Some(existing) = existing {
                     m.remove(&source).await?;
+                    let _ = tx_progress.send(RsProgress { id: upload_id.clone(), total: existing.size, current: existing.size, kind: RsProgressType::Duplicate(existing.id.clone()), filename: Some(existing.name.to_owned()) }).await;
                     return Err(Error::Duplicate(existing.id.to_owned(), MediaElement::Media(existing)).into())
                 }
             }
@@ -486,7 +511,7 @@ impl ModelController {
             new_file.name = filename.to_string();
             new_file.source = Some(source.to_string());
             new_file.mimetype = infos.mimetype.clone().unwrap_or(DEFAULT_MIME.to_owned());
-            new_file.created = Some(infos.created.unwrap_or_else(|| Utc::now().timestamp_millis() as u64));
+            new_file.created = Some(infos.created.unwrap_or_else(|| Utc::now().timestamp_millis()));
 
             let final_progress = tx_progress.send(RsProgress { id: upload_id.clone(), total: infos.size, current: infos.size, kind: RsProgressType::Finished, filename: Some(filename.to_owned()) }).await;
             if let Err(error) = final_progress {
@@ -506,6 +531,7 @@ impl ModelController {
                 log_error(crate::tools::log::LogServiceType::Source, format!("Unable to generate thumb {:#}", r));
             }
             let media = store.get_media(&id).await?.ok_or(Error::NotFound)?;
+            let _ = tx_progress.send(RsProgress { id: upload_id.clone(), total: media.size, current: media.size, kind: RsProgressType::Finished, filename: Some(media.name.to_owned()) }).await;
             self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media: media.clone(), action: ElementAction::Added}] });
             
             medias.push(media)
@@ -516,7 +542,7 @@ impl ModelController {
 	}
 
 
-    pub fn create_progress_sender(&self, library_id: String) -> mpsc::Sender<RsProgress> {
+    pub fn create_progress_sender(&self, library_id: String, upload_id: Option<String>) -> mpsc::Sender<RsProgress> {
         //Progress
         let mc_progress = self.clone();
         let (tx_progress, mut rx_progress) = mpsc::channel::<RsProgress>(100);
@@ -524,8 +550,11 @@ impl ModelController {
             let mut last_send = 0;
             let mut last_type: Option<RsProgressType> = None;
             
-            while let Some(progress) = rx_progress.recv().await {
+            while let Some(mut progress) = rx_progress.recv().await {
                 let current = progress.current.unwrap_or(1);
+                if let Some(upload_id) = &upload_id {
+                    progress.id = upload_id.clone();
+                }
                 if progress.current == progress.total || last_send == 0 || current < last_send || current - last_send  > 1000000 || Some(&progress.kind) != last_type.as_ref() {
                     last_type = Some(progress.kind.clone());
                     last_send = current;
@@ -560,7 +589,7 @@ impl ModelController {
         new_file.source = if let Some(selected) = request.selected_file { Some(format!("{}|{}",request.url, selected)) } else { Some(request.url) };
         new_file.mimetype = final_infos.mimetype.or(infos.mimetype).unwrap_or(DEFAULT_MIME.to_owned());
         new_file.size = final_infos.size.or(infos.size);
-        new_file.created = Some(infos.created.unwrap_or_else(|| Utc::now().timestamp_millis() as u64));
+        new_file.created = Some(infos.created.unwrap_or_else(|| Utc::now().timestamp_millis()));
         
         new_file.kind = file_type_from_mime(&new_file.mimetype);
         
@@ -655,8 +684,6 @@ impl ModelController {
     }
 
     pub async fn prediction(&self, library_id: &str, media_id: &str, insert_tags: bool, requesting_user: &ConnectedUser) -> crate::Result<Vec<PredictionTagResult>> {
-
-
         let plugins = self.get_plugins(PluginQuery { kind: Some(PluginType::ImageClassification), library: Some(library_id.to_string()), ..Default::default() }, &ConnectedUser::ServerAdmin).await?;
         if !plugins.is_empty() {
             let mut all_predictions: Vec<PredictionTagResult> = vec![];
@@ -695,6 +722,99 @@ impl ModelController {
             Err(crate::Error::NoModelFound)
         }
     }
+
+    pub async fn convert(&self, library_id: &str, media_id: &str, mut request: VideoConvertRequest, requesting_user: &ConnectedUser) -> crate::Result<Media> {
+        requesting_user.check_file_role(library_id, media_id, LibraryRole::Write)?;
+
+        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let media = store.get_media(media_id).await?.ok_or(Error::NotFound)?;
+
+        let m = self.source_for_library(library_id).await?; 
+        let local = self.library_source_for_library(library_id).await?; 
+        let path = m.local_path(media.source.as_ref().ok_or(Error::ServiceError("Convert".to_owned(), Some("Unable to convert video without source".to_owned())))?).ok_or(Error::ServiceError("Convert".to_owned(), Some("Unable to convert video that is not local".to_owned())))?;
+ 
+        let filename = format!("{}.{}", nanoid!(), request.format);
+        let dest_source = format!(".cache/{}", filename);
+        let dest = local.get_gull_path(&dest_source);
+        PathProvider::ensure_filepath(&dest).await?;
+
+
+        let mc_progress = self.clone();
+        let lib_progress = library_id.to_string();
+        let request_progress = request.clone();
+        let name_progress = request.id.clone();
+        let (tx_progress, mut rx_progress) = mpsc::channel::<f64>(100);
+        tokio::spawn(async move {
+            while let Some(percent) = rx_progress.recv().await {        
+                let message = ConvertMessage {
+                    library: lib_progress.clone(),
+                    progress: ConvertProgress {
+                        percent,
+                        converted_id: None,
+                        filename: name_progress.clone(),
+                        done: false,
+                        id: request_progress.id.clone(),
+                        request: Some(request_progress.clone())
+                    },
+                };
+                mc_progress.send_convert_progress(message);
+                
+            }
+        });
+
+        let mut video_builder = VideoCommandBuilder::new();
+        video_builder.set_progress(tx_progress);
+
+
+        if let Some(overlay) = &mut request.overlay {
+            match overlay.kind {
+                video_tools::VideoOverlayType::Watermark => {
+                    let name = if overlay.path.is_empty() { ".watermark.png".to_owned() } else { format!(".watermark.{}.png", &overlay.path)};
+                    overlay.path = local.get_gull_path(&name).to_str().ok_or(Error::ServiceError("Convert".to_owned(), Some("Invalid watermark path".to_owned())))?.to_string();
+                },
+                video_tools::VideoOverlayType::File => todo!(),
+            }
+  
+        }
+        let progress_id = request.id.clone();
+        video_builder.set_request(request.clone()).await?;
+        video_builder.run_file(path.to_str().unwrap(), dest.to_str().unwrap()).await?;
+        let message = ConvertMessage {
+            library: library_id.to_string(),
+            progress: ConvertProgress {
+                percent: 1.0,
+                converted_id: None,
+                filename: filename.clone(),
+                done: true,
+                id: progress_id.clone(),
+                request: Some(request.clone())
+            },
+        };
+        self.send_convert_progress(message);
+        let media_infos: MediaForUpdate = media.into();
+        let reader = File::open(dest).await?;
+        let media = self.add_library_file(library_id, &filename, Some(media_infos), reader, requesting_user).await;
+        
+        local.remove(&dest_source).await?;
+        match media {
+            Ok(media) => {
+                let message = ConvertMessage {
+                    library: library_id.to_string(),
+                    progress: ConvertProgress {
+                        percent: 1.0,
+                        converted_id: Some(media.id.clone()),
+                        filename: filename.clone(),
+                        done: true,
+                        id: progress_id.clone(),
+                        request: Some(request.clone())
+                    },
+                };
+                self.send_convert_progress(message);
+                Ok(media)
+            },
+            Err(err) => Err(err),
+        }
+    }
     
     pub async fn update_video_infos(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> crate::Result<()> {
         requesting_user.check_file_role(library_id, media_id, LibraryRole::Read)?;
@@ -729,7 +849,7 @@ impl ModelController {
 
         self.update_media(library_id, media_id.to_owned(), update, true, requesting_user).await?;
 
-        println!("videos infos {:?}", videos_infos);
+        //println!("videos infos {:?}", videos_infos);
         Ok(())
     }
 
