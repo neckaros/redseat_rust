@@ -7,12 +7,12 @@ use serde_json::Value;
 use tokio::{fs::File, io::{AsyncRead, BufReader}};
 
 use rs_plugin_common_interfaces::url::RsLink;
-use crate::{domain::{deleted::RsDeleted, library::LibraryRole, people::{PeopleMessage, Person}, tag::Tag, ElementAction, MediasIds}, error::RsResult, plugins::sources::{AsyncReadPinBox, FileStreamResult}, tools::image_tools::{ImageSize, ImageType}};
+use crate::{domain::{deleted::RsDeleted, library::LibraryRole, people::{PeopleMessage, Person, PersonWithAction}, tag::Tag, ElementAction, MediasIds}, error::RsResult, plugins::sources::{AsyncReadPinBox, FileStreamResult}, tools::image_tools::{ImageSize, ImageType}};
 
 use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
 
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct PersonForAdd {
 	pub name: String,
     pub socials: Option<Vec<RsLink>>,
@@ -22,8 +22,10 @@ pub struct PersonForAdd {
     pub portrait: Option<String>,
     pub params: Option<Value>,
     pub birthday: Option<u64>,
+    #[serde(default)]
+    pub generated: bool,
 }
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct PersonForInsert {
     pub id: String,
 	pub name: String,
@@ -34,6 +36,8 @@ pub struct PersonForInsert {
     pub portrait: Option<String>,
     pub params: Option<Value>,
     pub birthday: Option<u64>,
+    #[serde(default)]
+    pub generated: bool,
 }
 
 
@@ -75,6 +79,7 @@ pub struct PersonForUpdate {
     pub portrait: Option<String>,
     pub params: Option<Value>,
     pub birthday: Option<u64>,
+    pub generated: Option<bool>,
 }
 
 
@@ -106,7 +111,7 @@ impl ModelController {
         println!("socialts {:?}", update);
 		store.update_person(&tag_id, update).await?;
         let person = store.get_person(&tag_id).await?.ok_or(Error::NotFound)?;
-        self.send_people(PeopleMessage { library: library_id.to_string(), action: ElementAction::Updated, people: vec![person.clone()] });
+        self.send_people(PeopleMessage { library: library_id.to_string(), people: vec![PersonWithAction { person: person.clone(), action: ElementAction::Updated}] });
         Ok(person)
 	}
 
@@ -132,11 +137,12 @@ impl ModelController {
             alt: new_person.alt,
             portrait: new_person.portrait,
             params: new_person.params,
-            birthday: new_person.birthday
+            birthday: new_person.birthday,
+            generated: new_person.generated,
         };
 		store.add_person(backup.clone()).await?;
         let new_person = self.get_person(library_id, backup.id, requesting_user).await?.ok_or(Error::NotFound)?;
-        self.send_people(PeopleMessage { library: library_id.to_string(), action: ElementAction::Added, people: vec![new_person.clone()] });
+        self.send_people(PeopleMessage { library: library_id.to_string(), people: vec![PersonWithAction { person: new_person.clone(), action: ElementAction::Added}] });
 		Ok(new_person)
 	}
 
@@ -148,7 +154,7 @@ impl ModelController {
         if let Some(existing) = existing { 
             store.remove_person(tag_id.to_string()).await?;
             self.add_deleted(library_id, RsDeleted::person(tag_id.to_owned()), requesting_user).await?;
-            self.send_people(PeopleMessage { library: library_id.to_string(), action: ElementAction::Deleted, people: vec![existing.clone()] });
+            self.send_people(PeopleMessage { library: library_id.to_string(), people: vec![PersonWithAction { person: existing.clone(), action: ElementAction::Deleted}] });
             Ok(existing)
         } else {
             Err(Error::NotFound.into())
@@ -166,8 +172,12 @@ impl ModelController {
             return Err(Error::InvalidIdForAction("udpate person image".to_string(), person_id.to_string()))
         }
         self.update_library_image(library_id, ".portraits", person_id, kind, reader, requesting_user).await?;
-
-        self.get_person(library_id, person_id.to_owned(), requesting_user).await?.ok_or(Error::PersonNotFound(person_id.to_owned()))
+        
+        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        store.update_person_portrait(person_id.to_string()).await?;
+        let person = self.get_person(library_id, person_id.to_owned(), requesting_user).await?.ok_or(Error::PersonNotFound(person_id.to_owned()))?;
+        self.send_people(PeopleMessage { library: library_id.to_string(), people: vec![PersonWithAction { person: person.clone(), action: ElementAction::Updated}] });
+        Ok(person)
 	}
 
     

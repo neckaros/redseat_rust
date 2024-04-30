@@ -23,6 +23,8 @@ impl SqliteLibraryStore {
             birthday: row.get(7)?,
             modified: row.get(8)?,
             added: row.get(9)?,
+            posterv: row.get(10)?,
+            generated: row.get(11)?,
         })
     }
 
@@ -46,7 +48,7 @@ impl SqliteLibraryStore {
             }
 
 
-            let mut query = conn.prepare(&format!("SELECT id, name, socials, type, alt, portrait, params, birthday, modified, added  FROM people {}{}", where_query.format(), where_query.format_order()))?;
+            let mut query = conn.prepare(&format!("SELECT id, name, socials, type, alt, portrait, params, birthday, modified, added, posterv, generated  FROM people {}{}", where_query.format(), where_query.format_order()))?;
             let rows = query.query_map(
             where_query.values(), Self::row_to_person,
             )?;
@@ -58,7 +60,7 @@ impl SqliteLibraryStore {
     pub async fn get_person(&self, credential_id: &str) -> Result<Option<Person>> {
         let credential_id = credential_id.to_string();
         let row = self.connection.call( move |conn| { 
-            let mut query = conn.prepare("SELECT id, name, socials, type, alt, portrait, params, birthday, modified, added FROM people WHERE id = ?")?;
+            let mut query = conn.prepare("SELECT id, name, socials, type, alt, portrait, params, birthday, modified, added, posterv, generated FROM people WHERE id = ?")?;
             let row = query.query_row(
             [credential_id],Self::row_to_person).optional()?;
             Ok(row)
@@ -82,6 +84,7 @@ impl SqliteLibraryStore {
             where_query.add_update(&update.portrait, "portrait");
             where_query.add_update(&update.params, "params");
             where_query.add_update(&update.birthday, "birthday");
+            where_query.add_update(&update.generated, "generated");
 
             let alts = replace_add_remove_from_array(existing.alt, update.alt, update.add_alts, update.remove_alts);
             let v = to_pipe_separated_optional(alts);
@@ -104,6 +107,14 @@ impl SqliteLibraryStore {
         Ok(())
     }
 
+    pub async fn update_person_portrait(&self, id: String) -> Result<()> {
+        self.connection.call( move |conn| { 
+            conn.execute("update people set posterv = ifnull(posterv, 0) + 1 WHERE id = ?", params![id])?;
+            Ok(())
+        }).await?;
+        Ok(())
+    }
+
     pub async fn add_person(&self, person: PersonForInsert) -> Result<()> {
         self.connection.call( move |conn| { 
             let socials = if let Some(soc) = person.socials {
@@ -111,8 +122,8 @@ impl SqliteLibraryStore {
             } else {
                 None
             };
-            conn.execute("INSERT INTO people (id, name, socials, type, alt, portrait, params, birthday)
-            VALUES (?, ?, ? ,?, ?, ?, ?, ?)", params![
+            conn.execute("INSERT INTO people (id, name, socials, type, alt, portrait, params, birthday, generated)
+            VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?)", params![
                 person.id,
                 person.name,
                 socials,
@@ -120,7 +131,8 @@ impl SqliteLibraryStore {
                 to_pipe_separated_optional(person.alt),
                 person.portrait,
                 person.params,
-                person.birthday
+                person.birthday,
+                person.generated
             ])?;
             
             Ok(())

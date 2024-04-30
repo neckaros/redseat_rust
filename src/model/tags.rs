@@ -9,7 +9,7 @@ use serde_json::Value;
 use x509_parser::nom::branch::alt;
 
 
-use crate::{domain::{deleted::RsDeleted, library::LibraryRole, tag::{self, Tag, TagMessage}, ElementAction}, error::RsResult, tools::prediction::PredictionTag};
+use crate::{domain::{deleted::RsDeleted, library::LibraryRole, tag::{self, Tag, TagMessage, TagWithAction}, ElementAction}, error::RsResult, tools::prediction::PredictionTag};
 
 use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
 
@@ -205,7 +205,7 @@ impl ModelController {
                 let mut updated = self.get_tags(library_id, TagQuery::new_with_path(format!("{}%",tag.childs_path())), requesting_user).await?;
                 all_updated.append(&mut updated);
             }
-            self.send_tags(TagMessage { library: library_id.to_string(), action: ElementAction::Updated, tags: all_updated });
+            self.send_tags(TagMessage { library: library_id.to_string(), tags: all_updated.iter().map(|t| TagWithAction { action: ElementAction::Deleted, tag: t.clone()}).collect()});
             Ok(tag)
         } else {
             Err(Error::NotFound)
@@ -230,7 +230,7 @@ impl ModelController {
 
         let new_tag = self.get_tag(library_id, into, requesting_user).await?.ok_or(Error::TagNotFound(old_id.to_owned()))?;
 
-        self.send_tags(TagMessage { library: library_id.to_string(), action: ElementAction::Updated, tags: vec![new_tag.clone()] });
+        self.send_tags(TagMessage { library: library_id.to_string(), tags: vec![TagWithAction { tag: new_tag.clone(), action: ElementAction::Updated}] });
 
         Ok(new_tag)
 	}
@@ -261,7 +261,7 @@ impl ModelController {
         };
 		store.add_tag(backup.clone()).await?;
         let new_tag = self.get_tag(library_id, backup.id, requesting_user).await?.ok_or(Error::NotFound)?;
-        self.send_tags(TagMessage { library: library_id.to_string(), action: ElementAction::Added, tags: vec![new_tag.clone()] });
+        self.send_tags(TagMessage { library: library_id.to_string(), tags: vec![TagWithAction { tag: new_tag.clone(), action: ElementAction::Added}] });
 		Ok(new_tag)
 	}
 
@@ -275,7 +275,7 @@ impl ModelController {
             children.push(existing.clone());
             store.remove_tag(tag_id.to_string()).await?;
             self.add_deleted(library_id, RsDeleted::serie(tag_id.to_owned()), requesting_user).await?;
-            self.send_tags(TagMessage { library: library_id.to_string(), action: ElementAction::Deleted, tags: children });
+            self.send_tags(TagMessage { library: library_id.to_string(), tags: children.iter().map(|t| TagWithAction { action: ElementAction::Deleted, tag: t.clone()}).collect()});
             Ok(existing)
         } else {
             Err(Error::NotFound.into())

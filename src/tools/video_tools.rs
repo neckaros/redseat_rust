@@ -100,6 +100,8 @@ pub struct VideoConvertRequest {
     pub format: RsVideoFormat,
     pub codec: Option<RsVideoCodec>,
     pub crf: Option<u16>,
+    #[serde(default)]
+    pub no_audio: bool,
     pub width: Option<String>,
     pub height: Option<String>,
     pub crop_width: Option<u16>,
@@ -190,13 +192,17 @@ impl VideoCommandBuilder {
         }
 
         
+        if request.no_audio {
+            self.remove_audio();
+        }
+
+        
         if let Some(overlay) = request.overlay {
             self.add_overlay(overlay);
         }
         self.format = Some(request.format);
-        if let Some(codec) = request.codec {
-            self.set_video_codec(codec, request.crf).await;
-        }
+        self.set_video_codec(request.codec, request.crf).await;
+        
 
    
         
@@ -220,9 +226,15 @@ impl VideoCommandBuilder {
         self
     }
 
-    pub async fn set_video_codec(&mut self, codec: RsVideoCodec, crf: Option<u16>) -> &mut Self {
+    pub fn remove_audio(&mut self) -> &mut Self {
+        
+        self.add_out_option("-an");
+        self
+    }
+
+    pub async fn set_video_codec(&mut self, codec: Option<RsVideoCodec>, crf: Option<u16>) -> &mut Self {
         match codec {
-            RsVideoCodec::H265 => {
+            Some(RsVideoCodec::H265) => {
                 self.add_out_option("-c:v");
                 
                 let supported_hw = video_hardware().await.unwrap_or_default();
@@ -249,7 +261,7 @@ impl VideoCommandBuilder {
                     self.format = Some(RsVideoFormat::Mp4);
                 }
             },
-            RsVideoCodec::H264 => {
+            Some(RsVideoCodec::H264) => {
                 let supported_hw = video_hardware().await.unwrap_or_default();
                 self.add_out_option("-c:v");
                 if supported_hw.contains(&"cuda".to_string()) {
@@ -282,18 +294,22 @@ impl VideoCommandBuilder {
                     self.format = Some(RsVideoFormat::Mp4);
                 }
             },
-            RsVideoCodec::AV1 => {
+            Some(RsVideoCodec::AV1) => {
                 self.add_out_option("-c:v");
                 self.add_out_option("libaom-av1");
                 if self.format.is_none() {
                     self.format = Some(RsVideoFormat::WebM);
                 }
             },
-            RsVideoCodec::Custom(custom) => {
+            Some(RsVideoCodec::Custom(custom)) => {
                 self.add_out_option("-c:v");
                 self.add_out_option(custom);
             },
-            RsVideoCodec::Unknown => (),
+            Some(RsVideoCodec::Unknown) => (),
+            None => {
+                self.add_out_option("-c:v");
+                self.add_out_option("copy");
+            }
         }
         self
     }

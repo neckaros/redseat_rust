@@ -75,17 +75,9 @@ impl SqliteLibraryStore {
                 Ok((initial_version, version))
         }).await?;
 
-       /* self.connection.call( |conn| {
+      /*self.connection.call( |conn| {
 
-            conn.execute("ALTER TABLE medias ADD COLUMN iso_new INTEGER;", params![])?;
-            conn.execute("UPDATE medias SET iso_new = CAST(iso as INTEGER);", params![])?;
-            conn.execute("ALTER TABLE medias DROP COLUMN iso;", params![])?;
-            conn.execute("ALTER TABLE medias RENAME COLUMN iso_new TO iso;", params![])?;
-
-            conn.execute("ALTER TABLE medias ADD COLUMN focal_new INTEGER;", params![])?;
-            conn.execute("UPDATE medias SET focal_new = CAST(focal as INTEGER);", params![])?;
-            conn.execute("ALTER TABLE medias DROP COLUMN focal;", params![])?;
-            conn.execute("ALTER TABLE medias RENAME COLUMN focal_new TO focal;", params![])?;
+            conn.execute("ALTER TABLE people ADD COLUMN generated INTEGER NOT NULL DEFAULT 0;", params![])?;
 
             Ok(())
         }).await?;*/

@@ -256,19 +256,14 @@ impl  ModelController {
 impl  ModelController {
 
 	pub fn set_socket(&mut self, io: SocketIo) {
-		println!("==SET Socket==");
 		self.io = Arc::new(Some(io));
 	}
 
 	fn for_connected_users<T: Clone>(&self, message: &T, action: fn(user: &ConnectedUser, socket: &SocketRef, message: T) -> ()) {
 		let io = self.io.clone();
-		println!("socket {:?}", io);
 		if let Some(ref io) = *io {
-			println!("socketa");
 			if let Ok(sockets) = io.sockets() {
-				println!("socketb");
 				for socket in sockets {
-					println!("sockety");
 					if let Some(user) = socket.extensions.get::<ConnectedUser>() {
 						action(&user, &socket, message.clone())
 					}

@@ -23,7 +23,10 @@ pub struct Person {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub birthday: Option<u64>,
     pub modified: u64,
-    pub added: u64
+    pub added: u64,
+    pub posterv: u32,
+    #[serde(default)]
+    pub generated: bool,
 }
 
 
@@ -31,6 +34,12 @@ pub struct Person {
 #[serde(rename_all = "camelCase")] 
 pub struct PeopleMessage {
     pub library: String,
+    pub people: Vec<PersonWithAction>
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")] 
+pub struct PersonWithAction {
     pub action: ElementAction,
-    pub people: Vec<Person>
+    pub person: Person
 }

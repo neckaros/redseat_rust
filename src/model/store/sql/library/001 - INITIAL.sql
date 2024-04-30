@@ -10,15 +10,17 @@ CREATE TABLE "migrations" (
   up   TEXT    NOT NULL,
   down TEXT    NOT NULL
 );
-CREATE TABLE movies (id TEXT PRIMARY KEY, name TEXT, year INTEGER, airdate INTEGER, digitalairdate INTEGER, duration INTEGER, overview TEXT, country TEXT,  status TEXT, type TEXT, params TEXT, imdb TEXT, slug TEXT, tmdb INTEGER, trakt INTEGER, otherids TEXT, modified INTEGER, added INTEGER, lang TEXT, original TEXT, imdb_rating REAL, imdb_votes INTEGER, trailer TEXT, trakt_rating REAL, trakt_votes INTEGER) WITHOUT ROWID;
-CREATE TABLE people (id TEXT PRIMARY KEY, name TEXT, socials TEXT, type TEXT, alt TEXT, birthday INTEGER, portrait TEXT, params TEXT, modified INTEGER, added INTEGER) WITHOUT ROWID;
+CREATE TABLE movies (id TEXT PRIMARY KEY, name TEXT, year INTEGER, airdate INTEGER, digitalairdate INTEGER, duration INTEGER, overview TEXT, country TEXT,  status TEXT, type TEXT, params TEXT, imdb TEXT, slug TEXT, tmdb INTEGER, trakt INTEGER, otherids TEXT, modified INTEGER, added INTEGER, lang TEXT, original TEXT, imdb_rating REAL, imdb_votes INTEGER, trailer TEXT, trakt_rating REAL, trakt_votes INTEGER,
+posterv INTEGER NOT NULL DEFAULT 0, backgroundv INTEGER NOT NULL DEFAULT 0, cardv INTEGER NOT NULL DEFAULT 0) WITHOUT ROWID;
+CREATE TABLE people (id TEXT PRIMARY KEY, name TEXT, socials TEXT, type TEXT, alt TEXT, birthday INTEGER, portrait TEXT, params TEXT, modified INTEGER, added INTEGER, posterv INTEGER NOT NULL DEFAULT 0, generated INTEGER NOT NULL DEFAULT 0) WITHOUT ROWID;
 CREATE TABLE people_faces (
                 id   TEXT PRIMARY KEY,
                 people_ref TEXT    NOT NULL,
                 factors TEXT    NOT NULL
             );
 CREATE TABLE ratings (media_ref TEXT, user_ref TEXT, rating REAL, PRIMARY KEY (media_ref, user_ref));
-CREATE TABLE series (id TEXT PRIMARY KEY, name TEXT, year INTEGER, type TEXT, alt TEXT, params TEXT, poster TEXT, imdb TEXT, slug TEXT, tmdb INTEGER, trakt INTEGER, tvdb INTEGER, otherids TEXT, created INTEGER, status TEXT, overview TEXT, lang TEXT, original TEXT, modified INTEGER, added INTEGER, imdb_rating REAL, imdb_votes INTEGER, trailer TEXT, maxCreated INTEGER, trakt_rating REAL, trakt_votes INTEGER) WITHOUT ROWID;
+CREATE TABLE series (id TEXT PRIMARY KEY, name TEXT, year INTEGER, type TEXT, alt TEXT, params TEXT, poster TEXT, imdb TEXT, slug TEXT, tmdb INTEGER, trakt INTEGER, tvdb INTEGER, otherids TEXT, created INTEGER, status TEXT, overview TEXT, lang TEXT, original TEXT, modified INTEGER, added INTEGER, imdb_rating REAL, imdb_votes INTEGER, trailer TEXT, maxCreated INTEGER, trakt_rating REAL, trakt_votes INTEGER,
+posterv INTEGER NOT NULL DEFAULT 0, backgroundv INTEGER NOT NULL DEFAULT 0, cardv INTEGER NOT NULL DEFAULT 0) WITHOUT ROWID;
 CREATE TABLE shares (media_ref TEXT, platform TEXT, idex TEXT, params TEXT, PRIMARY KEY (media_ref, platform, idex));
 CREATE TABLE tags (id TEXT PRIMARY KEY, name TEXT, parent TEXT, type TEXT, alt TEXT, thumb TEXT, params TEXT, modified INTEGER, added INTEGER, generated INTEGER DEFAULT "0" NOT NULL CHECK (generated IN (0, 1))) WITHOUT ROWID;
 

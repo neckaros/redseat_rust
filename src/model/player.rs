@@ -12,7 +12,7 @@ impl ModelController {
         let players = self.list_players(user).await;
         if let Ok(players) = players {
             let message = players.into_iter().map(RsPlayerEvent::from).collect::<Vec<_>>();
-            let _ = socket.emit("players-list", message);
+            let _ = socket.emit("players-list", [message]);
             
         }
 
@@ -20,12 +20,10 @@ impl ModelController {
 
     pub async fn send_players(&self, players: Vec<RsPlayerAvailable>) {
         let message = players.into_iter().map(RsPlayerEvent::from).collect::<Vec<_>>();
-		println!("will send players {:?}", message);
         self.for_connected_users(&message, |user, socket, message| {
             let r = user.check_role(&super::users::UserRole::Read);
 			if r.is_ok() {
-                println!("emit to {:?}", socket.id);
-				let _ = socket.emit("players-list", message);
+				let _ = socket.emit("players-list", [message]);
 			} else {
                 log_error(LogServiceType::Source, format!("Unable to emit player list to {:?} (socket: {}): {:?}", user, socket.id, r))
             }

@@ -38,6 +38,12 @@ impl Tag {
 #[serde(rename_all = "camelCase")] 
 pub struct TagMessage {
     pub library: String,
+    pub tags: Vec<TagWithAction>
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")] 
+pub struct TagWithAction {
     pub action: ElementAction,
-    pub tags: Vec<Tag>
+    pub tag: Tag
 }
