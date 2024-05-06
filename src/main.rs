@@ -105,9 +105,14 @@ async fn app() -> Result<Router> {
         |socket: SocketRef, TryData(data): TryData<AuthMessage>| async move { routes::socket::on_connect(socket, mc_forsocket, data).await }
       });
 
-       
+    let admin_users = mc.get_users(&model::users::ConnectedUser::ServerAdmin).await?.into_iter().filter(|u| u.is_admin()).collect::<Vec<_>>();
+    if admin_users.len() == 0 {
+        let config = get_config().await;
+        log_info(LogServiceType::Register, format!("Register your server at: https:://{}/install/{}", config.redseat_home, config.id));
+    }
     Ok(Router::new()
         .nest("/ping", routes::ping::routes())
+        .nest("/infos", routes::infos::routes(mc.clone()))
         .nest("/libraries", routes::libraries::routes(mc.clone()))
         .nest("/libraries/:libraryid/medias", routes::medias::routes(mc.clone()))
         .nest("/libraries/:libraryid/tags", routes::tags::routes(mc.clone()))
@@ -188,7 +193,7 @@ async fn register() -> Result<RegisterInfo>{
         let public_config = PublicServerInfos::get(&certs.0, &public_domain).await?;
         log_info(LogServiceType::Register, format!("Exposed public url: {}:{}", public_config.url, public_config.port));
         
-        let client = reqwest::Client::new();
+        /*let client = reqwest::Client::new();
         println!("server: {}", format!("https://{}/servers/{}/register", config.redseat_home, config.id));
         
         let res = client.post(format!("https://{}/servers/{}/register", config.redseat_home, config.id))
@@ -197,7 +202,7 @@ async fn register() -> Result<RegisterInfo>{
             .await?;
 
         let register_response = res.text().await?;
-        println!("repsonse: {}", register_response);
+        println!("repsonse: {}", register_response);*/
     } 
 
     Ok(register_info)

@@ -141,13 +141,14 @@ impl  ModelController {
 	}
 
 	pub async fn get_users(&self, requesting_user: &ConnectedUser) -> Result<Vec<users::ServerUser>> {
-		if let ConnectedUser::Server(user) = &requesting_user {
-			if user.role == UserRole::Admin {
-				return self.store.get_users().await;	
-			}
+		if requesting_user.is_admin() {
+			self.store.get_users().await
+		} else {
+			Err(Error::UserListNotAuth { user: requesting_user.clone() })
 		}
-		Err(Error::UserListNotAuth { user: requesting_user.clone() })
 	}
+
+	
 
 	pub async fn source_for_library(&self, library_id: &str) -> Result<Box<dyn Source>> {
 		let library = self.store.get_library(library_id).await?.ok_or_else(|| Error::NotFound)?;

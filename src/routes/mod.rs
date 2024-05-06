@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::tools::image_tools::{ImageSize, ImageType};
 
 pub mod ping;
+pub mod infos;
 pub mod libraries;
 pub mod users;
 pub mod mw_auth;
