@@ -58,15 +58,7 @@ impl YydlContext {
         let mut command = YtDlCommandBuilder::new(&request.url);
         //let mut process = YoutubeDl::new(request.url.to_owned());
         //process.socket_timeout("15");
-
-        if let Some(cookies) = &request.cookies {
-            command.set_cookies(cookies).await?;
-        }
-        if let Some(headers) = &request.headers {
-            for header in headers {
-                command.add_header(&header.0, &header.1);
-            }
-        }
+        command.set_request(request).await?;
         let output = command.run_with_cache(progress).await?;
 
         let read = SourceRead::Stream(output);
@@ -193,6 +185,7 @@ impl YtDlCommandBuilder {
     
     pub fn add_referer(&mut self, referer: &str) -> &mut Self {
         self.cmd.arg("--referer").arg(referer);
+        println!("REFERER {}", referer);
         self
     }
     pub fn add_header(&mut self, name: &str, value: &str) -> &mut Self {
