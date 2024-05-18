@@ -94,7 +94,7 @@ async fn handler_patch(Path((library_id, serie_id)): Path<(String, String)>, Sta
 }
 
 async fn handler_delete(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
-	let library = mc.remove_serie(&library_id, &serie_id, &user).await?;
+	let library = mc.remove_serie(&library_id, &serie_id, false, &user).await?;
 	let body = Json(json!(library));
 	Ok(body)
 }

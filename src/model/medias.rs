@@ -462,11 +462,12 @@ impl ModelController {
             if let Some(origin) = &mut infos.origin {
                 let origin_filename = filename_from_path(&request.url);
                 origin.file = origin_filename;
-
-                let existing = store.get_media_by_origin(origin.clone()).await;
-                if let Some(existing) = existing {
-                    let _ = tx_progress.send(RsProgress { id: upload_id.clone(), total: existing.size, current: existing.size, kind: RsProgressType::Duplicate(existing.id.clone()), filename: Some(existing.name.to_owned()) }).await;
-                    return Err(Error::Duplicate(existing.id.to_owned(), MediaElement::Media(existing)).into())
+                if !infos.ignore_origin_duplicate {
+                    let existing = store.get_media_by_origin(origin.clone()).await;
+                    if let Some(existing) = existing {
+                        let _ = tx_progress.send(RsProgress { id: upload_id.clone(), total: existing.size, current: existing.size, kind: RsProgressType::Duplicate(existing.id.clone()), filename: Some(existing.name.to_owned()) }).await;
+                        return Err(Error::Duplicate(existing.id.to_owned(), MediaElement::Media(existing)).into())
+                    }
                 }
             }
 

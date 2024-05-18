@@ -512,6 +512,9 @@ name = "bytes"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2bd12c1caf447e69cd4528f47f94d203fd2582878ecb9e9465484c4148a8223"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "cap-fs-ext"
@@ -1139,18 +1142,20 @@ dependencies = [
 
 [[package]]
 name = "engineioxide"
-version = "0.12.0"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e3c9367e41ac7c507d52b3949552aacb853466393001e2720c913c91e0eaef0"
+checksum = "bc76e79b0c318bbff227b003843c56d5fc50b43276441d162124166f4cbacc80"
 dependencies = [
  "base64 0.22.0",
  "bytes",
- "futures",
+ "futures-core",
+ "futures-util",
  "http 1.1.0",
  "http-body 1.0.0",
  "http-body-util",
  "hyper 1.1.0",
  "hyper-util",
+ "itoa",
  "memchr",
  "pin-project-lite",
  "rand",
@@ -3174,6 +3179,8 @@ dependencies = [
  "tokio-util",
  "tower",
  "tower-http",
+ "tracing",
+ "tracing-subscriber",
  "unidecode",
  "webp",
  "which",
@@ -3373,9 +3380,9 @@ dependencies = [
 
 [[package]]
 name = "rs-plugin-common-interfaces"
-version = "0.13.3"
+version = "0.13.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "939d8321293e44901390826225fb911301f7c69cca509bc8d03fbf68b38c6284"
+checksum = "c082f3a47c63c9b95472a8ead552577638cc3363b4004512ec570bd1ad754045"
 dependencies = [
  "regex",
  "rusqlite",
@@ -3907,13 +3914,15 @@ dependencies = [
 
 [[package]]
 name = "socketioxide"
-version = "0.12.0"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d3458d2a9ec1f4050ded69f47a661e3fa7814f474ee68db8445c1fde8167956"
+checksum = "178953184593e92c3f58d0d3eda74865c520b6fc05f80dc6c99bb235e39f400a"
 dependencies = [
+ "bytes",
  "dashmap",
  "engineioxide",
- "futures",
+ "futures-core",
+ "futures-util",
  "http 1.1.0",
  "http-body 1.0.0",
  "hyper 1.1.0",

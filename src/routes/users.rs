@@ -2,6 +2,7 @@ use crate::{domain::{view_progress::ViewProgressForAdd, watched::{Watched, Watch
 use axum::{extract::{Path, State}, middleware, routing::{get, post}, Json, Router};
 use axum_extra::extract::Query;
 use serde_json::{json, Value};
+use tower_http::trace::TraceLayer;
 
 use super::mw_auth;
 
@@ -23,12 +24,15 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/me/history/progress/:id", get(handler_get_progress))
 		.route("/me/history/progress", post(handler_add_progress))
 		.merge(admin_routes)
+		
+        .layer(TraceLayer::new_for_http())
 		.with_state(mc)
 	
         
 }
 
 async fn handler_me(user: ConnectedUser) -> Result<Json<Value>> {
+	println!("ok");
 	let body = Json(json!(user));
 	Ok(body)
 }

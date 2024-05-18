@@ -72,7 +72,7 @@ async fn handler_request_process(Path(library_id): Path<String>, State(mc): Stat
 
 async fn handler_request_process_stream(Path(library_id): Path<String>, range: Option<RangeDefinition>, State(mc): State<ModelController>, user: ConnectedUser, Json(request): Json<RsRequest>) -> Result<Response> {
 	let wasm = mc.exec_request(request, Some(library_id.clone()), false, None, &user).await?;
-	Ok(wasm.into_response(&library_id, range, None, Some((mc.clone(), &user))).await?)
+	wasm.into_response(&library_id, range, None, Some((mc.clone(), &user))).await
 }
 
 async fn handler_request_permanent(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Json(request): Json<RsRequest>) -> Result<Json<Value>> {

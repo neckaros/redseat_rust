@@ -149,7 +149,7 @@ async fn handler_convert(Path((library_id, media_id)): Path<(String, String)>, S
 
 async fn handler_get_file(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, range: Option<RangeDefinition>, Query(query): Query<MediaFileQuery>) -> Result<Response> {
 	let reader = mc.library_file(&library_id, &media_id, range.clone(), query, &user).await?;
-	Ok(reader.into_response(&library_id, range, None, Some((mc.clone(), &user))).await?)
+	reader.into_response(&library_id, range, None, Some((mc.clone(), &user))).await
 }
 
 async fn handler_get_backup_medata(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {

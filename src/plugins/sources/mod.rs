@@ -56,7 +56,6 @@ impl RangeResponse {
     }
 }
 
-#[derive(Debug)]
 pub struct FileStreamResult<T: Sized + AsyncRead + Send> {
     pub stream: T,
     pub size: Option<u64>,
@@ -129,12 +128,17 @@ impl<T: Sized + AsyncRead + Send> FileStreamResult<T> {
     }
 }
 
-
+#[derive(Debug)]
 pub enum SourceRead {
 	Stream(FileStreamResult<AsyncReadPinBox>),
 	Request(RsRequest),
 }
 
+impl Debug for FileStreamResult<AsyncReadPinBox> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FileStreamResult").field("size", &self.size).field("accept_range", &self.accept_range).field("range", &self.range).field("mime", &self.mime).field("name", &self.name).field("cleanup", &self.cleanup).finish()
+    }
+}
 
 type FuncResult = dyn Future<Output=crate::model::error::Result<RsRequest>>;
 
@@ -246,6 +250,7 @@ impl SourceRead {
     
     #[async_recursion]
     pub async fn into_response(self, library_id: &str, range: Option<RangeDefinition>, progress: RsProgressCallback, mc: Option<(ModelController, &ConnectedUser)>) -> RsResult<axum::response::Response> {
+        println!("into_response");
         match self {
             SourceRead::Stream(reader) => {
                 let headers = reader.hearders().map_err(|_| Error::UnableToFormatHeaders)?;
@@ -255,10 +260,12 @@ impl SourceRead {
                 Ok((status, headers, body).into_response())
             },
             SourceRead::Request(request) => {
+                println!("Oops request: {:?}", request);
                 match request.status {
                     RsRequestStatus::Unprocessed | RsRequestStatus::NeedParsing => {
                         if let Some((mc, user)) = mc {
                             let new_request = mc.exec_request(request.clone(), Some(library_id.to_string()), false, progress, user).await?;
+                            println!("NR {:?}", new_request);
                             new_request.into_response(library_id, range.clone(), None, Some((mc, user))).await
                         } else {
                             Err(Error::InvalidRsRequestStatus(request.status).into())
@@ -308,6 +315,7 @@ impl SourceRead {
 
                     },
                     RsRequestStatus::FinalPublic => {
+                        println!("final public");
                         let mut headers = axum::http::HeaderMap::new();
                         headers.append(axum::http::header::LOCATION, request.url.parse().unwrap());
                         let status = axum::http::StatusCode::TEMPORARY_REDIRECT;

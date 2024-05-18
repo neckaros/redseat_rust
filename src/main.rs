@@ -19,10 +19,14 @@ use server::{get_home, get_server_port, PublicServerInfos};
 use tokio::net::TcpListener;
 use tools::{auth::{sign_local, Claims}, log::LogServiceType, prediction};
 use tower::ServiceBuilder;
-use tower_http::cors::{CorsLayer, Any};
+use tower_http::{cors::{Any, CorsLayer}, trace::TraceLayer};
 use crate::{server::{get_config, update_ip}, tools::{auth::{get_or_init_keys, verify_local, ClaimsLocal}, image_tools::resize_image_path, log::log_info}};
 use socketioxide::{extract::{SocketRef, TryData}, SocketIo};
 pub use self::error::{Result, Error};
+
+
+use tracing_subscriber::fmt::fmt;
+use tracing_subscriber::filter::EnvFilter;
 
 mod model;
 mod routes;
@@ -36,6 +40,7 @@ mod domain;
 
 #[tokio::main]
 async fn main() ->  Result<()> {
+
     log_info(tools::log::LogServiceType::Register, format!("Starting redseat server"));
     log_info(tools::log::LogServiceType::Register, format!("Initializing config"));
     server::initialize_config().await;
@@ -139,6 +144,7 @@ async fn app() -> Result<Router> {
             .layer(cors)
             
         )
+        .layer(TraceLayer::new_for_http())
     )
         
 

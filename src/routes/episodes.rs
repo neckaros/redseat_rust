@@ -17,6 +17,7 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/episodes/refresh", get(handler_refresh))
 		.route("/seasons/:season/episodes", get(handler_list_season_episodes))
 		.route("/seasons/:season/episodes/:number", get(handler_get))
+		.route("/seasons/:season/episodes/:number", post(handler_post_episode))
 		.route("/seasons/:season/episodes/:number", patch(handler_patch))
 		.route("/seasons/:season/episodes/:number", delete(handler_delete))
 		.route("/seasons/:season/episodes/:number/image", get(handler_image))
@@ -56,6 +57,14 @@ async fn handler_get(Path((library_id, serie_id, season, number)): Path<(String,
 	let library = mc.get_episode(&library_id, serie_id, season, number, &user).await?;
 	let body = Json(json!(library));
 	Ok(body)
+}
+
+async fn handler_post_episode(Path((library_id, serie_id, season, number)): Path<(String, String, u32, u32)>, State(mc): State<ModelController>, user: ConnectedUser, Json(mut insert): Json<Episode>) -> Result<Json<Value>> {
+	insert.serie = serie_id;
+	insert.season = season;
+	insert.number = number;
+	let new_credential = mc.add_episode(&library_id, insert,  &user).await?;
+	Ok(Json(json!(new_credential)))
 }
 
 async fn handler_patch(Path((library_id, serie_id, season, number)): Path<(String, String, u32, u32)>, State(mc): State<ModelController>, user: ConnectedUser, Json(update): Json<EpisodeForUpdate>) -> Result<Json<Value>> {
@@ -113,8 +122,9 @@ async fn handler_medias(Path((library_id, serie_id, season, number)): Path<(Stri
 	Ok(body)
 }
 
-async fn handler_post(Path((library_id, _)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(new_serie): Json<Episode>) -> Result<Json<Value>> {
-	let credential = mc.add_episode(&library_id, new_serie, &user).await?;
+async fn handler_post(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(mut insert): Json<Episode>) -> Result<Json<Value>> {
+	insert.serie = serie_id;
+	let credential = mc.add_episode(&library_id, insert, &user).await?;
 	let body = Json(json!(credential));
 	Ok(body)
 }

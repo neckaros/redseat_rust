@@ -234,6 +234,9 @@ pub struct MediaForUpdate {
 
     pub origin: Option<RsLink>,
     pub origin_url: Option<String>,
+    #[serde(default)]
+    pub ignore_origin_duplicate: bool,
+
     pub movie: Option<String>,
 
     pub lang: Option<String>,
@@ -354,6 +357,8 @@ pub struct MediaDownloadUrl {
     pub url: String,
     pub parse: bool,
     pub upload_id: Option<String>,
+    
+    pub ignore_origin_duplicate: bool,
     //pub infos: Option<MediaForUpdate>,
 
     pub kind: Option<FileType>,

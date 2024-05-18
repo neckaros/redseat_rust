@@ -285,7 +285,7 @@ pub async fn update_ip() -> Result<Option<(String, String)>> {
         };
         log_info(LogServiceType::Register, format!("Updating ips: {} {}", ipv4, ipv6));
 
-        let duck_url = format!("https://www.duckdns.org/update?domains={}&token={}&ip={}&ipv6={}&verbose=true", domain.replace(".duckdns.org", ""), duck_dns, ipv4, ipv6);
+        let duck_url = format!("https://www.duckdns.org/update?domains={}&token={}&ip={}&ipv6={}&verbose=true", domain.replace(".duckdns.org", ""), duck_dns, ipv4, "");
 
         let _ = reqwest::get(duck_url)
             .await.or_else(|_| Err(Error::Error("Unable to update duckdns".to_string())))?
