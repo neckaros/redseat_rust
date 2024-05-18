@@ -203,7 +203,7 @@ impl ToSql for UserRole {
 // endregion: --- User Role
 
 // region:    --- Preferences
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerUserPreferences {
     #[serde(default = "default_hidden_libraries")]
@@ -251,7 +251,7 @@ pub struct ServerLibrariesRightsForAdd {
 
 
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
 pub struct ServerUser {
     pub id: String,
     pub name: String,

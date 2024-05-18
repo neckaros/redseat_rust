@@ -90,12 +90,18 @@ async fn app() -> Result<Router> {
     let plugin_manager = PluginManager::new().await?;
     let mut mc = ModelController::new(store, plugin_manager).await?;
 
+    let origins = [
+        "http://localhost:3000".parse().unwrap(),
+        "https://redseat.vercel.app".parse().unwrap(),
+    ];
+
     let cors: CorsLayer = CorsLayer::new()
     // allow `GET` and `POST` when accessing the resource
     .allow_methods(vec![Method::GET, Method::PATCH, Method::DELETE, Method::HEAD, Method::OPTIONS, Method::POST])
     .allow_headers([AUTHORIZATION, ACCEPT, CONTENT_TYPE,REFERRER_POLICY,REFERER])
     // allow requests from any origin
-    .allow_origin(Any);
+
+    .allow_origin(origins);
     let (iolayer, io) = SocketIo::builder().with_state(mc.clone()).build_layer();
     //io.ns("/", routes::socket::on_connect);
     mc.set_socket(io.clone());

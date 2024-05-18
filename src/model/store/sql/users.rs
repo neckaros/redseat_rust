@@ -15,6 +15,28 @@ pub struct WatchedQuery {
     pub after: Option<u64>,
 }
 
+// region:    --- Library Settings
+
+impl FromSql for ServerUserPreferences {
+    fn column_result(value: ValueRef) -> FromSqlResult<Self> {
+        String::column_result(value).and_then(|as_string| {
+
+            let r = serde_json::from_str::<ServerUserPreferences>(&as_string).map_err(|_| FromSqlError::InvalidType)?;
+
+            Ok(r)
+        })
+    }
+}
+
+impl ToSql for ServerUserPreferences {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        let r = serde_json::to_string(&self).map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?;
+        Ok(ToSqlOutput::from(r))
+    }
+}
+// endregion:    --- 
+
+
 /// User object store
 impl SqliteStore {
     // region:    --- Users
@@ -104,6 +126,23 @@ impl SqliteStore {
             Ok(users)
         }).await?;
         Ok(row)
+    }
+
+
+    pub async fn add_user(&self, user: ServerUser) -> Result<()> {
+        self.server_store.call( move |conn| { 
+
+            conn.execute("INSERT INTO Users (id, name, role, preferences)
+            VALUES (?, ?, ?, ?)", params![
+                user.id,
+                user.name,
+                user.role,
+                user.preferences
+            ])?;
+            
+            Ok(())
+        }).await?;
+        Ok(())
     }
 
     pub async fn update_user(&self, connected_user: &ServerUser, update_user: ServerUserForUpdate) -> Result<()> {
