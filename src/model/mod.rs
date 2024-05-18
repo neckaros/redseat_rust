@@ -22,7 +22,7 @@ use nanoid::nanoid;
 use strum::IntoEnumIterator;
 use crate::{domain::{library::{LibraryMessage, LibraryRole, ServerLibrary}, player::{RsPlayer, RsPlayerAvailable}, plugin::PluginWasm, serie::Serie}, error::RsResult, plugins::{list_plugins, medias::{fanart::FanArtContext, imdb::ImdbContext, tmdb::TmdbContext, trakt::TraktContext}, sources::{error::SourcesError, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, LocalSource, Source, SourceRead}, PluginManager}, routes::mw_range::RangeDefinition, server::get_server_file_path_array, tools::{clock::SECONDS_IN_HOUR, image_tools::{resize_image_path, ImageSize, ImageSizeIter, ImageType}, log::log_info, scheduler::{self, refresh::RefreshTask, RsScheduler, RsTaskType}}};
 
-use self::{medias::CRYPTO_HEADER_SIZE, store::SqliteStore, users::{ConnectedUser, UserRole}};
+use self::{medias::CRYPTO_HEADER_SIZE, store::SqliteStore, users::{ConnectedUser, ServerUser, UserRole}};
 use error::{Result, Error};
 use socketioxide::{extract::SocketRef, SocketIo};
 use tokio::{fs::{self, remove_file, File}, io::{copy, AsyncRead, BufReader}, sync::RwLock};
@@ -138,6 +138,13 @@ impl  ModelController {
 		let user = self.store.get_user(&id).await;	
 
 		user
+	}
+
+	pub async fn add_user(&self, user: ServerUser, requesting_user: &ConnectedUser) -> Result<ServerUser> {
+		requesting_user.check_role(&UserRole::Admin);
+		let user_id = user.id.clone();
+		self.store.add_user(user).await?;
+		self.get_user(&user_id, &requesting_user).await
 	}
 
 	pub async fn get_users(&self, requesting_user: &ConnectedUser) -> Result<Vec<users::ServerUser>> {
