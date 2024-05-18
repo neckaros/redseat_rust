@@ -147,12 +147,14 @@ impl ModelController {
         let watched = self.get_watched(HistoryQuery { types: vec![MediaType::Episode], ..Default::default() }, requesting_user).await?.into_iter().map(|e| (e.id, e.date)).collect::<HashMap<_, _>>();
         let progresses = self.get_all_view_progress(HistoryQuery { types: vec![MediaType::Episode], ..Default::default() }, requesting_user).await?.into_iter().map(|e| (e.id, e.progress)).collect::<HashMap<_, _>>();
         for episode in episodes {
-            if let Some(trakt) = episode.trakt {
-                let watch = watched.get(&format!("trakt:{}", trakt));
+            let ids = MediasIds::from(episode.clone());
+            let ids_string: Vec<String> = ids.into();
+            for id in ids_string {
+                let watch = watched.get(&id);
                 if let Some(watch) = watch {
                     episode.watched = Some(*watch);
                 }
-                let progress = progresses.get(&format!("trakt:{}", trakt));
+                let progress = progresses.get(&id);
                 if let Some(watch) = progress {
                     episode.progress = Some(*watch);
                 }
@@ -284,9 +286,12 @@ impl ModelController {
                 }
             }
         } else {
-            if !self.has_library_image(library_id, ".series", serie_id, None, requesting_user).await? {
+            if !self.has_library_image(library_id, &format!(".series/{}", serie_id), &format!("{}.{}", season, episode), None, requesting_user).await? {
                 log_info(crate::tools::log::LogServiceType::Source, format!("Updating episode image: {}", serie_id));
-                self.refresh_episode_image(library_id, serie_id, season, episode, requesting_user).await?;
+                let r = self.refresh_episode_image(library_id, serie_id, season, episode, requesting_user).await;
+                if let Err(r) = r {
+                    println!("Error fetching episode image: {:?}", r);
+                }
             }
             
             let image = self.library_image(library_id, &format!(".series/{}", serie_id), &format!("{}.{}", season, episode), None, size, requesting_user).await?;
@@ -295,9 +300,15 @@ impl ModelController {
         
 	}
 
+    pub async fn get_episode_ids(&self, library_id: &str, serie_id: &str, season: u32, episode: u32, requesting_user: &ConnectedUser) -> RsResult<MediasIds> {
+        let episode = self.get_episode(library_id, serie_id.to_string(), season, episode, requesting_user).await?;
+        let ids: MediasIds = episode.into();
+        Ok(ids)
+    }
+
     /// download and update image
     pub async fn refresh_episode_image(&self, library_id: &str, serie_id: &str, season: &u32, episode: &u32, requesting_user: &ConnectedUser) -> RsResult<()> {
-        let ids: MediasIds = self.get_serie_ids(library_id, serie_id, requesting_user).await?;
+        let ids: MediasIds = self.get_episode_ids(library_id, serie_id, *season, *episode, requesting_user).await?;
         let reader = self.download_episode_image(&ids, season, episode).await?;
         self.update_episode_image(library_id, serie_id, season, episode, reader, requesting_user).await?;
         Ok(())

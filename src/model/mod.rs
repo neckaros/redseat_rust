@@ -122,7 +122,7 @@ impl  ModelController {
 
 
 	pub async fn get_user_unchecked(&self, user_id: &str) -> Result<users::ServerUser> {
-		self.store.get_user(&user_id).await
+		self.store.get_user(user_id).await
 	}
 
 	pub async fn get_user(&self, user_id: &str, requesting_user: &ConnectedUser) -> Result<users::ServerUser> {
@@ -135,16 +135,14 @@ impl  ModelController {
 			}
 		}
 
-		let user = self.store.get_user(&id).await;	
-
-		user
+		self.store.get_user(&id).await
 	}
 
 	pub async fn add_user(&self, user: ServerUser, requesting_user: &ConnectedUser) -> Result<ServerUser> {
-		requesting_user.check_role(&UserRole::Admin);
+		requesting_user.check_role(&UserRole::Admin)?;
 		let user_id = user.id.clone();
 		self.store.add_user(user).await?;
-		self.get_user(&user_id, &requesting_user).await
+		self.get_user(&user_id, requesting_user).await
 	}
 
 	pub async fn get_users(&self, requesting_user: &ConnectedUser) -> Result<Vec<users::ServerUser>> {
@@ -166,8 +164,7 @@ impl  ModelController {
 		let library = self.store.get_library(library_id).await?.ok_or_else(|| Error::NotFound)?;
 
 		let path = if library.source == "virtual" {
-			let path = get_server_file_path_array(vec!["libraries", &library.id]).await.map_err(|_| Error::FileNotFound("Unable to get virtual library local path".into()))?;
-			path
+			get_server_file_path_array(vec!["libraries", &library.id]).await.map_err(|_| Error::FileNotFound("Unable to get virtual library local path".into()))?
 		} else if let Some(existing) = &library.root {
   				let mut path = PathBuf::from(existing);
   				path.push(".redseat");

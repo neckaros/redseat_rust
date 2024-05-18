@@ -1,5 +1,5 @@
 
-use crate::{domain::{episode::{self, Episode}, media::{FileEpisode, Media, MediaForUpdate}, progress, view_progress::{ViewProgressForAdd, ViewProgressLigh}, watched::{WatchedForAdd, WatchedLight}, MediasIds}, model::{episodes::{EpisodeForUpdate, EpisodeQuery}, medias::MediaQuery, users::{ConnectedUser, HistoryQuery}, ModelController}, Error, Result};
+use crate::{domain::{episode::{self, Episode}, media::{FileEpisode, Media, MediaForUpdate}, progress, view_progress::{ViewProgressForAdd, ViewProgressLigh}, watched::{WatchedForAdd, WatchedLight}, MediasIds}, model::{episodes::{EpisodeForUpdate, EpisodeQuery}, medias::MediaQuery, users::{ConnectedUser, HistoryQuery}, ModelController}, tools::image_tools::ImageType, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
 use futures::TryStreamExt;
 use rs_plugin_common_interfaces::{lookup::{RsLookupEpisode, RsLookupQuery}, request::RsRequest, MediaType};
@@ -159,7 +159,7 @@ async fn handler_watched_get(Path((library_id, serie_id, season, number)): Path<
 
 async fn handler_watched_set(Path((library_id, serie_id, season, number)): Path<(String, String, u32, u32)>, State(mc): State<ModelController>, user: ConnectedUser, Json(watched): Json<WatchedLight>) -> Result<()> {
 	let episode = mc.get_episode(&library_id, serie_id.clone(), season, number, &user).await?;
-	let id = MediasIds::from(episode).into_best_external().ok_or(Error::NotFound)?;
+	let id = MediasIds::from(episode).into_best_external_or_local().ok_or(Error::NotFound)?;
 	let watched = WatchedForAdd { kind: MediaType::Episode, id, date: watched.date };
 	mc.add_watched(watched, &user).await?;
 
@@ -169,13 +169,22 @@ async fn handler_watched_set(Path((library_id, serie_id, season, number)): Path<
 
 
 async fn handler_image(Path((library_id, serie_id, season, number)): Path<(String, String, u32, u32)>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ImageRequestOptions>) -> Result<Response> {
-	let reader_response = mc.episode_image(&library_id, &serie_id, &season, &number, query.size, &user).await?;
+	let reader_response = mc.episode_image(&library_id, &serie_id, &season, &number, query.size.clone(), &user).await;
 
-	let headers = reader_response.hearders().map_err(|_| Error::GenericRedseatError)?;
-    let stream = ReaderStream::new(reader_response.stream);
-    let body = Body::from_stream(stream);
+	if let Ok(reader_response) = reader_response {
+		let headers = reader_response.hearders().map_err(|_| Error::GenericRedseatError)?;
+		let stream = ReaderStream::new(reader_response.stream);
+		let body = Body::from_stream(stream);
+		Ok((headers, body).into_response())
+	} else {
+		let reader_response = mc.serie_image(&library_id, &serie_id, Some(ImageType::Card), query.size, &user).await?;
+		let headers = reader_response.hearders().map_err(|_| Error::GenericRedseatError)?;
+		let stream = ReaderStream::new(reader_response.stream);
+		let body = Body::from_stream(stream);
+		Ok((headers, body).into_response())
+	}
 	
-    Ok((headers, body).into_response())
+
 }
 
 #[debug_handler]

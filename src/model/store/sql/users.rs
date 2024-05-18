@@ -240,6 +240,7 @@ impl SqliteStore {
                 where_query.add_where(SqlWhereType::Or(types));
             }
             where_query.add_where(SqlWhereType::Equal("user_ref".to_owned(), Box::new(user_id)));
+            
             if let Some(ids) = query.id {
                 let ids: Vec<String> = ids.into();
                 let ids = ids.into_iter().map(|f| Box::new(f) as Box<dyn ToSql>).collect();

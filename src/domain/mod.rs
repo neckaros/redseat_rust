@@ -93,6 +93,15 @@ impl MediasIds {
     pub fn into_best_external(self) -> Option<String> {
         self.as_trakt().or(self.as_imdb()).or(self.as_tmdb()).or(self.as_tvdb())
     }
+    pub fn as_best_external(&self) -> Option<String> {
+        self.as_trakt().or(self.as_imdb()).or(self.as_tmdb()).or(self.as_tvdb())
+    }
+
+
+    pub fn into_best_external_or_local(self) -> Option<String> {
+        self.as_best_external().or(self.as_redseat())
+    }
+
 
     pub fn from_imdb(imdb: String) -> Self {
         MediasIds {

@@ -78,9 +78,9 @@ impl SqliteLibraryStore {
             id, name, type, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, year, modified, added, imdb_rating, imdb_votes, trailer, maxCreated, trakt_rating, trakt_votes, status 
             FROM series 
             WHERE 
-            imdb = ? or slug = ? or tmdb = ? or trakt = ? or tvdb = ?")?;
+            id = ? or imdb = ? or slug = ? or tmdb = ? or trakt = ? or tvdb = ?")?;
             let row = query.query_row(
-            params![ids.imdb.unwrap_or("zz".to_string()), ids.slug.unwrap_or("zz".to_string()), ids.tmdb.unwrap_or(0), ids.trakt.unwrap_or(0), ids.tvdb.unwrap_or(0)],Self::row_to_serie).optional()?;
+            params![ids.redseat.unwrap_or("zz".to_string()), ids.imdb.unwrap_or("zz".to_string()), ids.slug.unwrap_or("zz".to_string()), ids.tmdb.unwrap_or(0), ids.trakt.unwrap_or(0), ids.tvdb.unwrap_or(0)],Self::row_to_serie).optional()?;
             Ok(row)
         }).await?;
         Ok(row)
