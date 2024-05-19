@@ -78,7 +78,7 @@ pub async fn get_server_id() -> String {
 }
 
 fn default_home() -> String {
-    let new_id = "redseat.vercel.app".to_owned();
+    let new_id = "www.redseat.cloud".to_owned();
     if let Some(id) = get_config_override_home() {
         return id;
     } else {

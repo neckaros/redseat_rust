@@ -97,7 +97,7 @@ async fn app() -> Result<Router> {
 
     let origins = [
         "http://localhost:3000".parse().unwrap(),
-        "https://redseat.vercel.app".parse().unwrap(),
+        "https://www.redseat.cloud".parse().unwrap(),
     ];
 
     let cors: CorsLayer = CorsLayer::new()
