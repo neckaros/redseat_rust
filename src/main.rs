@@ -119,7 +119,7 @@ async fn app() -> Result<Router> {
     let admin_users = mc.get_users(&model::users::ConnectedUser::ServerAdmin).await?.into_iter().filter(|u| u.is_admin()).collect::<Vec<_>>();
     if admin_users.len() == 0 {
         let config = get_config().await;
-        log_info(LogServiceType::Register, format!("Register your server at: https:://{}/install/{}", config.redseat_home, config.id));
+        log_info(LogServiceType::Register, format!("Register your server at: https://{}/install/{}", config.redseat_home, config.id));
     }
     Ok(Router::new()
         .nest("/ping", routes::ping::routes())

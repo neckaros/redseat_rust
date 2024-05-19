@@ -4,7 +4,7 @@ use tokio::{fs::{create_dir_all, metadata, read_to_string, File}, io::AsyncWrite
 use serde::{Deserialize, Serialize};
 use nanoid::nanoid;
 use clap::Parser;
-use crate::{error::{Error, RsResult}, tools::log::{log_info, LogServiceType}, RegisterInfo, Result};
+use crate::{error::{Error, RsResult}, model::{users::ConnectedUser, ModelController}, tools::log::{log_info, LogServiceType}, RegisterInfo, Result};
 
 
 static CONFIG: OnceLock<Mutex<ServerConfig>> = OnceLock::new();
@@ -180,6 +180,25 @@ pub async fn update_config(config: ServerConfig) -> Result<()> {
         *guard = config;
         return Ok(())
     }
+}
+
+pub async fn get_install_url(mc: &ModelController) -> Result<String> {
+	let admin_users = mc.get_users(&ConnectedUser::ServerAdmin).await?.into_iter().filter(|u| u.is_admin()).collect::<Vec<_>>();
+	let config = get_config().await;
+
+	let mut params = vec![];
+	if let Some(domain) = config.domain {
+		params.push(format!("domain={}", domain));
+	}
+	if let Some(port) = config.port {
+		params.push(format!("port={}", port));
+	}
+	if let Some(local) = config.local {
+		params.push(format!("local={}", local));
+	}
+	params.push(format!("administred={}", admin_users.len() > 0));
+	
+	Ok(format!("https://{}/install/{}/config?{}", config.redseat_home, config.id, params.join("&")))
 }
 
 
