@@ -68,12 +68,17 @@ pub async fn mw_token_resolver(mc: State<ModelController>, headers: HeaderMap, q
 }
 
 pub async fn parse_auth_message(auth: &AuthMessage, mc: &ModelController) -> Result<ConnectedUser> {
+    let server_id =  get_server_id().await;
+
     if let Some(token) = &auth.token {
-        let server_id = get_server_id().await;
-        let claims = verify(&token, &server_id)?;
-        let user = mc.get_user_unchecked(&claims.sub).await?;
-        
-        Ok(ConnectedUser::Server(user))
+        if let Some(server_id) = server_id {  
+            let claims = verify(&token, &server_id)?;
+            let user = mc.get_user_unchecked(&claims.sub).await?;
+            
+            Ok(ConnectedUser::Server(user))
+        } else {
+            Ok(ConnectedUser::Anonymous)
+        }
 
     } else if let Some(sharetoken) = &auth.sharetoken {
         let claims = verify_local(&sharetoken).await?;

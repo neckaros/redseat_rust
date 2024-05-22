@@ -3,7 +3,7 @@
 use std::{fs, net::{IpAddr, Ipv6Addr, SocketAddr}, path::PathBuf, str::FromStr, time::{SystemTime, UNIX_EPOCH}};
 
 use axum::{
-    extract::DefaultBodyLimit, http::Method, middleware, Router
+    extract::DefaultBodyLimit, http::Method, middleware, serve, Router
 };
 use axum_server::tls_rustls::RustlsConfig;
 
@@ -15,7 +15,7 @@ use plugins::{medias::{imdb::ImdbContext, tmdb::{tmdb_configuration::TmdbConfigu
 use routes::{mw_auth, mw_range};
 
 
-use server::{get_home, get_server_port, PublicServerInfos};
+use server::{get_home, get_server_id, get_server_port, PublicServerInfos};
 use tokio::net::TcpListener;
 use tools::{auth::{sign_local, Claims}, log::LogServiceType, prediction};
 use tower::ServiceBuilder;
@@ -116,10 +116,11 @@ async fn app() -> Result<Router> {
         |socket: SocketRef, TryData(data): TryData<AuthMessage>| async move { routes::socket::on_connect(socket, mc_forsocket, data).await }
       });
 
+    let server_id = get_server_id().await;
     let admin_users = mc.get_users(&model::users::ConnectedUser::ServerAdmin).await?.into_iter().filter(|u| u.is_admin()).collect::<Vec<_>>();
-    if admin_users.len() == 0 {
+    if admin_users.len() == 0 || server_id.is_none() {
         let config = get_config().await;
-        log_info(LogServiceType::Register, format!("Register your server at: https://{}/install/{}", config.redseat_home, config.id));
+        log_info(LogServiceType::Register, format!("Register your server at: http://127.0.0.1:{}/infos/install", get_server_port().await));
     }
     Ok(Router::new()
         .nest("/ping", routes::ping::routes())
@@ -167,7 +168,9 @@ struct RegisterInfo {
 async fn register() -> Result<RegisterInfo>{
     log_info(tools::log::LogServiceType::Register, "Checking registration".to_string());
     let config = get_config().await;
-    log_info(tools::log::LogServiceType::Register, format!("Server ID: {}", config.id));   
+    if let Some(id) = config.id {
+        log_info(tools::log::LogServiceType::Register, format!("Server ID: {}", id));   
+    }
     let _ = get_or_init_keys().await;
 
     /* 
@@ -203,7 +206,7 @@ async fn register() -> Result<RegisterInfo>{
         
 
         let public_config = PublicServerInfos::get(&certs.0, &public_domain).await?;
-        log_info(LogServiceType::Register, format!("Exposed public url: {}:{}", public_config.url, public_config.port));
+        log_info(LogServiceType::Register, format!("Exposed public url: {}:{}", public_config.url.unwrap_or("None".to_string()), public_config.port));
         
         /*let client = reqwest::Client::new();
         println!("server: {}", format!("https://{}/servers/{}/register", config.redseat_home, config.id));

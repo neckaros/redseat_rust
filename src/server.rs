@@ -14,8 +14,7 @@ const ENV_HOME: &str = "REDSEAT_HOME";
 const ENV_PORT: &str = "REDSEAT_PORT";
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ServerConfig {
-    #[serde(default = "default_serverid")]
-    pub id: String,
+    pub id: Option<String>,
     #[serde(default = "default_home")]
     pub redseat_home: String,
     pub port: Option<u16>,
@@ -73,7 +72,7 @@ fn get_config_override_serverid() -> Option<String> {
     } 
 }
 
-pub async fn get_server_id() -> String {
+pub async fn get_server_id() -> Option<String> {
     get_config().await.id
 }
 
@@ -101,10 +100,10 @@ pub async fn get_home() -> String {
 }
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PublicServerInfos {
-    pub url: String,
+    pub url: Option<String>,
     pub port: u16,
-    pub cert: String,
-    pub id: String,
+    pub cert: Option<String>,
+    pub id: Option<String>,
     pub local: Option<String>, 
 }
 
@@ -113,7 +112,21 @@ impl PublicServerInfos {
         let cert = read_to_string(public_cert_path).await?;
         let config = get_config().await;
         Ok(PublicServerInfos {
-            url: url.to_owned(),
+            url: Some(url.to_owned()),
+            port: get_server_port().await,
+            cert: Some(cert),
+            id: get_server_id().await,
+            local: config.local,
+        })
+    }
+
+    pub async fn current() -> RsResult<Self> {
+	    let public_cert_path = get_server_file_path("cert_chain.pem").await?;
+        let cert = read_to_string(public_cert_path).await.ok();
+        let config = get_config().await;
+        
+        Ok(PublicServerInfos {
+            url: config.domain,
             port: get_server_port().await,
             cert,
             id: get_server_id().await,
@@ -135,12 +148,21 @@ pub async fn get_config() -> ServerConfig {
     }
 }
 
+pub async fn check_unregistered() -> Result<()> {
+    let id = get_config().await.id;
+    if id.is_some() {
+        Err(crate::Error::ServerAlreadyRegistered)
+    } else {
+        Ok(())
+    }
+}
+
 pub async fn get_config_with_overrides() -> Result<ServerConfig> {
 
     let mut config = get_raw_config().await?;
 
     if let Some(id) = get_config_override_serverid() {
-        config.id = id;
+        config.id = Some(id);
     }
 
     return Ok(config)
@@ -167,18 +189,43 @@ pub async fn get_raw_config() -> Result<ServerConfig> {
     } 
 }
 
-
 pub async fn update_config(config: ServerConfig) -> Result<()> {
     let mut dir_path: PathBuf = get_server_local_path().await?;
     dir_path.push("config.json");
     let new_config_string = serde_json::to_string(&config).unwrap();
     let Ok(mut file) = File::create(dir_path).await else { return Err(Error::ServerUnableToAccessServerLocalFolder); };
-    if file.write_all(new_config_string.as_bytes()).await.is_err() {
-        return Err(Error::ServerNoServerId);
+    file.write_all(new_config_string.as_bytes()).await?;
+    
+    let mut guard = CONFIG.get().unwrap().lock().await;
+    *guard = config;
+    return Ok(())
+}
+
+pub async fn get_install_local_url() -> Result<String> {
+	Ok(format!("https://127.0.0.1:{}/infos/install", get_server_port().await))
+}
+
+
+pub async fn get_own_url() -> Result<String> {
+	let config = get_config().await;
+
+	let mut params = vec![];
+	if let Some(port) = config.port {
+		params.push(format!("port={}", port));
+	}
+	if let Some(local) = config.local {
+		params.push(format!("local={}", local));
+	}
+	
+	Ok(format!("https://{}/install?{}", config.redseat_home, params.join("&")))
+}
+
+pub async fn get_web_url() -> Result<String> {
+	let config = get_config().await;
+    if let Some(id) = config.id {
+	    Ok(format!("https://{}/servers/{}", config.redseat_home, id))
     } else {
-        let mut guard = CONFIG.get().unwrap().lock().await;
-        *guard = config;
-        return Ok(())
+	    Err(crate::Error::Error("Server not registered".to_owned()))
     }
 }
 
@@ -193,12 +240,15 @@ pub async fn get_install_url(mc: &ModelController) -> Result<String> {
 	if let Some(port) = config.port {
 		params.push(format!("port={}", port));
 	}
+	if let Some(duck_dns) = config.duck_dns {
+		params.push(format!("duckdns={}", duck_dns));
+	}
 	if let Some(local) = config.local {
 		params.push(format!("local={}", local));
 	}
 	params.push(format!("administred={}", admin_users.len() > 0));
 	
-	Ok(format!("https://{}/install/{}/config?{}", config.redseat_home, config.id, params.join("&")))
+	Ok(format!("https://{}/install/settings?{}", config.redseat_home, params.join("&")))
 }
 
 

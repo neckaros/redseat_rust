@@ -187,7 +187,7 @@ pub async fn dns_certify(domain: &str, duck_dns: &str) -> Result<(PathBuf, PathB
     //println!("certficate chain:\n\n{}", cert_chain_pem);
     //println!("private key:\n\n{}", cert.serialize_private_key_pem());
 
-    let _ = write_server_file("cert_chain.pem", cert_chain_pem.as_bytes()).await?;
+    let _ = write_server_file(PUBLIC_FILENAME.clone(), cert_chain_pem.as_bytes()).await?;
     let _ = write_server_file("cert_private.pem", cert.serialize_private_key_pem().as_bytes()).await?;
 
     log_info(LogServiceType::Register, format!("Certificates created and saved"));
