@@ -1,4 +1,4 @@
-use crate::{model::{users::{ConnectedUser, ServerUser, UserRole}, ModelController}, server::get_config, tools::image_tools::image_magick::Red, Result};
+use crate::{model::{users::{ConnectedUser, ServerUser, UserRole}, ModelController}, server::get_config, Result};
 use axum::{extract::{Query, State}, response::Redirect, routing::get, Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
