@@ -4,6 +4,7 @@ use tokio::{fs::{create_dir_all, metadata, read_to_string, File}, io::AsyncWrite
 use serde::{Deserialize, Serialize};
 use nanoid::nanoid;
 use clap::Parser;
+use tracing_subscriber::fmt::format;
 use crate::{error::{Error, RsResult}, model::{users::ConnectedUser, ModelController}, tools::log::{log_info, LogServiceType}, RegisterInfo, Result};
 
 
@@ -19,8 +20,7 @@ pub struct ServerConfig {
     pub redseat_home: String,
     pub port: Option<u16>,
     pub local: Option<String>,
-    pub domain: Option<String>,
-    pub duck_dns: Option<String>,
+    pub token: Option<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -100,7 +100,6 @@ pub async fn get_home() -> String {
 }
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PublicServerInfos {
-    pub url: Option<String>,
     pub port: u16,
     pub cert: Option<String>,
     pub id: Option<String>,
@@ -112,7 +111,6 @@ impl PublicServerInfos {
         let cert = read_to_string(public_cert_path).await?;
         let config = get_config().await;
         Ok(PublicServerInfos {
-            url: Some(url.to_owned()),
             port: get_server_port().await,
             cert: Some(cert),
             id: get_server_id().await,
@@ -126,7 +124,6 @@ impl PublicServerInfos {
         let config = get_config().await;
         
         Ok(PublicServerInfos {
-            url: config.domain,
             port: get_server_port().await,
             cert,
             id: get_server_id().await,
@@ -229,26 +226,19 @@ pub async fn get_web_url() -> Result<String> {
     }
 }
 
-pub async fn get_install_url(mc: &ModelController) -> Result<String> {
-	let admin_users = mc.get_users(&ConnectedUser::ServerAdmin).await?.into_iter().filter(|u| u.is_admin()).collect::<Vec<_>>();
+pub async fn get_install_url() -> Result<String> {
 	let config = get_config().await;
 
 	let mut params = vec![];
-	if let Some(domain) = config.domain {
-		params.push(format!("domain={}", domain));
-	}
 	if let Some(port) = config.port {
 		params.push(format!("port={}", port));
-	}
-	if let Some(duck_dns) = config.duck_dns {
-		params.push(format!("duckdns={}", duck_dns));
 	}
 	if let Some(local) = config.local {
 		params.push(format!("local={}", local));
 	}
-	params.push(format!("administred={}", admin_users.len() > 0));
+   
 	
-	Ok(format!("https://{}/install/settings?{}", config.redseat_home, params.join("&")))
+	Ok(format!("https://{}/install?{}", config.redseat_home, params.join("&")))
 }
 
 
@@ -323,45 +313,48 @@ pub async fn get_server_file_string(name: &str) -> Result<Option<String>> {
 
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ServerIpInfo {
+    pub ipv4: Option<String>,
+    pub ipv6: Option<String>,
+}
 
 pub async fn update_ip() -> Result<Option<(String, String)>> {
     log_info(LogServiceType::Register, "Checking public IPs".to_string());
     let config = get_config().await;
-
-    let Some(domain) = config.domain else {
-        log_info(LogServiceType::Register, format!("No Domain"));
-
-        return Ok(None);
+    let id = config.id.ok_or(crate::Error::ServerNoServerId)?;
+    let token = config.token.ok_or(crate::Error::ServerNotYetRegistered)?;
+    let ips = Consensus::get().await.or_else(|_| Err(Error::Error("Unable to get external IPs".to_string())))?;
+    let ipv4 = {
+        if let Some(ip) = ips.v4() {
+            ip.to_string()
+        } else {
+            "".to_string()
+        }
     };
+    let ipv6 = {
+        if let Some(ip) = ips.v6() {
+            ip.to_string()
+        } else {
+            "".to_string()
+        }
+    };
+    log_info(LogServiceType::Register, format!("Updating ips: {} {}", ipv4, ipv6));
 
-    if let Some(duck_dns) = config.duck_dns {
-        log_info(LogServiceType::Register, "Updating public ip for duckdns".to_string());
-        let ips = Consensus::get().await.or_else(|_| Err(Error::Error("Unable to get external IPs".to_string())))?;
+
+    let client = reqwest::Client::new();
+        
+    let request = ServerIpInfo {
+        ipv4: Some(ipv4.clone()),
+        ipv6: Some(ipv6.clone()),
+    };
+    let _ = client.patch(format!("https://{}/servers/{}/register", config.redseat_home, id))
+    .header("Authorization", format!("Token {}", token))
+        .json(&request)
+        .send()
+        .await?;
+
     
-        let ipv4 = {
-            if let Some(ip) = ips.v4() {
-                ip.to_string()
-            } else {
-                "".to_string()
-            }
-        };
-        let ipv6 = {
-            if let Some(ip) = ips.v6() {
-                ip.to_string()
-            } else {
-                "".to_string()
-            }
-        };
-        log_info(LogServiceType::Register, format!("Updating ips: {} {}", ipv4, ipv6));
-
-        let duck_url = format!("https://www.duckdns.org/update?domains={}&token={}&ip={}&ipv6={}&verbose=true", domain.replace(".duckdns.org", ""), duck_dns, ipv4, ipv6);
-
-        let _ = reqwest::get(duck_url)
-            .await.map_err(|_| Error::Error("Unable to update duckdns".to_string()))?
-            .text()
-            .await.map_err(|_| Error::Error("Unable to read duckdns response".to_string()))?;
-        return Ok(Some((ipv4, ipv6)));
-    }
-    Ok(None)
+    return Ok(Some((ipv4, ipv6)));
 
 }

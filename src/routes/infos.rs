@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use crate::{model::{users::{ConnectedUser, ServerUser, UserRole}, ModelController}, server::{check_unregistered, get_config, get_install_url, get_own_url, get_server_file_path, get_server_id, get_web_url, update_config, PublicServerInfos}, tools::image_tools::image_magick::Red, Result};
 use axum::{extract::{Query, State}, response::Redirect, routing::{get, post}, Json, Router};
+use query_external_ip::Consensus;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::time::{sleep, Sleep};
@@ -11,9 +12,8 @@ pub fn routes(mc: ModelController) -> Router {
 	Router::new()
 		.route("/", get(handler_infos))
 		.route("/install", get(handler_install))
-		.route("/own", get(handler_own))
 		.route("/configure", get(handler_configure))
-		.route("/register", post(handler_register))
+		.route("/register", get(handler_register))
 		.with_state(mc)
 }
 
@@ -51,21 +51,19 @@ async fn handler_own(State(mc): State<ModelController>, Query(query): Query<OwnQ
 			..Default::default()
 		};
 		mc.add_user(user, &ConnectedUser::ServerAdmin).await?;
-		let url = get_install_url(&mc).await?;
+		let url = get_install_url().await?;
 		Ok(Redirect::temporary(&url))
 	}
 }
 
-async fn handler_install(State(mc): State<ModelController>,  user: ConnectedUser) -> Result<Redirect> {
+async fn handler_install(State(mc): State<ModelController>) -> Result<Redirect> {
 	let admin_users = mc.get_users(&ConnectedUser::ServerAdmin).await?.into_iter().filter(|u| u.is_admin()).collect::<Vec<_>>();
 	check_unregistered().await?;
-	if admin_users.len() > 0 {
-		let url = get_install_url(&mc).await?;
-		Ok(Redirect::temporary(&url))
-	} else {
-		let url = get_own_url().await?;
-		Ok(Redirect::temporary(&url))
-	}
+    
+    
+	let url = get_install_url().await?;
+	Ok(Redirect::temporary(&url))
+	
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -81,11 +79,9 @@ async fn handler_configure(State(mc): State<ModelController>, Query(query): Quer
 	let mut config = get_config().await;
 
 	config.port = query.port;
-	config.domain = Some(query.domain);
-	config.duck_dns = query.duckdns;
 
 	update_config(config).await?;
-	let url = get_install_url(&mc).await?;
+	let url = get_install_url().await?;
 
 	tokio::spawn(async move {
 		sleep(Duration::from_millis(500)).await;
@@ -99,18 +95,43 @@ async fn handler_configure(State(mc): State<ModelController>, Query(query): Quer
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RegisterQuery {
     id: String,
+	token: String,
+	uid: String,
+	username: String
 }
 
-async fn handler_register(user: ConnectedUser, Json(query): Json<RegisterQuery>) -> Result<Json<Value>> {
+async fn handler_register(State(mc): State<ModelController>, Query(query): Query<RegisterQuery>) -> Result<Json<Value>> {
 	check_unregistered().await?;
 
-	let mut config = get_config().await;
+	let admin_users = mc.get_users(&ConnectedUser::ServerAdmin).await?.into_iter().filter(|u| u.is_admin()).collect::<Vec<_>>();
+	if admin_users.len() > 0 {
+		Err(crate::Error::ServerAlreadyOwned)
+	} else {
+		let user = ServerUser {
+			id: query.uid,
+			name: query.username,
+			role: UserRole::Admin,
+			..Default::default()
+		};
+		mc.add_user(user, &ConnectedUser::ServerAdmin).await?;
 
-	config.id = Some(query.id);
-	update_config(config).await?;
-	let server_id = get_server_id().await.ok_or(crate::Error::Error("Failed to set ID".to_string()));
-	Ok(Json(json!({
-		"id": server_id,
-	})))
+		let mut config = get_config().await;
+
+		config.id = Some(query.id);
+		config.token = Some(query.token);
+		update_config(config).await?;
+		let server_id = get_server_id().await.ok_or(crate::Error::Error("Failed to set ID".to_string()));
+
+
+
+		tokio::spawn(async move {
+			sleep(Duration::from_millis(500)).await;
+			std::process::exit(201);
+		});
+
+		Ok(Json(json!({
+			"id": server_id,
+		})))
+	}
 
 }

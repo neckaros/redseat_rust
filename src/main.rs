@@ -168,56 +168,23 @@ struct RegisterInfo {
 async fn register() -> Result<RegisterInfo>{
     log_info(tools::log::LogServiceType::Register, "Checking registration".to_string());
     let config = get_config().await;
-    if let Some(id) = config.id {
+    if let Some(id) = config.id.clone() {
         log_info(tools::log::LogServiceType::Register, format!("Server ID: {}", id));   
     }
     let _ = get_or_init_keys().await;
 
-    /* 
-    let exp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-    let claims = ClaimsLocal {
-        cr: "test".to_string(),
-        kind: tools::auth::ClaimsLocalType::Admin,
-        exp: exp.as_secs() + 60,
-    };
-
-    let token = sign_local(claims).await?;
-    println!("TOJEN {}", token);
-
-    let claims = verify_local(&token).await?;
-    
-    println!("verified {:?}", claims);
-    */
-
-
-    let domain = config.domain.clone();
-    let duck_dns = config.duck_dns.clone();
     let mut register_info = RegisterInfo {cert_paths: None, ips: None};
     let ips = update_ip().await.unwrap_or(None);
     register_info.ips = ips;
-    
-
-    if domain.is_some() && duck_dns.is_some() {
+    if let (Some(id), Some(_)) = (config.id, config.token) {
         log_info(tools::log::LogServiceType::Register, "Public domain certificate check".to_string());
-        let public_domain = domain.unwrap();
-        let certs = certificate::dns_certify(&public_domain, &duck_dns.unwrap()).await?;
+        let certs = certificate::dns_certify().await?;
         register_info.cert_paths = Some(certs.clone());
 
         
 
-        let public_config = PublicServerInfos::get(&certs.0, &public_domain).await?;
-        log_info(LogServiceType::Register, format!("Exposed public url: {}:{}", public_config.url.unwrap_or("None".to_string()), public_config.port));
-        
-        /*let client = reqwest::Client::new();
-        println!("server: {}", format!("https://{}/servers/{}/register", config.redseat_home, config.id));
-        
-        let res = client.post(format!("https://{}/servers/{}/register", config.redseat_home, config.id))
-            .json(&public_config)
-            .send()
-            .await?;
-
-        let register_response = res.text().await?;
-        println!("repsonse: {}", register_response);*/
+        let public_config = PublicServerInfos::get(&certs.0, &id).await?;
+        log_info(LogServiceType::Register, format!("Exposed public url: {}:{}", id, public_config.port));
     } 
 
     Ok(register_info)

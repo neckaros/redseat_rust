@@ -47,6 +47,7 @@ pub enum Error {
 
 	Forbiden,
 	AuthFail,
+	ServerNotYetRegistered,
 	ServerAlreadyRegistered,
 	ServerAlreadyOwned,
 	AuthFailNoAuthTokenCookie,
