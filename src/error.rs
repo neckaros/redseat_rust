@@ -47,6 +47,9 @@ pub enum Error {
 
 	Forbiden,
 	AuthFail,
+	ServerNotYetRegistered,
+	ServerAlreadyRegistered,
+	ServerAlreadyOwned,
 	AuthFailNoAuthTokenCookie,
 	AuthFailTokenWrongFormat,
 	AuthFailInvalidToken,
@@ -165,6 +168,8 @@ impl Error {
 			Self::LoginFail => (StatusCode::FORBIDDEN, ClientError::LOGIN_FAIL),
 			Self::Model(err) => err.client_status_and_error(),
 			// -- Auth.
+			Self::ServerAlreadyRegistered => (StatusCode::FORBIDDEN, ClientError::SERVER_ALREADY_REGISTERED),
+			Self::ServerAlreadyOwned => (StatusCode::FORBIDDEN, ClientError::SERVER_ALREADY_OWNED),
 			Self::Forbiden => (StatusCode::FORBIDDEN, ClientError::FORBIDDEN),
 			Self::AuthFailNoAuthTokenCookie
 			| Self::AuthFail
@@ -198,6 +203,8 @@ pub enum ClientError {
 	NO_AUTH,
 	TOKEN_EXPIRED,
 	FORBIDDEN,
+	SERVER_ALREADY_REGISTERED,
+	SERVER_ALREADY_OWNED,
 	NOT_FOUND,
 	NOT_FOR_CRYPTED_LIBRARY,
 	INVALID_PARAMS,

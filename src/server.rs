@@ -4,7 +4,8 @@ use tokio::{fs::{create_dir_all, metadata, read_to_string, File}, io::AsyncWrite
 use serde::{Deserialize, Serialize};
 use nanoid::nanoid;
 use clap::Parser;
-use crate::{error::{Error, RsResult}, tools::log::{log_info, LogServiceType}, RegisterInfo, Result};
+use tracing_subscriber::fmt::format;
+use crate::{error::{Error, RsResult}, model::{users::ConnectedUser, ModelController}, tools::log::{log_info, LogServiceType}, RegisterInfo, Result};
 
 
 static CONFIG: OnceLock<Mutex<ServerConfig>> = OnceLock::new();
@@ -15,14 +16,12 @@ const ENV_PORT: &str = "REDSEAT_PORT";
 const ENV_DIR: &str = "REDSEAT_DIR";
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ServerConfig {
-    #[serde(default = "default_serverid")]
-    pub id: String,
+    pub id: Option<String>,
     #[serde(default = "default_home")]
     pub redseat_home: String,
     pub port: Option<u16>,
     pub local: Option<String>,
-    pub domain: Option<String>,
-    pub duck_dns: Option<String>,
+    pub token: Option<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -88,7 +87,7 @@ fn get_config_override_serverid() -> Option<String> {
     } 
 }
 
-pub async fn get_server_id() -> String {
+pub async fn get_server_id() -> Option<String> {
     get_config().await.id
 }
 
@@ -116,10 +115,9 @@ pub async fn get_home() -> String {
 }
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PublicServerInfos {
-    pub url: String,
     pub port: u16,
-    pub cert: String,
-    pub id: String,
+    pub cert: Option<String>,
+    pub id: Option<String>,
     pub local: Option<String>, 
 }
 
@@ -128,7 +126,19 @@ impl PublicServerInfos {
         let cert = read_to_string(public_cert_path).await?;
         let config = get_config().await;
         Ok(PublicServerInfos {
-            url: url.to_owned(),
+            port: get_server_port().await,
+            cert: Some(cert),
+            id: get_server_id().await,
+            local: config.local,
+        })
+    }
+
+    pub async fn current() -> RsResult<Self> {
+	    let public_cert_path = get_server_file_path("cert_chain.pem").await?;
+        let cert = read_to_string(public_cert_path).await.ok();
+        let config = get_config().await;
+        
+        Ok(PublicServerInfos {
             port: get_server_port().await,
             cert,
             id: get_server_id().await,
@@ -150,12 +160,21 @@ pub async fn get_config() -> ServerConfig {
     }
 }
 
+pub async fn check_unregistered() -> Result<()> {
+    let id = get_config().await.id;
+    if id.is_some() {
+        Err(crate::Error::ServerAlreadyRegistered)
+    } else {
+        Ok(())
+    }
+}
+
 pub async fn get_config_with_overrides() -> Result<ServerConfig> {
 
     let mut config = get_raw_config().await?;
 
     if let Some(id) = get_config_override_serverid() {
-        config.id = id;
+        config.id = Some(id);
     }
 
     return Ok(config)
@@ -182,19 +201,59 @@ pub async fn get_raw_config() -> Result<ServerConfig> {
     } 
 }
 
-
 pub async fn update_config(config: ServerConfig) -> Result<()> {
     let mut dir_path: PathBuf = get_server_local_path().await?;
     dir_path.push("config.json");
     let new_config_string = serde_json::to_string(&config).unwrap();
     let Ok(mut file) = File::create(dir_path).await else { return Err(Error::ServerUnableToAccessServerLocalFolder); };
-    if file.write_all(new_config_string.as_bytes()).await.is_err() {
-        return Err(Error::ServerNoServerId);
+    file.write_all(new_config_string.as_bytes()).await?;
+    
+    let mut guard = CONFIG.get().unwrap().lock().await;
+    *guard = config;
+    return Ok(())
+}
+
+pub async fn get_install_local_url() -> Result<String> {
+	Ok(format!("https://127.0.0.1:{}/infos/install", get_server_port().await))
+}
+
+
+pub async fn get_own_url() -> Result<String> {
+	let config = get_config().await;
+
+	let mut params = vec![];
+	if let Some(port) = config.port {
+		params.push(format!("port={}", port));
+	}
+	if let Some(local) = config.local {
+		params.push(format!("local={}", local));
+	}
+	
+	Ok(format!("https://{}/install?{}", config.redseat_home, params.join("&")))
+}
+
+pub async fn get_web_url() -> Result<String> {
+	let config = get_config().await;
+    if let Some(id) = config.id {
+	    Ok(format!("https://{}/servers/{}", config.redseat_home, id))
     } else {
-        let mut guard = CONFIG.get().unwrap().lock().await;
-        *guard = config;
-        return Ok(())
+	    Err(crate::Error::Error("Server not registered".to_owned()))
     }
+}
+
+pub async fn get_install_url() -> Result<String> {
+	let config = get_config().await;
+
+	let mut params = vec![];
+	if let Some(port) = config.port {
+		params.push(format!("port={}", port));
+	}
+	if let Some(local) = config.local {
+		params.push(format!("local={}", local));
+	}
+   
+	
+	Ok(format!("https://{}/install?{}", config.redseat_home, params.join("&")))
 }
 
 
@@ -269,49 +328,50 @@ pub async fn get_server_file_string(name: &str) -> Result<Option<String>> {
 
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ServerIpInfo {
+    pub ipv4: Option<String>,
+    pub ipv6: Option<String>,
+}
 
 pub async fn update_ip() -> Result<Option<(String, String)>> {
     log_info(LogServiceType::Register, "Checking public IPs".to_string());
     let config = get_config().await;
+    let id = config.id.ok_or(crate::Error::ServerNoServerId)?;
+    let token = config.token.ok_or(crate::Error::ServerNotYetRegistered)?;
 
-    let Some(domain) = config.domain else {
-        log_info(LogServiceType::Register, format!("No Domain"));
-
-        return Ok(None);
+    let ipv4 = reqwest::get("https://v4.ident.me/").await?;
+    let ipv4 = {
+        if let Ok(ip) = ipv4.text().await {
+            ip.to_string()
+        } else {
+            "".to_string()
+        }
     };
+    let ipv6 = reqwest::get("https://v6.ident.me/").await?;
+    let ipv6 = {
+        if let Ok(ip) = ipv6.text().await {
+            ip.to_string()
+        } else {
+            "".to_string()
+        }
+    };
+    log_info(LogServiceType::Register, format!("Updating ips: {} {}", ipv4, ipv6));
 
-    if let Some(duck_dns) = config.duck_dns {
-        log_info(LogServiceType::Register, "Updating public ip for duckdns".to_string());
 
-        let ipv4 = reqwest::get("https://v4.ident.me/").await?;
+    let client = reqwest::Client::new();
+        
+    let request = ServerIpInfo {
+        ipv4: Some(ipv4.clone()),
+        ipv6: Some(ipv6.clone()),
+    };
+    let _ = client.patch(format!("https://{}/servers/{}/register", config.redseat_home, id))
+    .header("Authorization", format!("Token {}", token))
+        .json(&request)
+        .send()
+        .await?;
 
-       // let ips = Consensus::get().await.or_else(|_| Err(Error::Error("Unable to get external IPs".to_string())))?;
     
-        let ipv4 = {
-            if let Ok(ip) = ipv4.text().await {
-                ip.to_string()
-            } else {
-                "".to_string()
-            }
-        };
-        let ipv6 = reqwest::get("https://v6.ident.me/").await?;
-        let ipv6 = {
-            if let Ok(ip) = ipv6.text().await {
-                ip.to_string()
-            } else {
-                "".to_string()
-            }
-        };
-        log_info(LogServiceType::Register, format!("Updating ips: {} {}", ipv4, ipv6));
-
-        let duck_url = format!("https://www.duckdns.org/update?domains={}&token={}&ip={}&ipv6={}&verbose=true", domain.replace(".duckdns.org", ""), duck_dns, ipv4, ipv6);
-
-        let _ = reqwest::get(duck_url)
-            .await.map_err(|_| Error::Error("Unable to update duckdns".to_string()))?
-            .text()
-            .await.map_err(|_| Error::Error("Unable to read duckdns response".to_string()))?;
-        return Ok(Some((ipv4, ipv6)));
-    }
-    Ok(None)
+    return Ok(Some((ipv4, ipv6)));
 
 }
