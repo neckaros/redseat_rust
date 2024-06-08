@@ -12,6 +12,7 @@ static CONFIG: OnceLock<Mutex<ServerConfig>> = OnceLock::new();
 const ENV_SERVERID: &str = "REDSEAT_SERVERID";
 const ENV_HOME: &str = "REDSEAT_HOME";
 const ENV_PORT: &str = "REDSEAT_PORT";
+const ENV_DIR: &str = "REDSEAT_DIR";
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ServerConfig {
     #[serde(default = "default_serverid")]
@@ -30,6 +31,10 @@ struct Args {
     /// Name of the person to greet
     #[arg(short, long)]
     serverid: Option<String>,
+
+    
+    #[arg(short, long)]
+    dir: Option<String>,
 }
 
 pub async fn initialize_config() {
@@ -40,8 +45,18 @@ pub async fn initialize_config() {
 }
 
 pub async fn get_server_local_path() -> Result<PathBuf> {
-    let Some(mut dir_path) = dirs::config_local_dir() else { return Err(Error::ServerUnableToAccessServerLocalFolder); };
-    dir_path.push("redseat");
+    let args = Args::parse();
+    
+    let dir_path = if let Some(argdir) = args.dir {
+        PathBuf::from(&argdir)
+    } else if let Ok(val) =env::var(ENV_DIR) {
+        PathBuf::from(&val)
+    } else {
+        let Some(mut dir_path) = dirs::config_local_dir() else { return Err(Error::ServerUnableToAccessServerLocalFolder); };
+        dir_path.push("redseat");
+        dir_path    
+    };
+
     
 
     let Ok(_) = create_dir_all(&dir_path).await else { return Err(Error::ServerUnableToAccessServerLocalFolder); };
@@ -267,17 +282,21 @@ pub async fn update_ip() -> Result<Option<(String, String)>> {
 
     if let Some(duck_dns) = config.duck_dns {
         log_info(LogServiceType::Register, "Updating public ip for duckdns".to_string());
-        let ips = Consensus::get().await.or_else(|_| Err(Error::Error("Unable to get external IPs".to_string())))?;
+
+        let ipv4 = reqwest::get("https://v4.ident.me/").await?;
+
+       // let ips = Consensus::get().await.or_else(|_| Err(Error::Error("Unable to get external IPs".to_string())))?;
     
         let ipv4 = {
-            if let Some(ip) = ips.v4() {
+            if let Ok(ip) = ipv4.text().await {
                 ip.to_string()
             } else {
                 "".to_string()
             }
         };
+        let ipv6 = reqwest::get("https://v6.ident.me/").await?;
         let ipv6 = {
-            if let Some(ip) = ips.v6() {
+            if let Ok(ip) = ipv6.text().await {
                 ip.to_string()
             } else {
                 "".to_string()

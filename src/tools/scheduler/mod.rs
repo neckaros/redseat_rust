@@ -1,16 +1,17 @@
-use std::{collections::{HashMap, HashSet}, sync::Arc};
+use std::{collections::{HashMap, HashSet}, pin::Pin, sync::Arc};
 use crate::{error::RsResult, model::ModelController};
 use axum::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
-use self::{refresh::RefreshTask, series::SerieTask};
+use self::{ip::RefreshIpTask, refresh::RefreshTask, series::SerieTask};
 
 use super::{get_time, log::{log_error, log_info}};
 
 pub mod series;
 pub mod refresh;
+pub mod ip;
 
 #[derive(Debug, Clone)]
 pub struct RsScheduler {
@@ -82,6 +83,7 @@ impl RsScheduler {
                 let scheduler = self.clone();
                 let mc = mc.clone();
                 tokio::spawn(async move {
+                    
                     let task = {
                         let mut running = scheduler.running.lock().await;
                         let token = CancellationToken::new();                
@@ -155,7 +157,8 @@ pub enum RsSchedulerWhen {
 
 #[derive(PartialEq, Eq, Hash, Debug, Clone)]
 pub enum RsTaskType {
-    Refresh
+    Refresh,
+    Ip
 }
 
 
@@ -166,11 +169,15 @@ pub struct RsRunningTask {
 }
 
 impl RsSchedulerItem {
-    pub fn to_task(&self) -> RsResult<impl RsSchedulerTask>{
+    pub fn to_task(&self) -> RsResult<Pin<Box<dyn RsSchedulerTask + Send>>>{
         match self.kind {
             RsTaskType::Refresh => {
                 let deserialized: RefreshTask = serde_json::from_str(&self.task)?;
-                Ok(deserialized)
+                Ok(Box::pin(deserialized))
+            },
+            RsTaskType::Ip => {
+                let deserialized: RefreshIpTask = serde_json::from_str(&self.task)?;
+                Ok(Box::pin(deserialized))
             },
         }
             

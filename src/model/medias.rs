@@ -356,18 +356,21 @@ impl ModelController {
         let existing = self.get_media(library_id, media_id.to_owned(), requesting_user).await?.ok_or(Error::NotFound)?;
 
         if existing.kind == FileType::Video {
-            let r = self.update_video_infos(library_id, media_id, requesting_user).await;
+            let r = self.update_video_infos(library_id, media_id, requesting_user, false).await;
             if let Err(r) = r {
                 log_error(LogServiceType::Source, format!("unable to get video infos for {}: {:?}", media_id, r));
             }
         } else if existing.kind == FileType::Photo {
-            let r = self.update_photo_infos(library_id, media_id, requesting_user).await;
+            let r = self.update_photo_infos(library_id, media_id, requesting_user, false).await;
             if let Err(r) = r {
                 log_error(LogServiceType::Source, format!("unable to get photos infos for {}: {:?}", media_id, r));
             }
         }
     
-        self.prediction(library_id, media_id, true, requesting_user).await?;
+        self.prediction(library_id, media_id, true, requesting_user, false).await?;
+
+        let existing = self.get_media(library_id, media_id.to_owned(), requesting_user).await?.ok_or(Error::NotFound)?;
+        self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media: existing, action: ElementAction::Updated}] });
         
         Ok(())
     }
@@ -684,7 +687,7 @@ impl ModelController {
         Ok(token)
     }
 
-    pub async fn prediction(&self, library_id: &str, media_id: &str, insert_tags: bool, requesting_user: &ConnectedUser) -> crate::Result<Vec<PredictionTagResult>> {
+    pub async fn prediction(&self, library_id: &str, media_id: &str, insert_tags: bool, requesting_user: &ConnectedUser, notif: bool) -> crate::Result<Vec<PredictionTagResult>> {
         let plugins = self.get_plugins(PluginQuery { kind: Some(PluginType::ImageClassification), library: Some(library_id.to_string()), ..Default::default() }, &ConnectedUser::ServerAdmin).await?;
         if !plugins.is_empty() {
             let mut all_predictions: Vec<PredictionTagResult> = vec![];
@@ -711,7 +714,7 @@ impl ModelController {
                     if insert_tags {
                         for tag in &prediction {
                             let db_tag = self.get_ai_tag(&library_id, tag.tag.clone(), &requesting_user).await?;
-                            self.update_media(&library_id, media_id.to_string(), MediaForUpdate { add_tags: Some(vec![MediaItemReference { id: db_tag.id, conf: Some(tag.probability as u16) }]), ..Default::default() }, true, &requesting_user).await?;
+                            self.update_media(&library_id, media_id.to_string(), MediaForUpdate { add_tags: Some(vec![MediaItemReference { id: db_tag.id, conf: Some(tag.probability as u16) }]), ..Default::default() }, notif, &requesting_user).await?;
                         }
                     }
                     all_predictions.append(&mut prediction);
@@ -817,7 +820,7 @@ impl ModelController {
         }
     }
     
-    pub async fn update_video_infos(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> crate::Result<()> {
+    pub async fn update_video_infos(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser, notif: bool) -> crate::Result<()> {
         requesting_user.check_file_role(library_id, media_id, LibraryRole::Read)?;
 
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
@@ -848,13 +851,13 @@ impl ModelController {
             update.fps = video_stream.fps()
         }
 
-        self.update_media(library_id, media_id.to_owned(), update, true, requesting_user).await?;
+        self.update_media(library_id, media_id.to_owned(), update, notif, requesting_user).await?;
 
         //println!("videos infos {:?}", videos_infos);
         Ok(())
     }
 
-    pub async fn update_photo_infos(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> crate::Result<()> {
+    pub async fn update_photo_infos(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser, notif: bool) -> crate::Result<()> {
         requesting_user.check_file_role(library_id, media_id, LibraryRole::Read)?;
         self.cache_check_library_notcrypt(library_id).await?;
         let mut m = self.library_file(library_id, media_id, None, MediaFileQuery::default() , requesting_user).await?.into_reader(library_id, None, None, Some((self.clone(), &requesting_user))).await?;
@@ -882,7 +885,7 @@ impl ModelController {
             }
         
     
-            self.update_media(library_id, media_id.to_owned(), update, true, requesting_user).await?;
+            self.update_media(library_id, media_id.to_owned(), update, notif, requesting_user).await?;
         }
         Ok(())
     }

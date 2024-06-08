@@ -20,7 +20,7 @@ use std::{collections::HashMap, io::Read, path::PathBuf, pin::Pin, sync::Arc};
 use futures::lock::Mutex;
 use nanoid::nanoid;
 use strum::IntoEnumIterator;
-use crate::{domain::{library::{LibraryMessage, LibraryRole, ServerLibrary}, player::{RsPlayer, RsPlayerAvailable}, plugin::PluginWasm, serie::Serie}, error::RsResult, plugins::{list_plugins, medias::{fanart::FanArtContext, imdb::ImdbContext, tmdb::TmdbContext, trakt::TraktContext}, sources::{error::SourcesError, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, LocalSource, Source, SourceRead}, PluginManager}, routes::mw_range::RangeDefinition, server::get_server_file_path_array, tools::{clock::SECONDS_IN_HOUR, image_tools::{resize_image_path, ImageSize, ImageSizeIter, ImageType}, log::log_info, scheduler::{self, refresh::RefreshTask, RsScheduler, RsTaskType}}};
+use crate::{domain::{library::{LibraryMessage, LibraryRole, ServerLibrary}, player::{RsPlayer, RsPlayerAvailable}, plugin::PluginWasm, serie::Serie}, error::RsResult, plugins::{list_plugins, medias::{fanart::FanArtContext, imdb::ImdbContext, tmdb::TmdbContext, trakt::TraktContext}, sources::{error::SourcesError, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, LocalSource, Source, SourceRead}, PluginManager}, routes::mw_range::RangeDefinition, server::get_server_file_path_array, tools::{clock::SECONDS_IN_HOUR, image_tools::{resize_image_path, ImageSize, ImageSizeIter, ImageType}, log::log_info, scheduler::{self, ip::RefreshIpTask, refresh::RefreshTask, RsScheduler, RsTaskType}}};
 
 use self::{medias::CRYPTO_HEADER_SIZE, store::SqliteStore, users::{ConnectedUser, ServerUser, UserRole}};
 use error::{Result, Error};
@@ -75,7 +75,9 @@ impl ModelController {
 
 		let scheduler = &mc.scheduler;
 		scheduler.start(mc.clone()).await?;
+		
 		scheduler.add(RsTaskType::Refresh, scheduler::RsSchedulerWhen::Every(SECONDS_IN_HOUR), RefreshTask {specific_library:None} ).await?;
+		scheduler.add(RsTaskType::Ip, scheduler::RsSchedulerWhen::Every(SECONDS_IN_HOUR/2), RefreshIpTask {} ).await?;
 		//scheduler.add(RsTaskType::Refresh, scheduler::RsSchedulerWhen::At(0), RefreshTask {specific_library:None} ).await?;
 		//scheduler.tick(mc.clone()).await;
 		Ok(mc)
@@ -168,8 +170,7 @@ impl  ModelController {
 		} else if let Some(existing) = &library.root {
   				let mut path = PathBuf::from(existing);
   				path.push(".redseat");
-  				let new_path = path;
-  				new_path
+  				path
   			} else {
   				get_server_file_path_array(vec!["libraries", &library.id]).await.map_err(|_| Error::FileNotFound("Unable to get virtual library local path".into()))?
   			};

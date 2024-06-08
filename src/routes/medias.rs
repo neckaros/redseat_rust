@@ -134,7 +134,7 @@ struct UploadOption {
 }
 
 async fn handler_predict(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<PredictOption>) -> Result<Json<Value>> {
-	let prediction = mc.prediction(&library_id, &media_id, query.tag, &user).await?;
+	let prediction = mc.prediction(&library_id, &media_id, query.tag, &user, true).await?;
 	let body = Json(json!(prediction));
 	//println!("BODY {:?}", body);
 	Ok(body)
