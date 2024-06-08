@@ -116,7 +116,6 @@ async fn handler_lookup_add(Path((library_id, serie_id, season, number)): Path<(
 
 
 async fn handler_medias(Path((library_id, serie_id, season, number)): Path<(String, String, u32, u32)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
-	println!("{}|{}|{:04}", serie_id, season, number);
 	let libraries = mc.get_medias(&library_id, MediaQuery { series: vec![format!("{}|{:04}|{:04}", serie_id, season, number)], ..Default::default() }, &user).await?;
 	let body = Json(json!(libraries));
 	Ok(body)

@@ -72,15 +72,15 @@ pub async fn dns_certify() -> Result<(PathBuf, PathBuf)> {
                     terms_of_service_agreed: true,
                     only_return_existing: false,
                 },
-                LetsEncrypt::Staging.url(),
+                LetsEncrypt::Production.url(),
                 //LetsEncrypt::Production.url(),
                 None,
             )
-            .await.or_else(|_| Err(Error::ServerMalformatedConfigFile))?;
+            .await.map_err(|_| Error::ServerMalformatedConfigFile)?;
 
             let serialized_credentials = serde_json::to_string(&credentials).or_else(|_| Err(Error::ServerFileNotFound))?;
 
-            let _ = write_server_file("letsencrypt_account.json", serialized_credentials.as_bytes()).await?;
+            write_server_file("letsencrypt_account.json", serialized_credentials.as_bytes()).await?;
             (account, credentials)
         }
     };
@@ -174,7 +174,7 @@ pub async fn dns_certify() -> Result<(PathBuf, PathBuf)> {
     let mut delay = tokio::time::Duration::from_millis(250);
     loop {
         sleep(delay).await;
-        let state = order.refresh().await.map_err(|_| Error::Error(format!("Unable to refresh order rstatus")))?;
+        let state = order.refresh().await.map_err(|_| Error::Error("Unable to refresh order rstatus".to_string()))?;
         if let OrderStatus::Ready | OrderStatus::Invalid = state.status {
             //println!("order state: {:#?}", state);
             break;

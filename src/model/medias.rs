@@ -45,6 +45,7 @@ pub struct MediaQuery {
     pub people: Vec<String>,
     #[serde(default)]
     pub series: Vec<String>,
+    pub movie: Option<String>,
     pub limit: Option<usize>,
     #[serde(default)]
     pub types: Vec<FileType>,

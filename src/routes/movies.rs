@@ -1,8 +1,8 @@
 
-use crate::{domain::{movie::{Movie, MovieForUpdate}, view_progress::{ViewProgressForAdd, ViewProgressLigh}, watched::{WatchedForAdd, WatchedLight}, MediasIds}, model::{episodes::EpisodeQuery, movies::{MovieQuery, RsMovieSort}, store::sql::SqlOrder, users::{ConnectedUser, HistoryQuery}, ModelController}, tools::{clock::now, image_tools::ImageType}, Error, Result};
+use crate::{domain::{media::MediaForUpdate, movie::{Movie, MovieForUpdate}, view_progress::{ViewProgressForAdd, ViewProgressLigh}, watched::{WatchedForAdd, WatchedLight}, MediasIds}, model::{episodes::EpisodeQuery, medias::MediaQuery, movies::{MovieQuery, RsMovieSort}, store::sql::SqlOrder, users::{ConnectedUser, HistoryQuery}, ModelController}, tools::{clock::now, image_tools::ImageType}, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post, put}, Json, Router};
 use futures::TryStreamExt;
-use rs_plugin_common_interfaces::{lookup::{RsLookupMovie, RsLookupQuery}, MediaType};
+use rs_plugin_common_interfaces::{lookup::{RsLookupMovie, RsLookupQuery}, MediaType, RsRequest};
 use serde_json::{json, Value};
 use tokio::io::AsyncRead;
 use tokio_util::io::{ReaderStream, StreamReader};
@@ -20,7 +20,10 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/", post(handler_post))
 		.route("/search", get(handler_seach_movies))
 		.route("/:id", get(handler_get))
+		
+		.route("/:id/medias", get(handler_medias))
 		.route("/:id/search", get(handler_lookup))
+		.route("/:id/search", post(handler_lookup_add))
 		.route("/:id", patch(handler_patch))
 		.route("/:id/import", put(handler_import))
 		.route("/:id/refresh", get(handler_refresh))
@@ -70,6 +73,13 @@ async fn handler_seach_movies(Path(library_id): Path<String>, State(mc): State<M
 	Ok(body)
 }
 
+
+async fn handler_medias(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	let libraries = mc.get_medias(&library_id, MediaQuery { movie: Some(movie_id), ..Default::default() }, &user).await?;
+	let body = Json(json!(libraries));
+	Ok(body)
+}
+
 async fn handler_lookup(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
 	let movie = mc.get_movie(&library_id, movie_id, &user).await?;
 	let query = RsLookupQuery::Movie(RsLookupMovie {
@@ -84,6 +94,18 @@ async fn handler_lookup(Path((library_id, movie_id)): Path<(String, String)>, St
 	let body = Json(json!(library));
 	Ok(body)
 }
+
+async fn handler_lookup_add(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(request): Json<RsRequest>) -> Result<Json<Value>> {
+	let infos = MediaForUpdate {
+		movie: Some(movie_id),
+		..Default::default()
+	};
+	let added = mc.medias_add_request(&library_id,  request, Some(infos), &user).await.expect("Unable to download");
+
+	
+	Ok(Json(json!(added)))
+}
+
 
 async fn handler_refresh(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
 	let library = mc.refresh_movie(&library_id, &movie_id, &user).await?;

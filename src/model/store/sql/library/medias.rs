@@ -270,6 +270,10 @@ impl SqliteLibraryStore {
             }
             
         }
+
+        if let Some(movie) = query.movie {
+            where_query.add_where(SqlWhereType::Equal("movie".to_string(), Box::new(movie)));
+        }
         
 
 
