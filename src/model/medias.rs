@@ -16,7 +16,7 @@ use strum_macros::EnumString;
 use tokio::{fs::File, io::{copy, AsyncRead, AsyncReadExt, AsyncWriteExt}, sync::mpsc};
 use tokio_stream::StreamExt;
 use tokio_util::io::{ReaderStream, StreamReader};
-use crate::{domain::{deleted::RsDeleted, media::{self, ConvertMessage, ConvertProgress, RsGpsPosition, DEFAULT_MIME}, plugin, MediaElement}, model::store::sql::SqlOrder, plugins::sources::{path_provider::PathProvider, Source}, tools::{file_tools::filename_from_path, image_tools::convert_image_reader, video_tools::{VideoCommandBuilder, VideoConvertRequest, VideoOverlayPosition}}};
+use crate::{domain::{deleted::RsDeleted, library::LibraryType, media::{self, ConvertMessage, ConvertProgress, RsGpsPosition, DEFAULT_MIME}, plugin, MediaElement}, model::store::sql::SqlOrder, plugins::sources::{path_provider::PathProvider, Source}, tools::{file_tools::filename_from_path, image_tools::convert_image_reader, video_tools::{VideoCommandBuilder, VideoConvertRequest, VideoOverlayPosition}}};
 
 use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaItemReference, MediaWithAction, MediasMessage, ProgressMessage}, progress::{RsProgress, RsProgressType}, ElementAction}, error::RsResult, plugins::{get_plugin_fodler, sources::{async_reader_progress::ProgressReader, error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{self, resize_image, resize_image_reader, ImageSize, ImageType}, log::{log_error, log_info, LogServiceType}, prediction::{predict_net, preload_model, PredictionTagResult}, video_tools::{self, probe_video, VideoTime}}};
 
@@ -342,16 +342,16 @@ impl ModelController {
             Err(Error::NotFound.into())
         }
 	}
-    pub fn process_media_spawn(&self, library_id: String, media_id: String, requesting_user: ConnectedUser){
+    pub fn process_media_spawn(&self, library_id: String, media_id: String, predict: bool, requesting_user: ConnectedUser){
         let mc = self.clone();
         tokio::spawn(async move {
-            let r = mc.process_media(&library_id, &media_id, &requesting_user).await;
+            let r = mc.process_media(&library_id, &media_id, predict, &requesting_user).await;
             if let Err(error) = r {
                 log_error(crate::tools::log::LogServiceType::Source, format!("Unable to process media {} for predictions: {:?}", media_id, error));
             }
         });
     }
-    pub async fn process_media(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> RsResult<()>{
+    pub async fn process_media(&self, library_id: &str, media_id: &str, predict: bool, requesting_user: &ConnectedUser) -> RsResult<()>{
         self.cache_check_library_notcrypt(library_id).await?;
 
         let existing = self.get_media(library_id, media_id.to_owned(), requesting_user).await?.ok_or(Error::NotFound)?;
@@ -368,8 +368,9 @@ impl ModelController {
             }
         }
     
-        self.prediction(library_id, media_id, true, requesting_user, false).await?;
-
+        if predict {
+            self.prediction(library_id, media_id, true, requesting_user, false).await?;
+        }
         let existing = self.get_media(library_id, media_id.to_owned(), requesting_user).await?.ok_or(Error::NotFound)?;
         self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media: existing, action: ElementAction::Updated}] });
         
@@ -420,10 +421,10 @@ impl ModelController {
         let id = nanoid!();
         store.add_media(MediaForInsert { id: id.clone(), media: new_file }).await?;
         self.update_media(library_id, id.to_owned(), infos, false, requesting_user).await?;
-
+        let library = self.get_library(library_id, &ConnectedUser::ServerAdmin).await?.ok_or(Error::LibraryNotFound(library_id.to_owned()))?;
         if !crypted {
             let _ = self.generate_thumb(&library_id, &id, &requesting_user).await;
-            self.process_media_spawn(library_id.to_string(), id.clone(), requesting_user.clone());
+            self.process_media_spawn(library_id.to_string(), id.clone(), library.kind == LibraryType::Photos, requesting_user.clone());
         }
 
 
@@ -530,7 +531,8 @@ impl ModelController {
             self.update_media(library_id, id.to_owned(), infos, false, requesting_user).await?;
 
             let r = self.generate_thumb(&library_id, &id, &ConnectedUser::ServerAdmin).await;
-            self.process_media_spawn(library_id.to_string(), id.clone(), ConnectedUser::ServerAdmin);
+            let library = self.get_library(library_id, &ConnectedUser::ServerAdmin).await?.ok_or(Error::LibraryNotFound(library_id.to_owned()))?;
+            self.process_media_spawn(library_id.to_string(), id.clone(), library.kind == LibraryType::Photos, ConnectedUser::ServerAdmin);
             
             if let Err(r) = r {
                 log_error(crate::tools::log::LogServiceType::Source, format!("Unable to generate thumb {:#}", r));
@@ -604,10 +606,15 @@ impl ModelController {
         store.add_media(MediaForInsert { id: id.clone(), media: new_file }).await?;
         
         if let Some(update) = additional_infos {
-            self.update_media(&library_id, id.clone(), update, false, &requesting_user).await?;
+            self.update_media(library_id, id.clone(), update, false, requesting_user).await?;
+        }
+        let library = self.get_library(library_id, &ConnectedUser::ServerAdmin).await?.ok_or(Error::LibraryNotFound(library_id.to_owned()))?;
+        if !library.crypt.unwrap_or_default() {
+            let _ = self.generate_thumb(&library_id, &id, &requesting_user).await;
+            self.process_media_spawn(library_id.to_string(), id.clone(), library.kind == LibraryType::Photos, requesting_user.clone());
         }
 
-        let media = store.get_media(&id).await?.ok_or(Error::NotFound)?;
+        let media = store.get_media(&id).await?.ok_or(Error::MediaNotFound(id.to_owned()))?;
         self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media: media.clone(), action: ElementAction::Added}] });
 
         Ok(media)

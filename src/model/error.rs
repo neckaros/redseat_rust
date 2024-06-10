@@ -31,6 +31,7 @@ pub enum Error {
 
 	NotFound,
 	TagNotFound(String),
+	LibraryNotFound(String),
 	MediaNotFound(String),
 	PersonNotFound(String),
 
@@ -107,6 +108,9 @@ impl Error {
 		match self {
 			Error::NotFound => (StatusCode::NOT_FOUND, ClientError::NOT_FOUND),
 			Error::FileNotFound(_) => (StatusCode::NOT_FOUND, ClientError::NOT_FOUND),
+			Error::MediaNotFound(_) => (StatusCode::NOT_FOUND, ClientError::NOT_FOUND),
+			Error::LibraryNotFound(_) => (StatusCode::NOT_FOUND, ClientError::NOT_FOUND),
+			Error::TagNotFound(_) => (StatusCode::NOT_FOUND, ClientError::NOT_FOUND),
 
 			Self::Duplicate(id, element) => (StatusCode::NOT_FOUND, ClientError::DUPLICATE(DuplicateClientError { id: id.to_string(), element: element.to_owned()})),
 

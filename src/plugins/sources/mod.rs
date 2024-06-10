@@ -250,7 +250,7 @@ impl SourceRead {
     
     #[async_recursion]
     pub async fn into_response(self, library_id: &str, range: Option<RangeDefinition>, progress: RsProgressCallback, mc: Option<(ModelController, &ConnectedUser)>) -> RsResult<axum::response::Response> {
-        println!("into_response");
+
         match self {
             SourceRead::Stream(reader) => {
                 let headers = reader.hearders().map_err(|_| Error::UnableToFormatHeaders)?;
@@ -260,12 +260,12 @@ impl SourceRead {
                 Ok((status, headers, body).into_response())
             },
             SourceRead::Request(request) => {
-                println!("Oops request: {:?}", request);
+
                 match request.status {
                     RsRequestStatus::Unprocessed | RsRequestStatus::NeedParsing => {
                         if let Some((mc, user)) = mc {
                             let new_request = mc.exec_request(request.clone(), Some(library_id.to_string()), false, progress, user).await?;
-                            println!("NR {:?}", new_request);
+
                             new_request.into_response(library_id, range.clone(), None, Some((mc, user))).await
                         } else {
                             Err(Error::InvalidRsRequestStatus(request.status).into())
