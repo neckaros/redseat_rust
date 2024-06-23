@@ -1,5 +1,6 @@
-use std::{env, path::PathBuf, sync::OnceLock};
+use std::{cell::{OnceCell, RefCell}, env, path::PathBuf, sync::OnceLock, time::Duration};
 use query_external_ip::Consensus;
+use reqwest::Client;
 use tokio::{fs::{create_dir_all, metadata, read_to_string, File}, io::AsyncWriteExt, sync::Mutex};
 use serde::{Deserialize, Serialize};
 use nanoid::nanoid;
@@ -9,6 +10,7 @@ use crate::{error::{Error, RsResult}, model::{users::ConnectedUser, ModelControl
 
 
 static CONFIG: OnceLock<Mutex<ServerConfig>> = OnceLock::new();
+
 
 const ENV_SERVERID: &str = "REDSEAT_SERVERID";
 const ENV_HOME: &str = "REDSEAT_HOME";
@@ -334,28 +336,60 @@ pub struct ServerIpInfo {
     pub ipv6: Option<String>,
 }
 
+pub async fn get_ipv4() -> Result<String> {
+    let client = Client::builder()
+    .timeout(Duration::from_secs(1))
+    .build()
+    .unwrap();
+
+    let ip =client.get("https://v4.ident.me/").send().await;
+    if let Ok(ip) = ip {
+        if let Ok(ip) = ip.text().await {
+            return Ok(ip);
+        }
+    }
+    let ip = client.get("https://api.ipify.org/").send().await;
+    if let Ok(ip) = ip {
+        if let Ok(ip) = ip.text().await {
+            return Ok(ip);
+        }
+    }
+    Err(Error::Error("Unable to get IPV4".to_string()))
+}
+
+pub async fn get_ipv6() -> Result<String> {
+    let client = Client::builder()
+    .timeout(Duration::from_secs(1))
+    .build()
+    .unwrap();
+
+    let ip = client.get("https://v6.ident.me/").send().await;
+    if let Ok(ip) = ip {
+        if let Ok(ip) = ip.text().await {
+            return Ok(ip);
+        }
+    }
+    let ip = client.get("https://api64.ipify.org/").send().await;
+    if let Ok(ip) = ip {
+        if let Ok(ip) = ip.text().await {
+            return Ok(ip);
+        }
+    }
+    Err(Error::Error("Unable to get IPV4".to_string()))
+}
+
+
 pub async fn update_ip() -> Result<Option<(String, String)>> {
     log_info(LogServiceType::Register, "Checking public IPs".to_string());
     let config = get_config().await;
     let id = config.id.ok_or(crate::Error::ServerNoServerId)?;
     let token = config.token.ok_or(crate::Error::ServerNotYetRegistered)?;
 
-    let ipv4 = reqwest::get("https://v4.ident.me/").await?;
-    let ipv4 = {
-        if let Ok(ip) = ipv4.text().await {
-            ip.to_string()
-        } else {
-            "".to_string()
-        }
-    };
-    let ipv6 = reqwest::get("https://v6.ident.me/").await?;
-    let ipv6 = {
-        if let Ok(ip) = ipv6.text().await {
-            ip.to_string()
-        } else {
-            "".to_string()
-        }
-    };
+    let ipv4 = get_ipv4().await?;
+    let ipv6 = get_ipv6().await?;
+
+    
+
     log_info(LogServiceType::Register, format!("Updating ips: {} {}", ipv4, ipv6));
 
 
@@ -365,13 +399,19 @@ pub async fn update_ip() -> Result<Option<(String, String)>> {
         ipv4: Some(ipv4.clone()),
         ipv6: Some(ipv6.clone()),
     };
-    let _ = client.patch(format!("https://{}/servers/{}/register", config.redseat_home, id))
+
+    log_info(LogServiceType::Register, format!("Calling: https://{}/servers/{}/register", config.redseat_home, id));
+    log_info(LogServiceType::Register, format!("With content: {:?}", request));
+    let result = client.patch(format!("https://{}/servers/{}/register", config.redseat_home, id))
     .header("Authorization", format!("Token {}", token))
         .json(&request)
         .send()
         .await?;
 
+    log_info(LogServiceType::Register, format!("Result: {:?}", result.text().await?));
+
+
     
-    return Ok(Some((ipv4, ipv6)));
+    Ok(Some((ipv4, ipv6)))
 
 }

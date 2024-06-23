@@ -174,7 +174,7 @@ async fn register() -> Result<RegisterInfo>{
     let _ = get_or_init_keys().await;
 
     let mut register_info = RegisterInfo {cert_paths: None, ips: None};
-    let ips = update_ip().await.unwrap_or(None);
+    let ips = update_ip().await?;
     register_info.ips = ips;
     if let (Some(id), Some(_)) = (config.id, config.token) {
         log_info(tools::log::LogServiceType::Register, "Public domain certificate check".to_string());

@@ -24,6 +24,7 @@ pub enum RsProgressType {
     Download,
     #[default]
     Transfert,
+    Analysing,
     Finished,
     Duplicate(String),
 }

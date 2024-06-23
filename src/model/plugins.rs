@@ -157,7 +157,7 @@ impl ModelController {
     pub async fn exec_request(&self, request: RsRequest, library_id: Option<String>, savable: bool, progress: Option<Sender<RsProgress>>, requesting_user: &ConnectedUser) -> RsResult<SourceRead> {
        
         if let Some(library_id) = library_id {
-            requesting_user.check_library_role(&library_id, crate::domain::library::LibraryRole::Read)?;
+            requesting_user.check_request_role(&library_id, &request)?;
 
         } else {
             requesting_user.check_role(&UserRole::Admin)?;

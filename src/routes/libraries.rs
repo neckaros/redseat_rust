@@ -80,7 +80,7 @@ struct HandlerInvitationQuery {
     role: LibraryRole,
 }
 
-async fn handler_invitation(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, query: Query<HandlerInvitationQuery>) -> Result<Json<Value>> {
+async fn handler_invitation(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Json(query): Json<HandlerInvitationQuery>) -> Result<Json<Value>> {
 	let invitation = mc.add_library_invitation(&library_id, vec![query.role.clone()], &user).await?;
 	Ok(Json(json!(invitation)))
 }

@@ -15,6 +15,8 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/episodes", get(handler_list))
 		.route("/episodes", post(handler_post))
 		.route("/episodes/refresh", get(handler_refresh))
+		
+		.route("/seasons/:season/search", get(handler_lookup_season))
 		.route("/seasons/:season/episodes", get(handler_list_season_episodes))
 		.route("/seasons/:season/episodes/:number", get(handler_get))
 		.route("/seasons/:season/episodes/:number", post(handler_post_episode))
@@ -42,6 +44,25 @@ async fn handler_list(Path((library_id, serie_id)): Path<(String, String)>, Stat
 async fn handler_refresh(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(_query): Query<EpisodeQuery>) -> Result<Json<Value>> {
 	let libraries = mc.refresh_episodes(&library_id, &serie_id, &user).await?;
 	let body = Json(json!(libraries));
+	Ok(body)
+}
+
+async fn handler_lookup_season(Path((library_id, serie_id, season)): Path<(String, String, u32)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	let serie = mc.get_serie(&library_id, serie_id,  &user).await?.ok_or(Error::NotFound)?;
+	let query_episode = RsLookupEpisode {
+    serie: serie.name,
+    imdb: serie.imdb,
+    slug: serie.slug,
+    tmdb: serie.tmdb,
+    trakt: serie.trakt,
+    tvdb: serie.tmdb,
+    otherids: serie.otherids,
+	season,
+	number: None
+	};
+	let query = RsLookupQuery::Episode(query_episode);
+	let library = mc.exec_lookup(query, Some(library_id), &user).await?;
+	let body = Json(json!(library));
 	Ok(body)
 }
 

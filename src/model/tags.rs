@@ -44,6 +44,22 @@ pub struct TagForInsert {
     pub generated: bool,
 }
 
+impl Default for TagForInsert {
+    fn default() -> Self {
+        let mut rng = rand::thread_rng();
+        TagForInsert {
+            id: nanoid!(), // Génère un ID aléatoire
+            name: nanoid!(),
+            parent: None,
+            kind: None,
+            alt: None,
+            thumb: None,
+            params: None,
+            generated: false
+        }
+    }
+}
+
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
@@ -112,6 +128,13 @@ impl ModelController {
             return Ok(existing_tag);
         }
         let tag = self.get_or_create_path(&library_id, vec!["ai", &tag.name], TagForUpdate { alt: Some(tag.alts), generated: Some(true), ..Default::default()}, &requesting_user).await?;
+
+		Ok(tag)
+	}
+
+    pub async fn add_imported_tag(&self, library_id: &str, name: &str, requesting_user: &ConnectedUser) -> Result<Tag> {
+        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        let tag = self.get_or_create_path(library_id, vec!["imported", name], TagForUpdate { generated: Some(true), ..Default::default()}, &requesting_user).await?;
 
 		Ok(tag)
 	}

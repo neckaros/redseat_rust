@@ -20,7 +20,7 @@ pub async fn on_connect(socket: SocketRef, mc: ModelController, data: Result<Aut
                         let _ = socket.join("admin");
                     }
                 },
-                crate::model::users::ConnectedUser::Anonymous => {},
+                crate::model::users::ConnectedUser::Anonymous | crate::model::users::ConnectedUser::Guest(_) => {},
                 crate::model::users::ConnectedUser::ServerAdmin => {},
                 crate::model::users::ConnectedUser::Share(_) => {},
                 crate::model::users::ConnectedUser::UploadKey(_) => todo!(),

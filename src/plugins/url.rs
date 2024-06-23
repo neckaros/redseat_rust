@@ -164,7 +164,7 @@ impl PluginManager {
                 return Ok(SourceRead::Request(processed));
             }
         }
-        if request.status == RsRequestStatus::NeedParsing || request.url.contains(".m3u8") || request.mime.as_deref().unwrap_or("no") == "application/vnd.apple.mpegurl" {
+        if request.status == RsRequestStatus::NeedParsing || request.url.contains(".m3u8") || request.url.contains(".mpd") || request.mime.as_deref().unwrap_or("no") == "application/vnd.apple.mpegurl" {
             let mut result = request.clone();
             result.status = RsRequestStatus::NeedParsing;
             Ok(SourceRead::Request(result))

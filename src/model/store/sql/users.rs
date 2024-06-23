@@ -42,8 +42,9 @@ impl SqliteStore {
     // region:    --- Users
     pub async fn get_user(&self, user_id: &str) -> Result<ServerUser> {
         let user_id = user_id.to_string();
+        let error_user_id = user_id.to_string();
             let user = self.server_store.call( move |conn| { 
-                let user = conn.query_row(
+                let mut user = conn.query_row(
                 "SELECT id, name, role, preferences  FROM Users WHERE id = ?1",
                 [&user_id],
                 |row| {
@@ -57,7 +58,9 @@ impl SqliteStore {
                         libraries: vec![]
                     })
                 },
-                ).and_then(|mut el| {
+                )?;
+                
+                
                     let mut stmt = conn.prepare("SELECT lur.library_ref, lur.roles, lib.name, lib.type FROM Libraries_Users_Rights as lur LEFT JOIN Libraries as lib ON lur.library_ref = lib.id WHERE user_ref = ?1")?;
                     
                     let person_iter = stmt.query_map([&user_id], |row| {
@@ -69,14 +72,19 @@ impl SqliteStore {
                             roles: from_comma_separated(row.get(1)?)
                         })
                     })?;
-                    el.libraries = person_iter.flat_map(|e| e.ok()).collect::<Vec<ServerUserLibrariesRights>>();
-                    Ok(el)
-                })?;
+                    user.libraries = person_iter.flat_map(|e| e.ok()).collect::<Vec<ServerUserLibrariesRights>>();
+                    Ok(user)
+   
 
                 
 
-                Ok(user)
-        }).await?;
+                
+        }).await.map_err(|err| {
+            match err {
+                tokio_rusqlite::Error::Rusqlite(rusqlite::Error::QueryReturnedNoRows) => Error::UserNotFound(error_user_id),
+               _ => err.into()
+            }
+        })?;
         Ok(user)
     }
 

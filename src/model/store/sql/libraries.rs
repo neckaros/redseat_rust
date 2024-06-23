@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use crate::{domain::library::{LibraryType, ServerLibrary, ServerLibrarySettings}, model::{libraries::{ServerLibraryForUpdate, ServerLibraryInvitation}, store::{to_comma_separated, SqliteStore}}};
+use crate::{domain::library::{LibraryType, ServerLibrary, ServerLibrarySettings}, model::{libraries::{ServerLibraryForUpdate, ServerLibraryInvitation}, store::{from_comma_separated, to_comma_separated, SqliteStore}, users::{ConnectedUser, ServerUser}}};
 use super::Result;
 use crate::domain::library::LibraryRole;
 use rusqlite::{params, params_from_iter, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, ToSql};
@@ -197,6 +197,28 @@ impl SqliteStore {
         Ok(())
     }
     
+
+    pub async fn get_library_invitation(&self, code: String) -> Result<Option<ServerLibraryInvitation>> {
+
+            let row = self.server_store.call( move |conn| { 
+                let row = conn.query_row(
+                "SELECT code, role, expires, library FROM Invitation WHERE code = ?1",
+                [&code],
+                |row| {
+                    Ok(ServerLibraryInvitation {
+                        code: row.get(0)?,
+                        roles: from_comma_separated(row.get(1)?),
+                        expires:  row.get(2)?,
+                        library:  row.get(3)?,
+                    })
+                },
+                ).optional()?;
+    
+                Ok(row)
+        }).await?;
+        Ok(row)
+    }
+
     pub async fn add_library_invitation(&self, invitation: ServerLibraryInvitation) -> Result<()> {
         self.server_store.call( move |conn| { 
 
@@ -212,6 +234,16 @@ impl SqliteStore {
         }).await?;
         Ok(())
     }
+
+    pub async fn remove_library_invitation(&self, code: String) -> Result<()> {
+        self.server_store.call( move |conn| { 
+            conn.execute("DELETE FROM Invitation WHERE code = ?", [&code])?;
+            
+            Ok(())
+        }).await?;
+        Ok(())
+    }
+
 
     // endregion:    --- Libraries
     

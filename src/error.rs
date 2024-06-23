@@ -173,7 +173,9 @@ impl Error {
 			Self::Forbiden => (StatusCode::FORBIDDEN, ClientError::FORBIDDEN),
 			Self::AuthFailNoAuthTokenCookie
 			| Self::AuthFail
-			| Self::AuthFailTokenWrongFormat => {
+			| Self::AuthFailTokenWrongFormat
+			| Self::AuthFailInvalidToken
+			| Self::AuthFailNotForThisServer => {
 				(StatusCode::UNAUTHORIZED, ClientError::NO_AUTH)
 			},
 			Self::AuthFailExpiredToken => {

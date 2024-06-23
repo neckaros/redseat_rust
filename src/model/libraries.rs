@@ -1,10 +1,11 @@
 use std::{cmp::Ordering, str::FromStr};
 
 use nanoid::nanoid;
+use rs_plugin_common_interfaces::RsRequest;
 use serde::{Deserialize, Serialize};
 use tokio::fs::read_dir;
 
-use crate::{domain::{library::{LibraryMessage, LibraryRole, LibraryType, ServerLibrary, ServerLibrarySettings}, ElementAction}, plugins::sources::{Source, SourceRead}, tools::auth::ClaimsLocalType};
+use crate::{domain::{library::{LibraryMessage, LibraryRole, LibraryType, ServerLibrary, ServerLibrarySettings}, ElementAction}, plugins::sources::{Source, SourceRead}, tools::auth::{sign_local, ClaimsLocal, ClaimsLocalType}};
 
 use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
 
@@ -164,7 +165,7 @@ pub(super) fn map_library_for_user(library: ServerLibrary, user: &ConnectedUser)
                 None
             }
         },
-        ConnectedUser::Anonymous => None,
+        ConnectedUser::Anonymous | ConnectedUser::Guest(_) => None,
         ConnectedUser::ServerAdmin => Some(ServerLibraryForRead::from(library)),
         ConnectedUser::Share(claims) => {
             if claims.kind == ClaimsLocalType::Admin {
@@ -289,7 +290,7 @@ impl ModelController {
 	}
 
     pub async fn add_library_invitation(&self, library_id: &str, roles: Vec<LibraryRole>, requesting_user: &ConnectedUser) -> Result<super::libraries::ServerLibraryInvitation> {
-        requesting_user.check_library_role(&library_id, LibraryRole::Admin)?;
+        requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
         let invitation = ServerLibraryInvitation {
             code: nanoid!(),
             expires: None,
@@ -300,6 +301,7 @@ impl ModelController {
         Ok(invitation)
 	}
 
+    
 
     pub async fn get_watermarks(&self, library_id: &str, requesting_user: &ConnectedUser) -> Result<Vec<String>> {
         requesting_user.check_library_role(&library_id, LibraryRole::Read)?;
@@ -335,6 +337,20 @@ impl ModelController {
 		Ok(sourceread)
 	}
 
+
+    pub async  fn get_request_share_token(&self, library_id: &str, request: &RsRequest, delay_in_seconds: u64, requesting_user: &ConnectedUser) -> Result<String> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        let exp = ClaimsLocal::generate_seconds(delay_in_seconds);
+        let claims = ClaimsLocal {
+            cr: "service::share_request".to_string(),
+            kind: crate::tools::auth::ClaimsLocalType::RequestUrl(request.url.to_string()),
+            exp,
+        };
+        let token = sign_local(claims).await.map_err(|_| Error::UnableToSignShareToken)?;
+        Ok(token)
+    }
+
+    
 }
 
 

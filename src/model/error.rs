@@ -30,6 +30,7 @@ pub enum Error {
 	ServiceError(String, Option<String>),
 
 	NotFound,
+	UserNotFound(String),
 	TagNotFound(String),
 	LibraryNotFound(String),
 	MediaNotFound(String),
@@ -111,6 +112,7 @@ impl Error {
 			Error::MediaNotFound(_) => (StatusCode::NOT_FOUND, ClientError::NOT_FOUND),
 			Error::LibraryNotFound(_) => (StatusCode::NOT_FOUND, ClientError::NOT_FOUND),
 			Error::TagNotFound(_) => (StatusCode::NOT_FOUND, ClientError::NOT_FOUND),
+			Error::UserNotFound(_) => (StatusCode::NOT_FOUND, ClientError::NOT_FOUND),
 
 			Self::Duplicate(id, element) => (StatusCode::NOT_FOUND, ClientError::DUPLICATE(DuplicateClientError { id: id.to_string(), element: element.to_owned()})),
 

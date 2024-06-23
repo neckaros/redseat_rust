@@ -15,10 +15,12 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/url/expand", post(handler_expand))
 
 		.route("/requests/process", post(handler_request_process))
-		.route("/requests/process/stream", post(handler_request_process))
+		.route("/requests/process/stream", post(handler_request_process_stream))
 
 		.route("/requests/permanent", post(handler_request_permanent))
 		.route("/requests/url", get(handler_request_url))
+		.route("/requests/url/stream", get(handler_request_url_stream))
+		.route("/requests/url/sharetoken", get(handler_request_url_sharetoken))
 
 		.with_state(mc)
         
@@ -61,6 +63,18 @@ async fn handler_request_url(Path(library_id): Path<String>, State(mc): State<Mo
 	Ok(body)
 }
 
+async fn handler_request_url_stream(Path(library_id): Path<String>, range: Option<RangeDefinition>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ExpandQuery>) -> Result<Response> {
+	let request = RsRequest { url: query.url, ..Default::default()};
+	let wasm = mc.exec_request(request, Some(library_id.clone()), false, None, &user).await?;
+	wasm.into_response(&library_id, range, None, Some((mc.clone(), &user))).await
+}
+
+async fn handler_request_url_sharetoken(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ExpandQuery>) -> Result<String> {
+	let request = RsRequest { url: query.url, ..Default::default()};
+	let sharetoken = mc.get_request_share_token(&library_id, &request, 6 * 60 * 60,  &user).await?;
+	Ok(sharetoken)
+}
+
 async fn handler_request_process(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Json(request): Json<RsRequest>) -> Result<Json<Value>> {
 	let wasm = mc.exec_request(request, Some(library_id), false, None, &user).await?;
 	let body = match wasm {
@@ -74,6 +88,7 @@ async fn handler_request_process_stream(Path(library_id): Path<String>, range: O
 	let wasm = mc.exec_request(request, Some(library_id.clone()), false, None, &user).await?;
 	wasm.into_response(&library_id, range, None, Some((mc.clone(), &user))).await
 }
+
 
 async fn handler_request_permanent(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Json(request): Json<RsRequest>) -> Result<Json<Value>> {
 	let request = mc.exec_permanent(request, Some(library_id), None, &user).await?;

@@ -177,13 +177,13 @@ impl RsRequestHeader for RequestBuilder {
 impl SourceRead { 
     #[async_recursion]
     pub async fn into_reader(self, library_id: &str, range: Option<RangeDefinition>, progress: Option<Sender<RsProgress>>, mc: Option<(ModelController, &ConnectedUser)>) -> RsResult<FileStreamResult<AsyncReadPinBox>> {
-        println!("into_reader");
+        //println!("into_reader");
         match self {
             SourceRead::Stream(reader) => {
                 Ok(reader)
             },
             SourceRead::Request(request) => {
-                println!("into_reader req {:?}", request);
+                //println!("into_reader req {:?}", request);
                 match request.status {
                     RsRequestStatus::Unprocessed => {
                         if let Some((mc, user)) = mc {

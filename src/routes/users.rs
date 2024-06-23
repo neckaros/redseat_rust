@@ -1,4 +1,4 @@
-use crate::{domain::{view_progress::ViewProgressForAdd, watched::{Watched, WatchedForAdd}}, model::{users::{ConnectedUser, HistoryQuery, ViewProgressQuery}, ModelController}, Result};
+use crate::{domain::{view_progress::ViewProgressForAdd, watched::{Watched, WatchedForAdd}}, model::{users::{ConnectedUser, InvitationRedeemer, HistoryQuery, ViewProgressQuery}, ModelController}, Result};
 use axum::{extract::{Path, State}, middleware, routing::{get, post}, Json, Router};
 use axum_extra::extract::Query;
 use serde_json::{json, Value};
@@ -23,6 +23,9 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/me/history", post(handler_add_history))
 		.route("/me/history/progress/:id", get(handler_get_progress))
 		.route("/me/history/progress", post(handler_add_progress))
+
+		
+		.route("/invitation", get(handler_invitation))
 		.merge(admin_routes)
 		
         .layer(TraceLayer::new_for_http())
@@ -76,5 +79,14 @@ async fn handler_add_progress(State(mc): State<ModelController>, user: Connected
 	mc.add_view_progress(watched, &user).await?;
 	let body = Json(json!({"ok": true}));
 
+	Ok(body)
+}
+
+
+
+async fn handler_invitation(State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<InvitationRedeemer>) -> Result<Json<Value>> {
+	let library =  mc.redeem_invitation(query.code, user.clone()).await?;
+
+	let body = Json(json!(json!({"library": library, "uid": user.user_id()?, "name": user.user_name()?, "user": user})));
 	Ok(body)
 }

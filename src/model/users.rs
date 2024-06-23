@@ -1,6 +1,6 @@
 use std::{cmp::Ordering, str::FromStr};
 
-use rs_plugin_common_interfaces::MediaType;
+use rs_plugin_common_interfaces::{MediaType, RsRequest};
 use rusqlite::{
     types::{FromSql, FromSqlError, FromSqlResult, ValueRef},
     ToSql,
@@ -16,6 +16,7 @@ use super::{error::{Error, Result}, libraries::ServerLibraryForRead, medias::RsS
 #[serde(rename_all = "camelCase")]
 pub enum ConnectedUser {
     Server(ServerUser),
+    Guest(GuestUser),
     Share(ClaimsLocal),
     UploadKey(UploadKey),
     Anonymous,
@@ -26,6 +27,14 @@ impl ConnectedUser {
     pub fn is_registered(&self) -> bool {
         matches!(&self, ConnectedUser::Server(_)) 
     }
+    pub fn check_registered(&self) -> Result<ServerUser> {
+        if let ConnectedUser::Server(user) = &self {
+            Ok(user.clone())
+        } else {
+            Err(Error::NotServerConnected)
+        }
+    }
+
     pub fn is_admin(&self) -> bool {
         if self == &ConnectedUser::ServerAdmin {
             true
@@ -43,9 +52,24 @@ impl ConnectedUser {
             false
         }
     }
+
+
+
     pub fn user_id(&self) -> Result<String> {
         if let ConnectedUser::Server(user) = &self {
             Ok(user.id.clone())
+        } else if let ConnectedUser::Guest(user) = &self {
+            Ok(user.id.clone())
+        } else {
+            Err(Error::NotServerConnected)
+        }
+    }
+    
+    pub fn user_name(&self) -> Result<String> {
+        if let ConnectedUser::Server(user) = &self {
+            Ok(user.name.clone())
+        } else if let ConnectedUser::Guest(user) = &self {
+            Ok(user.name.clone())
         } else {
             Err(Error::NotServerConnected)
         }
@@ -58,6 +82,7 @@ impl ConnectedUser {
                 ClaimsLocalType::File(_, _) => {
                     Ok(()) 
                 },
+                ClaimsLocalType::RequestUrl(_) => Err(Error::ShareTokenInsufficient),
                 ClaimsLocalType::UserRole(_) => Err(Error::ShareTokenInsufficient),
                 ClaimsLocalType::Admin => Ok(()),
             }
@@ -89,8 +114,7 @@ impl ConnectedUser {
                         Err(Error::ShareTokenInsufficient)
                     }
                 },
-                ClaimsLocalType::UserRole(_) => Err(Error::ShareTokenInsufficient),
-                ClaimsLocalType::Admin => Err(Error::ShareTokenInsufficient),
+                _ => Err(Error::ShareTokenInsufficient),
             }
         } else if let ConnectedUser::UploadKey(key) = &self {
             if key.library == library_id { 
@@ -113,16 +137,48 @@ impl ConnectedUser {
                 Err(Error::InsufficientLibraryRole { user: self.clone(), library_id: library_id.to_string(), role: role.clone() })
             }
         } else if let ConnectedUser::Share(claims) = &self {
+            println!("TOKEN {:?}", claims);
             match &claims.kind {
                 ClaimsLocalType::File(_, id) => {
                     if id == file_id { 
+                        println!("Ca match");
                         Ok(()) 
                     } else {
                         Err(Error::ShareTokenInsufficient)
                     }
                 },
-                ClaimsLocalType::UserRole(_) => Err(Error::ShareTokenInsufficient),
-                ClaimsLocalType::Admin => Err(Error::ShareTokenInsufficient),
+                _ => Err(Error::ShareTokenInsufficient),
+            }
+        } else {
+            Err(Error::NotServerConnected)
+        }
+    }
+    pub fn check_request_role(&self, library_id: &str, request: &RsRequest) -> Result<()> {
+        if self.is_admin() {
+            Ok(())
+        } else if let ConnectedUser::Server(user) = &self {
+            if user.has_library_role(library_id, &LibraryRole::Read) {
+                Ok(())
+            } else {
+                Err(Error::InsufficientLibraryRole { user: self.clone(), library_id: library_id.to_string(), role: LibraryRole::Read })
+            }
+        } else if let ConnectedUser::Share(claims) = &self {
+            match &claims.kind {
+                ClaimsLocalType::File(library, _) => {
+                    if library == library_id { 
+                        Ok(()) 
+                    } else {
+                        Err(Error::ShareTokenInsufficient)
+                    }
+                },
+                ClaimsLocalType::RequestUrl(url) => {
+                    if *url == request.url { 
+                        Ok(()) 
+                    } else {
+                        Err(Error::ShareTokenInsufficient)
+                    }
+                },
+                _ => Err(Error::ShareTokenInsufficient),
             }
         } else {
             Err(Error::NotServerConnected)
@@ -260,6 +316,12 @@ pub struct ServerUser {
     pub libraries: Vec<ServerUserLibrariesRights>
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
+pub struct GuestUser {
+    pub id: String,
+    pub name: String,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct UploadKey {
     pub id: String,
@@ -286,6 +348,14 @@ impl ServerUser {
         }
     }
 }
+
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")] 
+pub struct InvitationRedeemer {
+	pub code: String,
+}
+
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ServerUserForUpdate {
@@ -384,6 +454,32 @@ impl ModelController {
     pub async fn get_upload_key(&self, key: String) -> RsResult<UploadKey> {
         Ok(self.store.get_upload_key(key).await?)
     }
+
+
+    pub async fn redeem_invitation(&self, code: String, user: ConnectedUser) -> RsResult<String> {
+        let connected_user = match user {
+            ConnectedUser::Server(u) => Ok(u),
+            ConnectedUser::Guest(u) => {
+                let creation_user = ServerUser {
+                    id: u.id,
+                    name: u.name,
+                    role: UserRole::Read,
+			        ..Default::default()
+                };
+                self.add_user(creation_user, &ConnectedUser::ServerAdmin).await
+            },
+            _ => Err(Error::UserGetNotAuth { user: user.clone(), requested_user: "Connected".to_string() }),
+        }?;
+        let invitation = self.store.get_library_invitation(code.clone()).await?.ok_or(Error::NotFound)?;
+        let library_id = invitation.library.clone();
+        self.store.add_library_rights(invitation.library, connected_user.id, invitation.roles).await?;
+
+        self.store.remove_library_invitation(code).await?;
+
+        Ok(library_id)
+    }
+
+
 }
 
 #[cfg(test)]

@@ -118,6 +118,8 @@ pub struct VideoCommandBuilder {
     cmd: Command,
     inputs: Vec<String>,
     current_input: u16,
+    expected_start: Option<f64>,
+    expected_duration: Option<f64>,
     input_options: Vec<String>,
     output_options: Vec<String>,
     video_effects: Vec<String>,
@@ -134,6 +136,8 @@ impl VideoCommandBuilder {
             cmd,
             inputs: Vec::new(),
             current_input: 0,
+            expected_start: None,
+            expected_duration: None,
             input_options: Vec::new(),
             output_options: Vec::new(),
             video_effects: Vec::new(),
@@ -346,10 +350,14 @@ impl VideoCommandBuilder {
             0 => self,
             1 => {
                 let first = intervals.first().unwrap();
+                println!("set interval {:?}", first);
                 self.add_input_option("-ss").add_input_option(first.start.to_string());
+                self.expected_start =  Some(first.start);
                 if let Some(duration) = first.duration {
                     self.add_out_option("-t").add_out_option((duration).to_string());
+                    self.expected_duration =  Some(duration)
                 }
+                
                 self
             },
             _ => self
@@ -359,7 +367,18 @@ impl VideoCommandBuilder {
     }
 
     pub async fn run_file(&mut self, uri: &str, to: &str) -> RsResult<()> {
-        let frames = get_number_of_frames(uri).await;
+        let mut frames = get_number_of_frames(uri).await;
+        let duration = get_duration(uri).await.unwrap_or(None);
+
+        println!("{:?} / {:?} / {:?}", duration, frames, self.expected_duration);
+        if let (Some(duration), Some(all_frames), Some(expected_duration)) = (duration, frames, self.expected_duration) {
+            frames = Some((all_frames as f64 * (expected_duration / duration)) as isize);
+        } else if let (Some(duration), Some(all_frames), Some(expected_start)) = (duration, frames, self.expected_start) {
+            let expected_duration = duration - expected_start;
+            frames = Some((all_frames as f64 * (expected_duration / duration)) as isize);
+        }
+
+        println!("=> {:?}",frames);
         for input in &self.input_options {
             self.cmd.arg(input);
         }

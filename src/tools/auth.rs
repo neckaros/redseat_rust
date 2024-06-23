@@ -32,6 +32,7 @@ pub struct ClaimsLocal {
 #[serde(rename_all = "camelCase")]
 pub enum ClaimsLocalType {
     File(String, String),
+    RequestUrl(String),
     UserRole(UserRole),
     Admin,
 }

@@ -1,7 +1,7 @@
 use std::{fs::read_dir, path::PathBuf, sync::Mutex};
 
 use extism::{convert::Json, Manifest, PluginBuilder, Wasm};
-use rs_plugin_common_interfaces::{PluginInformation, PluginType};
+use rs_plugin_common_interfaces::{PluginInformation, PluginType, RsRequest};
 
 use extism::Plugin as ExtismPlugin;
 use tokio::{fs::File, io::AsyncReadExt, sync::RwLock};
@@ -165,6 +165,8 @@ impl PluginManager {
         };
         Ok(source)
     }
+
+
 
 
 

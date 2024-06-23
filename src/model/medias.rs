@@ -519,7 +519,7 @@ impl ModelController {
             new_file.mimetype = infos.mimetype.clone().unwrap_or(DEFAULT_MIME.to_owned());
             new_file.created = Some(infos.created.unwrap_or_else(|| Utc::now().timestamp_millis()));
 
-            let final_progress = tx_progress.send(RsProgress { id: upload_id.clone(), total: infos.size, current: infos.size, kind: RsProgressType::Finished, filename: Some(filename.to_owned()) }).await;
+            let final_progress = tx_progress.send(RsProgress { id: upload_id.clone(), total: infos.size, current: infos.size, kind: RsProgressType::Analysing, filename: Some(filename.to_owned()) }).await;
             if let Err(error) = final_progress {
                 log_error(LogServiceType::Source, format!("Unable to send final progress message: {:?}", error));
             }
@@ -684,7 +684,7 @@ impl ModelController {
 
 
     pub async  fn get_file_share_token(&self, library_id: &str, media_id: &str, delay_in_seconds: u64, requesting_user: &ConnectedUser) -> Result<String> {
-        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let exp = ClaimsLocal::generate_seconds(delay_in_seconds);
         let claims = ClaimsLocal {
             cr: "service::share_media".to_string(),
