@@ -11,6 +11,7 @@ use rsa::{pkcs8::der::TagNumber, rand_core::le};
 use rusqlite::{params_from_iter, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, ParamsFromIter, Row, ToSql};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
+use strum::additional_attributes;
 use strum_macros::EnumString;
 use tokio_rusqlite::Connection;
 
@@ -333,7 +334,7 @@ impl RsQueryBuilder {
     }
 
 
-    pub fn add_recursive<T: ToSql + Display + 'static>(&mut self, table: String, mapping_table: String, map_key: String, map_field: String, id: Box<T>) {
+    pub fn add_recursive<T: ToSql + Display + 'static>(&mut self, table: String, mapping_table: String, map_key: String, map_field: String, id: Box<T>, additional_filter: Option<String>) {
         let table_name = format!("{}_{}", table, id.to_string().replace("-", "_"));
 
         let sql = format!("{}(n) AS (
@@ -343,7 +344,7 @@ impl RsQueryBuilder {
              WHERE {}.parent={}.n)", table_name, table, table_name, table, table_name);
         self.columns_recursive.push(sql);
         self.values_recursive.push(id);
-        self.wheres.push(SqlWhereType::Static(format!("id IN (SELECT tm.{} FROM {} tm WHERE {} IN {})", map_key, mapping_table, map_field, table_name)));
+        self.wheres.push(SqlWhereType::Static(format!("id IN (SELECT tm.{} FROM {} tm WHERE {} IN {}{})", map_key, mapping_table, map_field, table_name, additional_filter.unwrap_or("".to_string()))));
     }    
     pub fn format_recursive(&self) -> String {
         if !self.columns_recursive.is_empty() {

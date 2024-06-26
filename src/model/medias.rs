@@ -42,6 +42,8 @@ pub struct MediaQuery {
     #[serde(default)]
     pub tags: Vec<String>,
     #[serde(default)]
+    pub tags_confidence: Option<u16>,
+    #[serde(default)]
     pub people: Vec<String>,
     #[serde(default)]
     pub series: Vec<String>,

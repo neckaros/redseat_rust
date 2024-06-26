@@ -9,6 +9,7 @@ use tokio::sync::mpsc::Sender;
 #[derive(Debug, Clone)]
 pub struct RsPlayerAvailable {
     pub socket: SocketRef,
+    pub uid: String,
 	pub player: RsPlayer,
 }
 

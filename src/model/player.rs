@@ -46,15 +46,22 @@ impl ModelController {
 
     pub async fn list_players(&self, user: &ConnectedUser) -> RsResult<Vec<RsPlayerAvailable>> {
         user.check_role(&super::users::UserRole::Read)?;
-        let players = self.players.read().await;
-        let players = players.clone();
-        Ok(players)
+        let uid = user.user_id().ok();
+        if let Some(uid) = uid {
+            let players = self.players.read().await;
+            let players = players.clone().into_iter().filter(|p| p.uid == uid).collect();
+            Ok(players)
+        } else {
+            Ok(vec![])
+        }
+        
     }
 
     pub async fn add_player(&self, player: RsPlayer, socket: SocketRef, user: &ConnectedUser)  -> RsResult<()> {
         user.check_role(&super::users::UserRole::Read)?;
         let mut players = self.players.write().await;
         let player = RsPlayerAvailable {
+            uid: user.user_id()?,
             socket,
             player,
         };

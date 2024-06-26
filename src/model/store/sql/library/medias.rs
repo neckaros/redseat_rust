@@ -282,9 +282,9 @@ impl SqliteLibraryStore {
         where_query.add_oder(OrderBuilder::new(sort.to_owned(), query.order));
 
 
-
+        let tag_filter = query.tags_confidence.map(|conf| format!(" and (IFNULL(confidence, 100) >= {conf})"));
         for tag in query.tags {
-            where_query.add_recursive("tags".to_owned(), "media_tag_mapping".to_owned(), "media_ref".to_owned(), "tag_ref".to_owned(), Box::new(tag));
+            where_query.add_recursive("tags".to_owned(), "media_tag_mapping".to_owned(), "media_ref".to_owned(), "tag_ref".to_owned(), Box::new(tag), tag_filter.clone());
         }
         
         where_query
