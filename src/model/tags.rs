@@ -123,7 +123,7 @@ impl ModelController {
 
     pub async fn get_ai_tag(&self, library_id: &str, tag: PredictionTag, requesting_user: &ConnectedUser) -> Result<Tag> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
-        let existing_tag = self.get_tag_by_names(&library_id, tag.all_names(), &requesting_user).await?;
+        let existing_tag = self.get_tag_by_names(&library_id, vec![tag.id], &requesting_user).await?;
         if let Some(existing_tag) = existing_tag {
             return Ok(existing_tag);
         }
