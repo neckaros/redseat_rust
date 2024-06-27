@@ -28,7 +28,7 @@ pub async fn dns_certify() -> Result<(PathBuf, PathBuf)> {
 
 
 
-    log_info(LogServiceType::Register, format!("Getting https certificate"));
+    log_info(LogServiceType::Register, "Getting https certificate".to_string());
     const ACCOUNT_FILENAME: &str = "letsencrypt_account.json";
     const PUBLIC_FILENAME: &str = "cert_chain.pem";
     const PRIVATE_FILENAME: &str = "cert_private.pem";
@@ -37,7 +37,7 @@ pub async fn dns_certify() -> Result<(PathBuf, PathBuf)> {
     let existing_private_certificate = get_server_file_string(PRIVATE_FILENAME).await.unwrap_or(None);
 
     if existing_private_certificate.is_some() && existing_public_certificate.is_some() {
-        log_info(LogServiceType::Register, format!("Existing certificate, cheking validity"));
+        log_info(LogServiceType::Register, "Existing certificate, cheking validity".to_string());
 
         let public = existing_public_certificate.unwrap();
         let res = parse_x509_pem(public.as_bytes()).unwrap();
@@ -49,13 +49,13 @@ pub async fn dns_certify() -> Result<(PathBuf, PathBuf)> {
 
         let expiry_date: DateTime<Utc> = DateTime::<Utc>::from_timestamp(expiry.timestamp(), 0).expect("invalid timestamp");
          if expiry_date > utc_time { 
-            log_info(LogServiceType::Register, format!("Certificate valid"));
+            log_info(LogServiceType::Register, "Certificate valid".to_string());
             return Ok((get_server_file_path(PUBLIC_FILENAME).await?,get_server_file_path(PRIVATE_FILENAME).await?));
          } else {
-            log_info(LogServiceType::Register, format!("Certificate expired"));
+            log_info(LogServiceType::Register, "Certificate expired".to_string());
          }
     }
-    log_info(LogServiceType::Register, format!("No certificates found, requesting new one"));
+    log_info(LogServiceType::Register, "No certificates found, requesting new one".to_string());
 
     let (account, _) = {
         if let Some(existing_credentials) = get_server_file_string(ACCOUNT_FILENAME).await? {
@@ -64,7 +64,7 @@ pub async fn dns_certify() -> Result<(PathBuf, PathBuf)> {
             let credentials: AccountCredentials =  serde_json::from_str(&existing_credentials).unwrap();
             (account, credentials)
         } else {
-            log_info(LogServiceType::Register, format!("Create new ACME accounts"));
+            log_info(LogServiceType::Register, "Create new ACME accounts".to_string());
 
             let (account, credentials) = Account::create(
                 &NewAccount {
@@ -78,7 +78,7 @@ pub async fn dns_certify() -> Result<(PathBuf, PathBuf)> {
             )
             .await.map_err(|_| Error::ServerMalformatedConfigFile)?;
 
-            let serialized_credentials = serde_json::to_string(&credentials).or_else(|_| Err(Error::ServerFileNotFound))?;
+            let serialized_credentials = serde_json::to_string(&credentials).map_err(|_| Error::ServerFileNotFound)?;
 
             write_server_file("letsencrypt_account.json", serialized_credentials.as_bytes()).await?;
             (account, credentials)
@@ -158,9 +158,8 @@ pub async fn dns_certify() -> Result<(PathBuf, PathBuf)> {
     
     
     log_info(LogServiceType::Register, format!(
-        "Waiting 60 seconds for DNS propagation {} {:?}",
-        format!("https://{}/servers/{}/register/txt", config.redseat_home, id),
-        request
+        "Waiting 60 seconds for DNS propagation https://{}/servers/{}/register/txt {:?}",
+        config.redseat_home, id, request
     ));
     sleep(std::time::Duration::from_secs(60)).await;
 
@@ -214,14 +213,14 @@ pub async fn dns_certify() -> Result<(PathBuf, PathBuf)> {
 
     let mut params = CertificateParams::new(names.clone());
     params.distinguished_name = DistinguishedName::new();
-    let cert = Certificate::from_params(params).map_err(|_| Error::Error(format!("Unable to create certificate from params")))?;
-    let csr = cert.serialize_request_der().map_err(|_| Error::Error(format!("Unable to serialiaze certificate")))?;
+    let cert = Certificate::from_params(params).map_err(|_| Error::Error("Unable to create certificate from params".to_string()))?;
+    let csr = cert.serialize_request_der().map_err(|_| Error::Error("Unable to serialiaze certificate".to_string()))?;
 
     // Finalize the order and print certificate chain, private key and account credentials.
 
     order.finalize(&csr).await.map_err(|e| Error::Error(format!("Unable to finalize CSR {:?}", e)))?;
     let cert_chain_pem: String = loop {
-        match order.certificate().await.map_err(|_| Error::Error(format!("Unable to get finale certificate")))? {
+        match order.certificate().await.map_err(|_| Error::Error("Unable to get finale certificate".to_string()))? {
             Some(cert_chain_pem) => break cert_chain_pem,
             None => sleep(tokio::time::Duration::from_secs(1)).await,
         }
@@ -230,10 +229,10 @@ pub async fn dns_certify() -> Result<(PathBuf, PathBuf)> {
     //println!("certficate chain:\n\n{}", cert_chain_pem);
     //println!("private key:\n\n{}", cert.serialize_private_key_pem());
 
-    let _ = write_server_file(PUBLIC_FILENAME.clone(), cert_chain_pem.as_bytes()).await?;
-    let _ = write_server_file("cert_private.pem", cert.serialize_private_key_pem().as_bytes()).await?;
+    write_server_file(PUBLIC_FILENAME, cert_chain_pem.as_bytes()).await?;
+    write_server_file("cert_private.pem", cert.serialize_private_key_pem().as_bytes()).await?;
 
-    log_info(LogServiceType::Register, format!("Certificates created and saved"));
+    log_info(LogServiceType::Register, "Certificates created and saved".to_string());
 
     Ok((get_server_file_path(PUBLIC_FILENAME).await?,get_server_file_path(PRIVATE_FILENAME).await?))
     //Ok((cert_chain_pem, cert.serialize_private_key_pem()))

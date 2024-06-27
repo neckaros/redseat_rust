@@ -75,7 +75,7 @@ pub async fn parse_auth_message(auth: &AuthMessage, mc: &ModelController) -> Res
             let user = mc.get_user_unchecked(&claims.sub).await;
             match user {
                 Ok(user) => Ok(ConnectedUser::Server(user)),
-                Err(crate::model::error::Error::UserNotFound(id)) => Ok(ConnectedUser::Guest(GuestUser { id: claims.sub.clone(), name: claims.name.clone() })),
+                Err(crate::model::error::Error::UserNotFound(_id)) => Ok(ConnectedUser::Guest(GuestUser { id: claims.sub.clone(), name: claims.name.clone() })),
                 Err(err) => Err(err.into())
             }
         } else {

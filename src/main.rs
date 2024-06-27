@@ -118,8 +118,7 @@ async fn app() -> Result<Router> {
 
     let server_id = get_server_id().await;
     let admin_users = mc.get_users(&model::users::ConnectedUser::ServerAdmin).await?.into_iter().filter(|u| u.is_admin()).collect::<Vec<_>>();
-    if admin_users.len() == 0 || server_id.is_none() {
-        let config = get_config().await;
+    if admin_users.is_empty() || server_id.is_none() {
         log_info(LogServiceType::Register, format!("Register your server at: http://127.0.0.1:{}/infos/install", get_server_port().await));
     }
     Ok(Router::new()

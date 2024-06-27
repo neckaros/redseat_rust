@@ -39,9 +39,9 @@ pub struct OwnQuery {
 	name: String,
 }
 
-async fn handler_own(State(mc): State<ModelController>, Query(query): Query<OwnQuery>,  user: ConnectedUser) -> Result<Redirect> {
+async fn handler_own(State(mc): State<ModelController>, Query(query): Query<OwnQuery>) -> Result<Redirect> {
 	let admin_users = mc.get_users(&ConnectedUser::ServerAdmin).await?.into_iter().filter(|u| u.is_admin()).collect::<Vec<_>>();
-	if admin_users.len() > 0 {
+	if !admin_users.is_empty() {
 		Err(crate::Error::ServerAlreadyOwned)
 	} else {
 		let user = ServerUser {
@@ -56,8 +56,8 @@ async fn handler_own(State(mc): State<ModelController>, Query(query): Query<OwnQ
 	}
 }
 
-async fn handler_install(State(mc): State<ModelController>) -> Result<Redirect> {
-	let admin_users = mc.get_users(&ConnectedUser::ServerAdmin).await?.into_iter().filter(|u| u.is_admin()).collect::<Vec<_>>();
+async fn handler_install() -> Result<Redirect> {
+	//let admin_users = mc.get_users(&ConnectedUser::ServerAdmin).await?.into_iter().filter(|u| u.is_admin()).collect::<Vec<_>>();
 	check_unregistered().await?;
     
     
@@ -73,7 +73,7 @@ pub struct ConfigureQuery {
 	port: Option<u16>,
 }
 
-async fn handler_configure(State(mc): State<ModelController>, Query(query): Query<ConfigureQuery>,  user: ConnectedUser) -> Result<Redirect> {
+async fn handler_configure(Query(query): Query<ConfigureQuery>) -> Result<Redirect> {
 	check_unregistered().await?;
 
 	let mut config = get_config().await;

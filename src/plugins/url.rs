@@ -75,7 +75,7 @@ impl PluginManager {
     pub async fn fill_infos(&self, request: &mut RsRequest) {
         let ctx = YydlContext::new().await;
         if let Ok(ctx) = ctx {
-            let video = ctx.request_infos(&request).await;
+            let video = ctx.request_infos(request).await;
             if let Ok(Some(video)) = video {
                 if let Some(tags) = video.tags {
                     request.tags.add_or_set(tags);
@@ -94,7 +94,7 @@ impl PluginManager {
     }
 
     #[async_recursion]
-    pub async fn request(&self, mut request: RsRequest, _savable: bool, plugins: Vec<PluginWithCredential>, progress: RsProgressCallback) -> RsResult<SourceRead> {
+    pub async fn request(&self, mut request: RsRequest, _savable: bool, plugins: Vec<PluginWithCredential>, _progress: RsProgressCallback) -> RsResult<SourceRead> {
         let initial_request = request.clone();
         
         let client = reqwest::Client::new();
@@ -108,7 +108,7 @@ impl PluginManager {
             if let Some(size) = extract_header(headers, CONTENT_LENGTH).and_then(|c| c.parse::<u64>().ok()) {
                 request.size = Some(size);
             }
-            if let Some(filename) = extract_header(headers, CONTENT_DISPOSITION).and_then(parse_content_disposition) {
+            if let Some(_filename) = extract_header(headers, CONTENT_DISPOSITION).and_then(parse_content_disposition) {
                 //println!("dispo {}", filename);
             } else {
                 //let filename = guess_filename(&request.url, &request.mime);
@@ -156,7 +156,7 @@ impl PluginManager {
 
             if processed.status == RsRequestStatus::Intermediate && processed != initial_request {
                 println!("recurse request");
-                let recursed = self.request(processed, false, plugins, progress).await?;
+                let recursed = self.request(processed, false, plugins, _progress).await?;
                 return Ok(recursed);
             } else if processed.status == RsRequestStatus::Unprocessed {
                 return Err(Error::NotFound);

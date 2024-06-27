@@ -124,7 +124,7 @@ pub struct PublicServerInfos {
 }
 
 impl PublicServerInfos {
-    pub async fn get(public_cert_path: &PathBuf, url: &str) -> RsResult<Self> {
+    pub async fn get(public_cert_path: &PathBuf, _url: &str) -> RsResult<Self> {
         let cert = read_to_string(public_cert_path).await?;
         let config = get_config().await;
         Ok(PublicServerInfos {

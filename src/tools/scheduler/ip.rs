@@ -24,7 +24,6 @@ impl RefreshIpTask {
 #[async_trait]
 impl RsSchedulerTask for RefreshIpTask {
     async fn execute(&self, _: ModelController) -> RsResult<()> {
-        let connected_user = &ConnectedUser::ServerAdmin;
         log_info(crate::tools::log::LogServiceType::Scheduler, format!("Refresh IP"));
         let ips = update_ip().await;    
         log_info(crate::tools::log::LogServiceType::Scheduler, format!("Refreshed IP {:?}", ips));

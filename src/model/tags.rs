@@ -46,7 +46,6 @@ pub struct TagForInsert {
 
 impl Default for TagForInsert {
     fn default() -> Self {
-        let mut rng = rand::thread_rng();
         TagForInsert {
             id: nanoid!(), // Génère un ID aléatoire
             name: nanoid!(),
