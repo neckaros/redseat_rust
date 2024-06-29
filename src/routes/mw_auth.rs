@@ -47,17 +47,11 @@ pub async fn mw_must_be_admin(user: ConnectedUser, req: Request, next: Next) -> 
 pub async fn mw_token_resolver(mc: State<ModelController>, headers: HeaderMap, query: Query<TokenParams>, mut req: Request, next: Next) -> Result<Response> {
     let token: Option<String> = match headers.get("AUTHORIZATION").and_then(|t| t.to_str().ok()) {
         Some(token) => Some(token.replace(BEARER, "")),
-        None => match &query.token {
-            Some(token) => Some(token.clone()),
-            None => None,
-        },
+        None => query.token.clone(),
     };
     let sharetoken: Option<String> = match headers.get("SHARETOKEN").and_then(|t| t.to_str().ok()) {
         Some(token) => Some(token.replace(BEARER, "")),
-        None => match &query.sharetoken {
-            Some(token) => Some(token.clone()),
-            None => None,
-        },
+        None => query.sharetoken.clone(),
     };
     let auth_message = AuthMessage { token, sharetoken, key: query.key.clone()};
     let connected_user = parse_auth_message(&auth_message, &mc.0).await?;
@@ -71,7 +65,7 @@ pub async fn parse_auth_message(auth: &AuthMessage, mc: &ModelController) -> Res
 
     if let Some(token) = &auth.token {
         if let Some(server_id) = server_id {  
-            let claims = verify(&token, &server_id)?;
+            let claims = verify(token, &server_id)?;
             let user = mc.get_user_unchecked(&claims.sub).await;
             match user {
                 Ok(user) => Ok(ConnectedUser::Server(user)),
@@ -83,7 +77,7 @@ pub async fn parse_auth_message(auth: &AuthMessage, mc: &ModelController) -> Res
         }
 
     } else if let Some(sharetoken) = &auth.sharetoken {
-        let claims = verify_local(&sharetoken).await?;
+        let claims = verify_local(sharetoken).await?;
         
         Ok(ConnectedUser::Share(claims))
 

@@ -21,7 +21,7 @@ async fn handler_infos(State(mc): State<ModelController>) -> Result<Json<Value>>
 	let admin_users = mc.get_users(&ConnectedUser::ServerAdmin).await?.into_iter().filter(|u| u.is_admin()).collect::<Vec<_>>();
 	let infos = PublicServerInfos::current().await?;
 	let body: Json<Value> = Json(json!({
-		"administred": admin_users.len() > 0,
+		"administred": !admin_users.is_empty(),
 		"publicInfos": infos,
 	}));
 	Ok(body)
@@ -104,7 +104,7 @@ async fn handler_register(State(mc): State<ModelController>, Query(query): Query
 	check_unregistered().await?;
 
 	let admin_users = mc.get_users(&ConnectedUser::ServerAdmin).await?.into_iter().filter(|u| u.is_admin()).collect::<Vec<_>>();
-	if admin_users.len() > 0 {
+	if !admin_users.is_empty() {
 		Err(crate::Error::ServerAlreadyOwned)
 	} else {
 		let user = ServerUser {

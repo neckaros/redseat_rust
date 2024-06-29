@@ -16,6 +16,7 @@ pub mod text_tools;
 pub mod serialization_tools;
 
 pub mod clock;
+pub mod download_external_libs;
 
 
 pub fn get_time() -> Duration {

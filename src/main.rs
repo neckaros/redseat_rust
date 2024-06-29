@@ -40,9 +40,11 @@ mod domain;
 
 #[tokio::main]
 async fn main() ->  Result<()> {
-
-    log_info(tools::log::LogServiceType::Register, format!("Starting redseat server"));
-    log_info(tools::log::LogServiceType::Register, format!("Initializing config"));
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+    log_info(tools::log::LogServiceType::Register, format!("Architecture: {}-{}", os, arch));
+    log_info(tools::log::LogServiceType::Register, "Starting redseat server".to_string());
+    log_info(tools::log::LogServiceType::Register, "Initializing config".to_string());
     server::initialize_config().await;
 
     /*tokio::spawn(async move {
