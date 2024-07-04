@@ -333,16 +333,16 @@ impl SourceRead {
 
 #[async_trait]
 pub trait Source: Send {
-    async fn new(root: ServerLibrary, controller: ModelController) -> SourcesResult<Self> where Self: Sized;
+    async fn new(root: ServerLibrary, controller: ModelController) -> RsResult<Self> where Self: Sized;
     
 
     async fn exists(&self, name: &str) -> bool;
-    async fn remove(&self, name: &str) -> SourcesResult<()>;
-    async fn fill_infos(&self, source: &str, infos: &mut MediaForUpdate) -> SourcesResult<()>;
+    async fn remove(&self, name: &str) -> RsResult<()>;
+    async fn fill_infos(&self, source: &str, infos: &mut MediaForUpdate) -> RsResult<()>;
     fn local_path(&self, source: &str) -> Option<PathBuf>;
-    async fn get_file(&self, source: &str, range: Option<RangeDefinition>) -> SourcesResult<SourceRead>;
+    async fn get_file(&self, source: &str, range: Option<RangeDefinition>) -> RsResult<SourceRead>;
     
-    async fn write<'a>(&self, name: &str, read: Pin<Box<dyn AsyncRead + Send + 'a>>) -> SourcesResult<String>;
+    async fn write<'a>(&self, name: &str, read: Pin<Box<dyn AsyncRead + Send + 'a>>) -> RsResult<String>;
     
     //async fn fill_file_information(&self, file: &mut ServerFile) -> SourcesResult<()>;
 }

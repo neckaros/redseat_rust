@@ -385,6 +385,7 @@ impl From<MediaDownloadUrl> for RsRequest {
             selected_file: None,
             tags: value.tags_lookup,
             people: value.people_lookup,
+            ignore_origin_duplicate: value.ignore_origin_duplicate,
             ..Default::default()
         }
     }
@@ -410,6 +411,7 @@ impl From<GroupMediaDownload<MediaDownloadUrl>> for Vec<RsRequest> {
                         tags: file.tags_lookup.or(value.tags_lookup.clone()),
                         people: file.people_lookup.or(value.people_lookup.clone()),
                         description: file.description.or(value.title.clone()),
+                        ignore_origin_duplicate: file.ignore_origin_duplicate,
                         ..Default::default()
                     });
         }
@@ -456,6 +458,7 @@ impl From<RsRequest> for MediaForUpdate {
         MediaForUpdate {
             name: value.filename,
             description: value.description,
+            ignore_origin_duplicate: value.ignore_origin_duplicate,
             //kind: value.k,
             size: value.size,
             people_lookup: value.people,

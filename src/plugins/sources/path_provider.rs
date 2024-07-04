@@ -9,7 +9,7 @@ use query_external_ip::SourceError;
 use sha256::try_async_digest;
 use tokio::{fs::{create_dir_all, remove_file, File}, io::{copy, AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, BufReader, BufWriter}};
 
-use crate::{domain::{library::ServerLibrary, media::MediaForUpdate}, model::ModelController, routes::mw_range::RangeDefinition, tools::{file_tools::get_mime_from_filename, image_tools::resize_image_reader, log::log_info}};
+use crate::{domain::{library::ServerLibrary, media::MediaForUpdate}, error::RsResult, model::ModelController, routes::mw_range::RangeDefinition, tools::{file_tools::get_mime_from_filename, image_tools::resize_image_reader, log::log_info}};
 
 use super::{error::{SourcesError, SourcesResult}, AsyncReadPinBox, FileStreamResult, RangeResponse, Source, SourceRead};
 
@@ -92,14 +92,14 @@ impl PathProvider {
 
 #[async_trait]
 impl Source for PathProvider {
-    async fn new(library: ServerLibrary, _: ModelController) -> SourcesResult<Self> {
+    async fn new(library: ServerLibrary, _: ModelController) -> RsResult<Self> {
         if let Some(root) = library.root {
             Ok(PathProvider {
                 root: PathBuf::from_str(&root).map_err(|_| SourcesError::Error)?,
                 for_local: false
             })
         } else {
-            Err(SourcesError::Error)
+            Err(SourcesError::Error.into())
         }
     }
 
@@ -108,13 +108,13 @@ impl Source for PathProvider {
         path.exists()
     }
 
-    async fn remove(&self, source: &str) -> SourcesResult<()> {
+    async fn remove(&self, source: &str) -> RsResult<()> {
         let path = self.get_gull_path(&source);
         remove_file(path).await?;
         Ok(())
     }
 
-    async fn fill_infos(&self, source: &str, infos: &mut MediaForUpdate) -> SourcesResult<()> {
+    async fn fill_infos(&self, source: &str, infos: &mut MediaForUpdate) -> RsResult<()> {
         let path = self.get_gull_path(&source);
         let metadata = path.metadata()?;
         infos.size = Some(metadata.len());
@@ -134,7 +134,7 @@ impl Source for PathProvider {
         Some(self.get_gull_path(&source))
     }
 
-    async fn get_file(&self, source: &str, range: Option<RangeDefinition>) -> SourcesResult<SourceRead> {
+    async fn get_file(&self, source: &str, range: Option<RangeDefinition>) -> RsResult<SourceRead> {
         let path = self.get_gull_path(&source);
         let guess = mime_guess::from_path(&source);
         let filename = path.file_name().map(|f| f.to_string_lossy().into_owned());
@@ -205,7 +205,7 @@ impl Source for PathProvider {
 
 
 
-    async fn write<'a>(&self, name: &str, mut read: Pin<Box<dyn AsyncRead + Send + 'a>>) -> SourcesResult<String> {
+    async fn write<'a>(&self, name: &str, mut read: Pin<Box<dyn AsyncRead + Send + 'a>>) -> RsResult<String> {
         let path = self.root.clone();
         let mut sourcepath = PathBuf::new();
 

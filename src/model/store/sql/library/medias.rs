@@ -466,16 +466,15 @@ impl SqliteLibraryStore {
                 update.people_lookup.add_or_set(parsed_people);
             }
         }
-        
         // Find tags with lookup 
         if let Some(lookup_tags) = update.tags_lookup {
             let mut found_tags: Vec<MediaItemReference> = vec![];
             for lookup_tag in lookup_tags {
-                let found = self.get_tags(TagQuery::new_with_name(&lookup_tag)).await?;
-                if let Some(tag) = found.get(0) {
+                let found = self.get_tags(TagQuery::new_with_name(&lookup_tag.replace('#', ""))).await?;
+                if let Some(tag) = found.first() {
                     found_tags.push(MediaItemReference { id: tag.id.clone(), conf: Some(100) });
                 } else {
-                    let tag = self.get_or_create_path( vec!["imported", &lookup_tag], TagForUpdate { generated: Some(true), ..Default::default()}).await?;
+                    let tag = self.get_or_create_path( vec!["imported", &lookup_tag.replace('#', "")], TagForUpdate { generated: Some(true), ..Default::default()}).await?;
                     found_tags.push(MediaItemReference { id: tag.id.clone(), conf: Some(100) });
                 }
             }

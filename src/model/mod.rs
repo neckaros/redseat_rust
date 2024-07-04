@@ -20,7 +20,7 @@ use std::{collections::HashMap, io::Read, path::PathBuf, pin::Pin, sync::Arc};
 use futures::lock::Mutex;
 use nanoid::nanoid;
 use strum::IntoEnumIterator;
-use crate::{domain::{library::{LibraryMessage, LibraryRole, ServerLibrary}, player::{RsPlayer, RsPlayerAvailable}, plugin::PluginWasm, serie::Serie}, error::RsResult, plugins::{list_plugins, medias::{fanart::FanArtContext, imdb::ImdbContext, tmdb::TmdbContext, trakt::TraktContext}, sources::{error::SourcesError, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, LocalSource, Source, SourceRead}, PluginManager}, routes::mw_range::RangeDefinition, server::get_server_file_path_array, tools::{clock::SECONDS_IN_HOUR, image_tools::{resize_image_path, ImageSize, ImageSizeIter, ImageType}, log::log_info, scheduler::{self, ip::RefreshIpTask, refresh::RefreshTask, RsScheduler, RsTaskType}}};
+use crate::{domain::{library::{LibraryMessage, LibraryRole, ServerLibrary}, player::{RsPlayer, RsPlayerAvailable}, plugin::PluginWasm, serie::Serie}, error::{RsError, RsResult}, plugins::{list_plugins, medias::{fanart::FanArtContext, imdb::ImdbContext, tmdb::TmdbContext, trakt::TraktContext}, sources::{error::SourcesError, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, LocalSource, Source, SourceRead}, PluginManager}, routes::mw_range::RangeDefinition, server::get_server_file_path_array, tools::{clock::SECONDS_IN_HOUR, image_tools::{resize_image_path, ImageSize, ImageSizeIter, ImageType}, log::log_info, scheduler::{self, ip::RefreshIpTask, refresh::RefreshTask, RsScheduler, RsTaskType}}};
 
 use self::{medias::CRYPTO_HEADER_SIZE, store::SqliteStore, users::{ConnectedUser, ServerUser, UserRole}};
 use error::{Result, Error};
@@ -157,7 +157,7 @@ impl  ModelController {
 
 	
 
-	pub async fn source_for_library(&self, library_id: &str) -> Result<Box<dyn Source>> {
+	pub async fn source_for_library(&self, library_id: &str) -> RsResult<Box<dyn Source>> {
 		let library = self.store.get_library(library_id).await?.ok_or_else(|| Error::NotFound)?;
 		let source = self.plugin_manager.source_for_library(library, self.clone()).await?;
 		Ok(source)
@@ -187,7 +187,7 @@ impl  ModelController {
 		let reader_response = m.get_file(&source_filepath, None).await;
 		if let Some(int_size) = size {
 			if let Err(error) = &reader_response {
-				if matches!(error, SourcesError::NotFound(_)) {
+				if matches!(error, RsError::Source(SourcesError::NotFound(_))) {
 					let original_filepath = format!("{}/{}{}.webp", folder, id, ImageType::optional_to_filename_element(&kind));
 					let exist = m.exists(&original_filepath).await;
 					if exist {

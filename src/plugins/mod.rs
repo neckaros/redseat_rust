@@ -114,6 +114,7 @@ pub async fn list_other_plugins() -> crate::Result<Vec<PluginInformation>> {
 }*/
 
 pub mod url;
+pub mod provider;
 
 impl PluginManager {
     pub async fn new() -> Result<Self> {
@@ -155,7 +156,7 @@ impl PluginManager {
         Ok(infos)
     }
 
-    pub async fn source_for_library(&self, library: ServerLibrary, controller: ModelController) -> SourcesResult<Box<dyn Source>> {
+    pub async fn source_for_library(&self, library: ServerLibrary, controller: ModelController) -> RsResult<Box<dyn Source>> {
         let source: Box<dyn Source> = if library.source == "PathProvider" {
             let source = PathProvider::new(library, controller).await?;
             Box::new(source)

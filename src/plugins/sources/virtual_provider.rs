@@ -9,7 +9,7 @@ use query_external_ip::SourceError;
 use rs_plugin_common_interfaces::request::RsRequest;
 use tokio::{fs::File, io::{AsyncRead, AsyncWrite, BufReader, BufWriter}};
 
-use crate::{domain::{library::ServerLibrary, media::MediaForUpdate}, model::ModelController, plugins::PluginManager, routes::mw_range::RangeDefinition, server::get_server_file_path_array};
+use crate::{domain::{library::ServerLibrary, media::MediaForUpdate}, error::RsResult, model::ModelController, plugins::PluginManager, routes::mw_range::RangeDefinition, server::get_server_file_path_array};
 
 use super::{error::{SourcesError, SourcesResult}, AsyncReadPinBox, FileStreamResult, Source, SourceRead};
 
@@ -21,7 +21,7 @@ pub struct VirtualProvider {
 
 #[async_trait]
 impl Source for VirtualProvider {
-    async fn new(library: ServerLibrary, controller: ModelController) -> SourcesResult<Self> {
+    async fn new(library: ServerLibrary, controller: ModelController) -> RsResult<Self> {
 
         Ok(VirtualProvider {
             library,
@@ -32,7 +32,7 @@ impl Source for VirtualProvider {
     async fn exists(&self, _source: &str) -> bool {
         true
     }
-    async fn remove(&self, _source: &str) -> SourcesResult<()> {
+    async fn remove(&self, _source: &str) -> RsResult<()> {
 
         Ok(())
     }
@@ -41,11 +41,11 @@ impl Source for VirtualProvider {
         None
     }
 
-    async fn fill_infos(&self, _source: &str, _infos: &mut MediaForUpdate) -> SourcesResult<()> {
+    async fn fill_infos(&self, _source: &str, _infos: &mut MediaForUpdate) -> RsResult<()> {
 
         Ok(())
     }
-    async fn get_file(&self, source: &str, _range: Option<RangeDefinition>) -> SourcesResult<SourceRead> {
+    async fn get_file(&self, source: &str, _range: Option<RangeDefinition>) -> RsResult<SourceRead> {
         let splitted: Vec<String> = source.split('|').map(ToString::to_string).collect();
         Ok(SourceRead::Request( RsRequest {
             url: splitted.first().cloned().unwrap_or(source.to_owned()),
@@ -55,7 +55,7 @@ impl Source for VirtualProvider {
     }
 
 
-    async fn write<'a>(&self, _name: &str, _read: Pin<Box<dyn AsyncRead + Send + 'a>>) -> SourcesResult<String> {
+    async fn write<'a>(&self, _name: &str, _read: Pin<Box<dyn AsyncRead + Send + 'a>>) -> RsResult<String> {
         Ok("test".to_owned())
     }
 

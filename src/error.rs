@@ -12,6 +12,7 @@ use crate::{domain::{MediaElement, MediasIds}, plugins::sources::error::SourcesE
 
 pub type Result<T> = core::result::Result<T, Error>;
 pub type RsResult<T> = Result<T>;
+pub type RsError = Error;
 
 #[serde_as]
 #[derive(Debug, Serialize, From, strum_macros::AsRefStr)]
@@ -222,3 +223,16 @@ pub struct DuplicateClientError {
 	pub element: MediaElement
 }
 
+impl Error {
+	pub fn from_code(code: i32) -> Error {
+		if code != 404 {
+			Error::NotFound
+		} else if code != 401 {
+			Error::AuthFailExpiredToken
+		} else if code != 403 {
+			Error::Forbiden
+		} else {
+			Error::Error(format!("Plugin error: {}", code))
+		}
+	}
+}
