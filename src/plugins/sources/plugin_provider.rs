@@ -11,7 +11,7 @@ use tokio::{fs::File, io::{AsyncRead, AsyncWrite, BufReader, BufWriter}};
 
 use crate::{domain::{library::ServerLibrary, media::MediaForUpdate, plugin::PluginWithCredential}, error::RsResult, model::{users::ConnectedUser, ModelController}, plugins::PluginManager, routes::mw_range::RangeDefinition, server::get_server_file_path_array};
 
-use super::{error::{SourcesError, SourcesResult}, AsyncReadPinBox, FileStreamResult, Source, SourceRead};
+use super::{error::{SourcesError, SourcesResult}, AsyncReadPinBox, AsyncSeekableWrite, FileStreamResult, Source, SourceRead};
 
 pub struct PluginProvider {
     library: ServerLibrary,
@@ -61,6 +61,10 @@ impl Source for PluginProvider {
 
     async fn write<'a>(&self, _name: &str, _read: Pin<Box<dyn AsyncRead + Send + 'a>>) -> RsResult<String> {
         Ok("test".to_owned())
+    }
+
+    async fn writer<'a>(&self, name: &str) -> RsResult<(String, Pin<Box<dyn AsyncSeekableWrite + 'a>>)> {
+        Err(crate::Error::NotImplemented("Writer not implemented for plugin provider".to_string()))
     }
 
 }

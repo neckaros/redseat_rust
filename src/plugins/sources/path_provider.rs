@@ -7,11 +7,11 @@ use chrono::{Datelike, Utc};
 use futures::Stream;
 use query_external_ip::SourceError;
 use sha256::try_async_digest;
-use tokio::{fs::{create_dir_all, remove_file, File}, io::{copy, AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, BufReader, BufWriter}};
+use tokio::{fs::{create_dir_all, remove_file, File}, io::{copy, AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter}};
 
 use crate::{domain::{library::ServerLibrary, media::MediaForUpdate}, error::RsResult, model::ModelController, routes::mw_range::RangeDefinition, tools::{file_tools::get_mime_from_filename, image_tools::resize_image_reader, log::log_info}};
 
-use super::{error::{SourcesError, SourcesResult}, AsyncReadPinBox, FileStreamResult, RangeResponse, Source, SourceRead};
+use super::{error::{SourcesError, SourcesResult}, AsyncReadPinBox, AsyncSeekableWrite, FileStreamResult, RangeResponse, Source, SourceRead};
 
 pub struct PathProvider {
     root: PathBuf,
@@ -206,6 +206,14 @@ impl Source for PathProvider {
 
 
     async fn write<'a>(&self, name: &str, mut read: Pin<Box<dyn AsyncRead + Send + 'a>>) -> RsResult<String> {
+        
+        let (source, mut file) = self.writer(name).await?;
+        copy(&mut read, &mut file).await?;
+        file.flush().await?;
+        Ok(source.to_string())
+    }
+
+    async fn writer<'a>(&self, name: &str) -> RsResult<(String, Pin<Box<dyn AsyncSeekableWrite + 'a>>)> {
         let path = self.root.clone();
         let mut sourcepath = PathBuf::new();
 
@@ -221,7 +229,7 @@ impl Source for PathProvider {
 
         let mut file_path = path.clone();
         let original_source = sourcepath.clone();
-        sourcepath.push(&name);
+        sourcepath.push(name);
         file_path.push(&sourcepath);
         
         if let Some(p) = file_path.parent() {
@@ -232,7 +240,7 @@ impl Source for PathProvider {
         let original_name = name;
         let mut i = 1;
         while file_path.exists() {
-            i = i + 1;
+            i += 1;
             let extension = file_path.extension().and_then(|r| r.to_str());
             let new_name = if let Some(extension) = extension {
                 original_name.replace(&format!(".{}", extension), &format!("-{}.{}", i, extension))
@@ -247,11 +255,15 @@ impl Source for PathProvider {
     
     
         let source = sourcepath.to_str().ok_or(SourcesError::Other("Unable to convert path to string".into()))?.to_string();
-        let mut file = BufWriter::new(File::create(&file_path).await?);
-        copy(&mut read, &mut file).await?;
-        Ok(source.to_string())
+        let file = BufWriter::new(File::create(&file_path).await?);
+
+        Ok((source, Box::pin(file)))
     }
+
 }
+
+
+
 
 impl PathProvider {
     /// Will replace existing library file

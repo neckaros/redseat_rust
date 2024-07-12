@@ -128,9 +128,9 @@ impl PluginManager {
                     };
                     //println!("request {}", serde_json::to_string(&req).unwrap());
                     
-                    println!("call plugin request {:?}: {}", plugin.path, request.url);
+                    //println!("call plugin request {:?}: {}", plugin.path, request.url);
                     let res = plugin_m.call_get_error_code::<Json<RsRequestPluginRequest>, Json<RsRequest>>("process", Json(req));
-                    println!("called plugin request {:?}", plugin.path);
+                    //println!("called plugin request {:?}", plugin.path);
                     if let Ok(Json(mut res)) = res {
                         if res.mime.is_none() {
                             res.mime = get_mime_from_filename(&res.url);

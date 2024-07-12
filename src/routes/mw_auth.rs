@@ -82,7 +82,7 @@ pub async fn parse_auth_message(auth: &AuthMessage, mc: &ModelController) -> Res
         Ok(ConnectedUser::Share(claims))
 
     } else if let Some(key) = &auth.key {
-        let uploadkey = mc.get_upload_key(key.to_owned()).await?;
+        let uploadkey = mc.get_upload_key(key.to_owned()).await.map_err(|_| Error::AuthFail)?;
           
         Ok(ConnectedUser::UploadKey(uploadkey))
   

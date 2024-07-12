@@ -223,6 +223,7 @@ pub struct MediaForUpdate {
     
     pub add_series: Option<Vec<FileEpisode>>,
     pub remove_series: Option<Vec<FileEpisode>>,
+    pub series_lookup: Option<Vec<String>>,
 
     pub add_people: Option<Vec<MediaItemReference>>,
     pub remove_people: Option<Vec<String>>,
@@ -346,7 +347,11 @@ pub struct GroupMediaDownload<T> {
 
     pub title: Option<String>,
 
+    pub ignore_origin_duplicate: Option<bool>,
+    
+    pub description: Option<String>,
     pub people_lookup: Option<Vec<String>>,
+    pub series_lookup: Option<Vec<String>>,
     pub tags_lookup: Option<Vec<String>>,
 }
 
@@ -363,11 +368,13 @@ pub struct MediaDownloadUrl {
 
     pub kind: Option<FileType>,
     pub filename: Option<String>,
+    pub mime: Option<String>,
     pub description: Option<String>,
     pub length: Option<u64>,
     pub thumbnail_url: Option<String>,
     
     pub people_lookup: Option<Vec<String>>,
+    pub series_lookup: Option<Vec<String>>,
     pub tags_lookup: Option<Vec<String>>,
 }
 
@@ -375,7 +382,7 @@ impl From<MediaDownloadUrl> for RsRequest {
     fn from(value: MediaDownloadUrl) -> Self {
         RsRequest {
             url: value.url,
-            mime: None,
+            mime: value.mime,
             size: None,
             filename: value.filename,
             status: if value.parse { RsRequestStatus::NeedParsing } else { RsRequestStatus::Unprocessed },
@@ -456,7 +463,7 @@ impl From<Media> for MediaForUpdate {
 impl From<RsRequest> for MediaForUpdate {
     fn from(value: RsRequest) -> Self {
         MediaForUpdate {
-            name: value.filename,
+            name: value.filename_or_extract_from_url(),
             description: value.description,
             ignore_origin_duplicate: value.ignore_origin_duplicate,
             //kind: value.k,
@@ -465,6 +472,52 @@ impl From<RsRequest> for MediaForUpdate {
             tags_lookup: value.tags,
             ..Default::default()
         }
+    }
+}
+
+impl From<GroupMediaDownload<MediaDownloadUrl>> for MediaForUpdate {
+    fn from(value: GroupMediaDownload<MediaDownloadUrl>) -> Self {
+        let mut update = MediaForUpdate {
+            name: value.group_filename,
+            description: value.description,
+            ignore_origin_duplicate: value.ignore_origin_duplicate.unwrap_or_default(),
+            people_lookup: value.people_lookup,
+            tags_lookup: value.tags_lookup,
+            series_lookup: value.series_lookup,
+            ..Default::default()
+        };
+
+        if value.group.unwrap_or_default() {
+            let mut people_final = update.people_lookup.clone().unwrap_or_default();
+            for file in &value.files {
+                if let Some(people) = &file.people_lookup {
+                    for person in people {
+                        if !people_final.contains(person) {
+                            people_final.push(person.to_string());
+                        }
+                    }
+                }
+            }
+            if !people_final.is_empty() {
+                update.people_lookup = Some(people_final);
+            }
+
+            let mut tags_final = update.tags_lookup.clone().unwrap_or_default();
+            for file in &value.files {
+                if let Some(tags) = &file.tags_lookup {
+                    for tag in tags {
+                        if !tags_final.contains(tag) {
+                            tags_final.push(tag.to_string());
+                        }
+                    }
+                }
+            }
+            if !tags_final.is_empty() {
+                update.tags_lookup = Some(tags_final);
+            }
+        }
+
+        update
     }
 }
 

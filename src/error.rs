@@ -22,6 +22,8 @@ pub enum Error {
 	Message(String),
 	LoginFail,
 	NotFound,
+	
+	NotImplemented(String),
 
 	UnavailableForCryptedLibraries,
 
@@ -119,6 +121,10 @@ pub enum Error {
 	
 	#[from]
 	Extism(#[serde_as(as = "DisplayFromStr")] extism::Error),
+
+	
+	#[from]
+	Zip(#[serde_as(as = "DisplayFromStr")] zip::result::ZipError),
 }
 
 // region:    --- Error Boilerplate

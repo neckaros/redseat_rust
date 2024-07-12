@@ -38,6 +38,8 @@ impl ToSql for SerieStatus {
 pub struct SerieQuery {
     pub after: Option<u64>,
 
+    pub name: Option<String>,
+    
     #[serde(default)]
     pub sort: RsSort,
     #[serde(default)]

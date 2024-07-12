@@ -3,7 +3,7 @@ use std::u64;
 use rs_plugin_common_interfaces::url::RsLink;
 use rusqlite::{params, params_from_iter, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, Row, ToSql};
 
-use crate::{domain::{media::{FileEpisode, FileType, Media, MediaForInsert, MediaForUpdate, MediaItemReference, RsGpsPosition}, MediasIds}, error::RsResult, model::{medias::{MediaQuery, MediaSource, RsSort}, people::PeopleQuery, store::{from_comma_separated_optional, from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType}, to_comma_separated_optional, to_pipe_separated_optional}, tags::{TagForInsert, TagForUpdate, TagQuery}}, tools::{array_tools::AddOrSetArray, log::{log_info, LogServiceType}, text_tools::{extract_people, extract_tags}}};
+use crate::{domain::{media::{FileEpisode, FileType, Media, MediaForInsert, MediaForUpdate, MediaItemReference, RsGpsPosition}, MediasIds}, error::RsResult, model::{medias::{MediaQuery, MediaSource, RsSort}, people::PeopleQuery, series::SerieQuery, store::{from_comma_separated_optional, from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType}, to_comma_separated_optional, to_pipe_separated_optional}, tags::{TagForInsert, TagForUpdate, TagQuery}}, tools::{array_tools::AddOrSetArray, log::{log_info, LogServiceType}, text_tools::{extract_people, extract_tags}}};
 use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
 
@@ -502,6 +502,20 @@ impl SqliteLibraryStore {
             }
             if !found_people.is_empty() {
                 update.add_people.add_or_set(found_people);
+            }
+        }
+
+        // Find serie with lookup 
+        if let Some(lookup_series) = update.series_lookup {
+            let mut found_series: Vec<FileEpisode> = vec![];
+            for lookup_serie in lookup_series {
+                let found = self.get_series(SerieQuery { name: Some(lookup_serie), ..Default::default()}).await?;
+                if let Some(serie) = found.first() {
+                    found_series.push(FileEpisode { id: serie.id.to_string(), season: None, episode: None });
+                }
+            }
+            if !found_series.is_empty() {
+                update.add_series.add_or_set(found_series);
             }
         }
        

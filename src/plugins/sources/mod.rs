@@ -1,4 +1,4 @@
-use std::{fmt::{self, Debug}, fs::{remove_dir, remove_dir_all, remove_file}, io, path::PathBuf, pin::Pin, str::FromStr, sync::Arc};
+use std::{fmt::{self, Debug}, fs::{remove_dir, remove_dir_all, remove_file}, io, path::PathBuf, pin::Pin, str::FromStr, sync::Arc, time::Duration};
 use async_recursion::async_recursion;
 use axum::{async_trait, body::Body, extract::Request, response::IntoResponse};
 use bytes::Bytes;
@@ -9,10 +9,10 @@ use nanoid::nanoid;
 use reqwest::RequestBuilder;
 use rs_plugin_common_interfaces::request::{RsCookies, RsRequest, RsRequestStatus};
 use serde::{Deserialize, Serialize};
-use tokio::{fs::File, io::{AsyncRead, AsyncWrite, BufReader}, sync::{mpsc::Sender, Mutex}};
+use tokio::{fs::File, io::{AsyncRead, AsyncSeek, AsyncWrite, BufReader}, sync::{mpsc::Sender, Mutex}, time::sleep};
 
 use tokio_util::io::{ReaderStream, StreamReader};
-use crate::{domain::{library::ServerLibrary, media::MediaForUpdate, progress::{RsProgress, RsProgressCallback}}, error::RsResult, model::{error::Error, users::ConnectedUser, ModelController}, routes::mw_range::RangeDefinition, tools::video_tools::ytdl::ProgressStreamItem};
+use crate::{domain::{library::ServerLibrary, media::MediaForUpdate, progress::{RsProgress, RsProgressCallback}}, error::RsResult, model::{error::Error, users::ConnectedUser, ModelController}, routes::mw_range::RangeDefinition, tools::{file_tools::get_mime_from_filename, video_tools::ytdl::ProgressStreamItem}};
 
 use self::error::{SourcesError, SourcesResult};
 
@@ -23,6 +23,13 @@ pub mod error;
 pub mod async_reader_progress;
 
 pub type AsyncReadPinBox = Pin<Box<dyn AsyncRead + Send>>;
+
+pub trait AsyncSeekableWrite: AsyncWrite + AsyncSeek + Send {}
+
+impl<T> AsyncSeekableWrite for T where T: AsyncWrite + AsyncSeek + Send {}
+
+pub type BoxAsyncSeekableWrite = Box<dyn AsyncSeekableWrite + Unpin + Send>;
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RangeResponse {
     pub size: Option<u64>,
@@ -54,6 +61,16 @@ impl RangeResponse {
     pub fn header_value(&self) -> String  {
         format!("bytes {}-{}/{}", self.start.unwrap_or(0), self.end.unwrap_or(self.size.unwrap_or(1) - 1), self.size.unwrap_or(0))
     }
+}
+
+
+pub struct FileBufferResult {
+    pub buffer: Vec<u8>,
+    pub size: Option<u64>,
+    pub range: Option<RangeResponse>,
+    pub mime: Option<String>,
+    pub name: Option<String>,
+    pub cleanup: Option<Box<dyn Cleanup>>
 }
 
 pub struct FileStreamResult<T: Sized + AsyncRead + Send> {
@@ -131,6 +148,7 @@ impl<T: Sized + AsyncRead + Send> FileStreamResult<T> {
 #[derive(Debug)]
 pub enum SourceRead {
 	Stream(FileStreamResult<AsyncReadPinBox>),
+	//Buffer(FileBufferResult),
 	Request(RsRequest),
 }
 
@@ -176,7 +194,7 @@ impl RsRequestHeader for RequestBuilder {
 
 impl SourceRead { 
     #[async_recursion]
-    pub async fn into_reader(self, library_id: &str, range: Option<RangeDefinition>, progress: Option<Sender<RsProgress>>, mc: Option<(ModelController, &ConnectedUser)>) -> RsResult<FileStreamResult<AsyncReadPinBox>> {
+    pub async fn into_reader(self, library_id: &str, range: Option<RangeDefinition>, progress: Option<Sender<RsProgress>>, mc: Option<(ModelController, &ConnectedUser)>, retry: Option<u16>) -> RsResult<FileStreamResult<AsyncReadPinBox>> {
         //println!("into_reader");
         match self {
             SourceRead::Stream(reader) => {
@@ -188,7 +206,7 @@ impl SourceRead {
                     RsRequestStatus::Unprocessed => {
                         if let Some((mc, user)) = mc {
                             let new_request = mc.exec_request(request.clone(), Some(library_id.to_string()), false, progress.clone(), user).await?;
-                            new_request.into_reader(library_id, range.clone(), progress.clone(), Some((mc, user))).await
+                            new_request.into_reader(library_id, range.clone(), progress.clone(), Some((mc, user)), None).await
                         } else {
                             Err(Error::InvalidRsRequestStatus(request.status).into())
                         }
@@ -196,7 +214,7 @@ impl SourceRead {
                     RsRequestStatus::NeedParsing => {
                         if let Some((mc, user)) = mc {
                             let new_request = mc.parse_request(request, progress.clone()).await?;
-                            new_request.into_reader(library_id, range.clone(), progress.clone(), Some((mc, user))).await
+                            new_request.into_reader(library_id, range.clone(), progress.clone(), Some((mc, user)), None).await
                         } else {
                             Err(Error::InvalidRsRequestStatus(request.status).into())
                         }
@@ -207,7 +225,15 @@ impl SourceRead {
                         let r = client.get(request.url.clone())
                             .add_request_headers(&request, &range)?
                             .send().await?;
-
+                        if !r.status().is_success() {
+                            if r.status().as_u16() == 429 && retry.unwrap_or_default() < 5 {
+                                sleep(Duration::from_millis((retry.unwrap_or(1) as u64) * 1000)).await;
+                                println!("Retrying request into reader {}", retry.unwrap_or_default());
+                                return SourceRead::Request(request).into_reader(library_id, range.clone(), progress.clone(), mc, Some(retry.unwrap_or_default() + 1)).await;
+                                
+                            }
+                            return Err(Error::ServiceError("Unable to convert request to reader".to_string(), Some(format!("HTTP Error code: {:?}", r.status()))).into());
+                        }
                         let result_headers: &reqwest::header::HeaderMap = r.headers();
                         let accept_range = result_headers.get(reqwest::header::ACCEPT_RANGES).is_some();
                         let range_response = if let Some(range) = result_headers.get(reqwest::header::CONTENT_RANGE) {
@@ -220,10 +246,29 @@ impl SourceRead {
                         } else {
                             request.size
                         };
+                        println!("requested mime! {:?} {:?}", request.filename, request.mime);
                         let mime = if let Some(value) = result_headers.get(reqwest::header::CONTENT_TYPE).and_then(|h| h.to_str().ok()) {
-                            Some(value.to_owned())
-                        } else {
+                            println!("header value {:?}", value);
+                            if value == "application/octet-stream" {
+                                if request.mime.is_some() && request.mime != Some("application/octet-stream".to_string()) {
+                                    request.mime
+                                } else if let Some(filename) = &request.filename_or_extract_from_url() {
+                                    println!("extract requested mime! {}", filename);
+                                    get_mime_from_filename(filename)
+                                } else {
+                                    println!("None! {:?}", request.filename_or_extract_from_url());
+                                    None
+                                }
+                            } else {
+                                Some(value.to_owned())
+                            }
+                        } else if request.mime.is_some() && request.mime != Some("application/octet-stream".to_string()) {
                             request.mime
+                        } else if let Some(filename) = &request.filename_or_extract_from_url() {
+                            println!("extract requested mime!! {}", filename);
+                            get_mime_from_filename(filename)
+                        } else {
+                            None
                         };
 
                         let stream = r.bytes_stream();
@@ -344,6 +389,9 @@ pub trait Source: Send {
     
     async fn write<'a>(&self, name: &str, read: Pin<Box<dyn AsyncRead + Send + 'a>>) -> RsResult<String>;
     
+    
+    async fn writer<'a>(&self, name: &str) -> RsResult<(String, Pin<Box<dyn AsyncSeekableWrite + 'a>>)>;
+
     //async fn fill_file_information(&self, file: &mut ServerFile) -> SourcesResult<()>;
 }
 

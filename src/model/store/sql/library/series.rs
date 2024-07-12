@@ -1,6 +1,6 @@
 use rusqlite::{params, OptionalExtension, Row};
 
-use crate::{domain::{serie::Serie, MediasIds}, model::{series::{SerieForUpdate, SerieQuery}, store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_pipe_separated_optional}}, tools::array_tools::replace_add_remove_from_array};
+use crate::{domain::{serie::Serie, MediasIds}, model::{series::{SerieForUpdate, SerieQuery}, store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType}, to_pipe_separated_optional}}, tools::array_tools::replace_add_remove_from_array};
 use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
 
@@ -41,12 +41,17 @@ impl SqliteLibraryStore {
 
     pub async fn get_series(&self, query: SerieQuery) -> Result<Vec<Serie>> {
         let row = self.connection.call( move |conn| { 
-            let mut where_query = QueryBuilder::new();
-            if let Some(q) = &query.after {
-                where_query.add_where(QueryWhereType::After("modified", q));
+            let mut where_query = RsQueryBuilder::new();
+            if let Some(q) = query.after {
+                where_query.add_where(SqlWhereType::After("modified".to_string(), Box::new(q)));
             }
             if query.after.is_some() {
                 where_query.add_oder(OrderBuilder::new("modified".to_string(), SqlOrder::ASC))
+            }
+
+            if let Some(q) = query.name {
+                let name_queries = vec![SqlWhereType::EqualWithAlt("name".to_owned(), "alt".to_owned(), "|".to_owned(), Box::new(q.clone()))];
+                where_query.add_where(SqlWhereType::Or(name_queries));
             }
 
             where_query.add_oder(OrderBuilder::new(query.sort.to_string(), query.order));

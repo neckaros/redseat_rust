@@ -223,6 +223,7 @@ async fn handler_multi_patch(Path(library_id): Path<String>, State(mc): State<Mo
 }
 
 async fn handler_download(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<UploadOption>, Json(download): Json<GroupMediaDownload<MediaDownloadUrl>>) -> Result<Json<Value>> {
+
 	if query.spawn {
 		tokio::spawn(async move {
 			let _ = mc.download_library_url(&library_id,  download, &user).await.expect("Unable to download");
