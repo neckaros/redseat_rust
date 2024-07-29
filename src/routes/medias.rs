@@ -26,6 +26,8 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/exist", get(handler_exist))
 		.route("/download", post(handler_download))
 		.route("/request", post(handler_add_request))
+		.route("/transfert/:destination", post(handler_transfert))
+		.route("/:id/split", get(handler_split))
 		.route("/:id/metadata", get(handler_get))
 		.route("/:id/metadata/refresh", get(handler_refresh))
 		.route("/:id/sharetoken", get(handler_sharetoken))
@@ -101,6 +103,39 @@ async fn handler_locs(Path(library_id): Path<String>, State(mc): State<ModelCont
 
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")] 
+struct MediasTransfertRequest {
+	ids: Vec<String>,
+	#[serde(default)]
+	delete_original: bool
+}
+
+async fn handler_transfert(Path((library_id, destination)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(query): Json<MediasTransfertRequest>) -> Result<Json<Value>> {
+	let mut new_medias = vec![];
+	for id in query.ids {
+		let existing = mc.get_media(&library_id, id.clone(), &user).await?.ok_or(Error::NotFound)?;
+		let reader = mc.library_file(&library_id, &id, None, MediaFileQuery { raw: true, ..Default::default() }, &user).await?.into_reader(&library_id, None, None, Some((mc.clone(), &user)), None).await?;
+		let media = mc.add_library_file(&destination, &existing.name, Some(existing.clone().into()), reader.stream, &user).await?;
+		new_medias.push(media)
+	}
+	let body = Json(json!(new_medias));
+	Ok(body)
+}
+
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SplitQuery {
+	pub from: u32,
+	pub to: u32
+}
+async fn handler_split(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<SplitQuery>) -> Result<Json<Value>> {
+	let media = mc.split_media(&library_id, media_id, query.from, query.to, &user).await?;
+	let body = Json(json!(media));
+	Ok(body)
+}
+
+
 async fn handler_get(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
 	let library = mc.get_media(&library_id, media_id, &user).await?;
 	let body = Json(json!(library));
@@ -139,6 +174,8 @@ async fn handler_predict(Path((library_id, media_id)): Path<(String, String)>, S
 	//println!("BODY {:?}", body);
 	Ok(body)
 }
+
+
 
 async fn handler_convert(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(query): Json<VideoConvertRequest>) -> Result<Json<Value>> {
 	let prediction = mc.convert(&library_id, &media_id, query, &user).await?;

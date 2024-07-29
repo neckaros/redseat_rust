@@ -39,6 +39,10 @@ pub fn file_type_from_mime(mime: &str) -> FileType {
         FileType::Photo
     } else if mime.starts_with("video") {
         FileType::Video
+    } else if mime == "application/zip" {
+        FileType::Album
+    } else if mime == "application/vnd.comicbook+cbz" {
+        FileType::Album
     } else {
         FileType::Other
     }

@@ -209,11 +209,15 @@ impl YtDlCommandBuilder {
         Ok(self)
     }
 
+
+
     pub async fn run_with_cache(&mut self, progress: RsProgressCallback) -> RsResult<FileStreamResult<AsyncReadPinBox>>
     {
         let temp_path = get_server_temp_file_path().await?;
         let fileroot = nanoid!();
         self.cmd
+        
+        .arg("--write-info-json")
         .arg("-f")
         //.arg("best/bestvideo+bestaudio")
         .arg("bestvideo+bestaudio/best")
@@ -261,7 +265,7 @@ impl YtDlCommandBuilder {
             }
         }).find(|f| {
             if let Some(p) = f.path().file_name().and_then(|p| p.to_str()) {
-                p.starts_with(&fileroot)
+                p.starts_with(&fileroot) && !p.ends_with(".json")
             } else {
                 false
             }
@@ -279,7 +283,7 @@ impl YtDlCommandBuilder {
         let metadata = file.metadata().await?;
         let mime = final_path.to_str().and_then(get_mime_from_filename);
         let size = metadata.len();
-
+        
         let filereader = BufReader::new(file);
         let cleanup = CleanupFiles {
             paths: vec![temp_path]

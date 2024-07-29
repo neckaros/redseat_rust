@@ -20,7 +20,7 @@ use tokio_stream::StreamExt;
 use tokio_util::{compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt}, io::{ReaderStream, StreamReader}};
 use zip::ZipWriter;
 
-use crate::{domain::{deleted::RsDeleted, library::LibraryType, media::{self, ConvertMessage, ConvertProgress, RsGpsPosition, DEFAULT_MIME}, plugin, MediaElement}, model::store::sql::SqlOrder, plugins::sources::{path_provider::PathProvider, Source}, tools::{file_tools::filename_from_path, image_tools::convert_image_reader, video_tools::{VideoCommandBuilder, VideoConvertRequest, VideoOverlayPosition}}};
+use crate::{domain::{deleted::RsDeleted, library::LibraryType, media::{self, ConvertMessage, ConvertProgress, RsGpsPosition, DEFAULT_MIME}, plugin, MediaElement}, model::store::sql::SqlOrder, plugins::sources::{path_provider::PathProvider, Source}, routes::infos, tools::{file_tools::filename_from_path, image_tools::convert_image_reader, video_tools::{VideoCommandBuilder, VideoConvertRequest, VideoOverlayPosition}}};
 
 use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaItemReference, MediaWithAction, MediasMessage, ProgressMessage}, progress::{RsProgress, RsProgressType}, ElementAction}, error::RsResult, plugins::{get_plugin_fodler, sources::{async_reader_progress::ProgressReader, error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{self, resize_image, resize_image_reader, ImageSize, ImageType}, log::{log_error, log_info, LogServiceType}, prediction::{predict_net, preload_model, PredictionTagResult}, video_tools::{self, probe_video, VideoTime}}};
 
@@ -40,6 +40,11 @@ pub struct MediaQuery {
     pub added_before: Option<u64>,
     pub added_after: Option<u64>,
 
+    pub created_before: Option<u64>,
+    pub created_after: Option<u64>,
+
+    pub modified_before: Option<u64>,
+    pub modified_after: Option<u64>,
 
     pub before: Option<u64>,
     pub after: Option<u64>,
@@ -64,6 +69,13 @@ pub struct MediaQuery {
     pub distance: Option<f64>,
     #[serde(default)]
     pub gps_square: Vec<f64>,
+    
+    pub min_duration: Option<u64>,
+    pub max_duration: Option<u64>,
+
+    pub min_size: Option<u64>,
+    pub max_size: Option<u64>,
+    
     
     pub page_key: Option<u64>,
 
@@ -294,6 +306,85 @@ impl ModelController {
         
 	}
 
+    pub async fn split_media(&self, library_id: &str, media_id: String, from: u32, to: u32, requesting_user: &ConnectedUser) -> RsResult<Media> {
+        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+		let media = store.get_media(&media_id).await?.ok_or(Error::NotFound)?;
+        let mut infos: MediaForUpdate = media.clone().into();
+        if media.kind != FileType::Album {
+            return Err(Error::ServiceError("SPLIT".to_string(), Some(format!("{} media is not an albul", media_id))).into());
+        }
+        let filename = format!("{}-{}-{}.zip", media.name.replace(".zip", "").replace(".cbz", ""), from, to);
+        println!("Zip name: {}", filename);
+        
+        let m = self.source_for_library(&library_id).await?;
+        let (source, mut file) = m.writer(&filename).await?;
+        //let file = file.compat_write();
+        
+        
+
+        //let mut file = Box::pin(File::create("D:\\System\\backup\\2024\\7\\foo.zip").await?);
+        let mut zip_writer = ZipFileWriter::with_tokio(&mut file);
+        
+        let mut pages = 0usize;
+        let mut total_size = 0u64;
+        for n in from..=to {
+            
+            
+            let file = self.library_file(library_id, &media_id, 
+                None, MediaFileQuery { page: Some(n) , ..Default::default()}, requesting_user).await?;
+            let filename = file.filename().unwrap_or(nanoid!());
+            let mut reader = file.into_reader(library_id, None, None, Some((self.clone(), requesting_user)), None).await?;
+
+            let mut buffer = vec![];
+            reader.stream.read_to_end(&mut buffer).await?;
+
+            total_size += buffer.len() as u64;
+
+            let builder = ZipEntryBuilder::new(filename.into(), Compression::Deflate);
+            zip_writer.write_entry_whole(builder, &buffer).await.map_err(|_| Error::ServiceError("Unable to save zip entry".to_string(), None))?;
+            pages += 1;
+
+
+        }
+
+        zip_writer.close().await.map_err(|_| Error::ServiceError("Unable to close zip file".to_string(), None))?;
+        file.flush().await?;
+        println!("CLOSED");
+
+        m.fill_infos(&source, &mut infos).await?;
+
+        if let Some(hash) = &infos.md5 {
+            let existing = store.get_media_by_hash(hash.to_owned()).await;
+            if let Some(existing) = existing {
+                m.remove(&source).await?;
+                //let _ = tx_progress.send(RsProgress { id: upload_id.clone(), total: existing.size, current: existing.size, kind: RsProgressType::Duplicate(existing.id.clone()), filename: Some(existing.name.to_owned()) }).await;
+                return Err(Error::Duplicate(existing.id.to_owned(), MediaElement::Media(existing)).into())
+            }
+        }
+
+        let mut new_file = MediaForAdd::default();
+        new_file.name = filename.to_string();
+        new_file.source = Some(source.to_string());
+        new_file.mimetype = infos.mimetype.clone().unwrap_or(DEFAULT_MIME.to_owned());
+        new_file.created = Some(infos.created.unwrap_or_else(|| Utc::now().timestamp_millis()));
+        new_file.pages = Some(pages);
+
+        new_file.kind = FileType::Album;
+
+        let id = nanoid!();
+        store.add_media(MediaForInsert { id: id.clone(), media: new_file }).await?;
+        self.update_media(library_id, id.to_owned(), infos, false, requesting_user).await?;
+        let r = self.generate_thumb(&library_id, &id, &ConnectedUser::ServerAdmin).await;
+        if let Err(r) = r {
+            log_error(crate::tools::log::LogServiceType::Source, format!("Unable to generate thumb {:#}", r));
+        }
+
+        let media = store.get_media(&id).await?.ok_or(Error::NotFound)?;
+
+        Ok(media)
+	}
+
     pub async fn update_media_image<T: AsyncRead>(&self, library_id: &str, media_id: &str, reader: T, requesting_user: &ConnectedUser) -> Result<()> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         self.update_library_image(library_id, ".thumbs", media_id, &None, reader, requesting_user).await?;
@@ -424,14 +515,14 @@ impl ModelController {
         tokio::pin!(reader); 
         let progress_reader = ProgressReader::new(reader, RsProgress { id: upload_id.clone(), total: infos.size, current: Some(0), kind: RsProgressType::Transfert, filename: Some(filename.to_owned()) }, tx_progress.clone());
            
-        
+           
         let source = m.write(filename, Box::pin(progress_reader)).await?;
 
-
+        
         if !crypted {
             let _ = m.fill_infos(&source, &mut infos).await;
         }
-
+        
         let mut new_file = MediaForAdd {
             name: filename.to_string(), 
             source: Some(source.to_string()),
@@ -454,7 +545,8 @@ impl ModelController {
         let id = nanoid!();
         store.add_media(MediaForInsert { id: id.clone(), media: new_file }).await?;
         self.update_media(library_id, id.to_owned(), infos, false, requesting_user).await?;
-        let library = self.get_library(library_id, &ConnectedUser::ServerAdmin).await?.ok_or(Error::LibraryNotFound(library_id.to_owned()))?;
+        let library: crate::model::libraries::ServerLibraryForRead = self.get_library(library_id, &ConnectedUser::ServerAdmin).await?.ok_or(Error::LibraryNotFound(library_id.to_owned()))?;
+        println!("SPAWNING");
         if !crypted {
             let _ = self.generate_thumb(&library_id, &id, &requesting_user).await;
             self.process_media_spawn(library_id.to_string(), id.clone(), library.kind == LibraryType::Photos, requesting_user.clone());
@@ -485,6 +577,8 @@ impl ModelController {
 
         if files.group.unwrap_or_default() {
             let mut infos: MediaForUpdate = files.clone().into();
+            infos.origin = origin.clone();
+
             let mut medias: Vec<Media> = vec![];
             let requests: Vec<RsRequest> = files.clone().into(); 
 
@@ -492,6 +586,18 @@ impl ModelController {
             //Progress
             let tx_progress = self.create_progress_sender(library_id.to_owned(), Some(upload_id.clone()));
 
+
+            if let Some(origin) = &mut infos.origin {
+                let origin_filename = if let Some(origin_url) = files.origin_url { filename_from_path(&origin_url) } else { None };
+                origin.file = origin_filename;
+                if !infos.ignore_origin_duplicate {
+                    let existing = store.get_media_by_origin(origin.clone()).await;
+                    if let Some(existing) = existing {
+                        let _ = tx_progress.send(RsProgress { id: upload_id.clone(), total: existing.size, current: existing.size, kind: RsProgressType::Duplicate(existing.id.clone()), filename: Some(existing.name.to_owned()) }).await;
+                        return Err(Error::Duplicate(existing.id.to_owned(), MediaElement::Media(existing)).into())
+                    }
+                }
+            }
 
             let filename = format!("{}.zip", nanoid!());
             println!("Zip name: {}", filename);
@@ -507,7 +613,7 @@ impl ModelController {
             let mut total_size = 0u64;
             let len = requests.len() as u64;
             for request in requests {
-                pages += 1;
+                
                 
                 let reader = SourceRead::Request(request.clone()).into_reader(library_id, None, 
                     None, Some((self.clone(), &ConnectedUser::ServerAdmin)), None).await;
@@ -521,12 +627,13 @@ impl ModelController {
 
                     let builder = ZipEntryBuilder::new(request.filename_or_extract_from_url().unwrap_or(nanoid!()).into(), Compression::Deflate);
                     zip_writer.write_entry_whole(builder, &buffer).await.map_err(|_| Error::ServiceError("Unable to save zip entry".to_string(), None))?;
-
+                    pages += 1;
                     let estimated = total_size / pages as u64 * len;
                     let _ = tx_progress.send(RsProgress { id: upload_id.clone(), total: Some(estimated), current: Some(total_size), kind: RsProgressType::Download, filename: Some(filename.clone()) }).await;
 
                 } else {
                     log_error(LogServiceType::Source, format!("Error adding to zip: {}", request.url));
+                    println!("{:?}", reader);
                 }
             }
 
@@ -595,6 +702,7 @@ impl ModelController {
                         let existing = store.get_media_by_origin(origin.clone()).await;
                         if let Some(existing) = existing {
                             let _ = tx_progress.send(RsProgress { id: upload_id.clone(), total: existing.size, current: existing.size, kind: RsProgressType::Duplicate(existing.id.clone()), filename: Some(existing.name.to_owned()) }).await;
+                            println!("duplicate origin!");
                             return Err(Error::Duplicate(existing.id.to_owned(), MediaElement::Media(existing)).into())
                         }
                     }
@@ -604,7 +712,10 @@ impl ModelController {
                 let reader = SourceRead::Request(request).into_reader(library_id, None, 
                     Some(tx_progress.clone()), Some((self.clone(), &ConnectedUser::ServerAdmin)), None).await?;
 
-                let mut filename = infos.name.clone().or_else(|| reader.name).unwrap_or(nanoid!());
+                if let Some(reader_name) = reader.name {
+                    infos.name = Some(reader_name);
+                }
+                let mut filename =infos.name.clone().unwrap_or(nanoid!());
                 if infos.mimetype.is_none() {
                     infos.mimetype = reader.mime;
                 }
@@ -885,7 +996,22 @@ impl ModelController {
         let name_progress = request.id.clone();
         let (tx_progress, mut rx_progress) = mpsc::channel::<f64>(100);
         tokio::spawn(async move {
-            while let Some(percent) = rx_progress.recv().await {        
+
+            let start_time = std::time::Instant::now();
+
+            let mut remaining = None;
+            while let Some(percent) = rx_progress.recv().await {     
+                
+                if percent > 0.01f64 {
+                    let duration_from_start = start_time.elapsed().as_secs_f64();
+                    let remaining_time = duration_from_start / percent * (1f64 - percent);
+                    println!("FFMPEG remaining time: {}", remaining_time);
+                    
+                    remaining = Some(remaining_time as u64);
+                }
+                
+
+
                 let message = ConvertMessage {
                     library: lib_progress.clone(),
                     progress: ConvertProgress {
@@ -894,7 +1020,8 @@ impl ModelController {
                         filename: name_progress.clone(),
                         done: false,
                         id: request_progress.id.clone(),
-                        request: Some(request_progress.clone())
+                        request: Some(request_progress.clone()),
+                        estimated_remaining_seconds: remaining
                     },
                 };
                 mc_progress.send_convert_progress(message);
@@ -927,7 +1054,8 @@ impl ModelController {
                 filename: filename.clone(),
                 done: true,
                 id: progress_id.clone(),
-                request: Some(request.clone())
+                request: Some(request.clone()),
+                ..Default::default()
             },
         };
         self.send_convert_progress(message);
@@ -946,7 +1074,8 @@ impl ModelController {
                         filename: filename.clone(),
                         done: true,
                         id: progress_id.clone(),
-                        request: Some(request.clone())
+                        request: Some(request.clone()),
+                        ..Default::default()
                     },
                 };
                 self.send_convert_progress(message);

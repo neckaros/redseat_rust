@@ -152,6 +152,15 @@ pub enum SourceRead {
 	Request(RsRequest),
 }
 
+impl SourceRead {
+    pub fn filename(&self) -> Option<String> {
+        match self {
+            SourceRead::Stream(s) => s.name.clone(),
+            SourceRead::Request(r) => r.filename_or_extract_from_url(),
+        }
+    }
+}
+
 impl Debug for FileStreamResult<AsyncReadPinBox> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FileStreamResult").field("size", &self.size).field("accept_range", &self.accept_range).field("range", &self.range).field("mime", &self.mime).field("name", &self.name).field("cleanup", &self.cleanup).finish()
@@ -246,17 +255,13 @@ impl SourceRead {
                         } else {
                             request.size
                         };
-                        println!("requested mime! {:?} {:?}", request.filename, request.mime);
                         let mime = if let Some(value) = result_headers.get(reqwest::header::CONTENT_TYPE).and_then(|h| h.to_str().ok()) {
-                            println!("header value {:?}", value);
                             if value == "application/octet-stream" {
                                 if request.mime.is_some() && request.mime != Some("application/octet-stream".to_string()) {
                                     request.mime
                                 } else if let Some(filename) = &request.filename_or_extract_from_url() {
-                                    println!("extract requested mime! {}", filename);
                                     get_mime_from_filename(filename)
                                 } else {
-                                    println!("None! {:?}", request.filename_or_extract_from_url());
                                     None
                                 }
                             } else {

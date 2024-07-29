@@ -3,7 +3,7 @@ use std::u64;
 use rs_plugin_common_interfaces::url::RsLink;
 use rusqlite::{params, params_from_iter, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, Row, ToSql};
 
-use crate::{domain::{media::{FileEpisode, FileType, Media, MediaForInsert, MediaForUpdate, MediaItemReference, RsGpsPosition}, MediasIds}, error::RsResult, model::{medias::{MediaQuery, MediaSource, RsSort}, people::PeopleQuery, series::SerieQuery, store::{from_comma_separated_optional, from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType}, to_comma_separated_optional, to_pipe_separated_optional}, tags::{TagForInsert, TagForUpdate, TagQuery}}, tools::{array_tools::AddOrSetArray, log::{log_info, LogServiceType}, text_tools::{extract_people, extract_tags}}};
+use crate::{domain::{media::{FileEpisode, FileType, Media, MediaForInsert, MediaForUpdate, MediaItemReference, RsGpsPosition}, MediasIds}, error::RsResult, model::{medias::{MediaQuery, MediaSource, RsSort}, people::PeopleQuery, series::SerieQuery, store::{from_comma_separated_optional, from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType}, to_comma_separated_optional, to_pipe_separated_optional}, tags::{TagForInsert, TagForUpdate, TagQuery}}, tools::{array_tools::AddOrSetArray, file_tools::{file_type_from_mime, get_mime_from_filename}, log::{log_info, LogServiceType}, text_tools::{extract_people, extract_tags}}};
 use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
 
@@ -228,6 +228,21 @@ impl SqliteLibraryStore {
         }
 
         
+        if let Some(added) = query.created_before {
+            where_query.add_where(SqlWhereType::Before("created".to_owned(), Box::new(added)));
+        }
+        if let Some(added) = query.created_after {
+            where_query.add_where(SqlWhereType::After("created".to_owned(), Box::new(added)));
+        }
+
+        if let Some(added) = query.modified_before {
+            where_query.add_where(SqlWhereType::Before("modified".to_owned(), Box::new(added)));
+        }
+        if let Some(added) = query.modified_after {
+            where_query.add_where(SqlWhereType::After("modified".to_owned(), Box::new(added)));
+        }
+
+        
         if let Some(long) = query.long {
             let distance = query.distance.map(|d| d * 0.008).unwrap_or(0.1);
             where_query.add_where(SqlWhereType::Between("long".to_owned(), Box::new(long - distance), Box::new(long + distance)));
@@ -275,8 +290,19 @@ impl SqliteLibraryStore {
             where_query.add_where(SqlWhereType::Equal("movie".to_string(), Box::new(movie)));
         }
         
-
-
+        if let Some(duration) = query.min_duration {
+            where_query.add_where(SqlWhereType::After("duration".to_string(), Box::new(duration)));
+        }
+        if let Some(duration) = query.max_duration {
+            where_query.add_where(SqlWhereType::Before("duration".to_string(), Box::new(duration)));
+        }
+        
+        if let Some(size) = query.min_size {
+            where_query.add_where(SqlWhereType::After("size".to_string(), Box::new(size)));
+        }
+        if let Some(size) = query.max_size {
+            where_query.add_where(SqlWhereType::Before("size".to_string(), Box::new(size)));
+        }
 
         
         where_query.add_oder(OrderBuilder::new(sort.to_owned(), query.order));
@@ -442,6 +468,14 @@ impl SqliteLibraryStore {
         let existing = self.get_media(media_id).await?.ok_or_else( || Error::NotFound)?;
 
 
+        if let Some(rename) = &update.name {
+            if let Some(mime) = get_mime_from_filename(&rename) {
+                update.mimetype = Some(mime.clone());
+                update.kind = Some(file_type_from_mime(&mime));
+                println!("UPDATE type {:?} {:?}", update.mimetype, update.kind)
+            }
+        }
+
         if let Some(gps) = &update.gps {
             let splited: Vec<&str> = gps.split(',').map(|t| t.trim()).collect();
             let lat = splited.first().and_then(|s| s.parse::<f64>().ok()).ok_or(Error::ServiceError("updating media".to_owned(), Some(format!("invalid latitude: {}", gps))))?;
@@ -526,6 +560,7 @@ impl SqliteLibraryStore {
             where_query.add_update(&update.name, "name");
             where_query.add_update(&update.description, "description");
             where_query.add_update(&update.mimetype, "mimetype");
+            where_query.add_update(&update.kind, "type");
             where_query.add_update(&update.size, "size");
             where_query.add_update(&update.md5, "md5");
             where_query.add_update(&update.created, "created");
@@ -543,6 +578,7 @@ impl SqliteLibraryStore {
             where_query.add_update(&update.sspeed, "sspeed");
             where_query.add_update(&update.f_number, "fnumber");
             where_query.add_update(&update.model, "model");
+            where_query.add_update(&update.pages, "pages");
             
             let v = to_comma_separated_optional(update.vcodecs);
             where_query.add_update(&v, "vcodecs");

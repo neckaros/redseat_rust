@@ -6,6 +6,7 @@ use rs_plugin_common_interfaces::{RsVideoCodec, RsVideoFormat};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use strum_macros::EnumString;
+use time::Instant;
 use tokio::sync::mpsc::Sender;
 use tokio::{io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader}, process::Command};
 use tokio_util::io::ReaderStream;
@@ -242,7 +243,8 @@ impl VideoCommandBuilder {
                 self.add_out_option("-c:v");
                 
                 let supported_hw = video_hardware().await.unwrap_or_default();
-                if supported_hw.contains(&"cuda x265".to_string()) {
+                println!("supported transcoding hw: {:?}", supported_hw);
+                if supported_hw.contains(&"cuda".to_string()) {
                     println!("cuda");
                     self.add_out_option("hevc_nvenc");
                     self.add_out_option("-preset:v");
@@ -251,7 +253,7 @@ impl VideoCommandBuilder {
                     self.add_out_option("-rc:v");
                     self.add_out_option("vbr");
                     self.add_out_option("-cq:v");
-                    self.add_out_option(crf.unwrap_or(26).to_string());
+                    self.add_out_option(crf.unwrap_or(32).to_string());
                   
                 } else {
                     self.add_out_option("libx265");
@@ -440,6 +442,7 @@ impl VideoCommandBuilder {
                 log_error(LogServiceType::Other, format!("ffmpeg error: {}", line));
             }
             let line_spit = line.split('=').collect::<Vec<&str>>();
+           
             if line_spit[0] == "frame" {
                 if let Some(frames) = frames {
                     let frame_number = line_spit[1].parse::<isize>();

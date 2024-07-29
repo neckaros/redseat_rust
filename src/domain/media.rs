@@ -190,6 +190,7 @@ pub struct MediaForUpdate {
     pub name: Option<String>,
     pub description: Option<String>,
     pub mimetype: Option<String>,
+    pub kind: Option<FileType>,
     pub size: Option<u64>,
 
     pub md5: Option<String>,
@@ -212,6 +213,8 @@ pub struct MediaForUpdate {
     pub model: Option<String>,
     pub sspeed: Option<String>,
     pub f_number: Option<f64>,
+
+    pub pages: Option<usize>,
 
     pub duration: Option<u64>,
  
@@ -363,6 +366,7 @@ pub struct MediaDownloadUrl {
     pub parse: bool,
     pub upload_id: Option<String>,
     
+    #[serde(default)]
     pub ignore_origin_duplicate: bool,
     //pub infos: Option<MediaForUpdate>,
 
@@ -455,6 +459,7 @@ impl From<Media> for MediaForUpdate {
             created: value.created,
             origin: value.origin,
             add_series: value.series,
+            pages: value.pages,
             ..Default::default()
         }
     }
@@ -568,7 +573,7 @@ pub struct ProgressMessage {
 }
 
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")] 
 pub struct ConvertProgress {
     pub id: String,
@@ -576,6 +581,7 @@ pub struct ConvertProgress {
     pub converted_id: Option<String>,
     pub done: bool,
     pub percent: f64,
+    pub estimated_remaining_seconds: Option<u64>,
     pub request: Option<VideoConvertRequest>,
 }
 
