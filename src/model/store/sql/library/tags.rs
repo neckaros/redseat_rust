@@ -98,7 +98,9 @@ impl SqliteLibraryStore {
             tx.execute(&update_sql, where_query.values())?;
 
             if let Some(migrate_to) = &update.migrate_to {
-                tx.execute("UPDATE media_tag_mapping SET tag_ref = ? where tag_ref = ?", params![&id, migrate_to])?;
+                tx.execute("UPDATE or IGNORE media_tag_mapping SET tag_ref = ? where tag_ref = ?", params![&migrate_to, id])?;
+                println!("MIGRATE: UPDATE media_tag_mapping SET tag_ref = {} where tag_ref = {}", id, migrate_to);
+                tx.execute("DELETE FROM media_tag_mapping  WHERE tag_ref = ?", [&id])?;
             }
             
             if let Some(new_name) = &update.name {

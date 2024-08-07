@@ -62,7 +62,11 @@ impl Source for VirtualProvider {
     async fn writer<'a>(&self, name: &str) -> RsResult<(String, Pin<Box<dyn AsyncSeekableWrite + 'a>>)> {
         Err(crate::Error::NotImplemented("Writer not implemented for plugin provider".to_string()))
     }
+    
 
+    async fn clean(&self, sources: Vec<String>) -> RsResult<Vec<(String, u64)>> {
+        Ok(vec![])
+    }
 }
 
 

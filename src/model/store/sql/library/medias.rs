@@ -439,6 +439,22 @@ impl SqliteLibraryStore {
         }).await?;
         Ok(row)
     }
+    
+
+    pub async fn get_all_sources(&self) -> Result<Vec<String>> {
+        let rows = self.connection.call( move |conn| { 
+
+            let mut query = conn.prepare("SELECT distinct(source) as sourcs from medias")?;
+            let rows = query.query_map(
+            params![],|row| {
+                let s: String =  row.get(0)?;
+                Ok(s)
+            })?;
+            let rows:Vec<String> = rows.collect::<std::result::Result<Vec<String>, rusqlite::Error>>()?; 
+            Ok(rows)
+        }).await?;
+        Ok(rows)
+    }
 
     pub async fn get_medias_locs(&self, precision: u32) -> Result<Vec<RsGpsPosition>> {
         let rows = self.connection.call( move |conn| { 

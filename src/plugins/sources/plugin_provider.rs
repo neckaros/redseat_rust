@@ -67,6 +67,10 @@ impl Source for PluginProvider {
         Err(crate::Error::NotImplemented("Writer not implemented for plugin provider".to_string()))
     }
 
+    async fn clean(&self, sources: Vec<String>) -> RsResult<Vec<(String, u64)>> {
+        Ok(vec![])
+    }
+    
 }
 
 

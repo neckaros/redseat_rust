@@ -9,6 +9,13 @@ pub fn filename_from_path(path: &str) -> Option<String> {
     })
 }
 
+pub fn remove_extension(filename: &str) -> &str {
+    match filename.rfind('.') {
+        Some(index) => &filename[..index],
+        None => filename,
+    }
+}
+
 
 pub fn get_mime_from_filename(path: &str) -> Option<String> {
     let mime = mime_guess::from_path(&path);

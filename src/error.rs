@@ -125,6 +125,9 @@ pub enum Error {
 	
 	#[from]
 	Zip(#[serde_as(as = "DisplayFromStr")] zip::result::ZipError),
+	
+	#[from]
+	Trash(#[serde_as(as = "DisplayFromStr")] trash::Error),
 }
 
 // region:    --- Error Boilerplate

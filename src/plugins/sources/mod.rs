@@ -397,11 +397,14 @@ pub trait Source: Send {
     
     async fn writer<'a>(&self, name: &str) -> RsResult<(String, Pin<Box<dyn AsyncSeekableWrite + 'a>>)>;
 
+    
+    async fn clean(&self, sources: Vec<String>) -> RsResult<Vec<(String, u64)>>;
+
     //async fn fill_file_information(&self, file: &mut ServerFile) -> SourcesResult<()>;
 }
 
 pub trait LocalSource: Send {
-    fn get_gull_path(&self, source: String) -> PathBuf;
+    fn get_full_path(&self, source: String) -> PathBuf;
 
     //async fn fill_file_information(&self, file: &mut ServerFile) -> SourcesResult<()>;
 }

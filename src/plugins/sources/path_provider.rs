@@ -1,10 +1,11 @@
-use std::{path::PathBuf, pin::Pin, str::FromStr};
+use std::{collections::HashSet, fs::read_dir, path::{Path, PathBuf}, pin::Pin, str::FromStr, time::{Duration, SystemTime}};
 
 
 use axum::async_trait;
 use bytes::Bytes;
 use chrono::{Datelike, Utc};
 use futures::Stream;
+use human_bytes::human_bytes;
 use query_external_ip::SourceError;
 use sha256::try_async_digest;
 use tokio::{fs::{create_dir_all, remove_file, File}, io::{copy, AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter}};
@@ -19,7 +20,7 @@ pub struct PathProvider {
 }
 
 impl PathProvider {
-    pub fn get_gull_path(&self, source: &str) -> PathBuf {
+    pub fn get_full_path(&self, source: &str) -> PathBuf {
         let mut path = self.root.clone();
         path.push(&source);
         path
@@ -31,7 +32,31 @@ impl PathProvider {
         }
         Ok(())
     }
+
+    pub fn get_all_file_paths(dir: &Path, include_hidden: bool) -> HashSet<String> {
+        let mut file_paths = HashSet::new();
     
+        if dir.is_dir() {
+            for entry in read_dir(dir).expect("Failed to read directory") {
+                let entry = entry.expect("Failed to get directory entry");
+                let path = entry.path();
+                let filename = entry.file_name();
+                
+                if path.is_file() {
+                    file_paths.insert(path.to_string_lossy().into_owned());
+                } else if path.is_dir() && (include_hidden || !filename.to_string_lossy().starts_with(".")) {
+                    file_paths.extend(PathProvider::get_all_file_paths(&path, include_hidden));
+                }
+            }
+        }
+    
+        file_paths
+    }
+    
+    pub fn move_to_trash<P: AsRef<Path>>(path: P) -> RsResult<()> {
+        trash::delete(path)?;
+        Ok(())
+    }
 
     pub async fn get_file_write_stream(&self, name: &str) -> SourcesResult<(String, Pin<Box<dyn AsyncWrite + Send>>)> {
         let path = self.root.clone();
@@ -104,18 +129,18 @@ impl Source for PathProvider {
     }
 
     async fn exists(&self, source: &str) -> bool {
-        let path = self.get_gull_path(&source);
+        let path = self.get_full_path(&source);
         path.exists()
     }
 
     async fn remove(&self, source: &str) -> RsResult<()> {
-        let path = self.get_gull_path(&source);
+        let path = self.get_full_path(&source);
         remove_file(path).await?;
         Ok(())
     }
 
     async fn fill_infos(&self, source: &str, infos: &mut MediaForUpdate) -> RsResult<()> {
-        let path = self.get_gull_path(&source);
+        let path = self.get_full_path(&source);
         let metadata = path.metadata()?;
         infos.size = Some(metadata.len());
 
@@ -131,11 +156,13 @@ impl Source for PathProvider {
     }
 
     fn local_path(&self, source: &str) -> Option<PathBuf> {
-        Some(self.get_gull_path(&source))
+        Some(self.get_full_path(&source))
     }
 
+
+
     async fn get_file(&self, source: &str, range: Option<RangeDefinition>) -> RsResult<SourceRead> {
-        let path = self.get_gull_path(&source);
+        let path = self.get_full_path(&source);
         let guess = mime_guess::from_path(&source);
         let filename = path.file_name().map(|f| f.to_string_lossy().into_owned());
 
@@ -260,6 +287,28 @@ impl Source for PathProvider {
         Ok((source, Box::pin(file)))
     }
 
+    async fn clean(&self, sources: Vec<String>) -> RsResult<Vec<(String, u64)>> {
+        let mut result = vec![];
+        println!("CLEAN get paths");
+        let existing = Self::get_all_file_paths(&self.root, false);
+        println!("Got {} paths", existing.len());
+        let mut total = 0u64;
+        for existing_file in existing {
+            let existing_as_source = existing_file.replace(&self.root.to_string_lossy().into_owned(), "")[1..].to_string();
+            
+            if !sources.contains(&existing_as_source) {
+                let path = Path::new(&existing_file);
+                let metadata = path.metadata()?;
+                println!("{} TO DELETE {}", existing_as_source, metadata.len());
+                result.push((path.to_string_lossy().into_owned(), metadata.len()));
+                total += metadata.len();
+                Self::move_to_trash(path)?;
+            }
+        }
+        println!("Total clean: {} ({})", result.len(), human_bytes(total as f64));
+        Ok(result)
+    }
+
 }
 
 
@@ -283,4 +332,60 @@ impl PathProvider {
         Ok(file)
     }
 
+    pub fn clean_temp(&self) -> RsResult<Vec<(String, u64)>> {
+        let dest = self.get_full_path(".cache");
+        let mut result = vec![];
+        let paths = PathProvider::get_all_file_paths(dest.as_path(), false);
+        println!("dest: {:?}", dest);
+        let mut total = 0u64;
+
+        let now = SystemTime::now();
+        let one_day = Duration::from_secs(86400); // 86400 seconds in a day
+
+        for path_string in paths {
+            let path = Path::new(&path_string);
+            let metadata = path.metadata()?;
+            let modified = metadata.modified()?;
+
+            if now.duration_since(modified)? >= one_day {
+                println!("{} TO DELETE {}", path_string, metadata.len());
+                
+                result.push((path.to_string_lossy().into_owned(), metadata.len()));
+                total += metadata.len();
+            } else {
+                println!("{} TOO YOUNG {}", path_string, metadata.len()); 
+            }
+            PathProvider::move_to_trash(path)?;   
+        }
+        println!("Total clean: {} ({})", result.len(), human_bytes(total as f64));
+
+        Ok(result)
+    }
+
+}
+
+
+
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        body::Body,
+        http::{self, Request, StatusCode, header},
+    };
+    use http_body_util::BodyExt;
+    // for `collect`
+    use serde_json::{json, Value};
+    use tower::ServiceExt; // for `call`, `oneshot`, and `ready`
+
+
+    fn all_sub_path() {
+        let provider = PathProvider::new_for_local("D:\\System\\backup");
+
+        let paths = provider.get_all_file_paths("D:\\System\\backup\\.redseat");
+
+        println!("Paths: {:?}", paths);
+    }
 }

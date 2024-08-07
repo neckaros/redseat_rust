@@ -23,6 +23,8 @@ pub mod ytdl;
 
 pub type VideoResult<T> = core::result::Result<T, VideoError>;
 
+
+
 #[serde_as]
 #[derive(Debug, Serialize, strum_macros::AsRefStr)]
 pub enum VideoError {
@@ -105,6 +107,7 @@ pub struct VideoConvertRequest {
     pub no_audio: bool,
     pub width: Option<String>,
     pub height: Option<String>,
+    pub framerate: Option<u16>,
     pub crop_width: Option<u16>,
     pub crop_height: Option<u16>,
     pub aspect_ratio: Option<String>,
@@ -114,7 +117,7 @@ pub struct VideoConvertRequest {
 }
 
 
-
+#[derive(Debug)]
 pub struct VideoCommandBuilder {
     cmd: Command,
     inputs: Vec<String>,
@@ -195,7 +198,9 @@ impl VideoCommandBuilder {
         if let Some(aspect_ratio) = request.aspect_ratio {
             self.set_aspect_ratio(aspect_ratio)?;
         }
-
+        if let Some(framerate) = request.framerate {
+            self.set_framerate(framerate);
+        }
         
         if request.no_audio {
             self.remove_audio();
@@ -231,6 +236,14 @@ impl VideoCommandBuilder {
         self
     }
 
+    
+    pub fn set_framerate(&mut self, fr: u16) -> &mut Self {
+        
+        self.add_out_option("-r");
+        self.add_out_option(fr.to_string());
+        self
+    }
+
     pub fn remove_audio(&mut self) -> &mut Self {
         
         self.add_out_option("-an");
@@ -245,15 +258,120 @@ impl VideoCommandBuilder {
                 let supported_hw = video_hardware().await.unwrap_or_default();
                 println!("supported transcoding hw: {:?}", supported_hw);
                 if supported_hw.contains(&"cuda".to_string()) {
+
+                    let cq = crf.unwrap_or(28);
                     println!("cuda");
                     self.add_out_option("hevc_nvenc");
                     self.add_out_option("-preset:v");
                     self.add_out_option( "p7");
 
-                    self.add_out_option("-rc:v");
+                    self.add_out_option("-tune:v");
+                    self.add_out_option( "hq");
+
+                    self.add_out_option("-profile:v");
+                    self.add_out_option( "main10");
+
+                    self.add_out_option("-rc");
+                    self.add_out_option( "vbr");
+
+                    self.add_out_option("-rc-lookahead");
+                    self.add_out_option( "20");
+
+                    self.add_out_option("-cq:v");
+                    self.add_out_option(cq.to_string());
+
+                    self.add_out_option("-qmin");
+                    self.add_out_option((cq - 1).to_string());
+
+                    self.add_out_option("-qmax");
+                    self.add_out_option((cq + 1).to_string());
+
+                    self.add_out_option("-b:v");
+                    self.add_out_option( "0");
+
+                    self.add_out_option("-bufsize");
+                    self.add_out_option( "12M");
+
+                    self.add_out_option("-spatial-aq");
+                    self.add_out_option( "1");
+
+                    self.add_out_option("-aq-strength");
+                    self.add_out_option("15");
+
+                    self.add_out_option("-b:v");
+                    self.add_out_option( "0K");
+
+                    self.add_out_option("-pix_fmt");
+                    self.add_out_option( "p010le");
+
+                    //self.add_out_option("-level");
+                    //self.add_out_option( "4.1");
+
+                    self.add_out_option("-tier");
+                    self.add_out_option( "high");
+
+                    self.add_out_option("-bf");
+                    self.add_out_option( "3");
+
+                    self.add_out_option("-b_ref_mode");
+                    self.add_out_option( "middle");
+
+                    self.add_out_option("-b_strategy");
+                    self.add_out_option( "1");
+
+                    self.add_out_option("-i_qfactor");
+                    self.add_out_option( "0.75");
+
+                    self.add_out_option("-b_qfactor");
+                    self.add_out_option( "1.1");
+
+                    self.add_out_option("-refs");
+                    self.add_out_option( "3");
+
+                    self.add_out_option("-g");
+                    self.add_out_option( "250");
+
+                    self.add_out_option("-keyint_min");
+                    self.add_out_option( "25");
+
+                    self.add_out_option("-sc_threshold");
+                    self.add_out_option( "40");
+
+                    self.add_out_option("-qcomp");
+                    self.add_out_option( "0.6");
+
+                    self.add_out_option("-qblur");
+                    self.add_out_option( "0.5");
+
+                    self.add_out_option("-surfaces");
+                    self.add_out_option( "64");
+
+                                        /*self.add_out_option("-preset");
+                    self.add_out_option( "slow");
+
+                    self.add_out_option("-rc");
+                    self.add_out_option( "vbr");
+
+                    self.add_out_option("-cq");
+                    self.add_out_option( cq.to_string());
+
+                    self.add_out_option("-qmin");
+                    self.add_out_option(cq.to_string());
+
+                    self.add_out_option("-qmax");
+                    self.add_out_option( (cq + 3).to_string());
+                    
+                    self.add_out_option("-b:v");
+                    self.add_out_option( "6M");
+
+                    self.add_out_option("-bufsize");
+                    self.add_out_option( "15M");*/
+
+                  //-maxrate:v "$MAXRATE" 
+                    /*self.add_out_option("-rc:v");
                     self.add_out_option("vbr");
                     self.add_out_option("-cq:v");
-                    self.add_out_option(crf.unwrap_or(32).to_string());
+                    self.add_out_option(crf.unwrap_or(28).to_string());*/
                   
                 } else {
                     self.add_out_option("libx265");

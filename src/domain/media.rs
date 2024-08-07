@@ -565,11 +565,12 @@ pub struct MediasMessage {
 }
 
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")] 
 pub struct ProgressMessage {
     pub library: String,
-    pub progress: RsProgress
+    pub progress: RsProgress,
+    pub remaining_secondes: Option<u64>
 }
 
 

@@ -178,10 +178,11 @@ async fn handler_predict(Path((library_id, media_id)): Path<(String, String)>, S
 
 
 async fn handler_convert(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(query): Json<VideoConvertRequest>) -> Result<Json<Value>> {
-	let prediction = mc.convert(&library_id, &media_id, query, &user).await?;
-	let body = Json(json!(prediction));
-	//println!("BODY {:?}", body);
-	Ok(body)
+
+	mc.convert(&library_id, &media_id, query.clone(), &user).await?;
+
+	Ok(Json(json!(query)))
+	
 }
 
 async fn handler_get_file(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, range: Option<RangeDefinition>, Query(query): Query<MediaFileQuery>) -> Result<Response> {

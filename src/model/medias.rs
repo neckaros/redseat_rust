@@ -20,11 +20,11 @@ use tokio_stream::StreamExt;
 use tokio_util::{compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt}, io::{ReaderStream, StreamReader}};
 use zip::ZipWriter;
 
-use crate::{domain::{deleted::RsDeleted, library::LibraryType, media::{self, ConvertMessage, ConvertProgress, RsGpsPosition, DEFAULT_MIME}, plugin, MediaElement}, model::store::sql::SqlOrder, plugins::sources::{path_provider::PathProvider, Source}, routes::infos, tools::{file_tools::filename_from_path, image_tools::convert_image_reader, video_tools::{VideoCommandBuilder, VideoConvertRequest, VideoOverlayPosition}}};
+use crate::{domain::{deleted::RsDeleted, library::LibraryType, media::{self, ConvertMessage, ConvertProgress, RsGpsPosition, DEFAULT_MIME}, plugin, MediaElement}, model::store::sql::SqlOrder, plugins::sources::{path_provider::PathProvider, Source}, routes::infos, tools::{file_tools::{filename_from_path, remove_extension}, image_tools::convert_image_reader, video_tools::{VideoCommandBuilder, VideoConvertRequest, VideoOverlayPosition}}};
 
 use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaItemReference, MediaWithAction, MediasMessage, ProgressMessage}, progress::{RsProgress, RsProgressType}, ElementAction}, error::RsResult, plugins::{get_plugin_fodler, sources::{async_reader_progress::ProgressReader, error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{self, resize_image, resize_image_reader, ImageSize, ImageType}, log::{log_error, log_info, LogServiceType}, prediction::{predict_net, preload_model, PredictionTagResult}, video_tools::{self, probe_video, VideoTime}}};
 
-use super::{error::{Error, Result}, plugins::PluginQuery, store, users::ConnectedUser, ModelController};
+use super::{error::{Error, Result}, plugins::PluginQuery, store, users::ConnectedUser, ModelController, VideoConvertQueueElement};
 
 pub const CRYPTO_HEADER_SIZE: u64 = 16 + 4 + 4 + 32 + 256;
 
@@ -536,6 +536,7 @@ impl ModelController {
         let message = ProgressMessage {
             library: library_id.to_owned(),
             progress: RsProgress { id: upload_id, total: infos.size, current: infos.size, kind: RsProgressType::Finished, filename: Some(new_file.name.clone()) },
+            ..Default::default()
         };
         self.send_progress(message);
         
@@ -788,7 +789,22 @@ impl ModelController {
             let mut last_send = 0;
             let mut last_type: Option<RsProgressType> = None;
             
+            let start_time = std::time::Instant::now();
+
+            let mut remaining = None;
+
             while let Some(mut progress) = rx_progress.recv().await {
+                let percent = progress.percent();
+                if let Some(percent) = percent {
+                    if percent > 0.01f32 {
+                        let duration_from_start = start_time.elapsed().as_secs_f32();
+                        let remaining_time = duration_from_start / percent * (1f32 - percent);
+                        //println!("FFMPEG remaining time: {}", remaining_time);
+                        
+                        remaining = Some(remaining_time as u64);
+                    }
+                }
+
                 let current = progress.current.unwrap_or(1);
                 if let Some(upload_id) = &upload_id {
                     progress.id = upload_id.clone();
@@ -799,6 +815,7 @@ impl ModelController {
                     let message = ProgressMessage {
                         library: library_id.clone(),
                         progress,
+                        remaining_secondes: remaining
                     };
                     mc_progress.send_progress(message);
                 }
@@ -974,26 +991,70 @@ impl ModelController {
         }
     }
 
-    pub async fn convert(&self, library_id: &str, media_id: &str, mut request: VideoConvertRequest, requesting_user: &ConnectedUser) -> crate::Result<Media> {
+    pub async fn convert(&self, library_id: &str, media_id: &str, request: VideoConvertRequest, requesting_user: &ConnectedUser) -> crate::Result<()> {
         requesting_user.check_file_role(library_id, media_id, LibraryRole::Write)?;
-
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         let media = store.get_media(media_id).await?.ok_or(Error::NotFound)?;
 
-        let m = self.source_for_library(library_id).await?; 
-        let local = self.library_source_for_library(library_id).await?; 
+
+        let filename = format!("{}.{}", remove_extension(&media.name), request.format);
+        let queue_element = VideoConvertQueueElement::new(library_id.to_string(), media_id.to_string(), filename, requesting_user.clone(), request);
+        let message = ConvertMessage {
+            library: library_id.to_string(),
+            progress: queue_element.status.clone(),
+        };
+        self.send_convert_progress(message);
+
+        let converting = self.convert_current.read().await;
+        let mut queue = self.convert_queue.write().await;
+        queue.push_back(queue_element);
+        drop(queue);
+        if !converting.to_owned() {
+            drop(converting);
+            let mc = self.clone();
+            tokio::spawn(async move {
+                let mut converting = mc.convert_current.write().await;
+                *converting = true;
+                loop  {
+                    let mut queue = mc.convert_queue.write().await;
+                    let element = queue.pop_front();
+                    drop(queue);
+
+                    if let Some(element) = element {
+                        let _ = mc.convert_element(element).await;
+                    } else {
+                        break;
+                    }
+                }
+                *converting = false;
+                println!("Finished transcoding");
+            });
+        }
+
+        Ok(())
+
+    }
+
+    pub async fn convert_element(&self, mut element: VideoConvertQueueElement) -> crate::Result<Media> {
+        element.user.check_file_role(&element.library, &element.media, LibraryRole::Write)?;
+
+        let store = self.store.get_library_store(&element.library).ok_or(Error::NotFound)?;
+        let media = store.get_media(&element.media).await?.ok_or(Error::NotFound)?;
+
+        let m = self.source_for_library(&element.library).await?; 
+        let local = self.library_source_for_library(&element.library).await?; 
         let path = m.local_path(media.source.as_ref().ok_or(Error::ServiceError("Convert".to_owned(), Some("Unable to convert video without source".to_owned())))?).ok_or(Error::ServiceError("Convert".to_owned(), Some("Unable to convert video that is not local".to_owned())))?;
  
-        let filename = format!("{}.{}", nanoid!(), request.format);
+        let filename = element.status.filename;
         let dest_source = format!(".cache/{}", filename);
-        let dest = local.get_gull_path(&dest_source);
+        let dest = local.get_full_path(&dest_source);
         PathProvider::ensure_filepath(&dest).await?;
 
 
         let mc_progress = self.clone();
-        let lib_progress = library_id.to_string();
-        let request_progress = request.clone();
-        let name_progress = request.id.clone();
+        let lib_progress = element.library.to_string();
+        let request_progress = element.request.clone();
+        let name_progress = filename.clone();
         let (tx_progress, mut rx_progress) = mpsc::channel::<f64>(100);
         tokio::spawn(async move {
 
@@ -1005,7 +1066,7 @@ impl ModelController {
                 if percent > 0.01f64 {
                     let duration_from_start = start_time.elapsed().as_secs_f64();
                     let remaining_time = duration_from_start / percent * (1f64 - percent);
-                    println!("FFMPEG remaining time: {}", remaining_time);
+                    //println!("FFMPEG remaining time: {}", remaining_time);
                     
                     remaining = Some(remaining_time as u64);
                 }
@@ -1033,48 +1094,48 @@ impl ModelController {
         video_builder.set_progress(tx_progress);
 
 
-        if let Some(overlay) = &mut request.overlay {
+        if let Some(overlay) = &mut element.request.overlay {
             match overlay.kind {
                 video_tools::VideoOverlayType::Watermark => {
                     let name = if overlay.path.is_empty() { ".watermark.png".to_owned() } else { format!(".watermark.{}.png", &overlay.path)};
-                    overlay.path = local.get_gull_path(&name).to_str().ok_or(Error::ServiceError("Convert".to_owned(), Some("Invalid watermark path".to_owned())))?.to_string();
+                    overlay.path = local.get_full_path(&name).to_str().ok_or(Error::ServiceError("Convert".to_owned(), Some("Invalid watermark path".to_owned())))?.to_string();
                 },
                 video_tools::VideoOverlayType::File => todo!(),
             }
   
         }
-        let progress_id = request.id.clone();
-        video_builder.set_request(request.clone()).await?;
+        let progress_id = element.request.id.clone();
+        video_builder.set_request(element.request.clone()).await?;
         video_builder.run_file(path.to_str().unwrap(), dest.to_str().unwrap()).await?;
         let message = ConvertMessage {
-            library: library_id.to_string(),
+            library: element.library.to_string(),
             progress: ConvertProgress {
                 percent: 1.0,
                 converted_id: None,
                 filename: filename.clone(),
                 done: true,
                 id: progress_id.clone(),
-                request: Some(request.clone()),
+                request: Some(element.request.clone()),
                 ..Default::default()
             },
         };
         self.send_convert_progress(message);
         let media_infos: MediaForUpdate = media.into();
         let reader = File::open(dest).await?;
-        let media = self.add_library_file(library_id, &filename, Some(media_infos), reader, requesting_user).await;
+        let media = self.add_library_file(&element.library, &filename, Some(media_infos), reader, &element.user).await;
         
         local.remove(&dest_source).await?;
         match media {
             Ok(media) => {
                 let message = ConvertMessage {
-                    library: library_id.to_string(),
+                    library: element.library.to_string(),
                     progress: ConvertProgress {
                         percent: 1.0,
                         converted_id: Some(media.id.clone()),
                         filename: filename.clone(),
                         done: true,
                         id: progress_id.clone(),
-                        request: Some(request.clone()),
+                        request: Some(element.request.clone()),
                         ..Default::default()
                     },
                 };

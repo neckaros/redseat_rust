@@ -16,17 +16,37 @@ pub mod movies;
 pub mod deleted;
 pub mod player;
 
-use std::{collections::HashMap, io::Read, path::PathBuf, pin::Pin, sync::Arc};
+use std::{collections::{HashMap, VecDeque}, io::Read, path::PathBuf, pin::Pin, sync::Arc, thread::JoinHandle};
 use futures::lock::Mutex;
 use nanoid::nanoid;
+use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
-use crate::{domain::{library::{LibraryMessage, LibraryRole, ServerLibrary}, player::{RsPlayer, RsPlayerAvailable}, plugin::PluginWasm, serie::Serie}, error::{RsError, RsResult}, plugins::{list_plugins, medias::{fanart::FanArtContext, imdb::ImdbContext, tmdb::TmdbContext, trakt::TraktContext}, sources::{error::SourcesError, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, LocalSource, Source, SourceRead}, PluginManager}, routes::mw_range::RangeDefinition, server::get_server_file_path_array, tools::{clock::SECONDS_IN_HOUR, image_tools::{resize_image_path, ImageSize, ImageSizeIter, ImageType}, log::log_info, scheduler::{self, ip::RefreshIpTask, refresh::RefreshTask, RsScheduler, RsTaskType}}};
+use crate::{domain::{library::{LibraryMessage, LibraryRole, ServerLibrary}, media::ConvertProgress, player::{RsPlayer, RsPlayerAvailable}, plugin::PluginWasm, serie::Serie}, error::{RsError, RsResult}, plugins::{list_plugins, medias::{fanart::FanArtContext, imdb::ImdbContext, tmdb::TmdbContext, trakt::TraktContext}, sources::{error::SourcesError, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, LocalSource, Source, SourceRead}, PluginManager}, routes::mw_range::RangeDefinition, server::get_server_file_path_array, tools::{clock::SECONDS_IN_HOUR, image_tools::{resize_image_path, ImageSize, ImageSizeIter, ImageType}, log::log_info, scheduler::{self, ip::RefreshIpTask, refresh::RefreshTask, RsScheduler, RsTaskType}, video_tools::VideoConvertRequest}};
 
 use self::{medias::CRYPTO_HEADER_SIZE, store::SqliteStore, users::{ConnectedUser, ServerUser, UserRole}};
 use error::{Result, Error};
 use socketioxide::{extract::SocketRef, SocketIo};
 use tokio::{fs::{self, remove_file, File}, io::{copy, AsyncRead, BufReader}, sync::RwLock};
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct VideoConvertQueueElement {
+    request: VideoConvertRequest,
+    library: String,
+    media: String,
+	user: ConnectedUser,
+	id: String,
+	status: ConvertProgress
+
+}
+
+impl VideoConvertQueueElement {
+	pub fn new(library: String, media: String, filename: String, user: ConnectedUser, request: VideoConvertRequest) -> VideoConvertQueueElement {
+		VideoConvertQueueElement {id: request.id.clone(), 
+			status: ConvertProgress { id: request.id.clone(), filename, converted_id: None, done: false, percent: 0f64, estimated_remaining_seconds: None, request: Some(request.clone()) },
+			request, library, media, user, 
+			 }
+	}
+}
 
 #[derive(Clone)]
 pub struct ModelController {
@@ -40,6 +60,10 @@ pub struct ModelController {
 	pub scheduler: Arc<RsScheduler>,
 
 	pub players: Arc<RwLock<Vec<RsPlayerAvailable>>>,
+
+	pub convert_queue: Arc<RwLock<VecDeque<VideoConvertQueueElement>>>,
+	pub convert_current: Arc<RwLock<bool>>,
+	pub convert_current_process: Arc<RwLock<Option<JoinHandle<()>>>>,
 
 	pub chache_libraries: Arc<RwLock<HashMap<String, ServerLibrary>>>
 }
@@ -62,7 +86,10 @@ impl ModelController {
 			imdb: Arc::new(ImdbContext::new()),
 			scheduler: Arc::new(scheduler),
 			chache_libraries: Arc::new(RwLock::new(HashMap::new())),
-			players: Arc::new(RwLock::new(vec![]))
+			players: Arc::new(RwLock::new(vec![])),
+			convert_queue: Arc::new(RwLock::new(VecDeque::new())),
+			convert_current: Arc::new(RwLock::new(false)),
+			convert_current_process: Arc::new(RwLock::new(None))
 		};
 
 		let pm_forload = mc.plugin_manager.clone();
@@ -192,7 +219,7 @@ impl  ModelController {
 					let exist = m.exists(&original_filepath).await;
 					if exist {
 						log_info(crate::tools::log::LogServiceType::Other, format!("Creating image size: {} {} {} {}", folder, id, ImageType::optional_to_filename_element(&kind), int_size));
-						resize_image_path(&m.get_gull_path(&original_filepath),  &m.get_gull_path(&source_filepath), int_size.to_size()).await?;
+						resize_image_path(&m.get_full_path(&original_filepath),  &m.get_full_path(&source_filepath), int_size.to_size()).await?;
 						let reader = m.get_file(&source_filepath, None).await?;
 						if let SourceRead::Stream(reader) = reader {
 							return Ok(reader);

@@ -18,6 +18,8 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/:id/deleted", get(handler_list_deleted))
 		.route("/", post(handler_post))
 		
+		.route("/:id/clean", get(handler_clean))
+
 		.route("/:id/invitation", post(handler_invitation))
 		.with_state(mc)
         
@@ -73,6 +75,12 @@ async fn handler_list_deleted(Path(library_id): Path<String>, State(mc): State<M
 	let body = Json(json!(deleted));
 	Ok(body)
 	
+}
+
+async fn handler_clean(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	let cleaned = mc.clean_library(&library_id, &user).await?;
+	
+	Ok(Json(json!(cleaned)))
 }
 
 #[derive(Deserialize)]

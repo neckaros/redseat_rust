@@ -5,7 +5,7 @@ use rs_plugin_common_interfaces::RsRequest;
 use serde::{Deserialize, Serialize};
 use tokio::fs::read_dir;
 
-use crate::{domain::{library::{LibraryMessage, LibraryRole, LibraryType, ServerLibrary, ServerLibrarySettings}, ElementAction}, error::RsResult, plugins::sources::{Source, SourceRead}, tools::auth::{sign_local, ClaimsLocal, ClaimsLocalType}};
+use crate::{domain::{library::{LibraryMessage, LibraryRole, LibraryType, ServerLibrary, ServerLibrarySettings}, ElementAction}, error::RsResult, plugins::sources::{path_provider::PathProvider, Source, SourceRead}, tools::auth::{sign_local, ClaimsLocal, ClaimsLocalType}};
 
 use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
 
@@ -289,6 +289,20 @@ impl ModelController {
         }
 	}
 
+    pub async fn clean_library(&self, library_id: &str, requesting_user: &ConnectedUser) -> crate::error::Result<Vec<(String, u64)>> {
+        requesting_user.check_library_role(&library_id, LibraryRole::Admin)?;
+        let m = self.source_for_library(library_id).await?; 
+        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let sources = store.get_all_sources().await?;
+        println!("sources count: {}", sources.len());
+        let cleaned = m.clean(sources).await?;
+
+        let local = self.library_source_for_library(library_id).await?; 
+
+        local.clean_temp()?;
+        Ok(cleaned)
+	}
+
     pub async fn add_library_invitation(&self, library_id: &str, roles: Vec<LibraryRole>, requesting_user: &ConnectedUser) -> Result<super::libraries::ServerLibraryInvitation> {
         requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
         let invitation = ServerLibraryInvitation {
@@ -306,7 +320,7 @@ impl ModelController {
     pub async fn get_watermarks(&self, library_id: &str, requesting_user: &ConnectedUser) -> Result<Vec<String>> {
         requesting_user.check_library_role(&library_id, LibraryRole::Read)?;
         let local = self.library_source_for_library(library_id).await?;
-        let path = local.get_gull_path("");
+        let path = local.get_full_path("");
         let mut files = read_dir(&path).await?;
         let mut watermars: Vec<String> = vec![];
         while let Ok(Some(entry)) = files.next_entry().await {
