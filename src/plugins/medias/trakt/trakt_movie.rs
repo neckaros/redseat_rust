@@ -89,7 +89,7 @@ pub struct TraktFullMovie {
     pub ids: TraktIds,
     pub tagline: String,
     pub overview: String,
-    pub released: NaiveDate,
+    pub released: Option<NaiveDate>,
     pub runtime: Option<u32>,
     pub status: Option<TraktMovieStatus>,
     pub country: Option<String>,

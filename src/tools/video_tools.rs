@@ -498,6 +498,8 @@ impl VideoCommandBuilder {
             frames = Some((all_frames as f64 * (expected_duration / duration)) as isize);
         }
 
+        //let fr_ration = if let Some(target_fr) = 
+
         println!("=> {:?}",frames);
         for input in &self.input_options {
             self.cmd.arg(input);

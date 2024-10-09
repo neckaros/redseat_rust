@@ -64,7 +64,8 @@ async fn main() ->  Result<()> {
         
         let tls_config = RustlsConfig::from_pem_chain_file(certs.0, certs.1).await.unwrap();
 
-        let addr = SocketAddr::new(IpAddr::from(Ipv6Addr::UNSPECIFIED), local_port);
+        //let addr = format!("[::]:{}", local_port).parse::<SocketAddr>().unwrap();
+        let addr = SocketAddr::from(([0, 0, 0, 0], local_port));
         log_info(tools::log::LogServiceType::Register, format!("->> LISTENING HTTP/HTTPS on {:?}\n", addr));
 
         axum_server_dual_protocol::bind_dual_protocol(addr, tls_config)
@@ -163,7 +164,7 @@ async fn fallback(uri: Uri) -> (StatusCode, &'static str) {
 }
 struct RegisterInfo {
     cert_paths: Option<(PathBuf, PathBuf)>,
-    ips: Option<(String, String)>
+    ips: Option<String>
 }
 
 async fn register() -> Result<RegisterInfo>{

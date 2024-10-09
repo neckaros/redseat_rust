@@ -598,6 +598,13 @@ impl ModelController {
                         return Err(Error::Duplicate(existing.id.to_owned(), MediaElement::Media(existing)).into())
                     }
                 }
+                if origin.user.is_none() {
+                    if let Some(user) = &infos.people_lookup {
+                        if let Some(user) = user.first() {
+                            origin.user = Some(user.to_string())
+                        }
+                    }
+                }
             }
 
             let filename = format!("{}.zip", nanoid!());
