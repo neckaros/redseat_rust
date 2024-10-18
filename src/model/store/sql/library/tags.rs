@@ -47,7 +47,7 @@ impl SqliteLibraryStore {
                 where_query.add_where(QueryWhereType::EqualWithAlt("name", "alt", "|", q));
                 println!("q '{}'", q)
             }
-            println!("sql: {}", where_query.format());
+            //println!("sql: {}", where_query.format());
 
             let mut query = conn.prepare(&format!("SELECT id, name, parent, type, alt, thumb, params, modified, added, generated, path  FROM tags {}{}", where_query.format(), where_query.format_order()))?;
             
