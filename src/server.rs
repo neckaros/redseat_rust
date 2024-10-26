@@ -379,25 +379,25 @@ pub async fn get_ipv6() -> Result<String> {
 }
 
 
-pub async fn update_ip() -> Result<Option<(String, String)>> {
+pub async fn update_ip() -> Result<Option<String>> {
     log_info(LogServiceType::Register, "Checking public IPs".to_string());
     let config = get_config().await;
     let id = config.id.ok_or(crate::Error::ServerNoServerId)?;
     let token = config.token.ok_or(crate::Error::ServerNotYetRegistered)?;
 
     let ipv4 = get_ipv4().await?;
-    let ipv6 = get_ipv6().await?;
+    //let ipv6 = get_ipv6().await?;
 
     
 
-    log_info(LogServiceType::Register, format!("Updating ips: {} {}", ipv4, ipv6));
+    log_info(LogServiceType::Register, format!("Updating ip: {}", ipv4));
 
 
     let client = reqwest::Client::new();
         
     let request = ServerIpInfo {
         ipv4: Some(ipv4.clone()),
-        ipv6: Some(ipv6.clone()),
+        ipv6: None,
     };
 
     log_info(LogServiceType::Register, format!("Calling: https://{}/servers/{}/register", config.redseat_home, id));
@@ -412,6 +412,6 @@ pub async fn update_ip() -> Result<Option<(String, String)>> {
 
 
     
-    Ok(Some((ipv4, ipv6)))
+    Ok(Some(ipv4))
 
 }

@@ -185,7 +185,7 @@ impl YtDlCommandBuilder {
     
     pub fn add_referer(&mut self, referer: &str) -> &mut Self {
         self.cmd.arg("--referer").arg(referer);
-        println!("REFERER {}", referer);
+        //println!("REFERER {}", referer);
         self
     }
     pub fn add_header(&mut self, name: &str, value: &str) -> &mut Self {

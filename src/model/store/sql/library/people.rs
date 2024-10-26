@@ -37,18 +37,33 @@ impl SqliteLibraryStore {
             if query.after.is_some() {
                 where_query.add_oder(OrderBuilder::new("modified".to_string(), SqlOrder::ASC))
             } else {
+                if query.name.is_some() {
+                    where_query.add_oder(OrderBuilder::new("score".to_string(), SqlOrder::DESC));
+                }
                 where_query.add_oder(OrderBuilder::new("name".to_string(), SqlOrder::ASC))
             }
             
 
+            let mut score = "".to_string();
             if let Some(q) = query.name {
+
+                score = format!(",
+(case 
+when name = '{}' then 100 
+when socials like '%\"id\":\"{}\"%'  then 20
+when (alt like '%|{}|%' or  alt like '{}|%'  or  alt like '%|{}'  or alt = '{}' COLLATE NOCASE ) then 10
+else 0 end) as score", q, q, q, q, q, q);
                 let name_queries = vec![SqlWhereType::EqualWithAlt("name".to_owned(), "alt".to_owned(), "|".to_owned(), Box::new(q.clone())),
                 SqlWhereType::Like("socials".to_owned(), Box::new(format!("%\"id\":\"{}\"%", q)))];
                 where_query.add_where(SqlWhereType::Or(name_queries));
+
+                
             }
 
+            let mut query = conn.prepare(&format!("SELECT id, name, socials, type, alt, portrait, params, birthday, modified, added, posterv, generated{}  FROM people {}{}", score, where_query.format(), where_query.format_order()))?;
 
-            let mut query = conn.prepare(&format!("SELECT id, name, socials, type, alt, portrait, params, birthday, modified, added, posterv, generated  FROM people {}{}", where_query.format(), where_query.format_order()))?;
+            //println!("sql: {:?}", query.expanded_sql());
+
             let rows = query.query_map(
             where_query.values(), Self::row_to_person,
             )?;

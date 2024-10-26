@@ -45,11 +45,11 @@ pub async fn dns_certify() -> Result<(PathBuf, PathBuf)> {
         log_info(LogServiceType::Register, format!("certificate validity: {:?}",res_x509.1.validity.not_after));
 
         let expiry: &ASN1Time = &res_x509.1.validity.not_after;
-        let utc_time: DateTime<Utc> = Utc::now() + Duration::days(-5);
+        let utc_time: DateTime<Utc> = Utc::now() + Duration::days(5);
 
         let expiry_date: DateTime<Utc> = DateTime::<Utc>::from_timestamp(expiry.timestamp(), 0).expect("invalid timestamp");
          if expiry_date > utc_time { 
-            log_info(LogServiceType::Register, "Certificate valid".to_string());
+            log_info(LogServiceType::Register, format!("Certificate valid : {:?} > {:?}", expiry_date, utc_time));
             return Ok((get_server_file_path(PUBLIC_FILENAME).await?,get_server_file_path(PRIVATE_FILENAME).await?));
          } else {
             log_info(LogServiceType::Register, "Certificate expired".to_string());
@@ -158,10 +158,10 @@ pub async fn dns_certify() -> Result<(PathBuf, PathBuf)> {
     
     
     log_info(LogServiceType::Register, format!(
-        "Waiting 60 seconds for DNS propagation https://{}/servers/{}/register/txt {:?}",
+        "Waiting 180 seconds for DNS propagation https://{}/servers/{}/register/txt {:?}",
         config.redseat_home, id, request
     ));
-    sleep(std::time::Duration::from_secs(60)).await;
+    sleep(std::time::Duration::from_secs(180)).await;
 
     for (_, url) in &challenges {
         order.set_challenge_ready(url).await.map_err(|_| Error::Error(format!("Unable to set challenge ready for {}", url)))?;
