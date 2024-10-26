@@ -318,7 +318,7 @@ impl ModelController {
         println!("Zip name: {}", filename);
         
         let m = self.source_for_library(&library_id).await?;
-        let (source, mut file) = m.writer(&filename).await?;
+        let (source, mut file) = m.writerseek(&filename).await?;
         //let file = file.compat_write();
         
         
@@ -503,7 +503,7 @@ impl ModelController {
 
 
     
-    pub async fn add_library_file<'a, T: Sized + AsyncRead + Send + 'a >(&self, library_id: &str, filename: &str, infos: Option<MediaForUpdate>, reader: T, requesting_user: &ConnectedUser) -> RsResult<Media> {
+    pub async fn add_library_file<T: Sized + AsyncRead + Send + Unpin >(&self, library_id: &str, filename: &str, infos: Option<MediaForUpdate>, reader: T, requesting_user: &ConnectedUser) -> RsResult<Media> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         let mut infos = infos.unwrap_or_default();
         let upload_id = infos.upload_id.clone().unwrap_or_else(|| nanoid!());
@@ -512,12 +512,13 @@ impl ModelController {
 
         let tx_progress = self.create_progress_sender(library_id.to_owned(), Some(upload_id.clone()));
 
-        tokio::pin!(reader); 
-        let progress_reader = ProgressReader::new(reader, RsProgress { id: upload_id.clone(), total: infos.size, current: Some(0), kind: RsProgressType::Transfert, filename: Some(filename.to_owned()) }, tx_progress.clone());
-           
-           
-        let source = m.write(filename, Box::pin(progress_reader)).await?;
+        let mut progress_reader = ProgressReader::new(reader, RsProgress { id: upload_id.clone(), total: infos.size, current: Some(0), kind: RsProgressType::Transfert, filename: Some(filename.to_owned()) }, tx_progress.clone());
 
+           
+           
+        let (source, mut file) = m.writerseek(filename).await?;
+        copy(&mut progress_reader, &mut file).await?;
+        file.flush().await?;
         
         if !crypted {
             let _ = m.fill_infos(&source, &mut infos).await;
@@ -602,7 +603,7 @@ impl ModelController {
 
             let filename = format!("{}.zip", nanoid!());
             println!("Zip name: {}", filename);
-            let (source, mut file) = m.writer(&filename).await?;
+            let (source_porimise, mut file) = m.writer(&filename).await?;
             //let file = file.compat_write();
             
             
@@ -641,6 +642,8 @@ impl ModelController {
             zip_writer.close().await.map_err(|_| Error::ServiceError("Unable to close zip file".to_string(), None))?;
             file.flush().await?;
             println!("CLOSED");
+
+            let source = source_porimise.await?;
 
             m.fill_infos(&source, &mut infos).await?;
 
@@ -729,9 +732,11 @@ impl ModelController {
                 }
                 
                 
-                let progress_reader = ProgressReader::new(reader.stream, RsProgress { id: upload_id.clone(), total: reader.size, current: Some(0), kind: RsProgressType::Transfert, filename: Some(filename.clone()) }, tx_progress.clone());
+                let mut progress_reader = ProgressReader::new(reader.stream, RsProgress { id: upload_id.clone(), total: reader.size, current: Some(0), kind: RsProgressType::Transfert, filename: Some(filename.clone()) }, tx_progress.clone());
             
-                let source = m.write(&filename, Box::pin(progress_reader)).await?;
+                let (source, mut file) = m.writerseek(&filename).await?;
+                copy(&mut progress_reader, &mut file).await?;
+                file.flush().await?;
             
                 let _ = m.fill_infos(&source, &mut infos).await;
 
