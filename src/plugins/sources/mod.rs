@@ -9,7 +9,7 @@ use nanoid::nanoid;
 use reqwest::RequestBuilder;
 use rs_plugin_common_interfaces::request::{RsCookies, RsRequest, RsRequestStatus};
 use serde::{Deserialize, Serialize};
-use tokio::{fs::File, io::{AsyncRead, AsyncSeek, AsyncWrite, BufReader}, sync::{mpsc::Sender, Mutex}, time::sleep};
+use tokio::{fs::File, io::{copy, AsyncRead, AsyncSeek, AsyncWrite, AsyncWriteExt, BufReader}, sync::{mpsc::Sender, Mutex}, time::sleep};
 
 use tokio_util::io::{ReaderStream, StreamReader};
 use crate::{domain::{library::ServerLibrary, media::MediaForUpdate, progress::{RsProgress, RsProgressCallback}}, error::RsResult, model::{error::Error, users::ConnectedUser, ModelController}, routes::mw_range::RangeDefinition, tools::{file_tools::get_mime_from_filename, video_tools::ytdl::ProgressStreamItem}};
@@ -22,7 +22,7 @@ pub mod plugin_provider;
 pub mod error;
 pub mod async_reader_progress;
 
-pub type AsyncReadPinBox = Pin<Box<dyn AsyncRead + Send>>;
+pub type AsyncReadPinBox = Pin<Box<dyn AsyncRead + Send + Sync>>;
 
 pub trait AsyncSeekableWrite: AsyncWrite + AsyncSeek + Send {}
 
@@ -73,7 +73,7 @@ pub struct FileBufferResult {
     pub cleanup: Option<Box<dyn Cleanup>>
 }
 
-pub struct FileStreamResult<T: Sized + AsyncRead + Send> {
+pub struct FileStreamResult<T: Sized + AsyncRead + Sync + Send> {
     pub stream: T,
     pub size: Option<u64>,
     pub accept_range: bool,
@@ -124,7 +124,7 @@ impl Drop for CleanupFiles {
 //     }
 // }
 
-impl<T: Sized + AsyncRead + Send> FileStreamResult<T> {
+impl<T: Sized + AsyncRead + Send + Sync> FileStreamResult<T> {
     pub fn hearders(&self) -> SourcesResult<HeaderMap> {
         let mut headers = HeaderMap::new();
         let mime = self.mime.clone();
@@ -381,6 +381,8 @@ impl SourceRead {
     }
 }
 
+type BoxedStringFuture = Pin<Box<dyn Future<Output = RsResult<String>> + Send>>;
+
 #[async_trait]
 pub trait Source: Send {
     async fn new(root: ServerLibrary, controller: ModelController) -> RsResult<Self> where Self: Sized;
@@ -392,10 +394,10 @@ pub trait Source: Send {
     fn local_path(&self, source: &str) -> Option<PathBuf>;
     async fn get_file(&self, source: &str, range: Option<RangeDefinition>) -> RsResult<SourceRead>;
     
-    async fn write<'a>(&self, name: &str, read: Pin<Box<dyn AsyncRead + Send + 'a>>) -> RsResult<String>;
     
-    
-    async fn writer<'a>(&self, name: &str) -> RsResult<(String, Pin<Box<dyn AsyncSeekableWrite + 'a>>)>;
+    async fn writer(&self, name: &str) -> RsResult<(BoxedStringFuture, Pin<Box<dyn AsyncWrite + Send>>)>;
+
+    async fn writerseek(&self, name: &str) -> RsResult<(String, Pin<Box<dyn AsyncSeekableWrite + Send>>)>;
 
     
     async fn clean(&self, sources: Vec<String>) -> RsResult<Vec<(String, u64)>>;

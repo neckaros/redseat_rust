@@ -1,4 +1,4 @@
-use std::{io, path::PathBuf, pin::Pin, str::FromStr, sync::Arc};
+use std::{future::Future, io, path::PathBuf, pin::Pin, str::FromStr, sync::Arc};
 
 
 use axum::async_trait;
@@ -11,13 +11,12 @@ use tokio::{fs::File, io::{AsyncRead, AsyncWrite, BufReader, BufWriter}};
 
 use crate::{domain::{library::ServerLibrary, media::MediaForUpdate}, error::RsResult, model::ModelController, plugins::PluginManager, routes::mw_range::RangeDefinition, server::get_server_file_path_array};
 
-use super::{error::{SourcesError, SourcesResult}, AsyncReadPinBox, AsyncSeekableWrite, FileStreamResult, Source, SourceRead};
+use super::{error::{SourcesError, SourcesResult}, AsyncReadPinBox, AsyncSeekableWrite, BoxedStringFuture, FileStreamResult, Source, SourceRead};
 
 pub struct VirtualProvider {
     library: ServerLibrary,
     plugin_manager: Arc<PluginManager>
 }
-
 
 #[async_trait]
 impl Source for VirtualProvider {
@@ -55,13 +54,16 @@ impl Source for VirtualProvider {
     }
 
 
-    async fn write<'a>(&self, _name: &str, _read: Pin<Box<dyn AsyncRead + Send + 'a>>) -> RsResult<String> {
+    async fn writer(&self, name: &str) -> RsResult<(BoxedStringFuture, Pin<Box<dyn AsyncWrite + Send>>)> {
         Err(crate::Error::NotImplemented("Writer not implemented for plugin provider".to_string()))
     }
 
-    async fn writer<'a>(&self, name: &str) -> RsResult<(String, Pin<Box<dyn AsyncSeekableWrite + 'a>>)> {
+
+    async fn writerseek(&self, name: &str) -> RsResult<(String, Pin<Box<dyn AsyncSeekableWrite + Send>>)> {
         Err(crate::Error::NotImplemented("Writer not implemented for plugin provider".to_string()))
     }
+
+
     
 
     async fn clean(&self, sources: Vec<String>) -> RsResult<Vec<(String, u64)>> {

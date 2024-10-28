@@ -12,7 +12,7 @@ use tokio::{fs::{create_dir_all, remove_file, File}, io::{copy, AsyncRead, Async
 
 use crate::{domain::{library::ServerLibrary, media::MediaForUpdate}, error::RsResult, model::ModelController, routes::mw_range::RangeDefinition, tools::{file_tools::get_mime_from_filename, image_tools::resize_image_reader, log::log_info}};
 
-use super::{error::{SourcesError, SourcesResult}, AsyncReadPinBox, AsyncSeekableWrite, FileStreamResult, RangeResponse, Source, SourceRead};
+use super::{error::{SourcesError, SourcesResult}, AsyncReadPinBox, AsyncSeekableWrite, BoxedStringFuture, FileStreamResult, RangeResponse, Source, SourceRead};
 
 pub struct PathProvider {
     root: PathBuf,
@@ -232,15 +232,61 @@ impl Source for PathProvider {
 
 
 
-    async fn write<'a>(&self, name: &str, mut read: Pin<Box<dyn AsyncRead + Send + 'a>>) -> RsResult<String> {
+
+
+    async fn writer(&self, name: &str) -> RsResult<(BoxedStringFuture, Pin<Box<dyn AsyncWrite + Send>>)> {
+        let path = self.root.clone();
+        let mut sourcepath = PathBuf::new();
+
+        if !self.for_local {
+            let year = Utc::now().year().to_string();
+            sourcepath.push(year);
+            let month = Utc::now().month().to_string();
+            sourcepath.push(month);
+        }
+        let mut folder = path.clone();
+        folder.push(&sourcepath);
+       
+
+        let mut file_path = path.clone();
+        let original_source = sourcepath.clone();
+        sourcepath.push(name);
+        file_path.push(&sourcepath);
         
-        let (source, mut file) = self.writer(name).await?;
-        copy(&mut read, &mut file).await?;
-        file.flush().await?;
-        Ok(source.to_string())
+        if let Some(p) = file_path.parent() {
+            create_dir_all(&p).await?;
+        }
+        
+
+        let original_name = name;
+        let mut i = 1;
+        while file_path.exists() {
+            i += 1;
+            let extension = file_path.extension().and_then(|r| r.to_str());
+            let new_name = if let Some(extension) = extension {
+                original_name.replace(&format!(".{}", extension), &format!("-{}.{}", i, extension))
+            } else {
+                format!("{}-{}", original_name, i)
+            };
+            file_path = path.clone();
+            sourcepath = original_source.clone();
+            sourcepath.push(new_name);
+            file_path.push(&sourcepath);
+        }
+    
+    
+        let source = sourcepath.to_str().ok_or(SourcesError::Other("Unable to convert path to string".into()))?.to_string();
+        let file = BufWriter::new(File::create(&file_path).await?);
+
+        let source = Box::pin(async {
+            Ok(source)
+        });
+        Ok((source, Box::pin(file)))
     }
 
-    async fn writer<'a>(&self, name: &str) -> RsResult<(String, Pin<Box<dyn AsyncSeekableWrite + 'a>>)> {
+
+
+    async fn writerseek(&self, name: &str) -> RsResult<(String, Pin<Box<dyn AsyncSeekableWrite + Send>>)> {
         let path = self.root.clone();
         let mut sourcepath = PathBuf::new();
 
@@ -381,11 +427,5 @@ mod tests {
     use tower::ServiceExt; // for `call`, `oneshot`, and `ready`
 
 
-    fn all_sub_path() {
-        let provider = PathProvider::new_for_local("D:\\System\\backup");
 
-        let paths = provider.get_all_file_paths("D:\\System\\backup\\.redseat");
-
-        println!("Paths: {:?}", paths);
-    }
 }
