@@ -25,3 +25,5 @@ Mac:
  brew install llvm
 
 
+Path of configuration for docker volume:
+/root/.config/redseat

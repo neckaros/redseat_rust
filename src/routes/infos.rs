@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::{model::{users::{ConnectedUser, ServerUser, UserRole}, ModelController}, server::{check_unregistered, get_config, get_install_url, get_own_url, get_server_file_path, get_server_id, get_web_url, update_config, PublicServerInfos}, tools::image_tools::image_magick::Red, Result};
+use crate::{model::{users::{ConnectedUser, ServerUser, UserRole}, ModelController}, server::{check_unregistered, get_config, get_install_url, get_own_url, get_server_file_path, get_server_id, get_web_url, update_config, PublicServerInfos}, tools::{image_tools::image_magick::Red, log::{log_info, LogServiceType}}, Result};
 use axum::{extract::{Query, State}, response::Redirect, routing::{get, post}, Json, Router};
 use query_external_ip::Consensus;
 use serde::{Deserialize, Serialize};
@@ -57,11 +57,14 @@ async fn handler_own(State(mc): State<ModelController>, Query(query): Query<OwnQ
 }
 
 async fn handler_install() -> Result<Redirect> {
+	log_info(LogServiceType::Register, "Getting install request checking that server is unregistered".to_string());
 	//let admin_users = mc.get_users(&ConnectedUser::ServerAdmin).await?.into_iter().filter(|u| u.is_admin()).collect::<Vec<_>>();
 	check_unregistered().await?;
     
     
 	let url = get_install_url().await?;
+	
+	log_info(LogServiceType::Register, format!("Install URL: {}", url));
 	Ok(Redirect::temporary(&url))
 	
 }

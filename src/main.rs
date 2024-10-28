@@ -74,7 +74,7 @@ async fn main() ->  Result<()> {
         
 
     } else {
-        let listener = TcpListener::bind(format!("127.0.0.1:{}", local_port)).await.unwrap();
+        let listener = TcpListener::bind(format!("0.0.0.0:{}", local_port)).await.unwrap();
         log_info(LogServiceType::Register, format!("->> LISTENING on {:?}\n", listener.local_addr()));
         
         axum::serve(listener, app.await?)
