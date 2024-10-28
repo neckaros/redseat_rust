@@ -103,6 +103,7 @@ pub fn predict_net(path: PathBuf, bgr: bool, normalize: bool, buffer_image: Vec<
         ValueType::Tensor { ty: _, dimensions } => dimensions.get(1).map(|i| *i as u32),
         ValueType::Sequence(_) => None,
         ValueType::Map { key: _, value: _ } => None,
+        ValueType::Optional(value_type) => None,
     };
     let size = size.ok_or(Error::Error("Unable to get dimensions".into()))?;
     let resized = prepare_image(buffer_image, size, size)?;
