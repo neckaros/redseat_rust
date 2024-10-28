@@ -26,6 +26,7 @@ pub async fn get_plugin_fodler() -> crate::Result<PathBuf> {
 
 pub async fn list_plugins() -> crate::Result<impl Iterator<Item = PluginWasm>> {
     let folder = get_plugin_fodler().await?;
+    log_info(crate::tools::log::LogServiceType::Plugin, format!("Loaded plugins from local path -> {:?}", folder));
     Ok(std::fs::read_dir(folder)?
         // Filter out all those directory entries which couldn't be read
         .filter_map(|res| res.ok())
