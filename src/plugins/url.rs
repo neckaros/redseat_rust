@@ -23,7 +23,7 @@ impl PluginManager {
                         return Some(res)
                     } else if let Err((error, code)) = res {
                         if code != 404 {
-                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request {} {:?}", code, error))
+                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request parse: {} {:?}", code, error))
                         }
                     }
                     
@@ -44,7 +44,7 @@ impl PluginManager {
                         return Some(res.to_string())
                     } else if let Err((error, code)) = res {
                         if code != 404 {
-                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request {} {:?}", code, error))
+                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request expand {} {:?}", code, error))
                         }
                     }
                     
@@ -145,7 +145,7 @@ impl PluginManager {
                         processed_request = Some(res);
                     } else if let Err((error, code)) = res {
                         if code != 404 {
-                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request {} {:?}", code, error))
+                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request ({}): {} {:?}", plugin.filename, code, error))
                         }
                     }
                     
@@ -205,7 +205,7 @@ impl PluginManager {
                             
                         } else if let Err((error, code)) = res {
                             if code != 404 {
-                                log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request {} {:?}", code, error))
+                                log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request permanent {} {:?}", code, error))
                             }
                         }
                         
@@ -239,7 +239,7 @@ impl PluginManager {
                         }
                     } else if let Err((error, code)) = res {
                         if code != 404 {
-                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request {} {:?}", code, error))
+                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request lookup {} {:?}", code, error))
                         }
                     }
                     

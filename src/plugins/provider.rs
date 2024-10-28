@@ -28,7 +28,7 @@ impl PluginManager {
                     Ok(Json(res)) => Ok(res),
                     Err((error, code)) =>  {
                         if code != 404 {
-                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request {} {:?}", code, error));
+                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request get gile: {} {:?}", code, error));
                             Err(Error::NotFound)
                         } else {
                             Err(Error::Error(format!("Provider plugin error: {}", code)))
@@ -58,7 +58,7 @@ impl PluginManager {
                     Ok(Json(res)) => Ok(res),
                     Err((error, code)) =>  {
                         if code != 404 {
-                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request {} {:?}", code, error));
+                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request upload file: {} {:?}", code, error));
                             Err(Error::NotFound)
                         } else {
                             Err(Error::Error(format!("Provider plugin error: {}", code)))
