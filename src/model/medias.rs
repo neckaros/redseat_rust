@@ -466,16 +466,20 @@ impl ModelController {
             Err(Error::NotFound.into())
         }
 	}
-    pub fn process_media_spawn(&self, library_id: String, media_id: String, predict: bool, requesting_user: ConnectedUser){
+    pub fn process_media_spawn(&self, library_id: String, media_id: String, thumb: bool, predict: bool, requesting_user: ConnectedUser){
         let mc = self.clone();
         tokio::spawn(async move {
-            let r = mc.process_media(&library_id, &media_id, predict, &requesting_user).await;
+            let r = mc.process_media(&library_id, &media_id, thumb, predict, &requesting_user).await;
             if let Err(error) = r {
                 log_error(crate::tools::log::LogServiceType::Source, format!("Unable to process media {} for predictions: {:?}", media_id, error));
             }
         });
     }
-    pub async fn process_media(&self, library_id: &str, media_id: &str, predict: bool, requesting_user: &ConnectedUser) -> RsResult<()>{
+    pub async fn process_media(&self, library_id: &str, media_id: &str, thumb: bool, predict: bool, requesting_user: &ConnectedUser) -> RsResult<()>{
+        if thumb {
+            let _ = self.generate_thumb(library_id, media_id, requesting_user).await;
+        }
+
         self.cache_check_library_notcrypt(library_id).await?;
 
         let existing = self.get_media(library_id, media_id.to_owned(), requesting_user).await?.ok_or(Error::NotFound)?;
@@ -550,7 +554,7 @@ impl ModelController {
         println!("SPAWNING");
         if !crypted {
             let _ = self.generate_thumb(&library_id, &id, &requesting_user).await;
-            self.process_media_spawn(library_id.to_string(), id.clone(), library.kind == LibraryType::Photos, requesting_user.clone());
+            self.process_media_spawn(library_id.to_string(), id.clone(), false, library.kind == LibraryType::Photos, requesting_user.clone());
         }
 
 
@@ -770,7 +774,7 @@ impl ModelController {
 
                 let r = self.generate_thumb(&library_id, &id, &ConnectedUser::ServerAdmin).await;
                 let library = self.get_library(library_id, &ConnectedUser::ServerAdmin).await?.ok_or(Error::LibraryNotFound(library_id.to_owned()))?;
-                self.process_media_spawn(library_id.to_string(), id.clone(), library.kind == LibraryType::Photos, ConnectedUser::ServerAdmin);
+                self.process_media_spawn(library_id.to_string(), id.clone(), false, library.kind == LibraryType::Photos, ConnectedUser::ServerAdmin);
                 
                 if let Err(r) = r {
                     log_error(crate::tools::log::LogServiceType::Source, format!("Unable to generate thumb {:#}", r));
@@ -866,7 +870,7 @@ impl ModelController {
         let library = self.get_library(library_id, &ConnectedUser::ServerAdmin).await?.ok_or(Error::LibraryNotFound(library_id.to_owned()))?;
         if !library.crypt.unwrap_or_default() {
             let _ = self.generate_thumb(&library_id, &id, &requesting_user).await;
-            self.process_media_spawn(library_id.to_string(), id.clone(), library.kind == LibraryType::Photos, requesting_user.clone());
+            self.process_media_spawn(library_id.to_string(), id.clone(), true, library.kind == LibraryType::Photos, requesting_user.clone());
         }
 
         let media = store.get_media(&id).await?.ok_or(Error::MediaNotFound(id.to_owned()))?;

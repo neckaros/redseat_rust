@@ -143,7 +143,7 @@ async fn handler_get(Path((library_id, media_id)): Path<(String, String)>, State
 }
 
 async fn handler_refresh(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
-	mc.process_media(&library_id, &media_id, true, &user).await?;
+	mc.process_media(&library_id, &media_id, false, true, &user).await?;
 	let media = mc.get_media(&library_id, media_id, &user).await?;
 	let body = Json(json!(media));
 	Ok(body)
