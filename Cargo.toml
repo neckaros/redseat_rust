@@ -3,6 +3,13 @@ name = "redseat-rust"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "redseat-daemon"
+path = "src/daemon/main.rs"
+
+[[bin]]
+name = "redseat-rust"
+path = "src/main.rs"
 
 [dependencies]
 axum = {version = "0.7", features = ["query", "macros", "multipart"]}
