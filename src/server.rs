@@ -15,6 +15,7 @@ static CONFIG: OnceLock<Mutex<ServerConfig>> = OnceLock::new();
 const ENV_SERVERID: &str = "REDSEAT_SERVERID";
 const ENV_HOME: &str = "REDSEAT_HOME";
 const ENV_PORT: &str = "REDSEAT_PORT";
+const ENV_EXP_PORT: &str = "REDSEAT_EXP_PORT";
 const ENV_DIR: &str = "REDSEAT_DIR";
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ServerConfig {
@@ -22,6 +23,7 @@ pub struct ServerConfig {
     #[serde(default = "default_home")]
     pub redseat_home: String,
     pub port: Option<u16>,
+    pub exp_port: Option<u16>,
     pub local: Option<String>,
     pub token: Option<String>,
 }
@@ -68,6 +70,10 @@ pub async fn get_server_local_path() -> Result<PathBuf> {
 pub async fn get_server_port() -> u16 {
     let config_port = get_config().await.port;
     env::var(ENV_PORT).ok().and_then(|p| p.parse::<u16>().ok()).or_else(|| config_port).unwrap_or(8080)
+}
+pub async fn get_server_exposed_port() -> u16 {
+    let config_port = get_config().await.exp_port;
+    env::var(ENV_EXP_PORT).ok().and_then(|p| p.parse::<u16>().ok()).or_else(|| config_port).unwrap_or(8080)
 }
 
 fn default_serverid() -> String {
