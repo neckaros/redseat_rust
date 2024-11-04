@@ -1,20 +1,13 @@
-FROM rust:alpine AS builder
-WORKDIR /app/src
-RUN USER=root
-RUN apk add pkgconfig openssl-dev libc-dev nasm
+FROM rust:1.82 AS builder
+RUN apt-get update && apt-get install -y nasm && rm -rf /var/lib/apt/lists/*
+WORKDIR /usr/src/redseat-daemon
 COPY . .
-RUN cargo build --release
+RUN cargo install --path .
 
-FROM alpine:3.20.3
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y ffmpeg imagemagick && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-RUN apk add --no-cache openssl ca-certificates ffmpeg imagemagick
-COPY --from=builder /app/src/target/release/redseat-rust /app/redseat-rust
-COPY --from=builder /app/src/target/release/redseat-daemon /app/redseat-daemon
-RUN mkdir -p /config
-RUN mkdir -p /libraries
-
-VOLUME /config
-VOLUME /libraries
-
+COPY --from=builder /usr/local/cargo/bin/redseat-rust /app/redseat-rust
+COPY --from=builder /usr/local/cargo/bin/redseat-daemon /app/redseat-daemon
 EXPOSE 8080
-CMD ["redseat-daemon", "--docker"]
+CMD ["./redseat-daemon", "--docker"]
