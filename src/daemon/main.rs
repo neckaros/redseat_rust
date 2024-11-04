@@ -1,11 +1,12 @@
-use std::{error::Error, fs::{self, File}, io::{copy, Cursor}, process::ExitStatus};
+use std::env;
+use std::{error::Error, process::ExitStatus};
 use std::process::Command;
 
 pub mod log;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    logln!("Checking for update...");
+    //logln!("Checking for update...");
     //let exist = Path::new("./redseat-rust").exists();
     //if !exist {
     //    download().await?;
@@ -57,9 +58,16 @@ async fn download() -> Result<(), Box<dyn Error>> {
 }
 
 fn run() -> Result<ExitStatus, Box<dyn Error>> {
-    let status = Command::new("./redseat-rust")
+    let args: Vec<String> = env::args().skip(1).collect();
+
+    let mut command = Command::new("./redseat-rust");
+
+    command.args(&args);
+
+    println!("Starting command: ./redseat-rust {}", args.join(" "));
+
         //.arg("/dev/nonexistent")
-        .status()
+    let status = command   .status()
         .expect("Redseat could not be executed");
 
     println!("ls: {status}");
