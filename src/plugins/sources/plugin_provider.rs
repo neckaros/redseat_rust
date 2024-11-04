@@ -39,6 +39,10 @@ impl Source for PluginProvider {
         })
     }
 
+    async fn init(&self) -> SourcesResult<()> {
+        Ok(())
+    }
+    
     async fn exists(&self, _source: &str) -> bool {
         true
     }

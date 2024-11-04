@@ -3,7 +3,7 @@ use std::{cmp::Ordering, str::FromStr};
 use nanoid::nanoid;
 use rs_plugin_common_interfaces::RsRequest;
 use serde::{Deserialize, Serialize};
-use tokio::fs::read_dir;
+use tokio::fs::{create_dir_all, read_dir};
 
 use crate::{domain::{library::{LibraryMessage, LibraryRole, LibraryType, ServerLibrary, ServerLibrarySettings}, ElementAction}, error::RsResult, plugins::sources::{path_provider::PathProvider, Source, SourceRead}, tools::auth::{sign_local, ClaimsLocal, ClaimsLocalType}};
 
@@ -250,6 +250,7 @@ impl ModelController {
 	}
 
 	pub async fn add_library(&self, library_for_add: ServerLibraryForAdd, requesting_user: &ConnectedUser) -> Result<Option<super::libraries::ServerLibraryForRead>> {
+        
         requesting_user.check_role(&UserRole::Admin)?;
 		let library_id = nanoid!();
         let library = ServerLibrary {
@@ -267,8 +268,20 @@ impl ModelController {
         let user_id = requesting_user.user_id()?;
         self.store.add_library_rights(library_id.clone(), user_id, vec![LibraryRole::Admin]).await?;
         let library = self.store.get_library(&library_id).await?;
+
+        
+
+
         if let Some(library) = library { 
             self.cache_update_library(library.clone()).await;
+
+            
+            let source = self.source_for_library(&library.id).await.map_err(|e| Error::ServiceError("Unable to get library source after init".to_string(), Some(e.to_string())))?;
+            let inited = source.init().await;
+            if let Err(err) = inited {
+                return Err(Error::ServiceError("Unable to init library source".to_string(), Some(err.to_string())));
+            }
+
             self.send_library(LibraryMessage { action: crate::domain::ElementAction::Added, library: library.clone() });
             Ok(Some(ServerLibraryForRead::from(library)))
         } else {

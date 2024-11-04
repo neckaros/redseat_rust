@@ -1,7 +1,7 @@
 use std::{collections::HashSet, fs::read_dir, path::{Path, PathBuf}, pin::Pin, str::FromStr, time::{Duration, SystemTime}};
 
 
-use axum::async_trait;
+use axum::{async_trait, extract::path};
 use bytes::Bytes;
 use chrono::{Datelike, Utc};
 use futures::Stream;
@@ -126,6 +126,18 @@ impl Source for PathProvider {
         } else {
             Err(SourcesError::Error.into())
         }
+    }
+
+    async fn init(&self) -> SourcesResult<()> {
+        let path_lib = self.get_full_path(".redseat");
+        create_dir_all(path_lib).await?;
+
+        let path_lib = self.get_full_path(".redseat/.thumbs");
+        let path_lib = self.get_full_path(".redseat/.portraits");
+        let path_lib = self.get_full_path(".redseat/.cache");
+        let path_lib = self.get_full_path(".redseat/.series");
+        create_dir_all(path_lib).await?;
+        Ok(())
     }
 
     async fn exists(&self, source: &str) -> bool {

@@ -387,6 +387,7 @@ type BoxedStringFuture = Pin<Box<dyn Future<Output = RsResult<String>> + Send>>;
 pub trait Source: Send {
     async fn new(root: ServerLibrary, controller: ModelController) -> RsResult<Self> where Self: Sized;
     
+    async fn init(&self) -> SourcesResult<()>;
 
     async fn exists(&self, name: &str) -> bool;
     async fn remove(&self, name: &str) -> RsResult<()>;

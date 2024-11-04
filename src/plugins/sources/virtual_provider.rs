@@ -27,7 +27,9 @@ impl Source for VirtualProvider {
             plugin_manager: controller.plugin_manager.clone()
         })
     }
-
+    async fn init(&self) -> SourcesResult<()> {
+        Ok(())
+    }
     async fn exists(&self, _source: &str) -> bool {
         true
     }

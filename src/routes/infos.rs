@@ -100,10 +100,10 @@ pub struct RegisterQuery {
     id: String,
 	token: String,
 	uid: String,
-	username: String
+	username: String,
 }
 
-async fn handler_register(State(mc): State<ModelController>, Query(query): Query<RegisterQuery>) -> Result<Json<Value>> {
+async fn handler_register(State(mc): State<ModelController>, Query(query): Query<RegisterQuery>) -> Result<Redirect> {
 	check_unregistered().await?;
 
 	let admin_users = mc.get_users(&ConnectedUser::ServerAdmin).await?.into_iter().filter(|u| u.is_admin()).collect::<Vec<_>>();
@@ -120,21 +120,26 @@ async fn handler_register(State(mc): State<ModelController>, Query(query): Query
 
 		let mut config = get_config().await;
 
-		config.id = Some(query.id);
+		config.id = Some(query.id.clone());
 		config.token = Some(query.token);
+		let home = config.redseat_home.clone();
 		update_config(config).await?;
 		let server_id = get_server_id().await.ok_or(crate::Error::Error("Failed to set ID".to_string()));
 
 
+		let mut params = vec![];
+		params.push(format!("id={}", query.id));
+		
+		
+		let url = format!("https://{}/install/final?id={}", home, params.join("&"));
 
 		tokio::spawn(async move {
 			sleep(Duration::from_millis(500)).await;
 			std::process::exit(201);
 		});
+		
 
-		Ok(Json(json!({
-			"id": server_id,
-		})))
+		Ok(Redirect::temporary(&url))
 	}
 
 }
