@@ -35,6 +35,9 @@ struct Args {
     #[arg(short, long)]
     serverid: Option<String>,
 
+
+    #[arg(short, long)]
+    docker: bool,
     
     #[arg(short, long)]
     dir: Option<String>,
@@ -54,6 +57,8 @@ pub async fn get_server_local_path() -> Result<PathBuf> {
         PathBuf::from(&argdir)
     } else if let Ok(val) =env::var(ENV_DIR) {
         PathBuf::from(&val)
+    } else if args.docker {
+        PathBuf::from("/config")
     } else {
         let Some(mut dir_path) = dirs::config_local_dir() else { return Err(Error::ServerUnableToAccessServerLocalFolder); };
         dir_path.push("redseat");
