@@ -1,4 +1,3 @@
-# Build stage
 FROM debian:bookworm-slim AS builderimage
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -85,7 +84,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy ImageMagick build from builder
-COPY --from=builder /install/usr/local /usr/local
+COPY --from=builderimage /install/usr/local /usr/local
 
 # Update library cache
 RUN ldconfig
