@@ -21,7 +21,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 logln!("Exit code: {:?}", code);
                 if code == 101{
                     if retries < 4 {
-                        retries = retries + 1;
+                        retries += 1;
                         restart = true;
                         logln!("Panic termination will try to rerun (retry {:?}/4)", retries);
                     } else {
@@ -30,6 +30,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 } else if code == 201 {
                     logln!("Restarting at the request of the server");
                     restart = true
+                } else {
+                    restart = false
                 }
             } else {
                 restart = false;

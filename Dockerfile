@@ -1,5 +1,5 @@
 # Build stage
-FROM ubuntu:22.04 AS builderimage
+FROM ubuntu:24.10 AS builderimage
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -51,7 +51,7 @@ RUN cargo install --path .
 
 
 # Run stage
-FROM ubuntu:22.04
+FROM ubuntu:24.10
 
 ENV DEBIAN_FRONTEND=noninteractive
 
