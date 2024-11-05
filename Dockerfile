@@ -1,5 +1,5 @@
 # Build stage
-FROM ubuntu:24.10 AS builderimage
+FROM ubuntu:24.04 AS builderimage
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -51,7 +51,7 @@ RUN cargo install --path .
 
 
 # Run stage
-FROM ubuntu:24.10
+FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -61,9 +61,9 @@ RUN apt-get update && apt-get install -y \
     libheif1 \
     libwebp7 \
     libjpeg8 \
-    libpng16-16 \
-    libtiff5 \
-    libzip4 \
+    libpng16-16t64 \
+    libtiff6 \
+    libzip4t64 \
     libltdl7 \
     libgomp1 \
     && rm -rf /var/lib/apt/lists/*
