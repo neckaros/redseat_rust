@@ -3,6 +3,10 @@ FROM ubuntu:24.04 AS builderimage
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+RUN apt-get update && apt-get install -y software-properties-common
+
+RUN add-apt-repository ppa:ubuntuhandbook1/libheif
+
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
@@ -16,6 +20,7 @@ RUN apt-get update && apt-get install -y \
     libtiff-dev \
     libzip-dev \
     libltdl-dev \
+    libraw-dev \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
@@ -34,6 +39,7 @@ RUN cd /tmp && \
         --with-jpeg \
         --with-png \
         --with-tiff \
+        --with-raw=yes \
         --without-perl \
         --prefix=/usr/local && \
     make -j$(nproc) && \
@@ -66,6 +72,7 @@ RUN apt-get update && apt-get install -y \
     libzip4t64 \
     libltdl7 \
     libgomp1 \
+    webp \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy ImageMagick files from builder
