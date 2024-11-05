@@ -1,5 +1,5 @@
-# IamgeMagick Build stage
-FROM ubuntu:latest AS builderimagemagick
+# Build stage
+FROM debian:bookworm-slim AS builderimage
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV IMAGEMAGICK_VERSION=7.1.1-29
@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y \
     libheif-dev \
     libwebp-dev \
     libpng-dev \
-    libjpeg-dev \
+    libjpeg62-turbo-dev \
     libtiff-dev \
     libxml2-dev \
     libssl-dev \
@@ -61,11 +61,9 @@ COPY . .
 RUN cargo install --path .
 
 
-
 # Run stage
-FROM ubuntu:latest
+FROM debian:bookworm-slim
 
-# Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Install only required runtime libraries
@@ -74,7 +72,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libheif1 \
     libwebp7 \
     libpng16-16 \
-    libjpeg8 \
+    libjpeg62-turbo \
     libtiff5 \
     libxml2 \
     libssl3 \
@@ -83,14 +81,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libltdl7 \
     liblcms2-2 \
     libgomp1 \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy ImageMagick build from builder
-COPY --from=builderimagemagick /install/usr/local /usr/local
+COPY --from=builder /install/usr/local /usr/local
 
 # Update library cache
 RUN ldconfig
-
 
 RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
