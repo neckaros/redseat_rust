@@ -282,6 +282,7 @@ impl ModelController {
                 return Err(Error::ServiceError("Unable to init library source".to_string(), Some(err.to_string())));
             }
 
+            self.store.add_library_to_store(&library_id).await.map_err(|e| Error::ServiceError("Unable to add library to store".to_string(), Some(e.to_string())))?;
             self.send_library(LibraryMessage { action: crate::domain::ElementAction::Added, library: library.clone() });
             Ok(Some(ServerLibraryForRead::from(library)))
         } else {
