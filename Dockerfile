@@ -52,6 +52,8 @@ RUN wget https://github.com/ImageMagick/ImageMagick/archive/${IMAGEMAGICK_VERSIO
     cd .. && \
     rm -rf ImageMagick-${IMAGEMAGICK_VERSION} ${IMAGEMAGICK_VERSION}.tar.gz
 
+
+
 # Server build stage
 FROM rust:1.82 AS builder
 RUN apt-get update && apt-get install -y nasm && rm -rf /var/lib/apt/lists/*
@@ -66,22 +68,25 @@ FROM debian:bookworm-slim
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Install only required runtime libraries
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libde265-0 \
-    libheif1 \
-    libwebp6 \
-    libpng16-16 \
-    libjpeg62-turbo \
-    libtiff5 \
-    libxml2 \
-    libssl3 \
-    libfreetype6 \
-    libfontconfig1 \
-    libltdl7 \
-    liblcms2-2 \
-    libgomp1 \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        gcc-12-base \
+        libc6 \
+        libfreetype6 \
+        libfontconfig1 \
+        libgomp1 \
+        libheif1 \
+        libjpeg62-turbo \
+        liblcms2-2 \
+        libltdl7 \
+        libpng16-16 \
+        libssl3 \
+        libtiff5 \
+        libwebp7 \
+        libxml2 \
+        zlib1g \
+        ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
 
 # Copy ImageMagick build from builder
 COPY --from=builderimage /install/usr/local /usr/local
