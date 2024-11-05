@@ -133,8 +133,11 @@ impl Source for PathProvider {
         create_dir_all(path_lib).await?;
 
         let path_lib = self.get_full_path(".redseat/.thumbs");
+        create_dir_all(path_lib).await?;
         let path_lib = self.get_full_path(".redseat/.portraits");
+        create_dir_all(path_lib).await?;
         let path_lib = self.get_full_path(".redseat/.cache");
+        create_dir_all(path_lib).await?;
         let path_lib = self.get_full_path(".redseat/.series");
         create_dir_all(path_lib).await?;
         Ok(())
