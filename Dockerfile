@@ -1,56 +1,44 @@
-FROM debian:bookworm-slim AS builderimage
+# Build stage
+FROM ubuntu:22.04 AS builderimage
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV IMAGEMAGICK_VERSION=7.1.1-29
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
-    cmake \
     git \
     pkg-config \
     libde265-dev \
     libheif-dev \
     libwebp-dev \
+    libjpeg-dev \
     libpng-dev \
-    libjpeg62-turbo-dev \
     libtiff-dev \
-    libxml2-dev \
-    libssl-dev \
-    libfreetype6-dev \
-    libfontconfig1-dev \
-    libltdl7-dev \
-    liblcms2-dev \
-    libgomp1 \
+    libzip-dev \
+    libltdl-dev \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
-# Download and compile ImageMagick
-WORKDIR /tmp
-RUN wget https://github.com/ImageMagick/ImageMagick/archive/${IMAGEMAGICK_VERSION}.tar.gz && \
-    tar xvzf ${IMAGEMAGICK_VERSION}.tar.gz && \
-    cd ImageMagick-${IMAGEMAGICK_VERSION} && \
+# Download and compile ImageMagick 7
+RUN cd /tmp && \
+    wget https://imagemagick.org/archive/ImageMagick.tar.gz && \
+    tar xvzf ImageMagick.tar.gz && \
+    cd ImageMagick-* && \
     ./configure \
         --with-heic=yes \
         --with-webp=yes \
-        --with-jpeg=yes \
-        --with-png=yes \
-        --with-tiff=yes \
         --enable-shared \
         --disable-static \
         --with-modules \
-        --enable-openmp \
-        --prefix=/usr/local \
-        --disable-docs \
-        --disable-deprecated \
-        --disable-hdri \
+        --enable-hdri \
+        --with-jpeg \
+        --with-png \
+        --with-tiff \
         --without-perl \
-        --without-magick-plus-plus \
-        --without-x && \
+        --prefix=/usr/local && \
     make -j$(nproc) && \
-    make install DESTDIR=/install && \
-    cd .. && \
-    rm -rf ImageMagick-${IMAGEMAGICK_VERSION} ${IMAGEMAGICK_VERSION}.tar.gz
+    make install && \
+    ldconfig
 
 
 
@@ -63,33 +51,29 @@ RUN cargo install --path .
 
 
 # Run stage
-FROM debian:bookworm-slim
+FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Install only required runtime libraries
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        gcc-12-base \
-        libc6 \
-        libfreetype6 \
-        libfontconfig1 \
-        libgomp1 \
-        libheif1 \
-        libjpeg62-turbo \
-        liblcms2-2 \
-        libltdl7 \
-        libpng16-16 \
-        libssl3 \
-        libtiff5 \
-        libwebp7 \
-        libxml2 \
-        zlib1g \
-        ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y \
+    libde265-0 \
+    libheif1 \
+    libwebp7 \
+    libjpeg8 \
+    libpng16-16 \
+    libtiff5 \
+    libzip4 \
+    libltdl7 \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy ImageMagick build from builder
-COPY --from=builderimage /install/usr/local /usr/local
+# Copy ImageMagick files from builder
+COPY --from=builderimage /usr/local/lib /usr/local/lib
+COPY --from=builderimage /usr/local/bin /usr/local/bin
+COPY --from=builderimage /usr/local/etc /usr/local/etc
+COPY --from=builderimage /usr/local/include /usr/local/include
+COPY --from=builderimage /usr/local/share /usr/local/share
 
 # Update library cache
 RUN ldconfig
