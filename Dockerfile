@@ -69,7 +69,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libde265-0 \
     libheif1 \
-    libwebp7 \
+    libwebp6 \
     libpng16-16 \
     libjpeg62-turbo \
     libtiff5 \
