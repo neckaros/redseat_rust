@@ -61,6 +61,10 @@ FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+RUN apt-get update && apt-get install -y software-properties-common
+
+RUN add-apt-repository ppa:ubuntuhandbook1/libheif
+
 # Install only required runtime libraries
 RUN apt-get update && apt-get install -y \
     libde265-0 \
