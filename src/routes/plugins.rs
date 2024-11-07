@@ -44,7 +44,7 @@ struct ExpandQuery {
 	pub url: String,
 }
 
-async fn handler_reload_plugins(Path(plugin_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+async fn handler_reload_plugins(State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
 	let library = mc.reload_plugins(&user).await?;
 	let body = Json(json!({
 		"status": "OK"
