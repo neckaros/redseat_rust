@@ -62,7 +62,16 @@ async fn download() -> Result<(), Box<dyn Error>> {
 fn run() -> Result<ExitStatus, Box<dyn Error>> {
     let args: Vec<String> = env::args().skip(1).collect();
 
-    let mut command = Command::new("./redseat-rust");
+    // Get the path to the current executable
+    let exe_path = env::current_exe().unwrap();
+
+    // Get the directory where the executable is located
+    let exe_dir = exe_path.parent().unwrap();
+
+    // Construct the path to the command you want to run
+    let command_path = exe_dir.join("redseat-rust");
+
+    let mut command = Command::new(&command_path);
 
     command.args(&args);
 
