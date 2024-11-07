@@ -69,6 +69,12 @@ impl ModelController {
 		Ok(credential)
 	}
 
+    pub async fn reload_plugins(&self, requesting_user: &ConnectedUser) -> RsResult<()> {
+        requesting_user.check_role(&UserRole::Admin)?;
+        self.plugin_manager.reload().await?;
+		Ok(())
+	}
+
     pub async fn reload_plugin(&self, plugin_id: String, requesting_user: &ConnectedUser) -> RsResult<Plugin> {
         requesting_user.check_role(&UserRole::Admin)?;
         let plugin = self.get_plugin(plugin_id.clone(), requesting_user).await?;

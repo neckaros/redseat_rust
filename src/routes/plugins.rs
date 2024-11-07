@@ -12,6 +12,8 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/", get(handler_list))
 		.route("/install", post(handler_install))
 
+		.route("/reload", get(handler_reload_plugins))
+
 		.route("/parse", get(handler_parse))
 		.route("/expand", post(handler_expand))
 
@@ -42,6 +44,13 @@ struct ExpandQuery {
 	pub url: String,
 }
 
+async fn handler_reload_plugins(Path(plugin_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	let library = mc.reload_plugins(&user).await?;
+	let body = Json(json!({
+		"status": "OK"
+	}));
+	Ok(body)
+}
 
 async fn handler_parse(State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ExpandQuery>) -> Result<Json<Value>> {
 	user.check_role(&crate::model::users::UserRole::Read)?;
