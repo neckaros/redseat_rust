@@ -90,6 +90,9 @@ COPY --from=builderimage /usr/local/share /usr/local/share
 RUN ldconfig
 
 RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
+
+RUN apt-get -y purge software-properties-common
+
 WORKDIR /app
 COPY --from=builder /usr/local/cargo/bin/redseat-rust /app/redseat-rust
 COPY --from=builder /usr/local/cargo/bin/redseat-daemon /app/redseat-daemon
