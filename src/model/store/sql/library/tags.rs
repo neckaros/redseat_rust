@@ -45,7 +45,7 @@ impl SqliteLibraryStore {
 
             if let Some(q) = &query.name {
                 where_query.add_where(QueryWhereType::EqualWithAlt("name", "alt", "|", q));
-                println!("q '{}'", q)
+                //println!("q '{}'", q)
             }
             //println!("sql: {}", where_query.format());
 
@@ -55,7 +55,7 @@ impl SqliteLibraryStore {
             where_query.values(), Self::row_to_tag,
             )?;
             let backups:Vec<Tag> = rows.collect::<std::result::Result<Vec<Tag>, rusqlite::Error>>()?; 
-            println!("results: {:?}", backups);
+            //println!("results: {:?}", backups);
             Ok(backups)
         }).await?;
         Ok(row)

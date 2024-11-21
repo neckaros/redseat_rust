@@ -48,10 +48,12 @@ impl<R: AsyncRead + Unpin> AsyncRead for ProgressReader<R> {
             self.bytes_read += buf.filled().len();
             let mut new_progress = self.progress_template.clone();
             new_progress.current = Some(self.bytes_read as u64); 
-            let sender = self.sender.clone();
-            tokio::spawn(async move {
-                sender.send(new_progress).await.unwrap();
-            });
+            if buf.filled().len() > 0 {
+                let sender = self.sender.clone();
+                tokio::spawn(async move {
+                    sender.send(new_progress).await.unwrap();
+                });
+            }
             
         }
         poll

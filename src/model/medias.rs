@@ -748,6 +748,7 @@ impl ModelController {
                 let (source, mut file) = m.writerseek(&filename).await?;
                 copy(&mut progress_reader, &mut file).await?;
                 file.flush().await?;
+                drop(progress_reader);
             
                 let _ = m.fill_infos(&source, &mut infos).await;
 
