@@ -1,3 +1,4 @@
+use rusqlite::{types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, ToSql};
 use serde::{Deserialize, Serialize};
 use strum_macros::{Display, EnumString};
 
@@ -32,6 +33,40 @@ pub enum LibraryRole {
     #[default]
 	None,
 }
+
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+pub struct LibraryLimits {
+    #[serde(default)]
+    pub tags: bool,
+    #[serde(default)]
+    pub people: bool,
+    #[serde(default)]
+    pub albums: bool,
+    #[serde(default)]
+    pub delay: Option<u64>,
+
+}
+
+impl FromSql for LibraryLimits {
+    fn column_result(value: ValueRef) -> FromSqlResult<Self> {
+        String::column_result(value).and_then(|as_string| {
+            let r = serde_json::from_str(&as_string).map_err(|_| FromSqlError::InvalidType);
+            r
+        })
+    }
+}
+
+impl ToSql for LibraryLimits {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        let r = serde_json::to_string(self).map_err(|_| FromSqlError::InvalidType)?;
+        Ok(ToSqlOutput::from(r))
+    }
+}
+
+
+
+
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default, EnumString, Display)]
 #[serde(rename_all = "camelCase")] 

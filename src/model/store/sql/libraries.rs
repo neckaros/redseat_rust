@@ -1,7 +1,7 @@
 use std::str::FromStr;
 
-use crate::{domain::library::{LibraryType, ServerLibrary, ServerLibrarySettings}, model::{libraries::{ServerLibraryForUpdate, ServerLibraryInvitation}, store::{from_comma_separated, to_comma_separated, SqliteStore}, users::{ConnectedUser, ServerUser}}};
-use super::Result;
+use crate::{domain::library::{LibraryLimits, LibraryType, ServerLibrary, ServerLibrarySettings}, model::{libraries::{ServerLibraryForUpdate, ServerLibraryInvitation}, store::{from_comma_separated, to_comma_separated, SqliteStore}, users::{ConnectedUser, ServerUser}}};
+use super::{deserialize_from_row, Result};
 use crate::domain::library::LibraryRole;
 use rusqlite::{params, params_from_iter, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, ToSql};
 
@@ -159,14 +159,15 @@ impl SqliteStore {
         }).await?;
         Ok(())
     }
-    pub async fn add_library_rights(&self, library_id: String, user_id: String, role: Vec<LibraryRole>) -> Result<()> {
+    pub async fn add_library_rights(&self, library_id: String, user_id: String, role: Vec<LibraryRole>, limits: LibraryLimits) -> Result<()> {
         self.server_store.call( move |conn| { 
 
-            conn.execute("INSERT INTO Libraries_Users_Rights (user_ref, library_ref, roles)
-            VALUES (?, ?, ?)", params![
+            conn.execute("INSERT INTO Libraries_Users_Rights (user_ref, library_ref, roles, limits)
+            VALUES (?, ?, ?, ?)", params![
                 &user_id,
                 &library_id,
-                to_comma_separated(role)
+                to_comma_separated(role),
+                &limits
             ])?;
             
             Ok(())
@@ -202,7 +203,7 @@ impl SqliteStore {
 
             let row = self.server_store.call( move |conn| { 
                 let row = conn.query_row(
-                "SELECT code, role, expires, library FROM Invitation WHERE code = ?1",
+                "SELECT code, role, expires, library, limits FROM Invitation WHERE code = ?1",
                 [&code],
                 |row| {
                     Ok(ServerLibraryInvitation {
@@ -210,6 +211,7 @@ impl SqliteStore {
                         roles: from_comma_separated(row.get(1)?),
                         expires:  row.get(2)?,
                         library:  row.get(3)?,
+                        limits:  deserialize_from_row(row, 4)?
                     })
                 },
                 ).optional()?;
@@ -222,12 +224,13 @@ impl SqliteStore {
     pub async fn add_library_invitation(&self, invitation: ServerLibraryInvitation) -> Result<()> {
         self.server_store.call( move |conn| { 
 
-            conn.execute("INSERT INTO Invitation (code, role, expires, library)
-            VALUES (?, ?, ?, ?)", params![
+            conn.execute("INSERT INTO Invitation (code, role, expires, library, limits)
+            VALUES (?, ?, ?, ?, ?)", params![
                 &invitation.code,
                 to_comma_separated(invitation.roles),
                 &invitation.expires,
-                &invitation.library
+                &invitation.library,
+                &invitation.limits,
             ])?;
             
             Ok(())

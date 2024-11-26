@@ -1,5 +1,5 @@
 
-use crate::{domain::library::LibraryRole, model::{deleted::DeletedQuery, libraries::{ServerLibraryForAdd, ServerLibraryForUpdate}, users::ConnectedUser, ModelController}, Error, Result};
+use crate::{domain::library::{LibraryLimits, LibraryRole}, model::{deleted::DeletedQuery, libraries::{ServerLibraryForAdd, ServerLibraryForUpdate}, users::ConnectedUser, ModelController}, Error, Result};
 use axum::{extract::{Path, Query, State}, response::Response, routing::{delete, get, patch, post}, Json, Router};
 use hyper::StatusCode;
 use serde::Deserialize;
@@ -86,9 +86,10 @@ async fn handler_clean(Path(library_id): Path<String>, State(mc): State<ModelCon
 #[derive(Deserialize)]
 struct HandlerInvitationQuery {
     role: LibraryRole,
+	limits: LibraryLimits
 }
 
 async fn handler_invitation(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Json(query): Json<HandlerInvitationQuery>) -> Result<Json<Value>> {
-	let invitation = mc.add_library_invitation(&library_id, vec![query.role.clone()], &user).await?;
+	let invitation = mc.add_library_invitation(&library_id, vec![query.role.clone()], query.limits, &user).await?;
 	Ok(Json(json!(invitation)))
 }

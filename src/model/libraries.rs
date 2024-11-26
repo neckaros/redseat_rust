@@ -5,7 +5,7 @@ use rs_plugin_common_interfaces::RsRequest;
 use serde::{Deserialize, Serialize};
 use tokio::fs::{create_dir_all, read_dir};
 
-use crate::{domain::{library::{LibraryMessage, LibraryRole, LibraryType, ServerLibrary, ServerLibrarySettings}, ElementAction}, error::RsResult, plugins::sources::{path_provider::PathProvider, Source, SourceRead}, tools::auth::{sign_local, ClaimsLocal, ClaimsLocalType}};
+use crate::{domain::{library::{LibraryLimits, LibraryMessage, LibraryRole, LibraryType, ServerLibrary, ServerLibrarySettings}, ElementAction}, error::RsResult, plugins::sources::{path_provider::PathProvider, Source, SourceRead}, tools::auth::{sign_local, ClaimsLocal, ClaimsLocalType}};
 
 use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
 
@@ -67,6 +67,7 @@ pub struct ServerLibraryInvitation {
 	pub expires: Option<String>,
 	pub library: String,
 	pub roles: Vec<LibraryRole>,
+    pub limits: LibraryLimits
 }
 
 
@@ -266,7 +267,7 @@ impl ModelController {
             };
         self.store.add_library(library).await?;
         let user_id = requesting_user.user_id()?;
-        self.store.add_library_rights(library_id.clone(), user_id, vec![LibraryRole::Admin]).await?;
+        self.store.add_library_rights(library_id.clone(), user_id, vec![LibraryRole::Admin], LibraryLimits::default()).await?;
         let library = self.store.get_library(&library_id).await?;
 
         
@@ -317,13 +318,14 @@ impl ModelController {
         Ok(cleaned)
 	}
 
-    pub async fn add_library_invitation(&self, library_id: &str, roles: Vec<LibraryRole>, requesting_user: &ConnectedUser) -> Result<super::libraries::ServerLibraryInvitation> {
+    pub async fn add_library_invitation(&self, library_id: &str, roles: Vec<LibraryRole>, limits: LibraryLimits, requesting_user: &ConnectedUser) -> Result<super::libraries::ServerLibraryInvitation> {
         requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
         let invitation = ServerLibraryInvitation {
             code: nanoid!(),
             expires: None,
             library: library_id.to_string(),
             roles,
+            limits
         };
         self.store.add_library_invitation(invitation.clone()).await?;
         Ok(invitation)

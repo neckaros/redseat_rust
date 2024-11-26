@@ -24,7 +24,6 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/me/history/progress/:id", get(handler_get_progress))
 		.route("/me/history/progress", post(handler_add_progress))
 
-		
 		.route("/invitation", get(handler_invitation))
 		.merge(admin_routes)
 		

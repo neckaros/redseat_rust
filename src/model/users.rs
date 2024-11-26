@@ -8,7 +8,7 @@ use rusqlite::{
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
 
-use crate::{domain::{library::{LibraryRole, LibraryType}, view_progress::{ViewProgress, ViewProgressForAdd}, watched::{Watched, WatchedForAdd}, MediasIds}, error::RsResult, tools::auth::{ClaimsLocal, ClaimsLocalType}};
+use crate::{domain::{library::{LibraryLimits, LibraryRole, LibraryType}, view_progress::{ViewProgress, ViewProgressForAdd}, watched::{Watched, WatchedForAdd}, MediasIds}, error::RsResult, tools::auth::{ClaimsLocal, ClaimsLocalType}};
 
 use super::{error::{Error, Result}, libraries::ServerLibraryForRead, medias::RsSort, store::sql::{users::WatchedQuery, SqlOrder}, ModelController};
 
@@ -278,6 +278,7 @@ pub struct ServerUserLibrariesRights {
     #[serde(rename = "type")]
     pub kind: LibraryType,
     pub roles: Vec<LibraryRole>,
+    pub limits: LibraryLimits,
 }
 
 impl ServerUserLibrariesRights {
@@ -295,6 +296,7 @@ pub struct ServerUserLibrariesRightsWithUser {
     #[serde(rename = "type")]
     pub kind: LibraryType,
     pub roles: Vec<LibraryRole>,
+    pub limits: LibraryLimits,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -303,6 +305,7 @@ pub struct ServerLibrariesRightsForAdd {
     pub library_id: String,
     pub user_id: String,
     pub roles: Vec<LibraryRole>,
+    pub limits: LibraryLimits,
 }
 
 
@@ -472,7 +475,7 @@ impl ModelController {
         }?;
         let invitation = self.store.get_library_invitation(code.clone()).await?.ok_or(Error::NotFound)?;
         let library_id = invitation.library.clone();
-        self.store.add_library_rights(invitation.library, connected_user.id, invitation.roles).await?;
+        self.store.add_library_rights(invitation.library, connected_user.id, invitation.roles, invitation.limits).await?;
 
         self.store.remove_library_invitation(code).await?;
 

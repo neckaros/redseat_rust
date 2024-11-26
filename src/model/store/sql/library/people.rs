@@ -15,7 +15,7 @@ impl SqliteLibraryStore {
         Ok(Person {
             id: row.get(0)?,
             name: row.get(1)?,
-            socials: deserialize_from_row(row, 2).map_err(|_| FromSqlError::InvalidType)?,
+            socials: deserialize_from_row(row, 2)?,
             kind: row.get(3)?,
             alt: from_pipe_separated_optional(row.get(4)?),
             portrait: row.get(5)?,

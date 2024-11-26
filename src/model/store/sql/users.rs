@@ -1,9 +1,9 @@
 use rusqlite::{params, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, Row, ToSql};
 use serde::{Deserialize, Serialize};
 
-use crate::{domain::{view_progress::{ViewProgress, ViewProgressForAdd}, watched::{Watched, WatchedForAdd}, MediasIds}, model::{store::{from_comma_separated, sql::library, SqliteStore}, users::{HistoryQuery, ServerUser, ServerUserForUpdate, ServerUserLibrariesRights, ServerUserLibrariesRightsWithUser, ServerUserPreferences, UploadKey, UserRole, ViewProgressQuery}}};
+use crate::{domain::{library::LibraryLimits, view_progress::{ViewProgress, ViewProgressForAdd}, watched::{Watched, WatchedForAdd}, MediasIds}, model::{store::{from_comma_separated, sql::library, SqliteStore}, users::{HistoryQuery, ServerUser, ServerUserForUpdate, ServerUserLibrariesRights, ServerUserLibrariesRightsWithUser, ServerUserPreferences, UploadKey, UserRole, ViewProgressQuery}}};
 
-use super::{super::Error, OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType};
+use super::{super::Error, deserialize_from_row, OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType};
 use super::Result;
 
 
@@ -61,7 +61,7 @@ impl SqliteStore {
                 )?;
                 
                 
-                    let mut stmt = conn.prepare("SELECT lur.library_ref, lur.roles, lib.name, lib.type FROM Libraries_Users_Rights as lur LEFT JOIN Libraries as lib ON lur.library_ref = lib.id WHERE user_ref = ?1")?;
+                    let mut stmt = conn.prepare("SELECT lur.library_ref, lur.roles, lib.name, lib.type, lur.limits FROM Libraries_Users_Rights as lur LEFT JOIN Libraries as lib ON lur.library_ref = lib.id WHERE user_ref = ?1")?;
                     
                     let person_iter = stmt.query_map([&user_id], |row| {
 
@@ -69,7 +69,8 @@ impl SqliteStore {
                             id: row.get(0)?,
                             name: row.get(2)?,
                             kind: row.get(3)?,
-                            roles: from_comma_separated(row.get(1)?)
+                            roles: from_comma_separated(row.get(1)?),
+                            limits:  deserialize_from_row(row, 4)?
                         })
                     })?;
                     user.libraries = person_iter.flat_map(|e| e.ok()).collect::<Vec<ServerUserLibrariesRights>>();
@@ -105,7 +106,7 @@ impl SqliteStore {
             },
             )?;
 
-            let mut query = conn.prepare("SELECT lur.library_ref, lur.roles, lib.name, lib.type, lur.user_ref FROM Libraries_Users_Rights as lur LEFT JOIN Libraries as lib ON lur.library_ref = lib.id")?;
+            let mut query = conn.prepare("SELECT lur.library_ref, lur.roles, lib.name, lib.type, lur.user_ref, lur.limits FROM Libraries_Users_Rights as lur LEFT JOIN Libraries as lib ON lur.library_ref = lib.id")?;
             let rights = query.query_map([],
             |row| {
                 Ok(ServerUserLibrariesRightsWithUser {
@@ -113,7 +114,8 @@ impl SqliteStore {
                     user_id: row.get(4)?,
                     name: row.get(2)?,
                     kind: row.get(3)?,
-                    roles: from_comma_separated(row.get(1)?)
+                    roles: from_comma_separated(row.get(1)?),
+                    limits:  deserialize_from_row(row, 5)?
                 })
             },
             )?;
@@ -128,7 +130,8 @@ impl SqliteStore {
                     id: l.id.clone(),
                     name: l.name.clone(),
                     kind: l.kind.clone(),
-                    roles: l.roles.clone()
+                    roles: l.roles.clone(),
+                    limits: l.limits.clone()
                 }).collect::<Vec<ServerUserLibrariesRights>>();
             }
             Ok(users)

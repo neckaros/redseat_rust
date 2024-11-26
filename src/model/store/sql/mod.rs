@@ -41,10 +41,18 @@ pub async fn migrate_database(connection: &Connection) -> Result<usize> {
                 conn.execute_batch(&update)?;
                 
                 conn.pragma_update(None, "user_version", 3)?;
-                println!("Update SQL to verison 3")
+                println!("Update SQL to verison 3 (AI Models)")
+            }
+
+            if version < 4 {
+                let update = String::from_utf8_lossy(include_bytes!("004 - SHARE OPTIONS.sql"));
+                conn.execute_batch(&update)?;
+                
+                conn.pragma_update(None, "user_version", 4)?;
+                println!("Update SQL to verison 4 (share options)")
             }
             
-            Ok(version)
+            Ok(4)
     }).await?;
 
     Ok(version)
@@ -511,9 +519,9 @@ impl <'a> QueryBuilder<'a> {
 }
 
 
-pub fn deserialize_from_row<T: DeserializeOwned>(row: &Row, index: usize) -> Result<T> {
-    let value: Value = row.get(index)?;
+pub fn deserialize_from_row<T: DeserializeOwned>(row: &Row, index: usize) -> std::result::Result<T, FromSqlError> {
+    let value: Value = row.get(index).map_err(|e| FromSqlError::Other(Box::new(e)))?;
 
-    let u = serde_json::from_value::<T>(value)?;
+    let u = serde_json::from_value::<T>(value).map_err(|e| FromSqlError::Other(Box::new(e)))?;
     Ok(u)
 }

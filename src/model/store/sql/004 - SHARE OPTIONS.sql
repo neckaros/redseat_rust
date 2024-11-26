@@ -1,0 +1,2 @@
+ALTER TABLE Invitation ADD COLUMN limits TEXT NOT NULL DEFAULT "{}";
+ALTER TABLE Libraries_Users_Rights ADD COLUMN limits TEXT NOT NULL DEFAULT "{}";

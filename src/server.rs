@@ -36,7 +36,7 @@ struct Args {
     serverid: Option<String>,
 
 
-    #[arg(short, long)]
+    #[arg(short = 'k', long)]
     docker: bool,
     
     #[arg(short, long)]
