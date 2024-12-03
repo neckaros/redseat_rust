@@ -46,6 +46,13 @@ pub enum Error {
 	NoModelFound,
 	ModelMappingNotFound,
 	ModelNotFound(String),
+
+
+	// Plugins Error 
+	PluginNotFound(String),
+	PluginUnsupportedCall(String, String),
+	PluginError(i32, String),
+
 	// -- Auth errors.
 
 	Forbiden,
