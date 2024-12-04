@@ -34,7 +34,6 @@ pub fn routes(mc: ModelController) -> Router {
 }
 
 async fn handler_me(user: ConnectedUser) -> Result<Json<Value>> {
-	println!("ok");
 	let body = Json(json!(user));
 	Ok(body)
 }

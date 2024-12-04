@@ -262,6 +262,8 @@ impl ModelController {
                 kind: library_for_add.kind,
                 crypt: library_for_add.crypt,
                 settings: library_for_add.settings,
+                plugin: library_for_add.plugin,
+                credentials: library_for_add.credentials,
 
                 ..Default::default()
             };

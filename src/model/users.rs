@@ -137,11 +137,9 @@ impl ConnectedUser {
                 Err(Error::InsufficientLibraryRole { user: self.clone(), library_id: library_id.to_string(), role: role.clone() })
             }
         } else if let ConnectedUser::Share(claims) = &self {
-            println!("TOKEN {:?}", claims);
             match &claims.kind {
                 ClaimsLocalType::File(_, id) => {
                     if id == file_id { 
-                        println!("Ca match");
                         Ok(()) 
                     } else {
                         Err(Error::ShareTokenInsufficient)

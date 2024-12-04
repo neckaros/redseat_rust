@@ -45,6 +45,7 @@ impl<R: AsyncRead + Unpin> AsyncRead for ProgressReader<R> {
     ) -> Poll<io::Result<()>> {
         let poll = Pin::new(&mut self.inner).poll_read(cx, buf);
         if let Poll::Ready(Ok(())) = poll {
+            //println!("progress: {}", self.bytes_read);
             self.bytes_read += buf.filled().len();
             let mut new_progress = self.progress_template.clone();
             new_progress.current = Some(self.bytes_read as u64); 

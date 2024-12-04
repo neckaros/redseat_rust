@@ -519,10 +519,12 @@ impl ModelController {
         let mut progress_reader = ProgressReader::new(reader, RsProgress { id: upload_id.clone(), total: infos.size, current: Some(0), kind: RsProgressType::Transfert, filename: Some(filename.to_owned()) }, tx_progress.clone());
 
            
-           
-        let (source, mut file) = m.writerseek(filename).await?;
+        let (source, mut file) = m.writer(filename, infos.size, infos.mimetype.clone()).await?;
         copy(&mut progress_reader, &mut file).await?;
         file.flush().await?;
+        file.shutdown().await?;
+        let source = source.await?;
+        println!("source: {}", source);
         drop(progress_reader);
         if !crypted {
             let _ = m.fill_infos(&source, &mut infos).await;
@@ -614,7 +616,7 @@ impl ModelController {
 
             let filename = format!("{}.zip", nanoid!());
             println!("Zip name: {}", filename);
-            let (source_porimise, mut file) = m.writer(&filename).await?;
+            let (source_porimise, mut file) = m.writer(&filename, None, None).await?;
             //let file = file.compat_write();
             
             
@@ -744,7 +746,6 @@ impl ModelController {
                 
                 
                 let mut progress_reader = ProgressReader::new(reader.stream, RsProgress { id: upload_id.clone(), total: reader.size, current: Some(0), kind: RsProgressType::Transfert, filename: Some(filename.clone()) }, tx_progress.clone());
-            
                 let (source, mut file) = m.writerseek(&filename).await?;
                 copy(&mut progress_reader, &mut file).await?;
                 file.flush().await?;
@@ -938,6 +939,8 @@ impl ModelController {
         let thumb = video_tools::thumb_video(&uri, time).await?;
         let mut cursor = std::io::Cursor::new(thumb);
         let thumb = resize_image_reader(&mut cursor, 512).await?;
+
+        println!("Got thumb {}", thumb.len());
         Ok(thumb)
     }
 

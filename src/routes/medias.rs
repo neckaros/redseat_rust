@@ -216,8 +216,16 @@ async fn handler_post(Path(library_id): Path<String>, State(mc): State<ModelCont
 		} else if name == "file" {
 			let filename = field.file_name().unwrap().to_string();
 			let mime = field.content_type().map(|c| c.to_owned());
+			let size = field.headers().get("Content-Length")
+            .and_then(|len| len.to_str().ok())
+            .and_then(|len_str| len_str.parse::<u64>().ok());
+        	
+			println!("Expected file length: {:?}", size);
+
 			info.name = info.name.or(Some(filename.clone()));
 			info.mimetype = mime;
+			info.size = size;
+			
 			let reader = StreamReader::new(field.map_err(|multipart_error| {
 				std::io::Error::new(std::io::ErrorKind::Other, multipart_error)
 			}));

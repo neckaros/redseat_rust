@@ -209,12 +209,10 @@ impl ModelController {
 
 
 
-    pub async fn exec_token_exchange(&self, query: RsLookupQuery, library_id: Option<String>, plugin_id: &str, request: HashMap<String, String>, requesting_user: &ConnectedUser) -> RsResult<PluginCredential> {
-        if let Some(library_id) = library_id {
-            requesting_user.check_library_role(&library_id, crate::domain::library::LibraryRole::Admin)?;
-        } else {
-            requesting_user.check_role(&UserRole::Admin)?;
-        }
+    pub async fn exec_token_exchange(&self, plugin_id: &str, request: HashMap<String, String>, requesting_user: &ConnectedUser) -> RsResult<PluginCredential> {
+
+        requesting_user.check_role(&UserRole::Admin)?;
+        
 
         let plugin = self.store.get_plugin(plugin_id).await?.ok_or(Error::NotFound)?;
         

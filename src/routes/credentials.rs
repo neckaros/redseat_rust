@@ -8,12 +8,12 @@ use serde_json::{json, Value};
 pub fn routes(mc: ModelController) -> Router {
 	Router::new()
 	.route("/available", get(handler_available))
-		.route("/", get(handler_list))
-		.route("/", post(handler_post))
-		.route("/:id", get(handler_get))
-		.route("/:id", patch(handler_patch))
-		.route("/:id", delete(handler_delete))
-		.with_state(mc)
+	.route("/", get(handler_list))
+	.route("/", post(handler_post))
+	.route("/:id", get(handler_get))
+	.route("/:id", patch(handler_patch))
+	.route("/:id", delete(handler_delete))
+	.with_state(mc)
         
 }
 

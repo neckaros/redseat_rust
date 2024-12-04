@@ -2,6 +2,7 @@ use std::{sync::{Arc, PoisonError}, time::SystemTimeError};
 
 use axum::{extract::multipart, http::StatusCode, response::{IntoResponse, Response}, Json};
 use ndarray::ShapeError;
+use rs_plugin_common_interfaces::CredentialType;
 use serde::{Deserialize, Serialize};
 use derive_more::From;
 use serde_json::json;
@@ -51,6 +52,7 @@ pub enum Error {
 	// Plugins Error 
 	PluginNotFound(String),
 	PluginUnsupportedCall(String, String),
+	PluginUnsupportedCredentialType(CredentialType, Option<CredentialType>),
 	PluginError(i32, String),
 
 	// -- Auth errors.
@@ -81,6 +83,7 @@ pub enum Error {
 	ServerFileNotFound,
 
 	GenericRedseatError,
+	
 	
 	// -- Externals
 
@@ -158,9 +161,8 @@ impl IntoResponse for Error {
 		// -- If client error, build the new reponse.
 		let error_json = json!({
 						"error": {
-							"type": client_error.as_ref(),
 							"value": client_error,
-							"req_uuid": nanoid.to_string(),
+							"reqUuid": nanoid.to_string(),
 						}
 					});
 	
@@ -203,6 +205,10 @@ impl Error {
 			Self::TicketDeleteFailIdNotFound { .. } => {
 				(StatusCode::BAD_REQUEST, ClientError::INVALID_PARAMS)
 			},
+			// -- Plugin 
+			Self::PluginError(code, error) => {
+				(StatusCode::INTERNAL_SERVER_ERROR, ClientError::PLUGIN{ code: code.clone(), message: error.to_string()})
+			},
 			// -- Prediction
 			Self::NoModelFound => (StatusCode::NOT_FOUND, ClientError::NOT_FOUND),
 			// -- Fallback.
@@ -216,6 +222,7 @@ impl Error {
 
 
 #[derive(Debug, Serialize, Deserialize, strum_macros::AsRefStr)]
+#[serde(tag = "type")]
 #[allow(non_camel_case_types)]
 pub enum ClientError {
 	LOGIN_FAIL,
@@ -230,6 +237,7 @@ pub enum ClientError {
 	SERVICE_ERROR,
 	Custom(String),
 	DUPLICATE(DuplicateClientError),
+	PLUGIN {code: i32, message: String}
 }
 
 

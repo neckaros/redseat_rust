@@ -98,7 +98,8 @@ impl PathProvider {
             file_path.push(&sourcepath);
         }
     
-    
+        println!("local write path {:?}",file_path);
+
         let file = BufWriter::new(File::create(&file_path).await?);
         let source = sourcepath.to_str().ok_or(SourcesError::Other("Unable to convert path to string".into()))?.to_string();
         Ok((source.to_string(), Box::pin(file)))
@@ -249,7 +250,7 @@ impl Source for PathProvider {
 
 
 
-    async fn writer(&self, name: &str) -> RsResult<(BoxedStringFuture, Pin<Box<dyn AsyncWrite + Send>>)> {
+    async fn writer(&self, name: &str, length: Option<u64>, mime: Option<String>) -> RsResult<(BoxedStringFuture, Pin<Box<dyn AsyncWrite + Send>>)> {
         let path = self.root.clone();
         let mut sourcepath = PathBuf::new();
 

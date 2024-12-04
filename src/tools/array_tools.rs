@@ -1,5 +1,10 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
+
+use serde_json::Value;
+
+use crate::error::RsResult;
+use crate::Error;
 
 pub fn replace_add_remove_from_array<T: PartialEq + Clone>(existing: Option<Vec<T>>, replace: Option<Vec<T>>, add: Option<Vec<T>>, remove: Option<Vec<T>>) -> Option<Vec<T>> {
 
@@ -166,5 +171,24 @@ mod tests {
         assert_eq!(deduped.get(1).unwrap().name, "BBB");
         assert_eq!(deduped.get(2).unwrap().id, "3");
         assert_eq!(deduped.get(2).unwrap().name, "ddd");
+    }
+}
+
+// Function to convert serde_json::Value to HashMap<String, String>
+pub fn value_to_hashmap(value: Value) -> RsResult<HashMap<String, String>> {
+    if let Value::Object(map) = value {
+        let mut result = HashMap::new();
+        for (key, val) in map {
+            let val_as_string = match val {
+                Value::String(s) => s,
+                Value::Number(n) => n.to_string(),
+                Value::Bool(b) => b.to_string(),
+                _ => return Err(Error::Error("Invalid type in hashmap value".to_string())),
+            };
+            result.insert(key, val_as_string);
+        }
+        Ok(result)
+    } else {
+        Err(Error::Error("Invalid body for hashmap:Body is not JSON".to_string()))
     }
 }
