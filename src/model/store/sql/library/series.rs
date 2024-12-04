@@ -1,6 +1,6 @@
 use rusqlite::{params, OptionalExtension, Row};
 
-use crate::{domain::{serie::Serie, MediasIds}, model::{series::{SerieForUpdate, SerieQuery}, store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType}, to_pipe_separated_optional}}, tools::array_tools::replace_add_remove_from_array};
+use crate::{domain::{serie::Serie, MediasIds}, model::{series::{SerieForUpdate, SerieQuery}, store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType}, to_pipe_separated_optional}}, tools::{array_tools::replace_add_remove_from_array, image_tools::ImageType}};
 use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
 
@@ -36,6 +36,11 @@ impl SqliteLibraryStore {
             trakt_votes: row.get(19)?,
 
             status:  row.get(20)?,
+
+            posterv:  row.get(21)?,
+            backgroundv:  row.get(22)?,
+            cardv:  row.get(23)?,
+
         })
     }
 
@@ -57,7 +62,7 @@ impl SqliteLibraryStore {
             where_query.add_oder(OrderBuilder::new(query.sort.to_string(), query.order));
 
 
-            let mut query = conn.prepare(&format!("SELECT id, name, type, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, year, modified, added, imdb_rating, imdb_votes, trailer, maxCreated, trakt_rating, trakt_votes, status  FROM series {}{}", where_query.format(), where_query.format_order()))?;
+            let mut query = conn.prepare(&format!("SELECT id, name, type, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, year, modified, added, imdb_rating, imdb_votes, trailer, maxCreated, trakt_rating, trakt_votes, status, posterv, backgroundv, cardv  FROM series {}{}", where_query.format(), where_query.format_order()))?;
             let rows = query.query_map(
             where_query.values(), Self::row_to_serie,
             )?;
@@ -69,7 +74,7 @@ impl SqliteLibraryStore {
     pub async fn get_serie(&self, credential_id: &str) -> Result<Option<Serie>> {
         let credential_id = credential_id.to_string();
         let row = self.connection.call( move |conn| { 
-            let mut query = conn.prepare("SELECT id, name, type, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, year, modified, added, imdb_rating, imdb_votes, trailer, maxCreated, trakt_rating, trakt_votes, status FROM series WHERE id = ?")?;
+            let mut query = conn.prepare("SELECT id, name, type, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, year, modified, added, imdb_rating, imdb_votes, trailer, maxCreated, trakt_rating, trakt_votes, status, posterv, backgroundv, cardv FROM series WHERE id = ?")?;
             let row = query.query_row(
             [credential_id],Self::row_to_serie).optional()?;
             Ok(row)
@@ -131,6 +136,25 @@ impl SqliteLibraryStore {
             Ok(())
         }).await?;
 
+        Ok(())
+    }
+
+    pub async fn update_serie_image(&self, serie_id: String, kind: ImageType) -> Result<()> {
+
+        self.connection.call( move |conn| { 
+            match kind {
+                ImageType::Poster => conn.execute("update series set posterv = ifnull(posterv, 0) + 1 WHERE id = ?", params![serie_id])?,
+                ImageType::Background => conn.execute("update series set backgroundv = ifnull(backgroundv, 0) + 1 WHERE id = ?", params![serie_id])?,
+                ImageType::Still => 0,
+                ImageType::Card => conn.execute("update series set cardv = ifnull(cardv, 0) + 1 WHERE id = ?", params![serie_id])?,
+                ImageType::ClearLogo => 0,
+                ImageType::ClearArt => 0,
+                ImageType::Custom(_) => 0,
+            };
+
+            
+            Ok(())
+        }).await?;
         Ok(())
     }
 

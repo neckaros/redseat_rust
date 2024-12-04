@@ -141,6 +141,8 @@ impl From<TraktFullShow> for Serie {
             max_created: None,
             modified: t,
             added: t,
+            
+            ..Default::default()
         }
     }
 }

@@ -1,7 +1,7 @@
 
 
 
-use std::{io::{self, Read}, pin::Pin};
+use std::{io::{self, Cursor, Read}, pin::Pin};
 
 use async_recursion::async_recursion;
 use futures::TryStreamExt;
@@ -14,7 +14,7 @@ use tokio::{fs::File, io::{AsyncRead, AsyncWriteExt, BufReader}};
 use tokio_util::io::StreamReader;
 
 
-use crate::{domain::{deleted::RsDeleted, library::LibraryRole, people::{PeopleMessage, Person}, serie::{Serie, SerieStatus, SerieWithAction, SeriesMessage}, ElementAction, MediaElement, MediasIds}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source}}, server::get_server_folder_path_array, tools::{image_tools::{resize_image_reader, ImageSize, ImageType}, log::log_info}};
+use crate::{domain::{deleted::RsDeleted, library::LibraryRole, people::{PeopleMessage, Person}, serie::{Serie, SerieStatus, SerieWithAction, SeriesMessage}, ElementAction, MediaElement, MediasIds}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source}}, server::get_server_folder_path_array, tools::{image_tools::{convert_image_reader, resize_image_reader, ImageSize, ImageType}, log::log_info}};
 
 use super::{episodes::{EpisodeForUpdate, EpisodeQuery}, error::{Error, Result}, medias::{MediaQuery, RsSort}, store::sql::SqlOrder, users::ConnectedUser, ModelController};
 
@@ -417,11 +417,19 @@ impl ModelController {
         Ok(Box::pin(body_reader))
     }
 
-    pub async fn update_serie_image<T: AsyncRead>(&self, library_id: &str, serie_id: &str, kind: &ImageType, reader: T, requesting_user: &ConnectedUser) -> Result<()> {
+    pub async fn update_serie_image<T: AsyncRead + Unpin>(&self, library_id: &str, serie_id: &str, kind: &ImageType, mut reader: T, requesting_user: &ConnectedUser) -> Result<()> {
         if MediasIds::is_id(serie_id) {
             return Err(Error::InvalidIdForAction("udpate image".to_string(), serie_id.to_string()))
         }
-        self.update_library_image(library_id, ".series", serie_id, &Some(kind.clone()), reader, requesting_user).await
+
+        let converted = convert_image_reader(&mut reader, "webp", Some(80)).await?;
+        let converted_reader = Cursor::new(converted);
+        self.update_library_image(library_id, ".series", serie_id, &Some(kind.clone()), converted_reader, requesting_user).await;
+        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+		store.update_serie_image(serie_id.to_string(), kind.clone()).await;
+        let serie = self.get_serie(library_id, serie_id.to_owned(), requesting_user).await?.ok_or(Error::NotFound)?;
+        self.send_serie(SeriesMessage { library: library_id.to_string(), series: vec![SerieWithAction { serie, action: ElementAction::Updated}] });
+        Ok(())
 	}
     
 }

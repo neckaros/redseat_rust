@@ -261,3 +261,11 @@ fn mapping(path: PathBuf) -> Result<Vec<PredictionTag>> {
         Err(crate::Error::ModelMappingNotFound)
     } 
 }
+
+
+fn calculate_similarity(embedding1: &[f32], embedding2: &[f32]) -> f32 {
+    let dot: f32 = embedding1.iter().zip(embedding2.iter()).map(|(a, b)| a * b).sum();
+    let norm1: f32 = embedding1.iter().map(|a| a * a).sum::<f32>().sqrt();
+    let norm2: f32 = embedding2.iter().map(|a| a * a).sum::<f32>().sqrt();
+    dot / (norm1 * norm2)
+}

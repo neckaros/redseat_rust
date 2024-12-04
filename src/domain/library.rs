@@ -44,7 +44,7 @@ pub struct LibraryLimits {
     #[serde(default)]
     pub albums: bool,
     #[serde(default)]
-    pub delay: Option<u64>,
+    pub delay: Option<i64>,
 
 }
 

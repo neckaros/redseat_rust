@@ -166,6 +166,14 @@ impl ImageCommandBuilder {
         self
     }
 
+    pub fn auto_orient(&mut self) -> &mut Self {
+        self.cmd
+            .arg("-auto-orient");
+        self
+    }
+
+    
+
     /// Ex: 500x500^
     pub fn set_size(&mut self, size: &str) -> &mut Self {
         self.cmd
@@ -224,6 +232,7 @@ pub async fn resize_image_path(path: &PathBuf, to: &PathBuf, size: u32) -> Image
     let mut file = tokio::fs::File::create(to).await?;
 
     let mut builder = ImageCommandBuilder::new();
+    builder.auto_orient();
     builder.set_quality(80);
     builder.set_size(&format!("{}x{}^", size, size));
     let data = builder.run("webp",&mut source).await?;
@@ -233,6 +242,7 @@ pub async fn resize_image_path(path: &PathBuf, to: &PathBuf, size: u32) -> Image
 pub async fn resize_image_reader<R>(reader: &mut R, size: u32) -> ImageResult<Vec<u8>>where
     R: AsyncRead + Unpin + ?Sized,   {
     let mut builder = ImageCommandBuilder::new();
+    builder.auto_orient();
     builder.set_quality(80);
     builder.set_size(&format!("{}x{}^", size, size));
     let data = builder.run("webp",reader).await?;
@@ -243,6 +253,7 @@ pub async fn resize_image_reader<R>(reader: &mut R, size: u32) -> ImageResult<Ve
 pub async fn convert_image_reader<R>(reader: &mut R, format: &str, quality: Option<u16>) -> ImageResult<Vec<u8>>where
     R: AsyncRead + Unpin + ?Sized,   {
     let mut builder = ImageCommandBuilder::new();
+    builder.auto_orient();
     builder.set_quality(quality.unwrap_or(80));
     let data = builder.run(format,reader).await?;
     

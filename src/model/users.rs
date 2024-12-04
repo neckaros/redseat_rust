@@ -96,12 +96,12 @@ impl ConnectedUser {
             Err(Error::InsufficientUserRole { user: self.clone(), role: role.clone() })
         }
     }
-    pub fn check_library_role(&self, library_id: &str, role: LibraryRole) -> Result<()> {
+    pub fn check_library_role(&self, library_id: &str, role: LibraryRole) -> Result<LibraryLimits> {
         if self.is_admin() {
-            Ok(())
+            Ok(LibraryLimits::default())
         } else if let ConnectedUser::Server(user) = &self {
-            if user.has_library_role(&library_id, &role) {
-                Ok(())
+            if let Some(limits) = user.has_library_role(&library_id, &role) {
+                Ok(limits)
             } else {
                 Err(Error::InsufficientLibraryRole { user: self.clone(), library_id: library_id.to_string(), role: role.clone() })
             }
@@ -109,7 +109,7 @@ impl ConnectedUser {
             match &claims.kind {
                 ClaimsLocalType::File(library, _) => {
                     if library == library_id { 
-                        Ok(()) 
+                        Ok(LibraryLimits::default()) 
                     } else {
                         Err(Error::ShareTokenInsufficient)
                     }
@@ -118,7 +118,7 @@ impl ConnectedUser {
             }
         } else if let ConnectedUser::UploadKey(key) = &self {
             if key.library == library_id { 
-                Ok(()) 
+                Ok(LibraryLimits::default()) 
             } else {
                 Err(Error::ShareTokenInsufficient)
             }
@@ -131,7 +131,7 @@ impl ConnectedUser {
         if self.is_admin() {
             Ok(())
         } else if let ConnectedUser::Server(user) = &self {
-            if user.has_library_role(&library_id, &role) {
+            if user.has_library_role(&library_id, &role).is_some() {
                 Ok(())
             } else {
                 Err(Error::InsufficientLibraryRole { user: self.clone(), library_id: library_id.to_string(), role: role.clone() })
@@ -157,7 +157,7 @@ impl ConnectedUser {
         if self.is_admin() {
             Ok(())
         } else if let ConnectedUser::Server(user) = &self {
-            if user.has_library_role(library_id, &LibraryRole::Read) {
+            if user.has_library_role(library_id, &LibraryRole::Read).is_some() {
                 Ok(())
             } else {
                 Err(Error::InsufficientLibraryRole { user: self.clone(), library_id: library_id.to_string(), role: LibraryRole::Read })
@@ -341,13 +341,17 @@ impl ServerUser {
     pub fn has_role(&self, role: &UserRole) -> bool {
         &self.role >= role
     }
-    pub fn has_library_role(&self, library_id: &str, role: &LibraryRole) -> bool {
+    pub fn has_library_role(&self, library_id: &str, role: &LibraryRole) -> Option<LibraryLimits> {
         let libraries = &self.libraries.clone();
         let found = libraries.into_iter().find(|l| l.id == library_id);
         if let Some(found) = found {
-            found.has_role(role)
+            if found.has_role(role) {
+                Some(found.limits.clone())
+            } else {
+                None
+            }
         } else {
-            false
+            None
         }
     }
 }

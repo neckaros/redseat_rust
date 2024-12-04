@@ -37,8 +37,8 @@ pub struct MediaQuery {
     #[serde(default)]
     pub order: SqlOrder,
 
-    pub added_before: Option<u64>,
-    pub added_after: Option<u64>,
+    pub added_before: Option<i64>,
+    pub added_after: Option<i64>,
 
     pub created_before: Option<u64>,
     pub created_after: Option<u64>,
@@ -154,16 +154,16 @@ impl TryFrom<Media> for MediaSource {
 impl ModelController {
 
 	pub async fn get_medias(&self, library_id: &str, query: MediaQuery, requesting_user: &ConnectedUser) -> Result<Vec<Media>> {
-        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        let limits = requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
-		let people = store.get_medias(query).await?;
+		let people = store.get_medias(query, limits).await?;
 		Ok(people)
 	}
 
 	pub async fn count_medias(&self, library_id: &str, query: MediaQuery, requesting_user: &ConnectedUser) -> Result<u64> {
-        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        let limits = requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
-		let count = store.count_medias(query).await?;
+		let count = store.count_medias(query, limits).await?;
 		Ok(count)
 	}
     pub async fn get_locs(&self, library_id: &str, precision: Option<u32>, requesting_user: &ConnectedUser) -> Result<Vec<RsGpsPosition>> {

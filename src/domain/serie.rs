@@ -23,7 +23,7 @@ pub enum SerieStatus {
     #[default] Unknown,
 }
 
-#[derive(Debug, Serialize, PartialEq, Deserialize, Clone)]
+#[derive(Debug, Serialize, PartialEq, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Serie {
 
@@ -66,7 +66,15 @@ pub struct Serie {
     #[serde(default)]
     pub modified: u64,
     #[serde(default)]
-    pub added: u64
+    pub added: u64,
+
+    
+    #[serde(default)]
+    pub posterv: u64,
+    #[serde(default)]
+    pub backgroundv: u64,
+    #[serde(default)]
+    pub cardv: u64
 }
 
 

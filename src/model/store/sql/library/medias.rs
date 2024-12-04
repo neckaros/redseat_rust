@@ -1,9 +1,10 @@
 use std::u64;
 
+use chrono::Utc;
 use rs_plugin_common_interfaces::url::RsLink;
 use rusqlite::{params, params_from_iter, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, Row, ToSql};
 
-use crate::{domain::{media::{FileEpisode, FileType, Media, MediaForInsert, MediaForUpdate, MediaItemReference, RsGpsPosition}, MediasIds}, error::RsResult, model::{medias::{MediaQuery, MediaSource, RsSort}, people::PeopleQuery, series::SerieQuery, store::{from_comma_separated_optional, from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType}, to_comma_separated_optional, to_pipe_separated_optional}, tags::{TagForInsert, TagForUpdate, TagQuery}}, tools::{array_tools::AddOrSetArray, file_tools::{file_type_from_mime, get_mime_from_filename}, log::{log_info, LogServiceType}, text_tools::{extract_people, extract_tags}}};
+use crate::{domain::{library::LibraryLimits, media::{FileEpisode, FileType, Media, MediaForInsert, MediaForUpdate, MediaItemReference, RsGpsPosition}, MediasIds}, error::RsResult, model::{medias::{MediaQuery, MediaSource, RsSort}, people::PeopleQuery, series::SerieQuery, store::{from_comma_separated_optional, from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType}, to_comma_separated_optional, to_pipe_separated_optional}, tags::{TagForInsert, TagForUpdate, TagQuery}}, tools::{array_tools::AddOrSetArray, file_tools::{file_type_from_mime, get_mime_from_filename}, log::{log_info, LogServiceType}, text_tools::{extract_people, extract_tags}}};
 use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
 
@@ -190,7 +191,7 @@ impl SqliteLibraryStore {
     }
 
 
-    fn build_media_query(mut query: MediaQuery) -> RsQueryBuilder {
+    fn build_media_query(mut query: MediaQuery, limits: LibraryLimits) -> RsQueryBuilder {
         let mut where_query = RsQueryBuilder::new();
 
         if let Some(text) = query.text {
@@ -220,8 +221,21 @@ impl SqliteLibraryStore {
             }
         }
 
+
+        let limit = if let Some(minutes) = limits.delay {
+            Some(Utc::now().timestamp_millis() - (minutes * 60000))
+        } else {
+            None
+        };
         if let Some(added) = query.added_before {
+            let added = if let Some(limit) = limit {
+                added.min(limit)
+            } else {
+                added
+            };
             where_query.add_where(SqlWhereType::Before("added".to_owned(), Box::new(added)));
+        } else if let Some(limit) = limit {
+            where_query.add_where(SqlWhereType::Before("added".to_owned(), Box::new(limit)));
         }
         if let Some(added) = query.added_after {
             where_query.add_where(SqlWhereType::After("added".to_owned(), Box::new(added)));
@@ -316,11 +330,11 @@ impl SqliteLibraryStore {
         where_query
     }
 
-    pub async fn get_medias(&self, query: MediaQuery) -> Result<Vec<Media>> {
+    pub async fn get_medias(&self, query: MediaQuery, limits: LibraryLimits) -> Result<Vec<Media>> {
         let row = self.connection.call( move |conn| { 
 
             let limit = query.limit.unwrap_or(200);
-            let mut where_query = Self::build_media_query(query);
+            let mut where_query = Self::build_media_query(query, limits);
 
 
             let mut query = conn.prepare(&format!("
@@ -356,11 +370,11 @@ impl SqliteLibraryStore {
     }
 
     
-    pub async fn count_medias(&self, query: MediaQuery) -> Result<u64> {
+    pub async fn count_medias(&self, query: MediaQuery, limits: LibraryLimits) -> Result<u64> {
         let row = self.connection.call( move |conn| { 
 
             let limit = query.limit.unwrap_or(200);
-            let mut where_query = Self::build_media_query(query);
+            let mut where_query = Self::build_media_query(query, limits);
 
 
             let mut query = conn.prepare(&format!("

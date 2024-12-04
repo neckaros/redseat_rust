@@ -7,6 +7,7 @@ pub mod log;
 pub mod array_tools;
 pub mod serialization;
 pub mod prediction;
+pub mod recognition;
 pub mod file_tools;
 pub mod http_tools;
 pub mod scheduler;
