@@ -509,6 +509,7 @@ impl ModelController {
     
     pub async fn add_library_file<T: Sized + AsyncRead + Send + Unpin >(&self, library_id: &str, filename: &str, infos: Option<MediaForUpdate>, reader: T, requesting_user: &ConnectedUser) -> RsResult<Media> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         let mut infos = infos.unwrap_or_default();
         let upload_id = infos.upload_id.clone().unwrap_or_else(|| nanoid!());
         let crypted = self.cache_get_library_crypt(library_id).await;
@@ -528,6 +529,14 @@ impl ModelController {
         drop(progress_reader);
         if !crypted {
             let _ = m.fill_infos(&source, &mut infos).await;
+        }
+        if let Some(hash) = &infos.md5 {
+            let existing = store.get_media_by_hash(hash.to_owned()).await;
+            if let Some(existing) = existing {
+                m.remove(&source).await?;
+                let _ = tx_progress.send(RsProgress { id: upload_id.clone(), total: existing.size, current: existing.size, kind: RsProgressType::Duplicate(existing.id.clone()), filename: Some(existing.name.to_owned()) }).await;
+                return Err(Error::Duplicate(existing.id.to_owned(), MediaElement::Media(existing)).into())
+            }
         }
         
         let mut new_file = MediaForAdd {
@@ -554,7 +563,6 @@ impl ModelController {
         store.add_media(MediaForInsert { id: id.clone(), media: new_file }).await?;
         self.update_media(library_id, id.to_owned(), infos, false, requesting_user).await?;
         let library: crate::model::libraries::ServerLibraryForRead = self.get_library(library_id, &ConnectedUser::ServerAdmin).await?.ok_or(Error::LibraryNotFound(library_id.to_owned()))?;
-        println!("SPAWNING");
         if !crypted {
             let _ = self.generate_thumb(&library_id, &id, &requesting_user).await;
             self.process_media_spawn(library_id.to_string(), id.clone(), false, library.kind == LibraryType::Photos, requesting_user.clone());

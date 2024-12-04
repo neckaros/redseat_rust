@@ -98,7 +98,6 @@ impl PathProvider {
             file_path.push(&sourcepath);
         }
     
-        println!("local write path {:?}",file_path);
 
         let file = BufWriter::new(File::create(&file_path).await?);
         let source = sourcepath.to_str().ok_or(SourcesError::Other("Unable to convert path to string".into()))?.to_string();

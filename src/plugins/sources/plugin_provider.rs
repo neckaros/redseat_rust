@@ -61,17 +61,33 @@ impl Source for PluginProvider {
     async fn exists(&self, _source: &str) -> bool {
         true
     }
-    async fn remove(&self, _source: &str) -> RsResult<()> {
-
-        Ok(())
+    async fn remove(&self, source: &str) -> RsResult<()> {
+        self.plugin_manager.provider_remove_file(RsProviderPath { root: self.library.root.clone(), source: source.to_string() }, &self.plugin).await
     }
 
     fn local_path(&self, _source: &str) -> Option<PathBuf> {
         None
     }
 
-    async fn fill_infos(&self, _source: &str, _infos: &mut MediaForUpdate) -> RsResult<()> {
+    async fn fill_infos(&self, source: &str, infos: &mut MediaForUpdate) -> RsResult<()> {
+        let entry = self.plugin_manager.provider_info_file(RsProviderPath { root: self.library.root.clone(), source: source.to_string() }, &self.plugin).await?;
+        println!("INFOS: {:?}", entry);
+        if let Some(size) = entry.size {
+            infos.size = Some(size);
+        } 
+        if let Some(hash) = entry.hash {
+            infos.md5 = Some(hash);
+        } 
 
+        if let Some(mime) = entry.mimetype {
+            infos.mimetype = Some(mime);
+        } 
+        if let Some(created) = entry.created {
+            infos.created = Some(created);
+        } 
+        if let Some(modified) = entry.modified {
+            infos.modified = Some(modified);
+        } 
         Ok(())
     }
     async fn get_file(&self, source: &str, _range: Option<RangeDefinition>) -> RsResult<SourceRead> {
