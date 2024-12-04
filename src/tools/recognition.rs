@@ -34,15 +34,15 @@ fn detect_faces(
         .collect();
 
     let input_shape = &[1, 3, height as usize, width as usize];
-    let input_tensor = Array4::from_shape_vec(*input_shape, img_tensor)?.view();
+    //let input_tensor = Array4::from_shape_vec(*input_shape, img_tensor)?.view();
 
     // Run inference
-    let outputs: SessionOutputs = detection_session.run(inputs!["images".to_string() => input_tensor]?)?;
-    let output = outputs["output0"].try_extract_tensor::<f32>()?.t().into_owned();
+    //let outputs: SessionOutputs = detection_session.run(inputs!["images".to_string() => input_tensor]?)?;
+    //let output = outputs["output0"].try_extract_tensor::<f32>()?.t().into_owned();
 
     // Parse detections (assuming [num_boxes, 5] format)
     let mut boxes = Vec::new();
-    for i in (0..detections.len()).step_by(5) {
+    /*for i in (0..detections.len()).step_by(5) {
         let confidence = detections[i + 4];
         if confidence > 0.5 {
             let x1 = detections[i] * width as f32;
@@ -51,6 +51,6 @@ fn detect_faces(
             let y2 = detections[i + 3] * height as f32;
             boxes.push((x1, y1, x2, y2));
         }
-    }
+    }*/
     Ok(boxes)
 }
