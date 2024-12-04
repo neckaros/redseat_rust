@@ -1,7 +1,7 @@
 
-use crate::{domain::plugin::{PluginForAdd, PluginForInstall, PluginForUpdate}, model::{plugins::PluginQuery, users::ConnectedUser}, ModelController, Result};
+use crate::{domain::plugin::{PluginForAdd, PluginForInstall, PluginForUpdate}, model::{credentials::CredentialForAdd, plugins::PluginQuery, users::ConnectedUser}, tools::array_tools::value_to_hashmap, ModelController, Result};
 use axum::{extract::{Path, Query, State}, routing::{delete, get, patch, post}, Json, Router};
-use rs_plugin_common_interfaces::{request::RsRequest, url::RsLink, PluginType};
+use rs_plugin_common_interfaces::{request::RsRequest, url::RsLink, CredentialType, PluginType};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -21,6 +21,7 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/", post(handler_post))
 		.route("/:id", get(handler_get))
 		.route("/:id/reload", get(handler_reload))
+		.route("/:id/oauthtoken", post(handler_exchange_token))
 		.route("/:id", patch(handler_patch))
 		.route("/:id", delete(handler_delete))
 		.with_state(mc)
@@ -93,7 +94,27 @@ async fn handler_reload(Path(plugin_id): Path<String>, State(mc): State<ModelCon
 	Ok(body)
 }
 
-async fn handler_patch(Path(plugin_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Json(update): Json<PluginForUpdate>) -> Result<Json<Value>> {
+async fn handler_exchange_token(Path(plugin_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Json(payload): Json<Value>) -> Result<()> {
+	let params = value_to_hashmap(payload)?;
+	let name = params.get("name").cloned().unwrap_or("Credential".to_string());
+	let created_credential = mc.exec_token_exchange(&plugin_id, params, &user).await?;
+	let credential_for_add = CredentialForAdd {
+    name: name,
+    source: plugin_id,
+    kind: CredentialType::Oauth { url: "None".to_string() },
+    login: Some("token".to_string()),
+    password: created_credential.password,
+    settings: created_credential.settings,
+    user_ref: user.user_id().ok(),
+    refresh_token: created_credential.refresh_token,
+    expires: created_credential.expires,
+};
+	let credential = mc.add_credential(credential_for_add, &user).await?;
+	Ok(())
+}
+
+
+async fn handler_patch(Path(plugin_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Json(update): Json<PluginForUpdate>) -> Result<(Json<Value>)> {
 	let new_credential = mc.update_plugin(&plugin_id, update, &user).await?;
 	Ok(Json(json!(new_credential)))
 }

@@ -56,13 +56,13 @@ impl Source for VirtualProvider {
     }
 
 
-    async fn writer(&self, name: &str) -> RsResult<(BoxedStringFuture, Pin<Box<dyn AsyncWrite + Send>>)> {
-        Err(crate::Error::NotImplemented("Writer not implemented for plugin provider".to_string()))
+    async fn writer(&self, name: &str, length: Option<u64>, mime: Option<String>) -> RsResult<(BoxedStringFuture, Pin<Box<dyn AsyncWrite + Send>>)> {
+        Err(crate::Error::NotImplemented("Writer not implemented for virtual provider".to_string()))
     }
 
 
     async fn writerseek(&self, name: &str) -> RsResult<(String, Pin<Box<dyn AsyncSeekableWrite + Send>>)> {
-        Err(crate::Error::NotImplemented("Writer not implemented for plugin provider".to_string()))
+        Err(crate::Error::NotImplemented("Writer not implemented for virtual provider".to_string()))
     }
 
 

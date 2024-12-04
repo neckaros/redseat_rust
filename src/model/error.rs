@@ -14,6 +14,7 @@ pub type Result<T> = core::result::Result<T, Error>;
 #[serde_as]
 #[derive(Debug, Serialize, From, strum_macros::AsRefStr)]
 pub enum Error {
+	Other(String),
 
 	//media
 	InvalidIdForAction(String, String),

@@ -4,6 +4,7 @@ use extism::{convert::Json, Manifest, PluginBuilder, Wasm};
 use rs_plugin_common_interfaces::{PluginInformation, PluginType, RsRequest};
 
 use extism::Plugin as ExtismPlugin;
+use sources::plugin_provider::PluginProvider;
 use tokio::{fs::File, io::AsyncReadExt, sync::RwLock};
 
 use crate::{domain::{library::ServerLibrary, plugin::{self, PluginWasm}}, error::RsResult, model::ModelController, server::get_server_folder_path_array, tools::log::{log_error, log_info, LogServiceType}, Error, Result};
@@ -13,6 +14,7 @@ use self::sources::{error::SourcesResult, path_provider::PathProvider, virtual_p
 pub mod sources;
 pub mod error;
 pub mod medias;
+pub mod token;
 
 
 pub struct PluginManager {
@@ -161,6 +163,9 @@ impl PluginManager {
     pub async fn source_for_library(&self, library: ServerLibrary, controller: ModelController) -> RsResult<Box<dyn Source>> {
         let source: Box<dyn Source> = if library.source == "PathProvider" {
             let source = PathProvider::new(library, controller).await?;
+            Box::new(source)
+        } else if library.source == "PluginProvider" {
+            let source = PluginProvider::new(library, controller).await?;
             Box::new(source)
         } else {
             let source = VirtualProvider::new(library, controller).await?;

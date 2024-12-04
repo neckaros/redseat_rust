@@ -1,8 +1,10 @@
 
 
 
+use std::collections::HashMap;
+
 use nanoid::nanoid;
-use rs_plugin_common_interfaces::{lookup::{RsLookupQuery, RsLookupSourceResult}, request::RsRequest, url::{RsLink, RsLinkType}, PluginInformation, PluginType};
+use rs_plugin_common_interfaces::{lookup::{RsLookupQuery, RsLookupSourceResult}, request::RsRequest, url::{RsLink, RsLinkType}, PluginCredential, PluginInformation, PluginType, RsPluginRequest};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -203,5 +205,17 @@ impl ModelController {
 
         self.plugin_manager.lookup(query, plugins).await
         
+    }
+
+
+
+    pub async fn exec_token_exchange(&self, plugin_id: &str, request: HashMap<String, String>, requesting_user: &ConnectedUser) -> RsResult<PluginCredential> {
+
+        requesting_user.check_role(&UserRole::Admin)?;
+        
+
+        let plugin = self.store.get_plugin(plugin_id).await?.ok_or(Error::NotFound)?;
+        
+        self.plugin_manager.exchange_token(plugin, request).await
     }
 }

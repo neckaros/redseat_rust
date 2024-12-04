@@ -131,7 +131,7 @@ async fn handler_register(State(mc): State<ModelController>, Query(query): Query
 		params.push(format!("id={}", query.id));
 		
 		
-		let url = format!("https://{}/install/final?id={}", home, params.join("&"));
+		let url = format!("https://{}/install/final?{}", home, params.join("&"));
 
 		tokio::spawn(async move {
 			sleep(Duration::from_millis(500)).await;
