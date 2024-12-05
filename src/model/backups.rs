@@ -13,20 +13,21 @@ use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelContr
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BackupForAdd {
 	pub source: String,
-    pub credentials: String,
+    pub credentials: Option<String>,
+    pub plugin: Option<String>,
     pub library: String,
     pub path: String,
     pub schedule: Option<String>,
     pub filter: Option<Value>,
     pub last: Option<u64>,
     pub password: Option<String>,
-    pub size: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BackupForUpdate {
 	pub source: Option<String>,
 	pub credentials: Option<String>,
+    pub plugin: Option<String>,
 	pub library: Option<String>,
     pub path: Option<String>,
     pub schedule: Option<String>,
@@ -77,7 +78,8 @@ impl ModelController {
             filter: backup.filter,
             last: backup.last,
             password: backup.password,
-            size: backup.size,
+            size: 0,
+            plugin: backup.plugin
         };
 		self.store.add_backup(backup.clone()).await?;
 		Ok(backup)

@@ -51,6 +51,14 @@ pub async fn migrate_database(connection: &Connection) -> Result<usize> {
                 conn.pragma_update(None, "user_version", 4)?;
                 println!("Update SQL to verison 4 (share options)")
             }
+
+            if version < 5 {
+                let update = String::from_utf8_lossy(include_bytes!("005 - BACKUP PLUGIN.sql"));
+                conn.execute_batch(&update)?;
+                
+                conn.pragma_update(None, "user_version", 5)?;
+                println!("Update SQL to verison 5 (share backup plugin)")
+            }
             
             Ok(4)
     }).await?;

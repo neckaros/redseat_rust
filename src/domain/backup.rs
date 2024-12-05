@@ -7,7 +7,8 @@ use serde_json::Value;
 pub struct Backup {
     pub id: String,
 	pub source: String,
-    pub credentials: String,
+    pub plugin: Option<String>,
+    pub credentials: Option<String>,
     pub library: String,
     pub path: String,
     pub schedule: Option<String>,
