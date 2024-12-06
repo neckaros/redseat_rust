@@ -1,6 +1,7 @@
 use std::{pin::Pin, task::{Context, Poll}};
 
 use aes::cipher::{block_padding::{Padding, Pkcs7}, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
+use extism::ToBytes;
 use hex_literal::hex;
 use pbkdf2::{pbkdf2_hmac, pbkdf2_hmac_array};
 use rand::RngCore;
@@ -15,6 +16,10 @@ use crate::error::RsResult;
 static salt_file: [u8; 16] = hex!("e5709660b22ab0803630cb963f703b83");
 static salt_text: [u8; 16] = hex!("a1209660b32cca003630cb963f730b54");
 
+fn ceil_to_multiple_of_16(value: usize) -> usize {
+    (value + 15) & !15
+}
+
 pub struct AesTokioEncryptStream<W: AsyncWrite + Unpin> {
     writer: W,
     encryptor: Aes128CbcEnc,
@@ -23,10 +28,20 @@ pub struct AesTokioEncryptStream<W: AsyncWrite + Unpin> {
 
     iv: Vec<u8>,
     iv_written: bool,
+
+    thumb: Vec<u8>,
+    thumb_mime: String,
+    thumb_size_written: bool,
+    thumb_written: bool,
+
+    infos: Option<String>,
+    infos_size_written: bool,
+    infos_written: bool,
+    
 }
 
 impl<W: AsyncWrite + Unpin> AesTokioEncryptStream<W> {
-    pub fn new(writer: W, key: &[u8], iv: &[u8]) -> Result<Self, std::io::Error> {
+    pub fn new(writer: W, key: &[u8], iv: &[u8], file_mime: Option<String>, thumb: Option<(&[u8], String)>, infos: Option<String>) -> Result<Self, std::io::Error> {
         if key.len() != 16 || iv.len() != 16 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput, 
@@ -35,7 +50,7 @@ impl<W: AsyncWrite + Unpin> AesTokioEncryptStream<W> {
         }
 
         let encryptor = Aes128CbcEnc::new(key.into(), iv.into());        
-
+        let (thumb, thumb_mime) = thumb.unwrap_or((&[], "".to_string()));
         Ok(Self {
             writer,
             encryptor,
@@ -43,27 +58,66 @@ impl<W: AsyncWrite + Unpin> AesTokioEncryptStream<W> {
             block_size: 16,
 
             iv: iv.into(),
-            iv_written: false
+            iv_written: false,
+
+            thumb: thumb.into(),
+            thumb_mime,
+            thumb_size_written: false,
+            thumb_written: false,
+            
+            infos,
+            infos_size_written: false,
+            infos_written: false
+            
         })
     }
+    
+    
 
     pub async fn write_encrypted(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        //16 Bytes to store IV
+        //4 to store encrypted thumb size = T (can be 0)
+        //4 to store encrypted Info size = I (can be 0)
+        //32 to store thumb mimetype
+        //256 to store file mimetype
+        //T Bytes for the encrypted thumb
+        //I Bytes for the encrypted info
         if !self.iv_written {
-            self.writer.write(self.iv.as_slice()).await?;
+            self.writer.write_all(self.iv.as_slice()).await?;
             self.iv_written = true;
+        }
+        if !self.thumb_size_written {
+            self.writer.write_all(&(ceil_to_multiple_of_16(self.thumb.len()) as u32).to_be_bytes()).await?;
+            self.thumb_size_written = true;
+        }
+        if !self.infos_size_written {
+            self.writer.write_all(&(ceil_to_multiple_of_16(self.infos.to_bytes().unwrap().len()) as u32).to_be_bytes()).await?;
+            self.infos_size_written = true;
         }
 
 
         self.buffer.extend_from_slice(data);
 
+        // Determine how many complete blocks we have
         let complete_blocks = self.buffer.len() / self.block_size;
-        for _ in 0..complete_blocks {
-            let (block, rest) = self.buffer.split_at(self.block_size);
-            let mut encrypted_block: [u8; 16] = block.try_into().unwrap();
-            self.encryptor.encrypt_block_mut(&mut encrypted_block.into());
-            self.writer.write_all(&encrypted_block).await?;
-            self.buffer = rest.to_vec();
+        let blocks_end = complete_blocks * self.block_size;
+
+        // Split into blocks to decrypt and leftover
+        let (blocks, rest) = self.buffer.split_at(blocks_end);
+
+        // Encrypt multiple blocks at once
+        let mut decrypted_blocks = Vec::with_capacity(blocks_end);
+        for chunk in blocks.chunks(self.block_size) {
+            let mut block_array: [u8; 16] = chunk.try_into().unwrap();
+            self.encryptor.encrypt_block_mut(&mut block_array.into());
+            decrypted_blocks.extend_from_slice(&block_array);
         }
+
+        // Write all decrypted blocks in one go
+        self.writer.write_all(&decrypted_blocks).await?;
+
+        // Keep only the leftover bytes in the buffer
+        self.buffer = rest.to_vec();
 
         Ok(data.len())
     }
@@ -107,6 +161,11 @@ pub struct AesTokioDecryptStream<W: AsyncWrite + Unpin> {
     buffer: Vec<u8>,
     key: Vec<u8>,
     block_size: usize,
+
+    thumb_size: Option<u32>,
+    thumb_passed: bool,
+    infos_size: Option<u32>,
+    infos_passed: bool,
 }
 
 impl<W: AsyncWrite + Unpin> AesTokioDecryptStream<W> {
@@ -129,21 +188,88 @@ impl<W: AsyncWrite + Unpin> AesTokioDecryptStream<W> {
             buffer: Vec::new(),
             key: key.into(),
             block_size: 16,
+
+            thumb_size: None,
+            thumb_passed: false,
+            infos_size: None,
+            infos_passed: false,
         })
     }
 
     pub async fn write_decrypted(&mut self, data: &[u8]) -> std::io::Result<usize> {
-        if let Some(mut decryptor) = self.decryptor.take() {
+        //16 Bytes to store IV
+        //4 to store encrypted thumb size = T (can be 0)
+        //4 to store encrypted Info size = I (can be 0)
+        //32 to store thumb mimetype
+        //256 to store file mimetype
+        //T Bytes for the encrypted thumb
+        //I Bytes for the encrypted info
+        if let Some(mut decryptor) = self.decryptor.as_mut() {
             self.buffer.extend_from_slice(data);
 
-            let complete_blocks = self.buffer.len() / self.block_size;
-            for _ in 0..complete_blocks {
-                let (block, rest) = self.buffer.split_at(self.block_size);
-                let mut block_array: [u8; 16] = block.try_into().unwrap();
-                decryptor.decrypt_block_mut(&mut block_array.into());
-                self.writer.write_all(&block_array).await?;
+
+            if self.thumb_size.is_none() {
+                if self.buffer.len() < 32 {
+                    return Ok(data.len());
+                }
+                let (block, rest) = self.buffer.split_at(4);
+                self.thumb_size = Some(u32::from_be_bytes(block[0..4].try_into().unwrap()));
+                println!("thumb size: {:?}", self.thumb_size);
                 self.buffer = rest.to_vec();
             }
+            if self.infos_size.is_none() {
+                if self.buffer.len() < 32 {
+                    return Ok(data.len());
+                }
+                let (block, rest) = self.buffer.split_at(4);
+                self.infos_size = Some(u32::from_be_bytes(block[0..4].try_into().unwrap()));
+                println!("info size: {:?}", self.infos_size);
+                self.buffer = rest.to_vec();
+            }
+            let thumb_size = self.thumb_size.unwrap_or(0);
+            if !self.thumb_passed && thumb_size > 0 {
+                if self.buffer.len() < thumb_size as usize {
+                    return Ok(data.len());
+                }
+                let (block, rest) = self.buffer.split_at(thumb_size as usize);
+                println!("passed thumb of {}", block.len());
+                self.buffer = rest.to_vec();
+                self.thumb_passed = true;
+            }
+            let infos_size = self.infos_size.unwrap_or(0);
+            if !self.infos_passed && infos_size > 0 {
+                if self.buffer.len() < infos_size as usize {
+                    return Ok(data.len());
+                }
+                let (block, rest) = self.buffer.split_at(infos_size as usize);
+                println!("passed infos of {}", block.len());
+                self.buffer = rest.to_vec();
+                self.infos_passed = true;
+            }
+
+
+
+
+                // Determine how many complete blocks we have
+            let complete_blocks = self.buffer.len() / self.block_size;
+            let blocks_end = complete_blocks * self.block_size;
+
+            // Split into blocks to decrypt and leftover
+            let (blocks, rest) = self.buffer.split_at(blocks_end);
+
+            // Decrypt multiple blocks at once
+            let mut decrypted_blocks = Vec::with_capacity(blocks_end);
+            for chunk in blocks.chunks(self.block_size) {
+                let mut block_array: [u8; 16] = chunk.try_into().unwrap();
+                decryptor.decrypt_block_mut(&mut block_array.into());
+                decrypted_blocks.extend_from_slice(&block_array);
+            }
+
+            // Write all decrypted blocks in one go
+            self.writer.write_all(&decrypted_blocks).await?;
+
+            // Keep only the leftover bytes in the buffer
+            self.buffer = rest.to_vec();
 
             Ok(data.len())
         } else if data.len() + self.buffer.len() < 16 { // Still not enough data to extract IV
@@ -283,7 +409,7 @@ pub async fn encrypt_file(
     let writer = BufWriter::new(output_file);
 
     // Create encryption stream
-    let mut encrypt_stream = AesTokioEncryptStream::new(writer, key, iv)?;
+    let mut encrypt_stream = AesTokioEncryptStream::new(writer, key, iv, None, Some((vec![0, 1, 226, 64, 100, 200, 50, 75, 0, 0, 0, 0].as_slice(), "image/jpeg".to_string())), Some("toto aime le chocolat".to_string()))?;
 
     // Read and encrypt in chunks
     let mut buffer = vec![0; 1024];
@@ -341,9 +467,11 @@ mod tests {
     #[tokio::test]
     async fn encrypt() {
         let key = derive_key("test".to_string());
-        let iv = hex!("6e88be8bad7eae9d9e10aa061224034f");
-       encrypt_file("/Users/arnaudjezequel/Documents/video.mp4", "/Users/arnaudjezequel/Documents/video.enc", &key, &iv).await.unwrap();
-       decrypt_file("/Users/arnaudjezequel/Documents/video.enc", "/Users/arnaudjezequel/Documents/video.enc.mp4", &key, None).await.unwrap();
+        let iv = random_iv();
+        //c:\\Devs\\test.png
+        ///Users/arnaudjezequel/Documents/video.mp4
+       encrypt_file("c:\\Devs\\test.png", "c:\\Devs\\test.enc", &key, &iv).await.unwrap();
+       decrypt_file("c:\\Devs\\test.enc", "c:\\Devs\\test.enc.png", &key, None).await.unwrap();
        //test();
     }
 

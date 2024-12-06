@@ -12,6 +12,9 @@ path = "src/daemon/main.rs"
 name = "redseat-rust"
 path = "src/main.rs"
 
+#[profile.test]
+#inherits = "release"
+
 [dependencies]
 axum = {version = "0.7", features = ["query", "macros", "multipart"]}
 axum-server = { version = "0.6", features = ["tls-rustls"] }
