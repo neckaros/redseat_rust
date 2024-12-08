@@ -27,7 +27,7 @@ pub enum Error {
 	NotImplemented(String),
 
 	UnavailableForCryptedLibraries,
-
+	CryptError(String),
 	TimeCreationError,
 	TraktTooManyUpdates,
 
@@ -138,6 +138,11 @@ pub enum Error {
 	
 	#[from]
 	Trash(#[serde_as(as = "DisplayFromStr")] trash::Error),
+
+	#[from]
+	PadError(#[serde_as(as = "DisplayFromStr")] cbc::cipher::inout::PadError),
+
+	
 }
 
 // region:    --- Error Boilerplate

@@ -1,56 +1,72 @@
 use std::{pin::Pin, task::{Context, Poll}};
 
-use aes::cipher::{block_padding::{Padding, Pkcs7}, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
+use aes::{cipher::{block_padding::{Padding, Pkcs7}, BlockDecryptMut, BlockEncryptMut, KeyIvInit}, Aes256, Aes256Dec, Block};
 use extism::ToBytes;
 use hex_literal::hex;
 use pbkdf2::{pbkdf2_hmac, pbkdf2_hmac_array};
 use rand::RngCore;
 use sha1::Sha1;
 use tokio::{fs::{File, OpenOptions}, io::{AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter}};
-type Aes128CbcEnc = cbc::Encryptor<aes::Aes128>;
-type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
+
+type Aes256CbcDec = cbc::Decryptor<Aes256>;
+type Aes256CbcEnc = cbc::Encryptor<Aes256>;
 use futures::Stream;
 
-use crate::error::RsResult;
+use crate::error::{RsError, RsResult};
 
-static salt_file: [u8; 16] = hex!("e5709660b22ab0803630cb963f703b83");
-static salt_text: [u8; 16] = hex!("a1209660b32cca003630cb963f730b54");
+static salt_file: [u8; 24] = hex!("7b9ef4f7aeb46f6d9a6f4f34dfadf471bf7addfef4ddbf37");
+static salt_text: [u8; 24] = hex!("6b5db4f7aeb46f7d9c71ad34dfadf471bf7addfef7d1be78");
 
 fn ceil_to_multiple_of_16(value: usize) -> usize {
     (value + 15) & !15
 }
 
+pub fn string_to_fixed_bytes(input: &str, size: usize) -> Vec<u8> {
+    let mut bytes = vec![b' '; size]; // Initialize with space characters
+    let input_bytes = input.as_bytes();
+    let copy_len = input_bytes.len().min(size);
+    
+    bytes[..copy_len].copy_from_slice(&input_bytes[..copy_len]);
+    
+    bytes
+}
+
 pub struct AesTokioEncryptStream<W: AsyncWrite + Unpin> {
     writer: W,
-    encryptor: Aes128CbcEnc,
+    encryptor: Aes256CbcEnc,
     buffer: Vec<u8>,
     block_size: usize,
 
     iv: Vec<u8>,
-    iv_written: bool,
-
+    header_written: bool,
+    file_mime: String,
     thumb: Vec<u8>,
     thumb_mime: String,
-    thumb_size_written: bool,
-    thumb_written: bool,
 
-    infos: Option<String>,
-    infos_size_written: bool,
-    infos_written: bool,
+    infos: Vec<u8>,
     
 }
 
 impl<W: AsyncWrite + Unpin> AesTokioEncryptStream<W> {
-    pub fn new(writer: W, key: &[u8], iv: &[u8], file_mime: Option<String>, thumb: Option<(&[u8], String)>, infos: Option<String>) -> Result<Self, std::io::Error> {
-        if key.len() != 16 || iv.len() != 16 {
+    pub fn new(writer: W, key: &[u8], iv: &[u8], file_mime: Option<String>, thumb: Option<(&[u8], String)>, infos: Option<String>) -> RsResult<Self> {
+        if key.len() != 32 || iv.len() != 16 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput, 
-                "Key and IV must be 16 bytes"
-            ));
+                "Key must be 256 bytes and IV must be 16 bytes"
+            ).into());
         }
 
-        let encryptor = Aes128CbcEnc::new(key.into(), iv.into());        
+        let encryptor = Aes256CbcEnc::new(key.into(), iv.into());        
         let (thumb, thumb_mime) = thumb.unwrap_or((&[], "".to_string()));
+
+        let encthumb = encrypt(thumb, key, iv)?;
+        let encinfos = if let Some(infos) = infos {
+            let infos_bytes = infos.as_bytes();
+            encrypt(&infos_bytes, key, iv)?
+        } else {
+            vec![0u8; 0]
+        };
+
         Ok(Self {
             writer,
             encryptor,
@@ -58,23 +74,20 @@ impl<W: AsyncWrite + Unpin> AesTokioEncryptStream<W> {
             block_size: 16,
 
             iv: iv.into(),
-            iv_written: false,
+            header_written: false,
+            file_mime: file_mime.unwrap_or("".to_string()),
 
-            thumb: thumb.into(),
+            thumb: encthumb,
             thumb_mime,
-            thumb_size_written: false,
-            thumb_written: false,
             
-            infos,
-            infos_size_written: false,
-            infos_written: false
+            infos: encinfos,
             
         })
     }
     
     
 
-    pub async fn write_encrypted(&mut self, data: &[u8]) -> std::io::Result<usize> {
+    pub async fn write_encrypted(&mut self, data: &[u8]) -> RsResult<usize> {
         //16 Bytes to store IV
         //4 to store encrypted thumb size = T (can be 0)
         //4 to store encrypted Info size = I (can be 0)
@@ -82,18 +95,31 @@ impl<W: AsyncWrite + Unpin> AesTokioEncryptStream<W> {
         //256 to store file mimetype
         //T Bytes for the encrypted thumb
         //I Bytes for the encrypted info
-        if !self.iv_written {
+        if !self.header_written {
+            //IV
             self.writer.write_all(self.iv.as_slice()).await?;
-            self.iv_written = true;
+        
+            //thumb size
+            self.writer.write_all(&(self.thumb.len() as u32).to_be_bytes()).await?;
+
+            //info size
+            self.writer.write_all(&(self.infos.len() as u32).to_be_bytes()).await?;
+
+            //thumb mime
+            self.writer.write_all(&string_to_fixed_bytes(&self.thumb_mime, 32)).await?;
+
+            //file mime
+            self.writer.write_all(&string_to_fixed_bytes(&self.file_mime, 256)).await?;
+
+            //enc thumb
+            self.writer.write_all(&self.thumb).await?;
+
+            //enc infos
+            self.writer.write_all(&self.infos).await?;
+
+            self.header_written = true;
         }
-        if !self.thumb_size_written {
-            self.writer.write_all(&(ceil_to_multiple_of_16(self.thumb.len()) as u32).to_be_bytes()).await?;
-            self.thumb_size_written = true;
-        }
-        if !self.infos_size_written {
-            self.writer.write_all(&(ceil_to_multiple_of_16(self.infos.to_bytes().unwrap().len()) as u32).to_be_bytes()).await?;
-            self.infos_size_written = true;
-        }
+
 
 
         self.buffer.extend_from_slice(data);
@@ -108,9 +134,10 @@ impl<W: AsyncWrite + Unpin> AesTokioEncryptStream<W> {
         // Encrypt multiple blocks at once
         let mut decrypted_blocks = Vec::with_capacity(blocks_end);
         for chunk in blocks.chunks(self.block_size) {
-            let mut block_array: [u8; 16] = chunk.try_into().unwrap();
-            self.encryptor.encrypt_block_mut(&mut block_array.into());
-            decrypted_blocks.extend_from_slice(&block_array);
+            let mut block_array: [u8; 16] = chunk.try_into().map_err(|e| RsError::CryptError("Unable to convert chuck to block_array".to_string()))?;
+            let mut outblock = Block::default();
+            self.encryptor.encrypt_block_b2b_mut(&mut block_array.into(), &mut outblock);
+            decrypted_blocks.extend_from_slice(&outblock);
         }
 
         // Write all decrypted blocks in one go
@@ -122,20 +149,16 @@ impl<W: AsyncWrite + Unpin> AesTokioEncryptStream<W> {
         Ok(data.len())
     }
 
-    pub async fn finalize(mut self) -> std::io::Result<()> {
+    pub async fn finalize(mut self) -> RsResult<()> {
+        println!("finalize: {}", self.buffer.len());
         if !self.buffer.is_empty() {
-            // Manually pad the buffer to 16 bytes
-            let mut padded_block = [0u8; 16];
-            let pad_length = self.block_size - (self.buffer.len() % self.block_size);
-            padded_block[..self.buffer.len()].copy_from_slice(&self.buffer);
-            
-            // PKCS7 padding
-            for i in self.buffer.len()..16 {
-                padded_block[i] = pad_length as u8;
-            }
 
-            self.encryptor.encrypt_block_mut(&mut padded_block.into());
-            self.writer.write_all(&padded_block).await?;
+            let mut buf = vec![0u8; 16];
+            let pt = self.encryptor
+            .encrypt_padded_b2b_mut::<Pkcs7>(&self.buffer, &mut buf)?;
+
+            
+            self.writer.write_all(&pt).await?;
         }
         self.writer.flush().await?;
         Ok(())
@@ -157,7 +180,7 @@ impl<W: AsyncWrite + Unpin> Stream for AesTokioEncryptStream<W> {
 //======================================================
 pub struct AesTokioDecryptStream<W: AsyncWrite + Unpin> {
     writer: W,
-    decryptor: Option<Aes128CbcDec>,
+    decryptor: Option<Aes256CbcDec>,
     buffer: Vec<u8>,
     key: Vec<u8>,
     block_size: usize,
@@ -166,14 +189,17 @@ pub struct AesTokioDecryptStream<W: AsyncWrite + Unpin> {
     thumb_passed: bool,
     infos_size: Option<u32>,
     infos_passed: bool,
+
+    thumb_mime_passed: bool,
+    file_mime_passed: bool,
 }
 
 impl<W: AsyncWrite + Unpin> AesTokioDecryptStream<W> {
     pub fn new(writer: W, key: &[u8], iv: Option<&[u8]>) -> Result<Self, std::io::Error> {
-        if key.len() != 16 {
+        if key.len() != 32 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput, 
-                "Key and IV must be 16 bytes"
+                "Key must be 32 bytes"
             ));
         }
 
@@ -181,7 +207,7 @@ impl<W: AsyncWrite + Unpin> AesTokioDecryptStream<W> {
         Ok(Self {
             writer,
             decryptor: if let Some(iv) = iv {
-                Some(Aes128CbcDec::new(key.into(), iv.into()))
+                Some(Aes256CbcDec::new(key.into(), iv.into()))
             } else {
                 None
             },
@@ -193,10 +219,16 @@ impl<W: AsyncWrite + Unpin> AesTokioDecryptStream<W> {
             thumb_passed: false,
             infos_size: None,
             infos_passed: false,
+
+            thumb_mime_passed: false,
+            file_mime_passed: false,
+            
         })
     }
 
-    pub async fn write_decrypted(&mut self, data: &[u8]) -> std::io::Result<usize> {
+    pub async fn write_decrypted(&mut self, data: &[u8]) -> RsResult<usize> {
+        self.buffer.extend_from_slice(data);
+
         //16 Bytes to store IV
         //4 to store encrypted thumb size = T (can be 0)
         //4 to store encrypted Info size = I (can be 0)
@@ -205,27 +237,46 @@ impl<W: AsyncWrite + Unpin> AesTokioDecryptStream<W> {
         //T Bytes for the encrypted thumb
         //I Bytes for the encrypted info
         if let Some(mut decryptor) = self.decryptor.as_mut() {
-            self.buffer.extend_from_slice(data);
-
-
+          
             if self.thumb_size.is_none() {
-                if self.buffer.len() < 32 {
+                if self.buffer.len() < 4 {
                     return Ok(data.len());
                 }
                 let (block, rest) = self.buffer.split_at(4);
-                self.thumb_size = Some(u32::from_be_bytes(block[0..4].try_into().unwrap()));
+                self.thumb_size = Some(u32::from_be_bytes(block[0..4].try_into().map_err(|e| RsError::CryptError("Unable to convert chuck to block_array".to_string()))?));
                 println!("thumb size: {:?}", self.thumb_size);
                 self.buffer = rest.to_vec();
             }
             if self.infos_size.is_none() {
-                if self.buffer.len() < 32 {
+                if self.buffer.len() < 4 {
                     return Ok(data.len());
                 }
                 let (block, rest) = self.buffer.split_at(4);
-                self.infos_size = Some(u32::from_be_bytes(block[0..4].try_into().unwrap()));
+                self.infos_size = Some(u32::from_be_bytes(block[0..4].try_into().map_err(|e| RsError::CryptError("Unable to convert chuck to block_array".to_string()))?));
                 println!("info size: {:?}", self.infos_size);
                 self.buffer = rest.to_vec();
             }
+
+            if !self.thumb_mime_passed {
+                if self.buffer.len() < 32 {
+                    return Ok(data.len());
+                }
+                let (block, rest) = self.buffer.split_at(32);
+                self.buffer = rest.to_vec();
+                self.thumb_mime_passed = true;
+            }
+            if !self.file_mime_passed {
+                if self.buffer.len() < 256 {
+                    return Ok(data.len());
+                }
+                let (block, rest) = self.buffer.split_at(256);
+                let file_mime = String::from_utf8(block.to_vec()).unwrap_or("unable to decrypt".to_string());
+                println!("filemime: {}", file_mime);
+                self.buffer = rest.to_vec();
+                self.file_mime_passed = true;
+            }
+
+
             let thumb_size = self.thumb_size.unwrap_or(0);
             if !self.thumb_passed && thumb_size > 0 {
                 if self.buffer.len() < thumb_size as usize {
@@ -248,10 +299,11 @@ impl<W: AsyncWrite + Unpin> AesTokioDecryptStream<W> {
             }
 
 
+            //put the last 16 bits in a end_buffer in case it's the end of the file
+            //let (block, rest) = self.buffer.split_at();
 
-
-                // Determine how many complete blocks we have
-            let complete_blocks = self.buffer.len() / self.block_size;
+            // Determine how many complete blocks we have (substracting a block here in case it's the last one with padding)
+            let complete_blocks = (self.buffer.len() / self.block_size) - 1;
             let blocks_end = complete_blocks * self.block_size;
 
             // Split into blocks to decrypt and leftover
@@ -260,47 +312,51 @@ impl<W: AsyncWrite + Unpin> AesTokioDecryptStream<W> {
             // Decrypt multiple blocks at once
             let mut decrypted_blocks = Vec::with_capacity(blocks_end);
             for chunk in blocks.chunks(self.block_size) {
-                let mut block_array: [u8; 16] = chunk.try_into().unwrap();
-                decryptor.decrypt_block_mut(&mut block_array.into());
-                decrypted_blocks.extend_from_slice(&block_array);
+                let mut block_array: [u8; 16] = chunk.try_into().map_err(|e| RsError::CryptError("Unable to convert chuck to block_array".to_string()))?;
+                //println!("encrypted {:?}", block_array);
+                let mut outblock = Block::default();
+                decryptor.decrypt_block_b2b_mut(&mut block_array.into(), &mut outblock);
+                decrypted_blocks.extend_from_slice(&outblock);
+                //print!("outblock: {:?}", decrypted_blocks);
+
+                //return Err(std::io::Error::other("STOP".to_string()));
+
             }
 
             // Write all decrypted blocks in one go
             self.writer.write_all(&decrypted_blocks).await?;
 
+
             // Keep only the leftover bytes in the buffer
             self.buffer = rest.to_vec();
 
-            Ok(data.len())
-        } else if data.len() + self.buffer.len() < 16 { // Still not enough data to extract IV
-            self.buffer.extend_from_slice(data);
-            Ok(data.len())
-        } else {
-            // Calculate how many bytes we need to fill the buffer to 16
-            let remaining_buffer_space = 16usize.saturating_sub(self.buffer.len());
-            
-            // Determine how many bytes to take from data
-            let bytes_to_take = remaining_buffer_space.min(data.len());
-            
-            // Extend the buffer with the first bytes
-            self.buffer.extend_from_slice(&data[..bytes_to_take]);
+        } else if self.buffer.len() >= 16 {
+            let (blocks, rest) = self.buffer.split_at(16);
+            println!("iv: {:?}", blocks);
 
-            self.decryptor = Some(Aes128CbcDec::new(self.key.as_slice().into(), self.buffer.as_slice().into()));
+
+
+            self.decryptor = Some(Aes256CbcDec::new(self.key.as_slice().into(), blocks.into()));
             
             // init again the buffer buffer with the remaining
-            self.buffer = data[bytes_to_take..].to_vec();
+            self.buffer = rest.to_vec();
 
-            Ok(data.len())
         }
+
+        Ok(data.len())
+
     }
 
-    pub async fn finalize(mut self) -> std::io::Result<()> {
+    pub async fn finalize(mut self) -> RsResult<()> {
         if let Some(mut decryptor) = self.decryptor {
             if !self.buffer.is_empty() {
-                let mut padded_block = [0u8; 16];
-                padded_block[..self.buffer.len()].copy_from_slice(&self.buffer);
+                let mut padded_block: [u8; 16] = self.buffer.try_into().map_err(|e| RsError::CryptError("Unable to convert chuck to block_array".to_string()))?;
 
-                decryptor.decrypt_block_mut(&mut padded_block.into());
+
+                let mut outblock = Block::default();
+                decryptor.decrypt_block_b2b_mut(&mut padded_block.into(), &mut outblock);
+
+                let padded_block = outblock.as_slice();
 
                 // Remove PKCS7 padding
                 let pad_length = padded_block[padded_block.len() - 1] as usize;
@@ -332,55 +388,37 @@ impl<W: AsyncWrite + Unpin> Stream for AesTokioDecryptStream<W> {
 
 
 
-fn derive_key(password: String) -> [u8; 16] {
+fn derive_key(password: String) -> [u8; 32] {
     let password = password.into_bytes();
-    let salt = b"salt";
+    //let salt = b"salt";
     // number of iterations
     let n = 1000;
 
-    let mut key1 = [0u8; 16];
-    pbkdf2_hmac::<Sha1>(password.as_slice(), salt, n, &mut key1);
-    println!("{:x?}", key1);
-    let hex_string = hex::encode(key1);
+    let mut key1 = [0u8; 32];
+    pbkdf2_hmac::<Sha1>(password.as_slice(), &salt_file, n, &mut key1);
+    //println!("{:?}", key1);
+    
     key1
 }
-fn test() {
-    let key = [0x42; 16];
-    let iv = [0x24; 16];
-    let plaintext = *b"hello world! this is my plaintext.";
-    let ciphertext = hex!(
-        "c7fe247ef97b21f07cbdd26cb5d346bf"
-        "d27867cb00d9486723e159978fb9a5f9"
-        "14cfb228a710de4171e396e7b6cf859e"
-    );
 
-    // encrypt/decrypt in-place
-    // buffer must be big enough for padded plaintext
-    let mut buf = [0u8; 48];
-    let pt_len = plaintext.len();
-    buf[..pt_len].copy_from_slice(&plaintext);
-    let ct = Aes128CbcEnc::new(&key.into(), &iv.into())
-        .encrypt_padded_mut::<Pkcs7>(&mut buf, pt_len)
-        .unwrap();
-    assert_eq!(ct, &ciphertext[..]);
+fn encrypt(data: &[u8], key: &[u8], iv: &[u8]) -> RsResult<Vec<u8>> {
+    let data_len = data.len();
+    let mut buf = vec![0u8; ceil_to_multiple_of_16(data_len)];
+    
+    buf[..data_len].copy_from_slice(&data);
+    let ct = Aes256CbcEnc::new(key.into(), iv.into())
+        .encrypt_padded_mut::<Pkcs7>(&mut buf, data_len)?;
 
-    let pt = Aes128CbcDec::new(&key.into(), &iv.into())
-        .decrypt_padded_mut::<Pkcs7>(&mut buf)
-        .unwrap();
-    assert_eq!(pt, &plaintext);
+    Ok((ct.to_vec()))
+}
 
-    // encrypt/decrypt from buffer to buffer
-    let mut buf = [0u8; 48];
-    let ct = Aes128CbcEnc::new(&key.into(), &iv.into())
-        .encrypt_padded_b2b_mut::<Pkcs7>(&plaintext, &mut buf)
-        .unwrap();
-    assert_eq!(ct, &ciphertext[..]);
+fn decrypt(mut data: &mut [u8], key: &[u8], iv: &[u8]) -> RsResult<Vec<u8>> {
 
-    let mut buf = [0u8; 48];
-    let pt = Aes128CbcDec::new(&key.into(), &iv.into())
-        .decrypt_padded_b2b_mut::<Pkcs7>(&ct, &mut buf)
-        .unwrap();
-    assert_eq!(pt, &plaintext);
+    let decrypted = Aes256CbcDec::new(key.into(), iv.into())
+        .decrypt_padded_mut::<Pkcs7>(&mut data)
+        .map_err(|e| RsError::CryptError("Unable to convert chuck todecrypt data buffer".to_string()))?;
+
+    Ok(decrypted.to_vec())
 }
 
 fn random_iv() -> [u8; 16] {
@@ -409,7 +447,7 @@ pub async fn encrypt_file(
     let writer = BufWriter::new(output_file);
 
     // Create encryption stream
-    let mut encrypt_stream = AesTokioEncryptStream::new(writer, key, iv, None, Some((vec![0, 1, 226, 64, 100, 200, 50, 75, 0, 0, 0, 0].as_slice(), "image/jpeg".to_string())), Some("toto aime le chocolat".to_string()))?;
+    let mut encrypt_stream = AesTokioEncryptStream::new(writer, key, iv, None, Some((vec![0, 1, 226, 64, 100, 200, 50, 75, 0, 0, 0, 0].as_slice(), "image/jpeg".to_string())), None)?;
 
     // Read and encrypt in chunks
     let mut buffer = vec![0; 1024];
@@ -470,9 +508,12 @@ mod tests {
         let iv = random_iv();
         //c:\\Devs\\test.png
         ///Users/arnaudjezequel/Documents/video.mp4
-       encrypt_file("c:\\Devs\\test.png", "c:\\Devs\\test.enc", &key, &iv).await.unwrap();
-       decrypt_file("c:\\Devs\\test.enc", "c:\\Devs\\test.enc.png", &key, None).await.unwrap();
-       //test();
+       encrypt_file("/Users/arnaudjezequel/Documents/video.mp4", "/Users/arnaudjezequel/Documents/video.enc", &key, &iv).await.unwrap();
+       decrypt_file("/Users/arnaudjezequel/Documents/video.enc", "/Users/arnaudjezequel/Documents/video.enc.mp4", &key, None).await.unwrap();
+       //test_file("/Users/arnaudjezequel/Documents/video.mp4","/Users/arnaudjezequel/Documents/video.mp4.enc", "/Users/arnaudjezequel/Documents/video.mp4.dec.mp4", &key, &iv).await.unwrap();
+       
+       //decrypt_file("/Users/arnaudjezequel/Downloads/U-AqTolcHF-H0vBi8mtpHQ", "/Users/arnaudjezequel/Downloads/U-AqTolcHF-H0vBi8mtpHQ.heic", &key, None).await.unwrap();
+
     }
 
 
