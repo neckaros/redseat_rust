@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use tokio::{fs::File, io::{copy, AsyncRead, AsyncSeek, AsyncWrite, AsyncWriteExt, BufReader}, sync::{mpsc::Sender, Mutex}, time::sleep};
 
 use tokio_util::io::{ReaderStream, StreamReader};
-use crate::{domain::{library::ServerLibrary, media::MediaForUpdate, progress::{RsProgress, RsProgressCallback}}, error::RsResult, model::{error::Error, users::ConnectedUser, ModelController}, routes::mw_range::RangeDefinition, server::get_server_file_path_array, tools::{file_tools::get_mime_from_filename, video_tools::ytdl::ProgressStreamItem}};
+use crate::{domain::{backup::Backup, library::ServerLibrary, media::MediaForUpdate, progress::{RsProgress, RsProgressCallback}}, error::RsResult, model::{error::Error, users::ConnectedUser, ModelController}, routes::mw_range::RangeDefinition, server::get_server_file_path_array, tools::{file_tools::get_mime_from_filename, video_tools::ytdl::ProgressStreamItem}};
 
 use self::error::{SourcesError, SourcesResult};
 
@@ -387,6 +387,8 @@ type BoxedStringFuture = Pin<Box<dyn Future<Output = RsResult<String>> + Send>>;
 #[async_trait]
 pub trait Source: Send {
     async fn new(root: ServerLibrary, controller: ModelController) -> RsResult<Self> where Self: Sized;
+
+    async fn new_from_backup(backup: Backup, controller: ModelController) -> RsResult<Self> where Self: Sized;
     
     async fn init(&self) -> SourcesResult<()>;
 
@@ -413,22 +415,29 @@ pub trait LocalSource: Send {
     //async fn fill_file_information(&self, file: &mut ServerFile) -> SourcesResult<()>;
 }
 
-pub async fn local_provider(library: &ServerLibrary) -> RsResult<PathProvider> {
+pub async fn local_provider_for_library(library: &ServerLibrary) -> RsResult<PathProvider> {
 
-    let path = if library.source == "PathProvider" {
-        if let Some(existing) = &library.root {
+    local_provider(&library.id, &library.source, &library.root).await
+    
+}
+
+pub async fn local_provider(id: &str, source_type: &str, root: &Option<String>) -> RsResult<PathProvider> {
+
+    let path = if source_type == "PathProvider" {
+        if let Some(existing) = &root {
             let mut path = PathBuf::from(existing);
             path.push(".redseat");
             path
         } else {
-            get_server_file_path_array(vec!["libraries", &library.id]).await.map_err(|_| Error::FileNotFound("Unable to get virtual library local path".into()))?
+            get_server_file_path_array(vec!["libraries", &id]).await.map_err(|_| Error::FileNotFound("Unable to get path provider local path".into()))?
         }
     } else {
-        get_server_file_path_array(vec!["libraries", &library.id]).await.map_err(|_| Error::FileNotFound("Unable to get virtual library local path".into()))?
+        get_server_file_path_array(vec!["libraries", &id]).await.map_err(|_| Error::FileNotFound("Unable to get virtual library local path".into()))?
     };
     let source = PathProvider::new_for_local(path);
     Ok(source)
 }
+
 
 
 

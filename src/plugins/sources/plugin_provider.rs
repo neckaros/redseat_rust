@@ -13,14 +13,15 @@ use tokio::{fs::{create_dir_all, remove_file, File}, io::{AsyncRead, AsyncWrite,
 use tokio_stream::StreamExt;
 use tokio_util::io::ReaderStream;
 
-use crate::{domain::{library::ServerLibrary, media::MediaForUpdate, plugin::PluginWithCredential}, error::RsResult, model::{users::ConnectedUser, ModelController}, plugins::{sources::{path_provider::PathProvider, RsRequestHeader}, PluginManager}, routes::mw_range::RangeDefinition, server::get_server_file_path_array, Error};
+use crate::{domain::{backup::Backup, library::ServerLibrary, media::MediaForUpdate, plugin::PluginWithCredential}, error::RsResult, model::{users::ConnectedUser, ModelController}, plugins::{sources::{path_provider::PathProvider, RsRequestHeader}, PluginManager}, routes::mw_range::RangeDefinition, server::get_server_file_path_array, Error};
 
 use super::{error::{SourcesError, SourcesResult}, local_provider, AsyncReadPinBox, AsyncSeekableWrite, BoxedStringFuture, FileStreamResult, Source, SourceRead};
 
 pub struct PluginProvider {
-    library: ServerLibrary,
+    id: String,
     plugin: PluginWithCredential,
-    plugin_manager: Arc<PluginManager>
+    plugin_manager: Arc<PluginManager>,
+    root: String,
 }
 
 
@@ -35,14 +36,30 @@ impl Source for PluginProvider {
 
         
         Ok(Self {
-            library,
+            id: library.id.clone(),
+            root: library.root.clone().unwrap_or("/".to_string()),
             plugin: plugin_with_credentials,
             plugin_manager: controller.plugin_manager.clone()
         })
     }
 
+    async fn new_from_backup(backup: Backup, controller: ModelController) -> RsResult<Self> {
+        let plugin_id = backup.plugin.clone().ok_or(SourcesError::Other(format!("Plugin backup need a plugin: {:?}", backup)))?;
+        let credential_id = backup.credentials.clone();
+        let plugin = controller.get_plugin(plugin_id, &ConnectedUser::ServerAdmin).await.map_err(|_| SourcesError::Other(format!("Plugin backup need a plugin: {:?}", backup)))?;
+        let credential = if let Some(credential_id) = credential_id { controller.get_credential(credential_id, &ConnectedUser::ServerAdmin).await.map_err(|_| SourcesError::Other(format!("Unable to get credential: {:?}", backup)))? } else { None};
+        let plugin_with_credentials = PluginWithCredential { plugin, credential };
+
+        Ok(PluginProvider {
+                id: backup.id.clone(),
+                root: backup.path,
+                plugin: plugin_with_credentials,
+                plugin_manager: controller.plugin_manager.clone()
+           })
+   }
+
     async fn init(&self) -> SourcesResult<()> {
-        let local = local_provider(&self.library).await.map_err(|_| SourcesError::Other("Unable to init library".to_string()))?; 
+        let local = local_provider(&self.id, "PluginProvider", &Some(self.root.clone())).await.map_err(|_| SourcesError::Other("Unable to init library".to_string()))?; 
 
         let path_lib = local.get_full_path(".redseat");
         create_dir_all(path_lib).await?;
@@ -56,13 +73,14 @@ impl Source for PluginProvider {
         let path_lib = local.get_full_path(".redseat/.series");
         create_dir_all(path_lib).await?;
         Ok(())
+
     }
     
     async fn exists(&self, _source: &str) -> bool {
         true
     }
     async fn remove(&self, source: &str) -> RsResult<()> {
-        self.plugin_manager.provider_remove_file(RsProviderPath { root: self.library.root.clone(), source: source.to_string() }, &self.plugin).await
+        self.plugin_manager.provider_remove_file(RsProviderPath { root: Some(self.root.clone()), source: source.to_string() }, &self.plugin).await
     }
 
     fn local_path(&self, _source: &str) -> Option<PathBuf> {
@@ -70,7 +88,7 @@ impl Source for PluginProvider {
     }
 
     async fn fill_infos(&self, source: &str, infos: &mut MediaForUpdate) -> RsResult<()> {
-        let entry = self.plugin_manager.provider_info_file(RsProviderPath { root: self.library.root.clone(), source: source.to_string() }, &self.plugin).await?;
+        let entry = self.plugin_manager.provider_info_file(RsProviderPath { root: Some(self.root.clone()), source: source.to_string() }, &self.plugin).await?;
         println!("INFOS: {:?}", entry);
         if let Some(size) = entry.size {
             infos.size = Some(size);
@@ -91,7 +109,8 @@ impl Source for PluginProvider {
         Ok(())
     }
     async fn get_file(&self, source: &str, _range: Option<RangeDefinition>) -> RsResult<SourceRead> {
-        let request = self.plugin_manager.provider_get_file(RsProviderPath { root: self.library.root.clone(), source: source.to_string() }, &self.plugin).await.map_err(|_| SourcesError::NotFound(Some(source.to_string())))?;
+        println!("root: {}, source: {}", self.root, source);
+        let request = self.plugin_manager.provider_get_file(RsProviderPath { root: Some(self.root.clone()), source: source.to_string() }, &self.plugin).await?;
         Ok(SourceRead::Request(request))
     }
 
@@ -104,12 +123,12 @@ impl Source for PluginProvider {
         let (asyncwriter, asyncreader) = tokio::io::duplex(256 * 1024);
         let mut streamreader = tokio_util::io::ReaderStream::new(asyncreader);
 
-        let request = self.plugin_manager.provider_upload_file_request(RsProviderAddRequest { root: self.library.root.clone().unwrap_or_default(), name: name.to_string(), overwrite: false }, &self.plugin).await.map_err(|_| SourcesError::NotFound(Some(name.to_string())))?;
+        let request = self.plugin_manager.provider_upload_file_request(RsProviderAddRequest { root: self.root.clone(), name: name.to_string(), overwrite: false }, &self.plugin).await.map_err(|_| SourcesError::NotFound(Some(name.to_string())))?;
 
         let content_length = length.clone();
         let mime = mime.unwrap_or("application/octet-stream".to_string()).to_string();
         let plugin = self.plugin.clone();
-        let local = local_provider(&self.library).await?; 
+        let local = local_provider(&self.id, "PluginProvider", &Some(self.root.clone())).await?; 
         let filename = name.to_string();
         let plugin_manager = self.plugin_manager.clone();
         let source = tokio::spawn(async move {

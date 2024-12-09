@@ -34,6 +34,7 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/:id/predict", get(handler_predict))
 		.route("/:id/convert", post(handler_convert))
 		.route("/:id", get(handler_get_file))
+		.route("/:id/backup/:backupid", get(handler_get_backup))
 		.route("/:id/backup/metadatas", get(handler_get_backup_medata))
 		.route("/:id", patch(handler_patch))
 		.route("/:id", delete(handler_delete))
@@ -189,6 +190,12 @@ async fn handler_get_file(Path((library_id, media_id)): Path<(String, String)>, 
 	let reader = mc.library_file(&library_id, &media_id, range.clone(), query, &user).await?;
 	reader.into_response(&library_id, range, None, Some((mc.clone(), &user))).await
 }
+
+async fn handler_get_backup(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Response<Body>> {
+	let reader = mc.get_backup_media(&library_id, &media_id, &user).await?;
+	Ok(reader)
+}
+
 
 async fn handler_get_backup_medata(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
 	let reader = mc.get_backup_file(&library_id, &media_id, &user).await?;

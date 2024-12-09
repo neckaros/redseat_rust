@@ -388,7 +388,7 @@ impl<W: AsyncWrite + Unpin> Stream for AesTokioDecryptStream<W> {
 
 
 
-fn derive_key(password: String) -> [u8; 32] {
+pub fn derive_key(password: String) -> [u8; 32] {
     let password = password.into_bytes();
     //let salt = b"salt";
     // number of iterations

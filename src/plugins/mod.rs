@@ -7,7 +7,7 @@ use extism::Plugin as ExtismPlugin;
 use sources::plugin_provider::PluginProvider;
 use tokio::{fs::File, io::AsyncReadExt, sync::RwLock};
 
-use crate::{domain::{library::ServerLibrary, plugin::{self, PluginWasm}}, error::RsResult, model::ModelController, server::get_server_folder_path_array, tools::log::{log_error, log_info, LogServiceType}, Error, Result};
+use crate::{domain::{backup::Backup, library::ServerLibrary, plugin::{self, PluginWasm}}, error::RsResult, model::ModelController, server::get_server_folder_path_array, tools::log::{log_error, log_info, LogServiceType}, Error, Result};
 
 use self::sources::{error::SourcesResult, path_provider::PathProvider, virtual_provider::VirtualProvider, Source};
 
@@ -169,6 +169,20 @@ impl PluginManager {
             Box::new(source)
         } else {
             let source = VirtualProvider::new(library, controller).await?;
+            Box::new(source)
+        };
+        Ok(source)
+    }
+
+    pub async fn source_for_backup(&self, backup: Backup, controller: ModelController) -> RsResult<Box<dyn Source>> {
+        let source: Box<dyn Source> = if backup.source == "PathProvider" {
+            let source = PathProvider::new_from_backup(backup, controller).await?;
+            Box::new(source)
+        } else if backup.source == "PluginProvider" {
+            let source = PluginProvider::new_from_backup(backup, controller).await?;
+            Box::new(source)
+        } else {
+            let source = VirtualProvider::new_from_backup(backup, controller).await?;
             Box::new(source)
         };
         Ok(source)

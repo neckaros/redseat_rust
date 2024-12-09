@@ -41,6 +41,10 @@ pub enum Error {
 
 	NotAMediaId(String),
 	NoMediaIdRequired(Box<MediasIds>),
+	BackupProcessNotFound(String),
+
+	BackupNotFound(String, String),
+
 
 	// Prediction Error 
 

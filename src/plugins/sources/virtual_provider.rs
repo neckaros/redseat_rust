@@ -9,7 +9,7 @@ use query_external_ip::SourceError;
 use rs_plugin_common_interfaces::request::RsRequest;
 use tokio::{fs::File, io::{AsyncRead, AsyncWrite, BufReader, BufWriter}};
 
-use crate::{domain::{library::ServerLibrary, media::MediaForUpdate}, error::RsResult, model::ModelController, plugins::PluginManager, routes::mw_range::RangeDefinition, server::get_server_file_path_array};
+use crate::{domain::{backup::Backup, library::ServerLibrary, media::MediaForUpdate}, error::RsResult, model::ModelController, plugins::PluginManager, routes::mw_range::RangeDefinition, server::get_server_file_path_array};
 
 use super::{error::{SourcesError, SourcesResult}, AsyncReadPinBox, AsyncSeekableWrite, BoxedStringFuture, FileStreamResult, Source, SourceRead};
 
@@ -26,6 +26,10 @@ impl Source for VirtualProvider {
             library,
             plugin_manager: controller.plugin_manager.clone()
         })
+    }
+
+    async fn new_from_backup(_: Backup, _: ModelController) -> RsResult<Self> {
+        Err(crate::Error::NotImplemented("Virtual providers can't be used for backup".to_string()))
     }
     async fn init(&self) -> SourcesResult<()> {
         Ok(())

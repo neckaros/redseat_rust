@@ -1,12 +1,15 @@
 
 
 
+use axum::{body::Body, response::{IntoResponse, Response}};
+use futures::TryFutureExt;
 use nanoid::nanoid;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::io::AsyncReadExt;
 
 
-use crate::domain::{backup::{Backup, BackupFile}, library::LibraryRole};
+use crate::{domain::{backup::{Backup, BackupFile}, library::LibraryRole}, error::{RsError, RsResult}, tools::encryption::{derive_key, AesTokioDecryptStream}};
 
 use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
 
@@ -101,5 +104,51 @@ impl ModelController {
         requesting_user.check_library_role(&library_id, LibraryRole::Admin)?;
 		let credential = self.store.get_backup_file(&library_id, &media_id).await?;
 		Ok(credential)
+	}
+
+    pub async fn get_backup_media(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> RsResult<Response> {
+        requesting_user.check_library_role(&library_id, LibraryRole::Admin)?;
+        let backup_files = self.get_backup_file(library_id, media_id, requesting_user).await?;
+        let last_backup_file = backup_files.first().ok_or(RsError::BackupNotFound(library_id.to_string(), media_id.to_string()))?;
+
+        let backup_info = self.get_backup(last_backup_file.backup.to_string(), requesting_user).await?.ok_or(RsError::BackupProcessNotFound(last_backup_file.backup.to_string()))?;
+
+        let source = self.plugin_manager.source_for_backup(backup_info.clone(), self.clone()).await?;
+
+        let mut source_read = source.get_file(&last_backup_file.path, None).await?;
+
+        let mut reader =  source_read.into_reader(library_id, None, None, Some((self.clone(), requesting_user)), None).await?;
+
+        let key = derive_key(backup_info.password.clone().unwrap_or_default());
+
+        let (asyncwriter, asyncreader) = tokio::io::duplex(256 * 1024);
+        let mut streamreader = tokio_util::io::ReaderStream::new(asyncreader);
+
+        let mut decrypt_stream = AesTokioDecryptStream::new(asyncwriter, &key, None)?;
+
+        let source = tokio::spawn(async move {
+
+            
+            let mut buffer = vec![0; 1024];
+            loop {
+                let bytes_read = reader.stream.read(&mut buffer).await.unwrap();
+                if bytes_read == 0 {
+                    break;
+                }
+                decrypt_stream.write_decrypted(&buffer[..bytes_read]).await.unwrap();
+            }
+        
+            decrypt_stream.finalize().await.unwrap();
+            
+
+           
+        }).map_err(|r| RsError::Error("Unable to get plugin writer".to_string()));
+
+
+        let body = Body::from_stream(streamreader);
+        let status =  axum::http::StatusCode::OK;
+        Ok((status, body).into_response())
+
+		
 	}
 }

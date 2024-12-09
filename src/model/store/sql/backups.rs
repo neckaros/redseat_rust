@@ -128,7 +128,7 @@ impl SqliteStore {
         let media_id = media_id.to_owned();
         let library_id = library_id.to_owned();
         let row = self.server_store.call( move |conn| { 
-            let mut query = conn.prepare("SELECT backup, library, file, id, path, hash, sourcehash, size, date, iv, infoSize, thumbsize, error FROM Backups_Files WHERE file = ? and library = ?")?;
+            let mut query = conn.prepare("SELECT backup, library, file, id, path, hash, sourcehash, size, date, iv, infoSize, thumbsize, error FROM Backups_Files WHERE file = ? and library = ? ORDER BY date DESC")?;
             let rows = query.query_map(
             [media_id, library_id],
             |row| {

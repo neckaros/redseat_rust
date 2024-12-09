@@ -19,7 +19,7 @@ impl PluginManager {
             let mut plugin_m = plugin.plugin.lock().unwrap();
             if plugin.infos.capabilities.contains(&PluginType::Provider) {
                 let call_object: RsPluginRequest<RsProviderPath> = RsPluginRequest {
-                    request: path,
+                    request: path.clone(),
                     plugin_settings: json!({}),
                     credential: plugin_with_creds.credential.clone().map(|c| c.into())
                 };
@@ -28,7 +28,7 @@ impl PluginManager {
                     Ok(Json(res)) => Ok(res),
                     Err((error, code)) =>  {
                         if code != 404 {
-                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request get gile: {} {:?}", code, error));
+                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request fet file {:?} : {} {:?}", path, code, error));
                             Err(Error::NotFound)
                         } else {
                             Err(Error::Error(format!("Provider plugin error: {}", code)))
@@ -39,7 +39,7 @@ impl PluginManager {
                 Err(Error::ModelNotFound(format!("provider plugin {}", plugin.filename)))
             }
         } else {
-            Err(Error::ModelNotFound(format!("provider plugin {}", plugin_with_creds.plugin.name)))
+            Err(Error::ModelNotFound(format!("Unable to find plugin provider plugin {}: path:{}; list: {:?}", plugin_with_creds.plugin.name, plugin_with_creds.plugin.path, self.plugins.read().await)))
         }
 
     }
