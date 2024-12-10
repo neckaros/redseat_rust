@@ -1,5 +1,5 @@
 
-use crate::{domain::library::{LibraryLimits, LibraryRole}, model::{deleted::DeletedQuery, libraries::{ServerLibraryForAdd, ServerLibraryForUpdate}, users::ConnectedUser, ModelController}, Error, Result};
+use crate::{domain::library::{LibraryLimits, LibraryRole}, model::{deleted::DeletedQuery, libraries::{ServerLibraryForAdd, ServerLibraryForUpdate}, users::ConnectedUser, ModelController}, tools::scheduler::backup::BackupTask, Error, Result};
 use axum::{extract::{Path, Query, State}, response::Response, routing::{delete, get, patch, post}, Json, Router};
 use hyper::StatusCode;
 use serde::Deserialize;
@@ -79,7 +79,7 @@ async fn handler_list_deleted(Path(library_id): Path<String>, State(mc): State<M
 
 async fn handler_clean(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
 	let cleaned = mc.clean_library(&library_id, &user).await?;
-	
+		
 	Ok(Json(json!(cleaned)))
 }
 

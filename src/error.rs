@@ -146,6 +146,8 @@ pub enum Error {
 	#[from]
 	PadError(#[serde_as(as = "DisplayFromStr")] cbc::cipher::inout::PadError),
 
+	#[from]
+	InvalidHeaderValue(#[serde_as(as = "DisplayFromStr")] http::header::InvalidHeaderValue),
 	
 }
 

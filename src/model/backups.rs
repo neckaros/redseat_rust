@@ -3,6 +3,7 @@
 
 use axum::{body::Body, response::{IntoResponse, Response}};
 use futures::TryFutureExt;
+use http::{header, HeaderMap};
 use nanoid::nanoid;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -109,8 +110,8 @@ impl ModelController {
     pub async fn get_backup_file(&self, library_id: &str, media_id: &str, backup_id: &str, requesting_user: &ConnectedUser) -> RsResult<BackupFile> {
     
         let backups = self.get_backup_files(library_id, media_id, requesting_user).await?;
-
-        let backup = backups.into_iter().find(|b| b.id == backup_id).ok_or(crate::Error::BackupNotFound(media_id.to_string(), backup_id.to_string()))?;
+        println!("backup files: {:?}", backups);
+        let backup = backups.into_iter().find(|b| b.backup == backup_id).ok_or(crate::Error::BackupNotFound(media_id.to_string(), backup_id.to_string()))?;
 
         Ok(backup)
 
@@ -159,10 +160,20 @@ impl ModelController {
            
         }).map_err(|r| RsError::Error("Unable to get plugin writer".to_string()));
 
+        let media = self.get_media(library_id, media_id.to_string(), requesting_user).await?;
 
         let body = Body::from_stream(streamreader);
+        let mut headers = HeaderMap::new();
+        if let Some(media) = media {
+            headers.insert(header::CONTENT_TYPE, media.mimetype.parse()?);
+            headers.insert(header::CONTENT_DISPOSITION, format!("attachment; filename={:?}", media.name).parse()?);
+            if let Some(size) = media.size {
+                headers.insert(header::CONTENT_LENGTH, size.to_string().parse()?);
+            }
+        }
+
         let status =  axum::http::StatusCode::OK;
-        Ok((status, body).into_response())
+        Ok((status, headers, body).into_response())
 
 		
 	}

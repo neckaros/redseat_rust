@@ -1,5 +1,5 @@
 
-use crate::{model::{backups::{BackupForAdd, BackupForUpdate}, users::ConnectedUser, ModelController}, Result};
+use crate::{model::{backups::{BackupForAdd, BackupForUpdate}, users::ConnectedUser, ModelController}, tools::scheduler::{backup::BackupTask, RsSchedulerTask}, Result};
 use axum::{extract::{Path, State}, routing::{delete, get, patch, post}, Json, Router};
 use serde_json::{json, Value};
 
@@ -12,6 +12,8 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/:id", get(handler_get))
 		.route("/:id", patch(handler_patch))
 		.route("/:id", delete(handler_delete))
+		
+		.route("/:id/start", get(handler_backup))
 		.with_state(mc)
         
 }
@@ -43,4 +45,14 @@ async fn handler_post(State(mc): State<ModelController>, user: ConnectedUser, Js
 	let credential = mc.add_backup(backup, &user).await?;
 	let body = Json(json!(credential));
 	Ok(body)
+}
+
+async fn handler_backup(Path(backup_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	tokio::spawn(async move {
+		let backup_task = BackupTask {
+			specific_backup: Some(backup_id),
+		};
+		let process = backup_task.execute(mc).await.unwrap();
+	});
+	Ok(Json(json!({"data": "ok"})))
 }

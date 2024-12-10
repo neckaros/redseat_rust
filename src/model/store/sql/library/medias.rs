@@ -3,11 +3,16 @@ use std::u64;
 use chrono::Utc;
 use rs_plugin_common_interfaces::url::RsLink;
 use rusqlite::{params, params_from_iter, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, Row, ToSql};
+use serde::{Deserialize, Serialize};
 
 use crate::{domain::{library::LibraryLimits, media::{FileEpisode, FileType, Media, MediaForInsert, MediaForUpdate, MediaItemReference, RsGpsPosition}, MediasIds}, error::RsResult, model::{medias::{MediaQuery, MediaSource, RsSort}, people::PeopleQuery, series::SerieQuery, store::{from_comma_separated_optional, from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType}, to_comma_separated_optional, to_pipe_separated_optional}, tags::{TagForInsert, TagForUpdate, TagQuery}}, tools::{array_tools::AddOrSetArray, file_tools::{file_type_from_mime, get_mime_from_filename}, log::{log_info, LogServiceType}, text_tools::{extract_people, extract_tags}}};
 use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
-
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MediaBackup {
+    id: String,
+    size: Option<u64>
+}
 
 impl FromSql for RsGpsPosition {
     fn column_result(value: ValueRef) -> FromSqlResult<Self> {
@@ -89,6 +94,23 @@ const MEDIA_QUERY: &str = "SELECT
         m.acodecs, m.achan, m.vcodecs, m.fps, m.bitrate, m.long, m.lat, m.model, m.pages, m.progress, 
         m.thumb, m.thumbv, m.thumbsize, m.iv, m.origin, m.movie, m.lang, m.uploader, m.uploadkey, m.modified, 
         m.added, m.created,
+        
+        GROUP_CONCAT(distinct a.tag_ref || '|' || IFNULL(a.confidence, 100)) tags,
+        GROUP_CONCAT(distinct b.people_ref) people,
+        GROUP_CONCAT(distinct c.serie_ref || '|' || printf('%04d', c.season) || '|' || printf('%04d', c.episode) ) series,
+        m.fnumber, m.icc, m.mp
+        
+        FROM medias as m
+            LEFT JOIN ratings on ratings.media_ref = m.id
+            LEFT JOIN media_tag_mapping a on a.media_ref = m.id and (a.confidence != -1 or a.confidence IS NULL)
+            LEFT JOIN media_people_mapping b on b.media_ref = m.id
+            LEFT JOIN media_serie_mapping c on c.media_ref = m.id
+        
+        
+        ";
+
+    const MEDIA_BACKUP_QUERY: &str = "SELECT 
+        m.id, m.size,
         
         GROUP_CONCAT(distinct a.tag_ref || '|' || IFNULL(a.confidence, 100)) tags,
         GROUP_CONCAT(distinct b.people_ref) people,
@@ -480,6 +502,30 @@ impl SqliteLibraryStore {
                 Ok(s)
             })?;
             let rows:Vec<RsGpsPosition> = rows.collect::<std::result::Result<Vec<RsGpsPosition>, rusqlite::Error>>()?; 
+            Ok(rows)
+        }).await?;
+        Ok(rows)
+    }
+
+    pub async fn get_all_medias_to_backup(&self, after: i64) -> Result<Vec<MediaBackup>> {
+        let rows = self.connection.call( move |conn| { 
+
+            let mut query = conn.prepare("SELECT id, size from medias WHERE (
+                CASE
+                    WHEN added >= created AND added >= modified THEN added
+                    WHEN created >= modified THEN created
+                    ELSE modified
+                END
+            ) > ?")?;
+            let rows = query.query_map(
+            params![after],|row| {
+                let s: MediaBackup =  MediaBackup {
+                    id: row.get(0)?,
+                    size: row.get(1)?
+                };
+                Ok(s)
+            })?;
+            let rows:Vec<MediaBackup> = rows.collect::<std::result::Result<Vec<MediaBackup>, rusqlite::Error>>()?; 
             Ok(rows)
         }).await?;
         Ok(rows)

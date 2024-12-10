@@ -24,7 +24,7 @@ use crate::{domain::{deleted::RsDeleted, library::LibraryType, media::{self, Con
 
 use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaItemReference, MediaWithAction, MediasMessage, ProgressMessage}, progress::{RsProgress, RsProgressType}, ElementAction}, error::RsResult, plugins::{get_plugin_fodler, sources::{async_reader_progress::ProgressReader, error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{self, resize_image, resize_image_reader, ImageSize, ImageType}, log::{log_error, log_info, LogServiceType}, prediction::{predict_net, preload_model, PredictionTagResult}, video_tools::{self, probe_video, VideoTime}}};
 
-use super::{error::{Error, Result}, plugins::PluginQuery, store, users::ConnectedUser, ModelController, VideoConvertQueueElement};
+use super::{error::{Error, Result}, plugins::PluginQuery, store::{self, sql::library::medias::MediaBackup}, users::ConnectedUser, ModelController, VideoConvertQueueElement};
 
 pub const CRYPTO_HEADER_SIZE: u64 = 16 + 4 + 4 + 32 + 256;
 
@@ -171,6 +171,13 @@ impl ModelController {
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
 		let locs = store.get_medias_locs(precision.unwrap_or(2)).await?;
 		Ok(locs)
+	}
+
+    pub async fn get_medias_to_backup(&self, library_id: &str, after: i64, requesting_user: &ConnectedUser) -> Result<Vec<MediaBackup>> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+		let medias = store.get_all_medias_to_backup(after).await?;
+		Ok(medias)
 	}
 
 
