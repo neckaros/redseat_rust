@@ -10,7 +10,7 @@ use super::{store::sql::SqlOrder, users::ConnectedUser, ModelController};
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct DeletedQuery {
-    pub after: Option<u64>,
+    pub after: Option<i64>,
     #[serde(rename = "type")]
     pub kind: Option<ElementType>,
   

@@ -12,7 +12,7 @@ pub struct WatchedQuery {
     
     #[serde(rename = "type")]
     pub kind: Option<String>,
-    pub after: Option<u64>,
+    pub after: Option<i64>,
 }
 
 // region:    --- Library Settings

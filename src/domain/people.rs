@@ -21,7 +21,7 @@ pub struct Person {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub birthday: Option<u64>,
+    pub birthday: Option<i64>,
     pub modified: u64,
     pub added: u64,
     pub posterv: u32,

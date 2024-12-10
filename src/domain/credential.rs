@@ -16,7 +16,7 @@ pub struct Credential {
     pub settings: Value,
     pub user_ref: Option<String>,
     pub refresh_token: Option<String>,
-    pub expires: Option<u64>,
+    pub expires: Option<i64>,
 }
 
 impl From<Credential> for PluginCredential {

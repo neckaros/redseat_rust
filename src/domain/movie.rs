@@ -67,7 +67,7 @@ pub struct Movie {
 
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub watched: Option<u64>,
+    pub watched: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub progress: Option<u64>,
 

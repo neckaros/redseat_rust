@@ -12,6 +12,7 @@ use super::{get_time, log::{log_error, log_info}};
 pub mod series;
 pub mod refresh;
 pub mod ip;
+pub mod backup;
 
 #[derive(Debug, Clone)]
 pub struct RsScheduler {

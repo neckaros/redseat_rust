@@ -91,8 +91,8 @@ pub struct Media {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<Value>,
 
-    pub added: Option<u64>,
-    pub modified: Option<u64>,
+    pub added: Option<i64>,
+    pub modified: Option<i64>,
     pub created: Option<i64>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -177,6 +177,19 @@ pub struct Media {
     pub uploadkey: Option<String>,
 } 
 
+impl Media {
+    pub fn max_date(&self) -> i64 {
+        *[
+        self.created.unwrap_or(0),
+        self.added.unwrap_or(0),
+        self.modified.unwrap_or(0),
+        ]
+        .iter()
+        .max()
+        .unwrap()
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct RsGpsPosition {
@@ -195,7 +208,7 @@ pub struct MediaForUpdate {
 
     pub md5: Option<String>,
     
-    pub modified: Option<u64>,
+    pub modified: Option<i64>,
     pub created: Option<i64>,
 
     pub width: Option<u32>,

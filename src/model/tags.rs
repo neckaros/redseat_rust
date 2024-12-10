@@ -66,7 +66,7 @@ pub struct TagQuery {
     pub name: Option<String>,
     pub parent: Option<String>,
     pub path: Option<String>,
-    pub after: Option<u64>
+    pub after: Option<i64>
 }
 
 impl TagQuery {
@@ -76,7 +76,7 @@ impl TagQuery {
     pub fn new_with_path(path: String) -> TagQuery {
         TagQuery { path: Some(path), ..Default::default()  }
     }
-    pub fn from_after(after: u64) -> TagQuery {
+    pub fn from_after(after: i64) -> TagQuery {
         TagQuery { after: Some(after), ..Default::default()  }
     }
 

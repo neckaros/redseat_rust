@@ -21,7 +21,7 @@ pub struct PersonForAdd {
     pub alt: Option<Vec<String>>,
     pub portrait: Option<String>,
     pub params: Option<Value>,
-    pub birthday: Option<u64>,
+    pub birthday: Option<i64>,
     #[serde(default)]
     pub generated: bool,
 }
@@ -35,7 +35,7 @@ pub struct PersonForInsert {
     pub alt: Option<Vec<String>>,
     pub portrait: Option<String>,
     pub params: Option<Value>,
-    pub birthday: Option<u64>,
+    pub birthday: Option<i64>,
     #[serde(default)]
     pub generated: bool,
 }
@@ -43,7 +43,7 @@ pub struct PersonForInsert {
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct PeopleQuery {
-    pub after: Option<u64>,
+    pub after: Option<i64>,
     pub name: Option<String>,
 }
 
@@ -51,7 +51,7 @@ impl PeopleQuery {
     pub fn new_empty() -> PeopleQuery {
         PeopleQuery { ..Default::default() }
     }
-    pub fn from_after(after: u64) -> PeopleQuery {
+    pub fn from_after(after: i64) -> PeopleQuery {
         PeopleQuery { after: Some(after), ..Default::default() }
     }
     pub fn from_name(name: &str) -> PeopleQuery {
@@ -78,7 +78,7 @@ pub struct PersonForUpdate {
 
     pub portrait: Option<String>,
     pub params: Option<Value>,
-    pub birthday: Option<u64>,
+    pub birthday: Option<i64>,
     pub generated: Option<bool>,
 }
 

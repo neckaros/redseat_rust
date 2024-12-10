@@ -39,7 +39,7 @@ pub enum RsMovieSort {
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct MovieQuery {
-    pub after: Option<u64>,
+    pub after: Option<i64>,
     pub in_digital: Option<bool>,
 
     pub watched: Option<bool>,
@@ -54,7 +54,7 @@ impl MovieQuery {
     pub fn new_empty() -> MovieQuery {
         MovieQuery { after: None, ..Default::default() }
     }
-    pub fn from_after(after: u64) -> MovieQuery {
+    pub fn from_after(after: i64) -> MovieQuery {
         MovieQuery { after: Some(after), ..Default::default() }
     }
 }

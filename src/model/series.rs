@@ -36,7 +36,7 @@ impl ToSql for SerieStatus {
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct SerieQuery {
-    pub after: Option<u64>,
+    pub after: Option<i64>,
 
     pub name: Option<String>,
     
@@ -50,7 +50,7 @@ impl SerieQuery {
     pub fn new_empty() -> SerieQuery {
         SerieQuery { after: None, ..Default::default() }
     }
-    pub fn from_after(after: u64) -> SerieQuery {
+    pub fn from_after(after: i64) -> SerieQuery {
         SerieQuery { after: Some(after), ..Default::default() }
     }
 }
@@ -82,7 +82,7 @@ pub struct SerieForUpdate {
     pub trailer: Option<String>,
 
     pub year: Option<u16>,
-    pub max_created: Option<u64>,
+    pub max_created: Option<i64>,
 }
 
 impl SerieForUpdate {

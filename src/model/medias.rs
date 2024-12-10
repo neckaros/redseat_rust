@@ -40,14 +40,14 @@ pub struct MediaQuery {
     pub added_before: Option<i64>,
     pub added_after: Option<i64>,
 
-    pub created_before: Option<u64>,
-    pub created_after: Option<u64>,
+    pub created_before: Option<i64>,
+    pub created_after: Option<i64>,
 
-    pub modified_before: Option<u64>,
-    pub modified_after: Option<u64>,
+    pub modified_before: Option<i64>,
+    pub modified_after: Option<i64>,
 
-    pub before: Option<u64>,
-    pub after: Option<u64>,
+    pub before: Option<i64>,
+    pub after: Option<i64>,
     #[serde(default)]
     pub tags: Vec<String>,
     #[serde(default)]
@@ -77,7 +77,7 @@ pub struct MediaQuery {
     pub max_size: Option<u64>,
     
     
-    pub page_key: Option<u64>,
+    pub page_key: Option<i64>,
 
     /// For legacy if user put serialized query in filter field
     pub filter: Option<String>,
@@ -122,7 +122,7 @@ impl MediaQuery {
     pub fn new_empty() -> MediaQuery {
         MediaQuery { tags: vec![], ..Default::default() }
     }
-    pub fn from_after(after: u64) -> MediaQuery {
+    pub fn from_after(after: i64) -> MediaQuery {
         MediaQuery { after: Some(after), ..Default::default() }
     }
 }

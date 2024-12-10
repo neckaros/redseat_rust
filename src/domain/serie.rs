@@ -60,7 +60,7 @@ pub struct Serie {
     pub year: Option<u16>,
 
     
-    pub max_created: Option<u64>,
+    pub max_created: Option<i64>,
 
 
     #[serde(default)]

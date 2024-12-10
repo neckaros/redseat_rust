@@ -13,7 +13,7 @@ pub struct Watched {
     pub kind: MediaType,
     pub id: String,
     pub user_ref: Option<String>,
-    pub date: u64,
+    pub date: i64,
     pub modified: u64
 }
 
@@ -24,11 +24,11 @@ pub struct WatchedForAdd {
     #[serde(rename = "type")]
     pub kind: MediaType,
     pub id: String,
-    pub date: u64,
+    pub date: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
 #[serde(rename_all = "camelCase")] 
 pub struct WatchedLight {
-    pub date: u64
+    pub date: i64
 }

@@ -27,10 +27,10 @@ pub struct EpisodeQuery {
     #[serde(default)]
     pub not_seasons: Vec<u32>,
 
-    pub after: Option<u64>,
+    pub after: Option<i64>,
 
-    pub aired_before: Option<u64>,
-    pub aired_after: Option<u64>,
+    pub aired_before: Option<i64>,
+    pub aired_after: Option<i64>,
 
     #[serde(default)]
     pub sorts: Vec<RsSortOrder>,
@@ -42,7 +42,7 @@ impl EpisodeQuery {
     pub fn new_empty() -> EpisodeQuery {
         EpisodeQuery { ..Default::default() }
     }
-    pub fn from_after(after: u64) -> EpisodeQuery {
+    pub fn from_after(after: i64) -> EpisodeQuery {
         EpisodeQuery { after: Some(after), ..Default::default() }
     }
 
@@ -64,7 +64,7 @@ pub struct EpisodeForUpdate {
 
 
     
-    pub airdate: Option<u64>,
+    pub airdate: Option<i64>,
     pub duration: Option<u64>,
 
     pub params: Option<Value>,

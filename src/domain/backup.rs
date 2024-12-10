@@ -13,7 +13,7 @@ pub struct Backup {
     pub path: String,
     pub schedule: Option<String>,
     pub filter: Option<Value>,
-    pub last: Option<u64>,
+    pub last: Option<i64>,
     pub password: Option<String>,
     pub size: u64,
 }
@@ -31,7 +31,7 @@ pub struct BackupFile {
     pub hash: String,
     pub sourcehash: String,
     pub size: u64,
-    pub date: u64,
+    pub date: i64,
     pub iv: Option<String>,
     pub thumb_size: Option<u64>,
     pub info_size: Option<u64>,

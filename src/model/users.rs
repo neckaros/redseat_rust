@@ -327,7 +327,7 @@ pub struct GuestUser {
 pub struct UploadKey {
     pub id: String,
     pub library: String,
-    pub expiry: Option<u64>,
+    pub expiry: Option<i64>,
     #[serde(default)]
     pub tags: bool,
 }
@@ -379,8 +379,8 @@ pub struct HistoryQuery {
     #[serde(default)]
     pub order: SqlOrder,
 
-    pub before: Option<u64>,
-    pub after: Option<u64>,
+    pub before: Option<i64>,
+    pub after: Option<i64>,
     #[serde(default)]
     pub types: Vec<MediaType>,
 

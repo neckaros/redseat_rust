@@ -21,7 +21,7 @@ pub struct CredentialForAdd {
     pub settings: Value,
     pub user_ref: Option<String>,
     pub refresh_token: Option<String>,
-    pub expires: Option<u64>,
+    pub expires: Option<i64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -33,7 +33,7 @@ pub struct CredentialForUpdate {
     pub settings: Option<Value>,
     pub user_ref: Option<String>,
     pub refresh_token: Option<String>,
-    pub expires: Option<u64>,
+    pub expires: Option<i64>,
 }
 
 

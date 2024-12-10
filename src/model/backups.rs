@@ -22,7 +22,7 @@ pub struct BackupForAdd {
     pub path: String,
     pub schedule: Option<String>,
     pub filter: Option<Value>,
-    pub last: Option<u64>,
+    pub last: Option<i64>,
     pub password: Option<String>,
 }
 
