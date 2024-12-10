@@ -13,6 +13,7 @@ use mime_guess::get_mime_extensions_str;
 use nanoid::nanoid;
 use query_external_ip::SourceError;
 use rs_plugin_common_interfaces::{request::{RsRequest, RsRequestStatus}, url::{RsLink, RsLinkType}, PluginType};
+use rusqlite::{types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, ToSql};
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
 use tokio::{fs::File, io::{copy, AsyncRead, AsyncReadExt, AsyncWriteExt}, sync::mpsc};
@@ -73,6 +74,9 @@ pub struct MediaQuery {
     pub min_duration: Option<u64>,
     pub max_duration: Option<u64>,
 
+    pub min_rating: Option<f32>,
+    pub max_rating: Option<f32>,
+
     pub min_size: Option<u64>,
     pub max_size: Option<u64>,
     
@@ -81,6 +85,24 @@ pub struct MediaQuery {
 
     /// For legacy if user put serialized query in filter field
     pub filter: Option<String>,
+}
+
+impl FromSql for MediaQuery {
+    fn column_result(value: ValueRef) -> FromSqlResult<Self> {
+        String::column_result(value).and_then(|as_string| {
+
+            let r = serde_json::from_str::<MediaQuery>(&as_string).map_err(|_| FromSqlError::InvalidType)?;
+
+            Ok(r)
+        })
+    }
+}
+
+impl ToSql for MediaQuery {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        let r = serde_json::to_string(&self).map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?;
+        Ok(ToSqlOutput::from(r))
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -173,10 +195,10 @@ impl ModelController {
 		Ok(locs)
 	}
 
-    pub async fn get_medias_to_backup(&self, library_id: &str, after: i64, requesting_user: &ConnectedUser) -> Result<Vec<MediaBackup>> {
+    pub async fn get_medias_to_backup(&self, library_id: &str, after: i64, query: MediaQuery, requesting_user: &ConnectedUser) -> Result<Vec<MediaBackup>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
-		let medias = store.get_all_medias_to_backup(after).await?;
+		let medias = store.get_all_medias_to_backup(after, query).await?;
 		Ok(medias)
 	}
 

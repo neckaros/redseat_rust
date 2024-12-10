@@ -12,7 +12,7 @@ use tokio::io::AsyncReadExt;
 
 use crate::{domain::{backup::{Backup, BackupFile}, library::LibraryRole}, error::{RsError, RsResult}, tools::encryption::{derive_key, AesTokioDecryptStream}};
 
-use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
+use super::{error::{Error, Result}, medias::MediaQuery, users::{ConnectedUser, UserRole}, ModelController};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BackupForAdd {
@@ -22,7 +22,7 @@ pub struct BackupForAdd {
     pub library: String,
     pub path: String,
     pub schedule: Option<String>,
-    pub filter: Option<Value>,
+    pub filter: Option<MediaQuery>,
     pub last: Option<i64>,
     pub password: Option<String>,
 }
@@ -35,7 +35,7 @@ pub struct BackupForUpdate {
 	pub library: Option<String>,
     pub path: Option<String>,
     pub schedule: Option<String>,
-    pub filter: Option<Value>,
+    pub filter: Option<MediaQuery>,
     pub last: Option<u64>,
     pub password: Option<String>,
     pub size: Option<u64>,

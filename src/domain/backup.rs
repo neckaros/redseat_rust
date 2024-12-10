@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::model::medias::MediaQuery;
+
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -12,7 +14,7 @@ pub struct Backup {
     pub library: String,
     pub path: String,
     pub schedule: Option<String>,
-    pub filter: Option<Value>,
+    pub filter: Option<MediaQuery>,
     pub last: Option<i64>,
     pub password: Option<String>,
     pub size: u64,

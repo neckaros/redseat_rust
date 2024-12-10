@@ -10,8 +10,8 @@ use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MediaBackup {
-    id: String,
-    size: Option<u64>
+    pub id: String,
+    pub size: Option<u64>
 }
 
 impl FromSql for RsGpsPosition {
@@ -89,42 +89,30 @@ impl From<MediasIds> for Vec<String> {
 
 
 const MEDIA_QUERY: &str = "SELECT 
-        m.id, m.source, m.name, m.description, m.type, m.mimetype, m.size, avg(ratings.rating) as rating, m.md5, m.params, 
-        m.width, m.height, m.phash, m.thumbhash, m.focal, m.iso, m.colorSpace, m.sspeed, m.orientation, m.duration, 
-        m.acodecs, m.achan, m.vcodecs, m.fps, m.bitrate, m.long, m.lat, m.model, m.pages, m.progress, 
-        m.thumb, m.thumbv, m.thumbsize, m.iv, m.origin, m.movie, m.lang, m.uploader, m.uploadkey, m.modified, 
-        m.added, m.created,
-        
-        GROUP_CONCAT(distinct a.tag_ref || '|' || IFNULL(a.confidence, 100)) tags,
-        GROUP_CONCAT(distinct b.people_ref) people,
-        GROUP_CONCAT(distinct c.serie_ref || '|' || printf('%04d', c.season) || '|' || printf('%04d', c.episode) ) series,
-        m.fnumber, m.icc, m.mp
-        
-        FROM medias as m
-            LEFT JOIN ratings on ratings.media_ref = m.id
-            LEFT JOIN media_tag_mapping a on a.media_ref = m.id and (a.confidence != -1 or a.confidence IS NULL)
-            LEFT JOIN media_people_mapping b on b.media_ref = m.id
-            LEFT JOIN media_serie_mapping c on c.media_ref = m.id
-        
-        
+            m.id, m.source, m.name, m.description, m.type, m.mimetype, m.size,
+            (select avg(rating ) from ratings where media_ref = m.id) as rating,
+            m.md5, m.params, 
+            m.width, m.height, m.phash, m.thumbhash, m.focal, m.iso, m.colorSpace, m.sspeed, m.orientation, m.duration, 
+            m.acodecs, m.achan, m.vcodecs, m.fps, m.bitrate, m.long, m.lat, m.model, m.pages, m.progress, 
+            m.thumb, m.thumbv, m.thumbsize, m.iv, m.origin, m.movie, m.lang, m.uploader, m.uploadkey, m.modified, 
+            m.added, m.created
+			,(select GROUP_CONCAT(tag_ref || '|' || IFNULL(confidence, 100)) from media_tag_mapping where media_ref = m.id and (confidence != -1 or confidence IS NULL)) as tags
+			,(select GROUP_CONCAT(people_ref ) from media_people_mapping where media_ref = m.id) as people
+			,(select GROUP_CONCAT(serie_ref || '|' || printf('%04d', season) || '|' || printf('%04d', episode)) from media_serie_mapping where media_ref = m.id) as series,
+            m.fnumber, m.icc, m.mp
+			
+            FROM medias as m
         ";
 
     const MEDIA_BACKUP_QUERY: &str = "SELECT 
-        m.id, m.size,
-        
-        GROUP_CONCAT(distinct a.tag_ref || '|' || IFNULL(a.confidence, 100)) tags,
-        GROUP_CONCAT(distinct b.people_ref) people,
-        GROUP_CONCAT(distinct c.serie_ref || '|' || printf('%04d', c.season) || '|' || printf('%04d', c.episode) ) series,
-        m.fnumber, m.icc, m.mp
-        
-        FROM medias as m
-            LEFT JOIN ratings on ratings.media_ref = m.id
-            LEFT JOIN media_tag_mapping a on a.media_ref = m.id and (a.confidence != -1 or a.confidence IS NULL)
-            LEFT JOIN media_people_mapping b on b.media_ref = m.id
-            LEFT JOIN media_serie_mapping c on c.media_ref = m.id
-        
-        
-        ";
+            m.id, m.size,
+            (select avg(rating ) from ratings where media_ref = m.id) as rating
+			,(select GROUP_CONCAT(tag_ref || '|' || IFNULL(confidence, 100)) from media_tag_mapping where media_ref = m.id and (confidence != -1 or confidence IS NULL)) as tags
+			,(select GROUP_CONCAT(people_ref ) from media_people_mapping where media_ref = m.id) as people
+			,(select GROUP_CONCAT(serie_ref || '|' || printf('%04d', season) || '|' || printf('%04d', episode)) from media_serie_mapping where media_ref = m.id) as series,
+            m.fnumber, m.icc, m.mp
+			
+            FROM medias as m";
 
 impl SqliteLibraryStore {
     fn row_to_mediasource(row: &Row) -> rusqlite::Result<MediaSource> {
@@ -334,10 +322,17 @@ impl SqliteLibraryStore {
         }
         
         if let Some(size) = query.min_size {
-            where_query.add_where(SqlWhereType::After("size".to_string(), Box::new(size)));
+            where_query.add_where(SqlWhereType::GreaterOrEqual("size".to_string(), Box::new(size)));
         }
         if let Some(size) = query.max_size {
-            where_query.add_where(SqlWhereType::Before("size".to_string(), Box::new(size)));
+            where_query.add_where(SqlWhereType::SmallerOrEqual("size".to_string(), Box::new(size)));
+        }
+        
+        if let Some(rating) = query.min_rating {
+            where_query.add_where(SqlWhereType::GreaterOrEqual("rating".to_string(), Box::new(rating)));
+        }
+        if let Some(rating) = query.max_rating {
+            where_query.add_where(SqlWhereType::SmallerOrEqual("rating".to_string(), Box::new(rating)));
         }
 
         
@@ -361,23 +356,14 @@ impl SqliteLibraryStore {
 
             let mut query = conn.prepare(&format!("
             {}
-            SELECT 
-            m.id, m.source, m.name, m.description, m.type, m.mimetype, m.size,
-            (select avg(rating ) from ratings where media_ref = m.id) as rating,
-            m.md5, m.params, 
-            m.width, m.height, m.phash, m.thumbhash, m.focal, m.iso, m.colorSpace, m.sspeed, m.orientation, m.duration, 
-            m.acodecs, m.achan, m.vcodecs, m.fps, m.bitrate, m.long, m.lat, m.model, m.pages, m.progress, 
-            m.thumb, m.thumbv, m.thumbsize, m.iv, m.origin, m.movie, m.lang, m.uploader, m.uploadkey, m.modified, 
-            m.added, m.created
-			,(select GROUP_CONCAT(tag_ref || '|' || IFNULL(confidence, 100)) from media_tag_mapping where media_ref = m.id and (confidence != -1 or confidence IS NULL)) as tags
-			,(select GROUP_CONCAT(people_ref ) from media_people_mapping where media_ref = m.id) as people
-			,(select GROUP_CONCAT(serie_ref || '|' || printf('%04d', season) || '|' || printf('%04d', episode)) from media_serie_mapping where media_ref = m.id) as series,
-            m.fnumber, m.icc, m.mp
-			
-            FROM medias as m
-             {}
-                          {}
-             LIMIT {}", where_query.format_recursive(), where_query.format(), where_query.format_order(), limit))?;
+            {}
+            {}
+            {}
+             LIMIT {}", 
+             where_query.format_recursive(), 
+             MEDIA_QUERY, 
+             where_query.format(), 
+             where_query.format_order(), limit))?;
 
             //println!("query {:?}", query.expanded_sql());
 
@@ -507,18 +493,36 @@ impl SqliteLibraryStore {
         Ok(rows)
     }
 
-    pub async fn get_all_medias_to_backup(&self, after: i64) -> Result<Vec<MediaBackup>> {
-        let rows = self.connection.call( move |conn| { 
+    pub async fn get_all_medias_to_backup(&self, after: i64, query: MediaQuery) -> Result<Vec<MediaBackup>> {
 
-            let mut query = conn.prepare("SELECT id, size from medias WHERE (
+        //println!("mediaquery: {:?}", query);
+        let rows = self.connection.call( move |conn| { 
+            let mut where_query = Self::build_media_query(query, LibraryLimits::default());
+            where_query.add_where(SqlWhereType::After("(
+                    CASE
+                        WHEN added >= created AND added >= modified THEN added
+                        WHEN created >= modified THEN created
+                        ELSE modified
+                    END
+                )".to_string(), Box::new(after)));
+            let mut query = conn.prepare(&format!("
+        {}
+        {}
+        {}
+        ORDER BY (
                 CASE
                     WHEN added >= created AND added >= modified THEN added
                     WHEN created >= modified THEN created
                     ELSE modified
                 END
-            ) > ?")?;
+            ) ASC",
+            where_query.format_recursive(), 
+            MEDIA_BACKUP_QUERY, 
+            where_query.format()
+    ))?;
+    //format!("query: {:?}", query.expanded_sql());
             let rows = query.query_map(
-            params![after],|row| {
+                where_query.values(),|row| {
                 let s: MediaBackup =  MediaBackup {
                     id: row.get(0)?,
                     size: row.get(1)?

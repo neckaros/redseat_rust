@@ -1,5 +1,6 @@
 use axum::{async_trait, Error};
 use chrono::DateTime;
+use human_bytes::human_bytes;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use crate::domain::movie::Movie;
@@ -33,8 +34,10 @@ impl RsSchedulerTask for BackupTask {
         };
 
         for backup in backups {
-            let backup_medias = mc.get_medias_to_backup(&backup.library, backup.last.unwrap_or(i64::min_value()), &ConnectedUser::ServerAdmin).await?;
-            log_info(crate::tools::log::LogServiceType::Scheduler, format!("Backing up {} medias from library {}", backup_medias.len(), backup.library));
+            let media_query = backup.filter.unwrap_or_default();
+            let backup_medias = mc.get_medias_to_backup(&backup.library, backup.last.unwrap_or(i64::min_value()), media_query, &ConnectedUser::ServerAdmin).await?;
+            let total_size: u64 = backup_medias.iter().filter_map(|backup| backup.size).sum();
+            log_info(crate::tools::log::LogServiceType::Scheduler, format!("Backing up {} medias for size of {} from library {}", backup_medias.len(), human_bytes(total_size as f64), backup.library));
             //println!("medias backups: {:?}", backup_medias);
                     
                 
