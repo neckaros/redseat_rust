@@ -100,22 +100,37 @@ impl ModelController {
         }
 	}
 
-    pub async fn get_backup_file(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> Result<Vec<BackupFile>> {
+    pub async fn get_backup_files(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> Result<Vec<BackupFile>> {
         requesting_user.check_library_role(&library_id, LibraryRole::Admin)?;
 		let credential = self.store.get_backup_file(&library_id, &media_id).await?;
 		Ok(credential)
 	}
 
-    pub async fn get_backup_media(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> RsResult<Response> {
-        requesting_user.check_library_role(&library_id, LibraryRole::Admin)?;
-        let backup_files = self.get_backup_file(library_id, media_id, requesting_user).await?;
-        let last_backup_file = backup_files.first().ok_or(RsError::BackupNotFound(library_id.to_string(), media_id.to_string()))?;
+    pub async fn get_backup_file(&self, library_id: &str, media_id: &str, backup_id: &str, requesting_user: &ConnectedUser) -> RsResult<BackupFile> {
+    
+        let backups = self.get_backup_files(library_id, media_id, requesting_user).await?;
 
-        let backup_info = self.get_backup(last_backup_file.backup.to_string(), requesting_user).await?.ok_or(RsError::BackupProcessNotFound(last_backup_file.backup.to_string()))?;
+        let backup = backups.into_iter().find(|b| b.id == backup_id).ok_or(crate::Error::BackupNotFound(media_id.to_string(), backup_id.to_string()))?;
+
+        Ok(backup)
+
+    }
+
+    pub async fn get_backup_media(&self, library_id: &str, media_id: &str, backup_id: Option<&str>, requesting_user: &ConnectedUser) -> RsResult<Response> {
+        requesting_user.check_library_role(&library_id, LibraryRole::Admin)?;
+
+        let backup_file = if let Some(backup_id) = backup_id {
+            self.get_backup_file(library_id, media_id, backup_id, requesting_user).await?
+        } else { 
+            let backup_files = self.get_backup_files(library_id, media_id, requesting_user).await?;
+            backup_files.first().ok_or(RsError::BackupNotFound(library_id.to_string(), media_id.to_string())).cloned()?
+        };
+
+        let backup_info = self.get_backup(backup_file.backup.to_string(), requesting_user).await?.ok_or(RsError::BackupProcessNotFound(backup_file.backup.to_string()))?;
 
         let source = self.plugin_manager.source_for_backup(backup_info.clone(), self.clone()).await?;
 
-        let mut source_read = source.get_file(&last_backup_file.path, None).await?;
+        let mut source_read = source.get_file(&backup_file.path, None).await?;
 
         let mut reader =  source_read.into_reader(library_id, None, None, Some((self.clone(), requesting_user)), None).await?;
 
