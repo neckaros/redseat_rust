@@ -11,7 +11,9 @@ use crate::model::Error;
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MediaBackup {
     pub id: String,
-    pub size: Option<u64>
+    pub name: String,
+    pub size: Option<u64>,
+    pub hash: String
 }
 
 impl FromSql for RsGpsPosition {
@@ -105,7 +107,7 @@ const MEDIA_QUERY: &str = "SELECT
         ";
 
     const MEDIA_BACKUP_QUERY: &str = "SELECT 
-            m.id, m.size,
+            m.id, m.name, m.size, m.md5,
             (select avg(rating ) from ratings where media_ref = m.id) as rating
 			,(select GROUP_CONCAT(tag_ref || '|' || IFNULL(confidence, 100)) from media_tag_mapping where media_ref = m.id and (confidence != -1 or confidence IS NULL)) as tags
 			,(select GROUP_CONCAT(people_ref ) from media_people_mapping where media_ref = m.id) as people
@@ -525,7 +527,9 @@ impl SqliteLibraryStore {
                 where_query.values(),|row| {
                 let s: MediaBackup =  MediaBackup {
                     id: row.get(0)?,
-                    size: row.get(1)?
+                    name: row.get(1)?,
+                    size: row.get(2)?,
+                    hash: row.get(3)?
                 };
                 Ok(s)
             })?;

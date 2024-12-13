@@ -21,7 +21,7 @@ use tokio_stream::StreamExt;
 use tokio_util::{compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt}, io::{ReaderStream, StreamReader}};
 use zip::ZipWriter;
 
-use crate::{domain::{deleted::RsDeleted, library::LibraryType, media::{self, ConvertMessage, ConvertProgress, RsGpsPosition, DEFAULT_MIME}, plugin, MediaElement}, model::store::sql::SqlOrder, plugins::sources::{path_provider::PathProvider, Source}, routes::infos, tools::{file_tools::{filename_from_path, remove_extension}, image_tools::convert_image_reader, video_tools::{VideoCommandBuilder, VideoConvertRequest, VideoOverlayPosition}}};
+use crate::{domain::{deleted::RsDeleted, library::LibraryType, media::{self, ConvertMessage, ConvertProgress, RsGpsPosition, DEFAULT_MIME}, plugin, MediaElement}, error::RsError, model::store::sql::SqlOrder, plugins::sources::{path_provider::PathProvider, Source}, routes::infos, tools::{file_tools::{filename_from_path, remove_extension}, image_tools::convert_image_reader, video_tools::{VideoCommandBuilder, VideoConvertRequest, VideoOverlayPosition}}};
 
 use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaItemReference, MediaWithAction, MediasMessage, ProgressMessage}, progress::{RsProgress, RsProgressType}, ElementAction}, error::RsResult, plugins::{get_plugin_fodler, sources::{async_reader_progress::ProgressReader, error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{self, resize_image, resize_image_reader, ImageSize, ImageType}, log::{log_error, log_info, LogServiceType}, prediction::{predict_net, preload_model, PredictionTagResult}, video_tools::{self, probe_video, VideoTime}}};
 
@@ -208,7 +208,7 @@ impl ModelController {
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
 		let mut media = store.get_media(&media_id).await?;
         if let Some(ref mut media) = media {
-            if requesting_user.is_admin() {
+            if !requesting_user.is_admin() {
                 media.source = None;
             }
         }
@@ -526,7 +526,12 @@ impl ModelController {
         }
     
         if predict {
-            self.prediction(library_id, media_id, true, requesting_user, false).await?;
+            let prediction_result = self.prediction(library_id, media_id, true, requesting_user, false).await;
+            match prediction_result {
+                Ok(_) => Ok(()),
+                Err(crate::Error::NoModelFound) => {log_info(LogServiceType::Source, format!("No prediction model found for library {}", library_id)); Ok(())},
+                Err(e) => Err(e),
+            }?;
         }
         let existing = self.get_media(library_id, media_id.to_owned(), requesting_user).await?.ok_or(Error::NotFound)?;
         self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media: existing, action: ElementAction::Updated}] });
@@ -553,7 +558,7 @@ impl ModelController {
         copy(&mut progress_reader, &mut file).await?;
         file.flush().await?;
         file.shutdown().await?;
-        let source = source.await?;
+        let source = source.await??;
         println!("source: {}", source);
         drop(progress_reader);
         if !crypted {
@@ -693,7 +698,7 @@ impl ModelController {
             file.flush().await?;
             println!("CLOSED");
 
-            let source = source_porimise.await?;
+            let source = source_porimise.await??;
 
             m.fill_infos(&source, &mut infos).await?;
 
@@ -1237,6 +1242,20 @@ impl ModelController {
         self.update_media(library_id, media_id.to_owned(), update, notif, requesting_user).await?;
 
         //println!("videos infos {:?}", videos_infos);
+        Ok(())
+    }
+
+    pub async fn update_file_infos(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser, notif: bool) -> crate::Result<()> {
+        requesting_user.check_file_role(library_id, media_id, LibraryRole::Write)?;
+        self.cache_check_library_notcrypt(library_id).await?;
+        let media = self.get_media(library_id, media_id.to_owned(), requesting_user).await?.ok_or(crate::model::Error::MediaNotFound(media_id.to_string()))?;
+        println!("media: {:?}", media);
+        let mut update = MediaForUpdate::default();
+        let m = self.source_for_library(&library_id).await?;
+        m.fill_infos(&media.source.unwrap_or_default(), &mut update).await?;
+    
+        self.update_media(library_id, media_id.to_owned(), update, notif, requesting_user).await?;
+        
         Ok(())
     }
 

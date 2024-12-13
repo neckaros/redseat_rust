@@ -13,7 +13,7 @@ use tokio::{fs::{create_dir_all, remove_file, File}, io::{AsyncRead, AsyncWrite,
 use tokio_stream::StreamExt;
 use tokio_util::io::ReaderStream;
 
-use crate::{domain::{backup::Backup, library::ServerLibrary, media::MediaForUpdate, plugin::PluginWithCredential}, error::RsResult, model::{users::ConnectedUser, ModelController}, plugins::{sources::{path_provider::PathProvider, RsRequestHeader}, PluginManager}, routes::mw_range::RangeDefinition, server::get_server_file_path_array, Error};
+use crate::{domain::{backup::Backup, library::ServerLibrary, media::MediaForUpdate, plugin::PluginWithCredential}, error::{RsError, RsResult}, model::{users::ConnectedUser, ModelController}, plugins::{sources::{path_provider::PathProvider, RsRequestHeader}, PluginManager}, routes::mw_range::RangeDefinition, server::get_server_file_path_array, Error};
 
 use super::{error::{SourcesError, SourcesResult}, local_provider, AsyncReadPinBox, AsyncSeekableWrite, BoxedStringFuture, FileStreamResult, Source, SourceRead};
 
@@ -89,7 +89,6 @@ impl Source for PluginProvider {
 
     async fn fill_infos(&self, source: &str, infos: &mut MediaForUpdate) -> RsResult<()> {
         let entry = self.plugin_manager.provider_info_file(RsProviderPath { root: Some(self.root.clone()), source: source.to_string() }, &self.plugin).await?;
-        println!("INFOS: {:?}", entry);
         if let Some(size) = entry.size {
             infos.size = Some(size);
         } 
@@ -139,58 +138,58 @@ impl Source for PluginProvider {
                 println!("sending to stream (size: {}) {}", length, request.request.url);
                 let response = client
                     .post(request.request.url.clone())
-                    .add_request_headers(&request.request, &None).unwrap()
+                    .add_request_headers(&request.request, &None)?
                     .header("Content-Length", length)
                     .header("Content-Type", mime )
                     .body(body)
                     .send()
-                    .await.unwrap();
+                    .await?;
                 println!("response: {}", response.status());
-                let text = response.text().await.unwrap();
-                let request = plugin_manager.provider_upload_parse_response(text, &plugin).await.map_err(|_| SourcesError::Other("Unable to parse upload response".to_string())).unwrap();
+                let text = response.text().await?;
+                let request = plugin_manager.provider_upload_parse_response(text, &plugin).await.map_err(|_| SourcesError::Other("Unable to parse upload response".to_string()))?;
 
             
 
-                request.source
+                Ok::<String, RsError>(request.source)
             } else { //download in temp directory if size is not available as it is necessary for upload
                 let dest_source = format!(".cache/{}", format!("{}-{}", nanoid!(), filename));
                 let dest = local.get_full_path(&dest_source);
                 println!("dest: {:?}", dest);
-                PathProvider::ensure_filepath(&dest).await.unwrap();
+                PathProvider::ensure_filepath(&dest).await?;
 
-                let mut file = File::create(&dest).await.unwrap();
+                let mut file = File::create(&dest).await?;
 
                 let mut writer = BufWriter::new(file);
                 // Read and write chunks from the stream
                 while let Some(chunk) = streamreader.next().await {
-                    let chunk = chunk.unwrap(); // Handle potential read errors
-                    writer.write_all(&chunk).await.unwrap();
+                    let chunk = chunk?; // Handle potential read errors
+                    writer.write_all(&chunk).await?;
                 }
                 // Flush to ensure all data is written
-                writer.flush().await.unwrap();
-                writer.shutdown().await.unwrap();
+                writer.flush().await?;
+                writer.shutdown().await?;
 
-                let file = File::open(&dest).await.unwrap();
-                let file_size = file.metadata().await.unwrap().len();
+                let file = File::open(&dest).await?;
+                let file_size = file.metadata().await?.len();
                 let stream = ReaderStream::new(file);
                 let body = reqwest::Body::wrap_stream(stream);
                 let client = Client::new();
                 println!("sending file to stream (size: {}) {}", file_size, request.request.url);
                 let response = client
                     .post(request.request.url.clone())
-                    .add_request_headers(&request.request, &None).unwrap()
+                    .add_request_headers(&request.request, &None)?
                     .header("Content-Length", file_size)
                     .header("Content-Type", mime )
                     .body(body)
                     .send()
-                    .await.unwrap();
+                    .await?;
                 println!("response: {}", response.status());
-                let text = response.text().await.unwrap();
-                let request = plugin_manager.provider_upload_parse_response(text, &plugin).await.map_err(|_| SourcesError::Other("Unable to parse upload response".to_string())).unwrap();
+                let text = response.text().await?;
+                let request = plugin_manager.provider_upload_parse_response(text, &plugin).await.map_err(|_| SourcesError::Other("Unable to parse upload response".to_string()))?;
 
                 remove_file(dest).await;
 
-                request.source
+                Ok::<String, RsError>(request.source)
             }
         
             

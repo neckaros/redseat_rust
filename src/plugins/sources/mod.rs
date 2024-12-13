@@ -382,7 +382,7 @@ impl SourceRead {
     }
 }
 
-type BoxedStringFuture = Pin<Box<dyn Future<Output = RsResult<String>> + Send>>;
+type BoxedStringFuture = Pin<Box<dyn Future<Output = RsResult<RsResult<String>>> + Send>>;
 
 #[async_trait]
 pub trait Source: Send {

@@ -44,6 +44,7 @@ pub enum Error {
 	BackupProcessNotFound(String),
 
 	BackupNotFound(String, String),
+	BackupFileNotFound(String),
 
 
 	// Prediction Error 

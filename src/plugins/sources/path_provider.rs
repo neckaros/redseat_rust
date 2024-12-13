@@ -10,7 +10,7 @@ use query_external_ip::SourceError;
 use sha256::try_async_digest;
 use tokio::{fs::{create_dir_all, remove_file, File}, io::{copy, AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter}};
 
-use crate::{domain::{backup::Backup, library::ServerLibrary, media::MediaForUpdate}, error::RsResult, model::ModelController, routes::mw_range::RangeDefinition, tools::{file_tools::get_mime_from_filename, image_tools::resize_image_reader, log::log_info}};
+use crate::{domain::{backup::Backup, library::ServerLibrary, media::MediaForUpdate}, error::{RsError, RsResult}, model::ModelController, routes::mw_range::RangeDefinition, tools::{file_tools::get_mime_from_filename, image_tools::resize_image_reader, log::log_info}};
 
 use super::{error::{SourcesError, SourcesResult}, AsyncReadPinBox, AsyncSeekableWrite, BoxedStringFuture, FileStreamResult, RangeResponse, Source, SourceRead};
 
@@ -163,9 +163,12 @@ impl Source for PathProvider {
 
     async fn fill_infos(&self, source: &str, infos: &mut MediaForUpdate) -> RsResult<()> {
         let path = self.get_full_path(&source);
+        println!("path {:?} ({source}", path);
         let metadata = path.metadata()?;
+        println!("metadata {:?}", metadata);
         infos.size = Some(metadata.len());
 
+        println!("size {:?}", metadata.len());
         let md5 = try_async_digest(&path).await;
         if let Ok(md5) = md5 {
             infos.md5 = Some(md5);
@@ -301,7 +304,7 @@ impl Source for PathProvider {
         let file = BufWriter::new(File::create(&file_path).await?);
 
         let source = Box::pin(async {
-            Ok(source)
+            Ok::<RsResult<String>, RsError>(Ok::<String, RsError>(source))
         });
         Ok((source, Box::pin(file)))
     }

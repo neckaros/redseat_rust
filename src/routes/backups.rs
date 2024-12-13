@@ -1,5 +1,5 @@
 
-use crate::{model::{backups::{BackupForAdd, BackupForUpdate}, users::ConnectedUser, ModelController}, tools::scheduler::{backup::BackupTask, RsSchedulerTask}, Result};
+use crate::{error::RsError, model::{backups::{BackupForAdd, BackupForUpdate}, users::ConnectedUser, ModelController}, tools::scheduler::{backup::BackupTask, RsSchedulerTask}, Result};
 use axum::{extract::{Path, State}, routing::{delete, get, patch, post}, Json, Router};
 use serde_json::{json, Value};
 
@@ -52,7 +52,14 @@ async fn handler_backup(Path(backup_id): Path<String>, State(mc): State<ModelCon
 		let backup_task = BackupTask {
 			specific_backup: Some(backup_id),
 		};
-		let process = backup_task.execute(mc).await.unwrap();
+		let process = backup_task.execute(mc).await;
+
+		match process {
+			Ok(_) => println!("Task completed successfully"),
+			Err(e) => println!("Task error: {}", e),
+		}
+
+		Ok::<_, RsError>(())
 	});
 	Ok(Json(json!({"data": "ok"})))
 }

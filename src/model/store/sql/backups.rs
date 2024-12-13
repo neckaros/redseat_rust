@@ -1,12 +1,33 @@
-use rusqlite::{params, params_from_iter, OptionalExtension, ToSql};
+use rusqlite::{params, params_from_iter, OptionalExtension, Row, ToSql};
 
 use crate::{domain::backup::{Backup, BackupFile}, model::{backups::BackupForUpdate, store::SqliteStore}};
 use super::Result;
 
+pub struct BackupInfos {
+    pub max_date: Option<i64>,
+    pub size: Option<u64>,
+}
 
 
 impl SqliteStore {
   
+    fn backup_file_from_row(row: &Row) -> rusqlite::Result<BackupFile> {
+        Ok(BackupFile {
+            backup: row.get(0)?,
+            library:row.get(1)?,
+            file:row.get(2)?,
+            id:row.get(3)?,
+            path:row.get(4)?,
+            hash:row.get(5)?,
+            sourcehash:row.get(6)?,
+            size:row.get(7)?,
+            date:row.get(8)?,
+            iv:row.get(9)?,
+            info_size:row.get(10)?,
+            thumb_size: row.get(11)?,
+            error:row.get(12)?,
+        })
+    }
     
     pub async fn get_backups(&self) -> Result<Vec<Backup>> {
         let row = self.server_store.call( move |conn| { 
@@ -124,30 +145,41 @@ impl SqliteStore {
     }
 
 
-    pub async fn get_backup_file(&self, library_id: &str, media_id: &str) -> Result<Vec<BackupFile>> {
+
+    // BACKUP FILE ============================
+    pub async fn get_backup_file(&self, backup_file_id: &str) -> Result<Option<BackupFile>> {
+        let backup_file_id = backup_file_id.to_owned();
+        let row = self.server_store.call( move |conn| { 
+            let mut query = conn.prepare("SELECT backup, library, file, id, path, hash, sourcehash, size, date, iv, infoSize, thumbsize, error FROM Backups_Files WHERE id = ?")?;
+            let row = query.query_row(
+            [backup_file_id],Self::backup_file_from_row,
+            ).optional()?;
+            Ok(row)
+           
+        }).await?;
+        Ok(row)
+    }
+
+    pub async fn get_backup_files(&self, library_id: &str, media_id: &str) -> Result<Vec<BackupFile>> {
         let media_id = media_id.to_owned();
         let library_id = library_id.to_owned();
         let row = self.server_store.call( move |conn| { 
             let mut query = conn.prepare("SELECT backup, library, file, id, path, hash, sourcehash, size, date, iv, infoSize, thumbsize, error FROM Backups_Files WHERE file = ? and library = ? ORDER BY date DESC")?;
             let rows = query.query_map(
-            [media_id, library_id],
-            |row| {
-                Ok(BackupFile {
-                    backup: row.get(0)?,
-                    library:row.get(1)?,
-                    file:row.get(2)?,
-                    id:row.get(3)?,
-                    path:row.get(4)?,
-                    hash:row.get(5)?,
-                    sourcehash:row.get(6)?,
-                    size:row.get(7)?,
-                    date:row.get(8)?,
-                    iv:row.get(9)?,
-                    info_size:row.get(10)?,
-                    thumb_size: row.get(11)?,
-                    error:row.get(12)?,
-                })
-            },
+            [media_id, library_id],Self::backup_file_from_row,
+            )?;
+            let files:Vec<BackupFile> = rows.collect::<std::result::Result<Vec<BackupFile>, rusqlite::Error>>()?; 
+            Ok(files)
+        }).await?;
+        Ok(row)
+    }
+    pub async fn get_library_backup_files(&self, library_id: &str) -> Result<Vec<BackupFile>> {
+        let library_id = library_id.to_owned();
+        let row = self.server_store.call( move |conn| { 
+            let mut query = conn.prepare("SELECT backup, library, file, id, path, hash, sourcehash, size, date, iv, infoSize, thumbsize, error FROM Backups_Files WHERE library = ? ORDER BY date DESC")?;
+            let rows = query.query_map(
+            [library_id],
+            Self::backup_file_from_row,
             )?;
             let files:Vec<BackupFile> = rows.collect::<std::result::Result<Vec<BackupFile>, rusqlite::Error>>()?; 
             Ok(files)
@@ -155,5 +187,49 @@ impl SqliteStore {
         Ok(row)
     }
 
+
+    pub async fn get_library_backup_files_infos(&self, backup_id: &str) -> Result<BackupInfos> {
+        let backup_id = backup_id.to_owned();
+        let row = self.server_store.call( move |conn| { 
+            let mut query = conn.prepare("SELECT MAX(date), SUM(size) FROM Backups_Files WHERE backup = ?")?;
+
+            let row: BackupInfos = query.query_row(
+                params![backup_id], |row| Ok(BackupInfos {
+                    max_date: row.get(0)?,
+                    size: row.get(1)?
+                }),
+            )?;
+            
+            Ok(row)
+        }).await?;
+        Ok(row)
+    }
+
+
     
+    
+    pub async fn add_backup_file(&self, backup: BackupFile) -> Result<()> {
+        self.server_store.call( move |conn| { 
+            conn.execute("INSERT INTO Backups_Files (backup, library, file, id, path, hash, sourcehash, size, date, iv, thumbsize, infoSize, error)
+            VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params![
+                backup.backup,
+                backup.library,
+                backup.file,
+                backup.id,
+                backup.path,
+                backup.hash,
+                backup.sourcehash,
+                backup.size,
+                backup.date,
+                backup.iv,
+                backup.thumb_size,
+                backup.info_size,
+                backup.error
+            ])?;
+            
+            Ok(())
+        }).await?;
+        Ok(())
+    }
+
 }

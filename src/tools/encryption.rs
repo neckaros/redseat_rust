@@ -11,14 +11,35 @@ use tokio::{fs::{File, OpenOptions}, io::{AsyncReadExt, AsyncWrite, AsyncWriteEx
 type Aes256CbcDec = cbc::Decryptor<Aes256>;
 type Aes256CbcEnc = cbc::Encryptor<Aes256>;
 use futures::Stream;
+use x509_parser::nom::bytes::complete;
 
 use crate::error::{RsError, RsResult};
 
 static salt_file: [u8; 24] = hex!("7b9ef4f7aeb46f6d9a6f4f34dfadf471bf7addfef4ddbf37");
 static salt_text: [u8; 24] = hex!("6b5db4f7aeb46f7d9c71ad34dfadf471bf7addfef7d1be78");
 
-fn ceil_to_multiple_of_16(value: usize) -> usize {
-    (value + 15) & !15
+pub fn ceil_to_multiple_of_16(value: usize) -> usize {
+    let ceil = (value + 15) & !15;
+    let rest = if value % 16 == 0 { 16 } else { 0 };
+    ceil + rest
+}
+
+
+pub fn estimated_encrypted_size(unencrypted_file_size: u64, unencrypted_thumb_size: u64, unencrypted_infos_size: u64) -> u64 {
+            //16 Bytes to store IV
+        //4 to store encrypted thumb size = T (can be 0)
+        //4 to store encrypted Info size = I (can be 0)
+        //32 to store thumb mimetype
+        //256 to store file mimetype
+        //T Bytes for the encrypted thumb
+        //I Bytes for the encrypted info
+        let thumb_size = if unencrypted_thumb_size == 0 { 0 } else { ceil_to_multiple_of_16(unencrypted_thumb_size as usize) as u64 };
+        println!("thumb_size {thumb_size}: {unencrypted_thumb_size}");
+        let infos_size = if unencrypted_infos_size == 0 { 0 } else { ceil_to_multiple_of_16(unencrypted_infos_size as usize) as u64 };
+        println!("infos_size {infos_size}: {unencrypted_infos_size}");
+        let file_size = if unencrypted_file_size == 0 { 0 } else { ceil_to_multiple_of_16(unencrypted_file_size as usize) as u64 };
+        println!("file {file_size}: {unencrypted_file_size}");
+        16 + 4 + 4 + 32 + 256 + thumb_size +  infos_size + file_size
 }
 
 pub fn string_to_fixed_bytes(input: &str, size: usize) -> Vec<u8> {
@@ -58,15 +79,17 @@ impl<W: AsyncWrite + Unpin> AesTokioEncryptStream<W> {
 
         let encryptor = Aes256CbcEnc::new(key.into(), iv.into());        
         let (thumb, thumb_mime) = thumb.unwrap_or((&[], "".to_string()));
-
-        let encthumb = encrypt(thumb, key, iv)?;
+        let encthumb = if thumb.len() > 0 {
+            encrypt(thumb, key, iv)?
+        } else {
+            vec![0u8; 0]
+        };
         let encinfos = if let Some(infos) = infos {
             let infos_bytes = infos.as_bytes();
             encrypt(&infos_bytes, key, iv)?
         } else {
             vec![0u8; 0]
         };
-
         Ok(Self {
             writer,
             encryptor,
@@ -118,6 +141,7 @@ impl<W: AsyncWrite + Unpin> AesTokioEncryptStream<W> {
             self.writer.write_all(&self.infos).await?;
 
             self.header_written = true;
+            //println!("Written headers");
         }
 
 
@@ -126,10 +150,15 @@ impl<W: AsyncWrite + Unpin> AesTokioEncryptStream<W> {
 
         // Determine how many complete blocks we have
         let complete_blocks = self.buffer.len() / self.block_size;
+        if complete_blocks == 0 {
+            return Ok(data.len());
+        }
+        let complete_blocks = complete_blocks - 1;
         let blocks_end = complete_blocks * self.block_size;
 
         // Split into blocks to decrypt and leftover
         let (blocks, rest) = self.buffer.split_at(blocks_end);
+        // Check if it's last block and send it to finalize for padding
 
         // Encrypt multiple blocks at once
         let mut decrypted_blocks = Vec::with_capacity(blocks_end);
@@ -150,12 +179,11 @@ impl<W: AsyncWrite + Unpin> AesTokioEncryptStream<W> {
     }
 
     pub async fn finalize(mut self) -> RsResult<()> {
-        println!("finalize: {}", self.buffer.len());
+        //println!("finalize: {}", self.buffer.len());
         if !self.buffer.is_empty() {
 
-            let mut buf = vec![0u8; 16];
-            let pt = self.encryptor
-            .encrypt_padded_b2b_mut::<Pkcs7>(&self.buffer, &mut buf)?;
+            let mut buf = vec![0; ceil_to_multiple_of_16(self.buffer.len())];
+            let pt = self.encryptor.encrypt_padded_b2b_mut::<Pkcs7>(&self.buffer, &mut buf)?;
 
             
             self.writer.write_all(&pt).await?;
@@ -402,6 +430,9 @@ pub fn derive_key(password: String) -> [u8; 32] {
 }
 
 fn encrypt(data: &[u8], key: &[u8], iv: &[u8]) -> RsResult<Vec<u8>> {
+    if data.len() == 0 {
+        return Ok(data.to_vec());
+    }
     let data_len = data.len();
     let mut buf = vec![0u8; ceil_to_multiple_of_16(data_len)];
     
@@ -421,7 +452,7 @@ fn decrypt(mut data: &mut [u8], key: &[u8], iv: &[u8]) -> RsResult<Vec<u8>> {
     Ok(decrypted.to_vec())
 }
 
-fn random_iv() -> [u8; 16] {
+pub fn random_iv() -> [u8; 16] {
     let mut iv = [0u8; 16];
     rand::thread_rng().fill_bytes(&mut iv);
     iv
