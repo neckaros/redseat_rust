@@ -196,18 +196,20 @@ async fn handler_get_file(Path((library_id, media_id)): Path<(String, String)>, 
 
 async fn handler_get_last_backup(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Response<Body>> {
 	let reader = mc.get_backup_media(&library_id, &media_id, None, &user).await?;
-	Ok(reader)
+	let response = reader.into_response(&library_id, None, None, Some((mc.clone(), &user))).await?;
+	Ok(response)
 }
 
 
 async fn handler_get_backup(Path((library_id, media_id, backup_file_id)): Path<(String, String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Response<Body>> {
 	let reader = mc.get_backup_media(&library_id, &media_id, Some(&backup_file_id), &user).await?;
-	Ok(reader)
+	let response = reader.into_response(&library_id, None, None, Some((mc.clone(), &user))).await?;
+	Ok(response)
 }
 
 
 async fn handler_get_backup_medata(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
-	let reader = mc.get_backup_files(&library_id, &media_id, &user).await?;
+	let reader = mc.get_library_media_backup_files(&library_id, &media_id, &user).await?;
 	Ok(Json(json!(reader)))
 }
 
@@ -231,7 +233,7 @@ async fn handler_post(Path(library_id): Path<String>, State(mc): State<ModelCont
 			info = serde_json::from_str(&text)?;
 		} else if name == "file" {
 			let filename = field.file_name().unwrap().to_string();
-			let mime = field.content_type().map(|c| c.to_owned());
+			let mime = if info.mimetype.is_none() { field.content_type().map(|c| c.to_owned()) } else { info.mimetype };
 			let size = field.headers().get("Content-Length")
             .and_then(|len| len.to_str().ok())
             .and_then(|len_str| len_str.parse::<u64>().ok());

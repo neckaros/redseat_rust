@@ -160,6 +160,20 @@ impl SourceRead {
             SourceRead::Request(r) => r.filename_or_extract_from_url(),
         }
     }
+
+    pub fn size(&self) -> Option<u64> {
+        match self {
+            SourceRead::Stream(s) => s.size,
+            SourceRead::Request(r) => r.size,
+        }
+    }
+
+    pub fn mimetype(&self) -> Option<String> {
+        match self {
+            SourceRead::Stream(s) => s.mime.clone(),
+            SourceRead::Request(r) => r.mime.clone(),
+        }
+    }
 }
 
 impl Debug for FileStreamResult<AsyncReadPinBox> {

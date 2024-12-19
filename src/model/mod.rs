@@ -21,7 +21,7 @@ use futures::lock::Mutex;
 use nanoid::nanoid;
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
-use crate::{domain::{library::{LibraryMessage, LibraryRole, ServerLibrary}, media::ConvertProgress, player::{RsPlayer, RsPlayerAvailable}, plugin::PluginWasm, serie::Serie}, error::{RsError, RsResult}, plugins::{list_plugins, medias::{fanart::FanArtContext, imdb::ImdbContext, tmdb::TmdbContext, trakt::TraktContext}, sources::{error::SourcesError, local_provider, local_provider_for_library, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, LocalSource, Source, SourceRead}, PluginManager}, routes::mw_range::RangeDefinition, server::get_server_file_path_array, tools::{clock::SECONDS_IN_HOUR, image_tools::{resize_image_path, ImageSize, ImageSizeIter, ImageType}, log::log_info, scheduler::{self, ip::RefreshIpTask, refresh::RefreshTask, RsScheduler, RsTaskType}, video_tools::VideoConvertRequest}};
+use crate::{domain::{backup::BackupProcessStatus, library::{LibraryMessage, LibraryRole, ServerLibrary}, media::ConvertProgress, player::{RsPlayer, RsPlayerAvailable}, plugin::PluginWasm, serie::Serie}, error::{RsError, RsResult}, plugins::{list_plugins, medias::{fanart::FanArtContext, imdb::ImdbContext, tmdb::TmdbContext, trakt::TraktContext}, sources::{error::SourcesError, local_provider, local_provider_for_library, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, LocalSource, Source, SourceRead}, PluginManager}, routes::mw_range::RangeDefinition, server::get_server_file_path_array, tools::{clock::SECONDS_IN_HOUR, image_tools::{resize_image_path, ImageSize, ImageSizeIter, ImageType}, log::log_info, scheduler::{self, ip::RefreshIpTask, refresh::RefreshTask, RsScheduler, RsTaskType}, video_tools::VideoConvertRequest}};
 
 use self::{medias::CRYPTO_HEADER_SIZE, store::SqliteStore, users::{ConnectedUser, ServerUser, UserRole}};
 use error::{Result, Error};
@@ -65,6 +65,8 @@ pub struct ModelController {
 	pub convert_current: Arc<RwLock<bool>>,
 	pub convert_current_process: Arc<RwLock<Option<JoinHandle<()>>>>,
 
+	pub backup_processes: Arc<RwLock<Vec<BackupProcessStatus>>>,
+
 	pub chache_libraries: Arc<RwLock<HashMap<String, ServerLibrary>>>
 }
 
@@ -89,7 +91,9 @@ impl ModelController {
 			players: Arc::new(RwLock::new(vec![])),
 			convert_queue: Arc::new(RwLock::new(VecDeque::new())),
 			convert_current: Arc::new(RwLock::new(false)),
-			convert_current_process: Arc::new(RwLock::new(None))
+			convert_current_process: Arc::new(RwLock::new(None)),
+
+			backup_processes: Arc::new(RwLock::new(vec![]))
 		};
 
 		let pm_forload = mc.plugin_manager.clone();

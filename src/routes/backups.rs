@@ -1,5 +1,5 @@
 
-use crate::{error::RsError, model::{backups::{BackupForAdd, BackupForUpdate}, users::ConnectedUser, ModelController}, tools::scheduler::{backup::BackupTask, RsSchedulerTask}, Result};
+use crate::{domain::backup::BackupWithStatus, error::RsError, model::{backups::{BackupForAdd, BackupForUpdate}, users::ConnectedUser, ModelController}, tools::scheduler::{backup::BackupTask, RsSchedulerTask}, Result};
 use axum::{extract::{Path, State}, routing::{delete, get, patch, post}, Json, Router};
 use serde_json::{json, Value};
 
@@ -19,14 +19,14 @@ pub fn routes(mc: ModelController) -> Router {
 }
 
 async fn handler_list(State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
-	let libraries = mc.get_backups(&user).await?;
-	let body = Json(json!(libraries));
+	let backups = mc.get_backups_with_status(&user).await?;
+	let body = Json(json!(backups));
 	Ok(body)
 }
 
 async fn handler_get(Path(backup_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
-	let library = mc.get_backup(backup_id, &user).await?;
-	let body = Json(json!(library));
+	let backup = mc.get_backup_with_status(&backup_id, &user).await?.ok_or(RsError::NotFound)?;
+	let body = Json(json!(backup));
 	Ok(body)
 }
 

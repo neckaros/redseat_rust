@@ -15,16 +15,17 @@ CREATE TABLE Backups_Files (
   id TEXT,
   path TEXT,
   hash TEXT,
-  sourcehash TEXT,
+  sourcehash TEXT NOT NULL,
   size INTEGER,
-  date INTEFER,
+  modified INTEGER DEFAULT 0,
+  added INTEGER DEFAULT 0,
   iv TEXT,
   thumbsize NUMBER,
   infoSize NUMBER,
   error TEXT,
   FOREIGN KEY (backup) REFERENCES Backups(id),
   FOREIGN KEY (library) REFERENCES Libraries(id),
-  PRIMARY KEY (backup, library, file)
+  PRIMARY KEY (backup, library, file, sourcehash)
 );
 
 CREATE TABLE Credentials (
@@ -107,4 +108,9 @@ CREATE TRIGGER inserted_progress AFTER INSERT ON progress
 CREATE TRIGGER modified_progress AFTER UPDATE ON progress
             BEGIN
              update progress SET modified = round((julianday('now') - 2440587.5)*86400.0 * 1000) WHERE id = NEW.id;
+            END;
+
+CREATE TRIGGER inserted_backup_file AFTER INSERT ON Backups_Files
+            BEGIN
+             update Backups_Files SET added = round((julianday('now') - 2440587.5)*86400.0 * 1000) WHERE id = NEW.id;
             END;

@@ -188,6 +188,26 @@ impl Media {
         .max()
         .unwrap()
     }
+
+    pub fn bytes_size(&self) -> Option<u64> {
+        if self.iv.is_none() {
+            self.size
+        } else {
+            
+        //16 Bytes to store IV
+        //4 to store encrypted thumb size = T (can be 0)
+        //4 to store encrypted Info size = I (can be 0)
+        //32 to store thumb mimetype
+        //256 to store file mimetype
+        //T Bytes for the encrypted thumb
+        //I Bytes for the encrypted info
+            if let Some(file_size) = self.size {
+                Some(file_size + 16 + 4 + 4 + 32 + 256 + self.thumbsize.unwrap_or(0) + 0)
+            } else {
+                None
+            }
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]

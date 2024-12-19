@@ -34,11 +34,11 @@ pub fn estimated_encrypted_size(unencrypted_file_size: u64, unencrypted_thumb_si
         //T Bytes for the encrypted thumb
         //I Bytes for the encrypted info
         let thumb_size = if unencrypted_thumb_size == 0 { 0 } else { ceil_to_multiple_of_16(unencrypted_thumb_size as usize) as u64 };
-        println!("thumb_size {thumb_size}: {unencrypted_thumb_size}");
+        //println!("thumb_size {thumb_size}: {unencrypted_thumb_size}");
         let infos_size = if unencrypted_infos_size == 0 { 0 } else { ceil_to_multiple_of_16(unencrypted_infos_size as usize) as u64 };
-        println!("infos_size {infos_size}: {unencrypted_infos_size}");
+        //println!("infos_size {infos_size}: {unencrypted_infos_size}");
         let file_size = if unencrypted_file_size == 0 { 0 } else { ceil_to_multiple_of_16(unencrypted_file_size as usize) as u64 };
-        println!("file {file_size}: {unencrypted_file_size}");
+        //println!("file {file_size}: {unencrypted_file_size}");
         16 + 4 + 4 + 32 + 256 + thumb_size +  infos_size + file_size
 }
 

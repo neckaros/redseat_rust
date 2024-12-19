@@ -108,7 +108,7 @@ impl Source for PluginProvider {
         Ok(())
     }
     async fn get_file(&self, source: &str, _range: Option<RangeDefinition>) -> RsResult<SourceRead> {
-        println!("root: {}, source: {}", self.root, source);
+        //println!("root: {}, source: {}", self.root, source);
         let request = self.plugin_manager.provider_get_file(RsProviderPath { root: Some(self.root.clone()), source: source.to_string() }, &self.plugin).await?;
         Ok(SourceRead::Request(request))
     }
@@ -135,7 +135,7 @@ impl Source for PluginProvider {
             if let Some(length) = content_length {
                 let body = reqwest::Body::wrap_stream(streamreader);
                 let client = Client::new();
-                println!("sending to stream (size: {}) {}", length, request.request.url);
+                //println!("sending to stream (size: {}) {}", length, request.request.url);
                 let response = client
                     .post(request.request.url.clone())
                     .add_request_headers(&request.request, &None)?
@@ -144,7 +144,7 @@ impl Source for PluginProvider {
                     .body(body)
                     .send()
                     .await?;
-                println!("response: {}", response.status());
+                //println!("response: {}", response.status());
                 let text = response.text().await?;
                 let request = plugin_manager.provider_upload_parse_response(text, &plugin).await.map_err(|_| SourcesError::Other("Unable to parse upload response".to_string()))?;
 
@@ -154,7 +154,7 @@ impl Source for PluginProvider {
             } else { //download in temp directory if size is not available as it is necessary for upload
                 let dest_source = format!(".cache/{}", format!("{}-{}", nanoid!(), filename));
                 let dest = local.get_full_path(&dest_source);
-                println!("dest: {:?}", dest);
+                //println!("dest: {:?}", dest);
                 PathProvider::ensure_filepath(&dest).await?;
 
                 let mut file = File::create(&dest).await?;
@@ -174,7 +174,7 @@ impl Source for PluginProvider {
                 let stream = ReaderStream::new(file);
                 let body = reqwest::Body::wrap_stream(stream);
                 let client = Client::new();
-                println!("sending file to stream (size: {}) {}", file_size, request.request.url);
+                //println!("sending file to stream (size: {}) {}", file_size, request.request.url);
                 let response = client
                     .post(request.request.url.clone())
                     .add_request_headers(&request.request, &None)?
@@ -183,7 +183,7 @@ impl Source for PluginProvider {
                     .body(body)
                     .send()
                     .await?;
-                println!("response: {}", response.status());
+                //println!("response: {}", response.status());
                 let text = response.text().await?;
                 let request = plugin_manager.provider_upload_parse_response(text, &plugin).await.map_err(|_| SourcesError::Other("Unable to parse upload response".to_string()))?;
 

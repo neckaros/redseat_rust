@@ -1,8 +1,11 @@
+use nanoid::nanoid;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use strum_macros::EnumString;
 
-use crate::{model::medias::MediaQuery, tools::clock::now};
+use crate::{error::RsError, model::medias::MediaQuery, tools::{clock::now, scheduler::backup}};
+
+use super::{library, media::Media, ElementAction};
 
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -19,6 +22,7 @@ pub struct Backup {
     pub last: Option<i64>,
     pub password: Option<String>,
     pub size: u64,
+    pub db_path: Option<String>,
 }
 
 
@@ -35,11 +39,30 @@ pub struct BackupFile {
     pub hash: String,
     pub sourcehash: String,
     pub size: u64,
-    pub date: i64,
+    pub modified: i64,
+    pub added: i64,
     pub iv: Option<String>,
     pub thumb_size: Option<u64>,
     pub info_size: Option<u64>,
     pub error: Option<String>,
+}
+
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupError {
+    pub id: String,
+    pub backup: String,
+	pub library: String,
+    pub file: String,
+    pub date: i64,
+    pub error: String,
+}
+
+impl BackupError {
+    pub fn new(backup: String, library: String, file: String, error: RsError) -> Self {
+        BackupError { id: nanoid!(), backup, library, file, date: now().timestamp_millis(), error: error.to_string() }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, strum_macros::Display,EnumString, Default)]
@@ -55,12 +78,11 @@ pub enum BackupStatus {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")] 
-pub struct BackupStatusMessage {
+pub struct BackupProcessStatus {
     pub library: String,
     pub backup: String,
     pub status: BackupStatus,
     pub time: i64,
-    pub files: Vec<BackupFileProgress>,
     pub total: u64,
     pub current: u64,
     pub total_size: u64,
@@ -69,15 +91,21 @@ pub struct BackupStatusMessage {
     pub estimated_remaining_seconds: Option<u64>
 }
 
-impl BackupStatusMessage {
-    pub fn new_from_backup(backup: &Backup, files: Vec<BackupFileProgress>, total: u64, current: u64, total_size: u64, current_size: u64) -> Self {
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")] 
+pub struct BackupWithStatus {
+    pub backup: Backup,
+    pub status: Option<BackupProcessStatus>,
+}
+
+impl BackupProcessStatus {
+    pub fn new_from_backup(backup: &Backup, total: u64, current: u64, total_size: u64, current_size: u64) -> Self {
         let backup = backup.clone();
-        BackupStatusMessage {
+        BackupProcessStatus {
             library: backup.library,
             backup: backup.id,
             status: BackupStatus::InProgress,
             time: now().timestamp_millis(),
-            files,
             total,
             current,
             total_size,
@@ -88,12 +116,11 @@ impl BackupStatusMessage {
     }
     pub fn new_from_backup_idle(backup: &Backup) -> Self {
         let backup = backup.clone();
-        BackupStatusMessage {
+        BackupProcessStatus {
             library: backup.library,
             backup: backup.id,
             status: BackupStatus::Idle,
             time: 0,
-            files: vec![],
             total: 0,
             current: 0,
             total_size: 0,
@@ -105,12 +132,11 @@ impl BackupStatusMessage {
 
     pub fn new_from_backup_done(backup: &Backup) -> Self {
         let backup = backup.clone();
-        BackupStatusMessage {
+        BackupProcessStatus {
             library: backup.library,
             backup: backup.id,
             status: BackupStatus::Done,
             time: 0,
-            files: vec![],
             total: 0,
             current: 0,
             total_size: 0,
@@ -124,14 +150,70 @@ impl BackupStatusMessage {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupFileProgress {
-    pub name: String,
+    pub name: Option<String>,
     pub backup: String,
-	pub library: String,
+	pub library: Option<String>,
     pub file: String,
     pub id: String,
-    pub size: u64,
+    pub size: Option<u64>,
+    pub status: BackupStatus,
     pub progress: u64,
     pub error: Option<String>,
 
     pub estimated_remaining_seconds: Option<u64>
+}
+
+impl BackupFileProgress {
+    pub fn new_from(backup: &Backup, media: &Media, id: String, status: BackupStatus, progress: u64, error: Option<String>) -> Self {
+        BackupFileProgress {
+            name: Some(media.name.clone()),
+            backup: backup.id.clone(),
+            library: Some(backup.library.clone()),
+            file: media.id.clone(),
+            status,
+            id,
+            size: media.size.clone(),
+            progress,
+            error,
+            estimated_remaining_seconds: None,
+        }
+    }
+
+    pub fn new(file: String, backup: String, library: Option<String>, name: Option<String>, size: Option<u64>, id: String, status: BackupStatus, progress: u64, error: Option<String>) -> Self {
+        BackupFileProgress {
+            name,
+            backup,
+            library,
+            file,
+            status,
+            id,
+            size,
+            progress,
+            error,
+            estimated_remaining_seconds: None,
+        }
+    }
+
+    pub fn new_light(backup_id: String, file_id: String, id: String, size: Option<u64>, status: BackupStatus, progress: u64, error: Option<String>) -> Self {
+        BackupFileProgress {
+            name: None,
+            backup: backup_id,
+            library: None,
+            file: file_id,
+            status,
+            id,
+            size,
+            progress,
+            error,
+            estimated_remaining_seconds: None,
+        }
+    }
+}
+
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")] 
+pub struct BackupMessage {
+    pub action: ElementAction,
+    pub backup: BackupWithStatus,
 }

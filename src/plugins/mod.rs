@@ -174,7 +174,7 @@ impl PluginManager {
         Ok(source)
     }
 
-    pub async fn source_for_backup(&self, backup: Backup, controller: ModelController) -> RsResult<Box<dyn Source>> {
+    pub async fn provider_for_backup(&self, backup: Backup, controller: ModelController) -> RsResult<Box<dyn Source>> {
         let source: Box<dyn Source> = if backup.source == "PathProvider" {
             let source = PathProvider::new_from_backup(backup, controller).await?;
             Box::new(source)
