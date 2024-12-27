@@ -12,17 +12,17 @@ use super::{library, media::Media, ElementAction};
 #[serde(rename_all = "camelCase")]
 pub struct Backup {
     pub id: String,
+	pub name: String,
 	pub source: String,
     pub plugin: Option<String>,
     pub credentials: Option<String>,
-    pub library: String,
+    pub library: Option<String>,
     pub path: String,
     pub schedule: Option<String>,
     pub filter: Option<MediaQuery>,
     pub last: Option<i64>,
     pub password: Option<String>,
     pub size: u64,
-    pub db_path: Option<String>,
 }
 
 
@@ -32,7 +32,7 @@ pub struct Backup {
 #[serde(rename_all = "camelCase")]
 pub struct BackupFile {
     pub backup: String,
-	pub library: String,
+	pub library: Option<String>,
     pub file: String,
     pub id: String,
     pub path: String,
@@ -79,7 +79,7 @@ pub enum BackupStatus {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")] 
 pub struct BackupProcessStatus {
-    pub library: String,
+    pub library: Option<String>,
     pub backup: String,
     pub status: BackupStatus,
     pub time: i64,
@@ -168,7 +168,7 @@ impl BackupFileProgress {
         BackupFileProgress {
             name: Some(media.name.clone()),
             backup: backup.id.clone(),
-            library: Some(backup.library.clone()),
+            library: backup.library.clone(),
             file: media.id.clone(),
             status,
             id,

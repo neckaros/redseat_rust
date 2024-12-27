@@ -46,7 +46,7 @@ impl SqliteStore {
     
     pub async fn get_backups(&self) -> Result<Vec<Backup>> {
         let row = self.server_store.call( move |conn| { 
-            let mut query = conn.prepare("SELECT id, source, credentials, library, path, schedule, filter, last, password, size, plugin, db_path  FROM Backups")?;
+            let mut query = conn.prepare("SELECT id, source, credentials, library, path, schedule, filter, last, password, size, plugin, name  FROM Backups")?;
             let rows = query.query_map(
             [],
             |row| {
@@ -62,7 +62,7 @@ impl SqliteStore {
                     password:  row.get(8)?,
                     size:  row.get(9)?,
                     plugin:  row.get(10)?,
-                    db_path:  row.get(11)?,
+                    name:  row.get(11)?,
                     
                 })
             },
@@ -76,7 +76,7 @@ impl SqliteStore {
     pub async fn get_backup(&self, credential_id: &str) -> Result<Option<Backup>> {
         let credential_id = credential_id.to_string();
         let row = self.server_store.call( move |conn| { 
-            let mut query = conn.prepare("SELECT id, source, credentials, library, path, schedule, filter, last, password, size, plugin, db_path  FROM Backups WHERE id = ?")?;
+            let mut query = conn.prepare("SELECT id, source, credentials, library, path, schedule, filter, last, password, size, plugin, name  FROM Backups WHERE id = ?")?;
             let row = query.query_row(
             [credential_id],
             |row| {
@@ -92,7 +92,7 @@ impl SqliteStore {
                     password:  row.get(8)?,
                     size:  row.get(9)?,
                     plugin:  row.get(10)?,
-                    db_path:  row.get(11)?,
+                    name:  row.get(11)?,
                 })
             },
             ).optional()?;
@@ -118,7 +118,7 @@ impl SqliteStore {
             super::add_for_sql_update(update.last, "last", &mut columns, &mut values);
             super::add_for_sql_update(update.password, "password", &mut columns, &mut values);
             super::add_for_sql_update(update.size, "size", &mut columns, &mut values);
-            super::add_for_sql_update(update.db_path, "db_path", &mut columns, &mut values);
+            super::add_for_sql_update(update.name, "name", &mut columns, &mut values);
 
 
             if columns.len() > 0 {
@@ -134,7 +134,7 @@ impl SqliteStore {
     pub async fn add_backup(&self, backup: Backup) -> Result<()> {
         self.server_store.call( move |conn| { 
 
-            conn.execute("INSERT INTO Backups (id, source, credentials, library, path, schedule, filter, last, password, size, plugin, db_path)
+            conn.execute("INSERT INTO Backups (id, source, credentials, library, path, schedule, filter, last, password, size, plugin, name)
             VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, ?, ?)", params![
                 backup.id,
                 backup.source,
@@ -147,7 +147,7 @@ impl SqliteStore {
                 backup.password,
                 backup.size,
                 backup.plugin,
-                backup.db_path
+                backup.name,
             ])?;
             
             Ok(())

@@ -80,6 +80,8 @@ pub enum Error {
 	UnableToOpenDatabase,
 	StoreError,
 
+	// -- Backup errors.
+	LibraryIdNeededForMediaBackup,
 
     // -- Servers errors.
 	ServerNoServerId,

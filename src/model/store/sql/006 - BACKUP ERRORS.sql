@@ -1,2 +1,1 @@
-ALTER TABLE Backups ADD COLUMN db_path TEXT;
 CREATE TABLE Backups_Errors (id   TEXT PRIMARY KEY, backup TEXT    NOT NULL,  library TEXT    NOT NULL,   file TEXT NOT NULL,   date INTEGER NOT NULL, error TEXT    NOT NULL);

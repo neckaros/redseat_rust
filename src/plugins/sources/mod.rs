@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use tokio::{fs::File, io::{copy, AsyncRead, AsyncSeek, AsyncWrite, AsyncWriteExt, BufReader}, sync::{mpsc::Sender, Mutex}, time::sleep};
 
 use tokio_util::io::{ReaderStream, StreamReader};
-use crate::{domain::{backup::Backup, library::ServerLibrary, media::MediaForUpdate, progress::{RsProgress, RsProgressCallback}}, error::RsResult, model::{error::Error, users::ConnectedUser, ModelController}, routes::mw_range::RangeDefinition, server::get_server_file_path_array, tools::{file_tools::get_mime_from_filename, video_tools::ytdl::ProgressStreamItem}};
+use crate::{domain::{backup::Backup, library::{self, ServerLibrary}, media::MediaForUpdate, progress::{RsProgress, RsProgressCallback}}, error::RsResult, model::{error::Error, users::ConnectedUser, ModelController}, routes::mw_range::RangeDefinition, server::get_server_file_path_array, tools::{file_tools::get_mime_from_filename, video_tools::ytdl::ProgressStreamItem}};
 
 use self::error::{SourcesError, SourcesResult};
 
@@ -218,7 +218,7 @@ impl RsRequestHeader for RequestBuilder {
 
 impl SourceRead { 
     #[async_recursion]
-    pub async fn into_reader(self, library_id: &str, range: Option<RangeDefinition>, progress: Option<Sender<RsProgress>>, mc: Option<(ModelController, &ConnectedUser)>, retry: Option<u16>) -> RsResult<FileStreamResult<AsyncReadPinBox>> {
+    pub async fn into_reader(self, library_id: Option<&str>, range: Option<RangeDefinition>, progress: Option<Sender<RsProgress>>, mc: Option<(ModelController, &ConnectedUser)>, retry: Option<u16>) -> RsResult<FileStreamResult<AsyncReadPinBox>> {
         //println!("into_reader");
         match self {
             SourceRead::Stream(reader) => {
@@ -229,10 +229,14 @@ impl SourceRead {
                 match request.status {
                     RsRequestStatus::Unprocessed => {
                         if let Some((mc, user)) = mc {
-                            let new_request = mc.exec_request(request.clone(), Some(library_id.to_string()), false, progress.clone(), user).await?;
-                            new_request.into_reader(library_id, range.clone(), progress.clone(), Some((mc, user)), None).await
+                            if let Some(library_id_string) = &library_id {
+                                let new_request = mc.exec_request(request.clone(), Some(library_id_string.to_string()), false, progress.clone(), user).await?;
+                                new_request.into_reader(library_id, range.clone(), progress.clone(), Some((mc, user)), None).await
+                            } else {
+                                Err(Error::RequestNeedsLibraryIdForResolution(request).into())
+                            }
                         } else {
-                            Err(Error::InvalidRsRequestStatus(request.status).into())
+                            Err(Error::RequestNeedsModelControllerForResolution(request).into())
                         }
                     },
                     RsRequestStatus::NeedParsing => {

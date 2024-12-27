@@ -1,6 +1,6 @@
 use derive_more::From;
 use hyper::StatusCode;
-use rs_plugin_common_interfaces::request::RsRequestStatus;
+use rs_plugin_common_interfaces::{request::RsRequestStatus, RsRequest};
 use serde::Serialize;
 use serde_with::{serde_as, DisplayFromStr};
 
@@ -44,6 +44,8 @@ pub enum Error {
 	//RsRequest
 	UnableToFormatHeaders,
 	InvalidRsRequestStatus(RsRequestStatus),
+	RequestNeedsModelControllerForResolution(RsRequest),
+	RequestNeedsLibraryIdForResolution(RsRequest),
 
 
     CannotOpenDatabase,

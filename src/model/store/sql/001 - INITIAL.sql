@@ -1,16 +1,19 @@
 CREATE TABLE Backups (
   id   TEXT PRIMARY KEY,
-  source TEXT    NOT NULL,
+  source TEXT NOT NULL,
   credentials TEXT,
-  library TEXT NOT NULL,
+  library TEXT,
   path TEXT NOT NULL,
-  schedule TEXT ,
+  schedule TEXT,
   filter TEXT,
-  last INTEGER, password TEXT, size INTEGER);
+  last INTEGER,
+  password TEXT,
+  size INTEGER,
+  name TEXT NOT NULL);
 
 CREATE TABLE Backups_Files (
   backup   TEXT NOT NULL,
-  library TEXT NOT NULL,
+  library TEXT,
   file TEXT NOT NULL,
   id TEXT,
   path TEXT,
