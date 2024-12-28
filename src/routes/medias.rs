@@ -118,7 +118,7 @@ async fn handler_transfert(Path((library_id, destination)): Path<(String, String
 	let mut new_medias = vec![];
 	for id in query.ids {
 		let existing = mc.get_media(&library_id, id.clone(), &user).await?.ok_or(Error::NotFound)?;
-		let reader = mc.library_file(&library_id, &id, None, MediaFileQuery { raw: true, ..Default::default() }, &user).await?.into_reader(&library_id, None, None, Some((mc.clone(), &user)), None).await?;
+		let reader = mc.library_file(&library_id, &id, None, MediaFileQuery { raw: true, ..Default::default() }, &user).await?.into_reader(Some(&library_id), None, None, Some((mc.clone(), &user)), None).await?;
 		let media = mc.add_library_file(&destination, &existing.name, Some(existing.clone().into()), reader.stream, &user).await?;
 		new_medias.push(media)
 	}

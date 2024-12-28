@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use axum::{body::Body, response::{IntoResponse, Response}};
 use futures::{future::ok, TryFutureExt};
 use hex_literal::hex;
-use http::{header, HeaderMap};
+use http::{header, request, HeaderMap};
 use nanoid::nanoid;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -14,16 +14,17 @@ use sha256::try_async_digest;
 use tokio::{fs::File, io::{copy, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader}, sync::mpsc};
 
 
-use crate::{domain::{backup::{self, Backup, BackupError, BackupFile, BackupFileProgress, BackupMessage, BackupProcessStatus, BackupStatus, BackupWithStatus}, library::LibraryRole, media::{self, Media, MediaForUpdate}, progress::{RsProgress, RsProgressType}}, error::{RsError, RsResult}, plugins::sources::{async_reader_progress::ProgressReader, AsyncReadPinBox, FileStreamResult, SourceRead}, routes::mw_range::RangeDefinition, tools::{clock::now, encryption::{ceil_to_multiple_of_16, derive_key, estimated_encrypted_size, random_iv, AesTokioDecryptStream, AesTokioEncryptStream}, log::{log_error, log_info}}};
+use crate::{domain::{backup::{self, Backup, BackupError, BackupFile, BackupFileProgress, BackupMessage, BackupProcessStatus, BackupStatus, BackupWithStatus}, library::LibraryRole, media::{self, Media, MediaForUpdate, DEFAULT_MIME}, progress::{RsProgress, RsProgressType}}, error::{RsError, RsResult}, plugins::sources::{async_reader_progress::ProgressReader, AsyncReadPinBox, FileStreamResult, SourceRead}, routes::mw_range::RangeDefinition, tools::{clock::now, encryption::{ceil_to_multiple_of_16, derive_key, estimated_encrypted_size, random_iv, AesTokioDecryptStream, AesTokioEncryptStream}, log::{log_error, log_info}}};
 
 use super::{error::{Error, Result}, medias::{MediaFileQuery, MediaQuery, MediaSource}, store::sql::backups::BackupInfos, users::{ConnectedUser, UserRole}, ModelController};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BackupForAdd {
+	pub name: String,
 	pub source: String,
     pub credentials: Option<String>,
     pub plugin: Option<String>,
-    pub library: String,
+    pub library: Option<String>,
     pub path: String,
     pub schedule: Option<String>,
     pub filter: Option<MediaQuery>,
@@ -43,7 +44,7 @@ pub struct BackupForUpdate {
     pub last: Option<i64>,
     pub password: Option<String>,
     pub size: Option<u64>,
-    pub db_path: Option<String>,
+    pub name: Option<String>,
 }
 
 
@@ -52,10 +53,17 @@ impl ModelController {
 
     pub fn send_backup_status(&self, message: BackupMessage) {
 		self.for_connected_users(&message, |user, socket, message| {
-            let r = user.check_library_role(&message.backup.backup.library, LibraryRole::Admin);
-			if r.is_ok() {
-				let _ = socket.emit("backups", message);
-			}
+            if let Some(library) = &message.backup.backup.library {
+                let r = user.check_library_role(library, LibraryRole::Admin);
+                if r.is_ok() {
+                    let _ = socket.emit("backups", message);
+                }
+            } else {
+                let r = user.check_role(&UserRole::Admin);
+                if r.is_ok() {
+                    let _ = socket.emit("backups", message);
+                }
+            }
 		});
 	}
     pub fn send_backup_file_status(&self, message: BackupFileProgress) {
@@ -155,12 +163,13 @@ impl ModelController {
     pub async fn update_backup(&self, backup_id: &str, update: BackupForUpdate, requesting_user: &ConnectedUser) -> Result<Backup> {
         requesting_user.check_role(&UserRole::Admin)?;
 		self.store.update_backup(backup_id, update).await?;
-        let backup = self.store.get_backup(backup_id).await?;
-        if let Some(backup) = backup { 
-            Ok(backup)
-        } else {
-            Err(Error::NotFound)
-        }
+        let backup = self.store.get_backup(backup_id).await?.ok_or(Error::NotFound)?;
+
+        let backup_with_status = BackupWithStatus { backup: backup.clone(), status: None};
+        let message = BackupMessage { action: crate::domain::ElementAction::Updated, backup: backup_with_status };
+        self.send_backup_status(message);
+        Ok(backup)
+
 	}
 
 
@@ -168,6 +177,7 @@ impl ModelController {
         requesting_user.check_role(&UserRole::Admin)?;
         let backup = Backup {
             id: nanoid!(),
+            name: backup.name,
             source: backup.source,
             credentials: backup.credentials,
             library: backup.library,
@@ -178,7 +188,6 @@ impl ModelController {
             password: backup.password,
             size: 0,
             plugin: backup.plugin,
-            db_path: None,
         };
 		self.store.add_backup(backup.clone()).await?;
 		Ok(backup)
@@ -272,9 +281,94 @@ impl ModelController {
        
         let source = if let Some(password) = backup_info.password.clone() {
 
-            let mut reader =  source_read.into_reader(library_id, None, None, Some((self.clone(), requesting_user)), None).await?;
+            let mut reader =  source_read.into_reader(Some(&library_id.to_string()), None, None, Some((self.clone(), requesting_user)), None).await?;
 
             let media = self.get_media(library_id, media_id.to_string(), requesting_user).await?;
+
+            
+            let key = derive_key(backup_info.password.clone().unwrap_or_default());
+
+            let (asyncwriter, asyncreader) = tokio::io::duplex(256 * 1024);
+            //let mut streamreader = tokio_util::io::ReaderStream::new(asyncreader);
+
+            let mut decrypt_stream = AesTokioDecryptStream::new(asyncwriter, &key, None)?;
+
+            tokio::spawn(async move {
+
+                
+                let mut buffer = vec![0; 1024];
+                loop {
+                    let bytes_read = reader.stream.read(&mut buffer).await.unwrap();
+                    if bytes_read == 0 {
+                        break;
+                    }
+                    decrypt_stream.write_decrypted(&buffer[..bytes_read]).await.unwrap();
+                }
+            
+                decrypt_stream.finalize().await.unwrap();
+                
+
+            
+            }).map_err(|r| RsError::Error("Unable to get plugin writer".to_string()));
+
+            SourceRead::Stream(FileStreamResult {
+                stream: Box::pin(asyncreader),
+                size: media.as_ref().map(|m| m.size.to_owned()).flatten(),
+                accept_range: false,
+                range: None,
+                mime: media.as_ref().map(|m| m.mimetype.to_owned()),
+                name: media.as_ref().map(|m| m.name.to_owned()),
+                cleanup: None,
+            })
+        } else {
+            source_read
+        };
+        
+        Ok(source)
+	}
+
+
+    pub async fn check_role_for_backup_id(&self, backup_file_id: &str, requesting_user: &ConnectedUser) -> RsResult<()> {
+        let backup_file = self.get_backup_file(backup_file_id).await?;
+        ModelController::check_role_for_backup(&backup_file, requesting_user)
+    }
+
+    pub fn check_role_for_backup(backup_file: &BackupFile, requesting_user: &ConnectedUser) -> RsResult<()> {
+        if let Some(library_id) = &backup_file.library {
+            requesting_user.check_library_role(&library_id, LibraryRole::Admin)?;
+            Ok(())
+        } else {
+            requesting_user.check_role(&UserRole::Admin)?;
+            Ok(())
+        }
+        
+    }
+
+    /// Get the SourceRead for a backup file
+    /// 
+    /// If no `backup_file_id` is provided, the last backup will be fetched
+    pub async fn get_backup_file_reader(&self, backup_file_id: &str, requesting_user: &ConnectedUser) -> RsResult<SourceRead> {
+        let backup_file = self.get_backup_file(backup_file_id).await?;
+
+        ModelController::check_role_for_backup(&backup_file, requesting_user)?;
+
+
+
+        let backup_info = self.get_backup(&backup_file.backup, requesting_user).await?.ok_or(RsError::BackupProcessNotFound(backup_file.backup.to_string()))?;
+
+        let source = self.plugin_manager.provider_for_backup(backup_info.clone(), self.clone()).await?;
+        let mut source_read = source.get_file(&backup_file.path, None).await?;
+
+       
+        let source = if let Some(password) = backup_info.password.clone() {
+
+            let mut reader =  source_read.into_reader(backup_file.library.as_deref(), None, None, Some((self.clone(), requesting_user)), None).await?;
+
+            let media = if let Some(library_id) = backup_file.library {
+                self.get_media(&library_id, backup_file.file.clone(), requesting_user).await?
+            } else {
+                None
+            };
 
             
             let key = derive_key(backup_info.password.clone().unwrap_or_default());
@@ -345,7 +439,7 @@ impl ModelController {
         let source_size = source_read.size();
         let source_mime = source_read.mimetype();
         let source_name = source_read.filename();
-        let mut reader = source_read.into_reader(&backup_info.library, None, None, Some((self.clone(), &ConnectedUser::ServerAdmin)), None).await?;
+        let mut reader = source_read.into_reader(backup_info.library.as_deref(), None, None, Some((self.clone(), &ConnectedUser::ServerAdmin)), None).await?;
 
         let mut reader = ProgressReader::new(reader.stream, RsProgress { id: id.clone(), total: source_size, current: Some(0), kind: RsProgressType::Transfert, filename: source_name.clone() }, tx_progress.clone());
 
@@ -405,7 +499,7 @@ impl ModelController {
             message.progress = infos.size.clone().unwrap_or(0);
             message.size = infos.size.clone();
             self.send_backup_file_status(message);
-            let backup = BackupFile { id, backup: backup_info.id, library: backup_info.library, file: file_id, path: backup_file_source, hash: infos.md5.clone().unwrap_or_default(), sourcehash, size: source_size.unwrap_or_default(), modified, added: now().timestamp_millis(), iv: None, thumb_size: None, info_size: None, error: None };
+            let backup = BackupFile { id, backup: backup_info.id, library: backup_info.library.clone(), file: file_id, path: backup_file_source, hash: infos.md5.clone().unwrap_or_default(), sourcehash, size: source_size.unwrap_or_default(), modified, added: now().timestamp_millis(), iv: None, thumb_size: None, info_size: None, error: None };
             backup
         };
          Ok(backup)
@@ -413,30 +507,29 @@ impl ModelController {
 		
 	}
 
-    pub async fn upload_backup_media(&self, backup_id: &str, media_id: &str, id: Option<String>, requesting_user: &ConnectedUser) -> RsResult<BackupFile> {
+    pub async fn upload_backup_media(&self, backup_id: &str, library_id: &str, media_id: &str, id: Option<String>, requesting_user: &ConnectedUser) -> RsResult<BackupFile> {
         
         let id = id.unwrap_or(nanoid!());
+        let media_info = self.get_media(&library_id, media_id.to_string(), requesting_user).await?.ok_or(RsError::NotFound)?;
+        let mut source_read = self.library_file(&library_id, media_id, None, MediaFileQuery { raw: true, ..Default::default()}, requesting_user).await?;
 
-        let backup_info = self.get_backup(backup_id, requesting_user).await?.ok_or(RsError::BackupProcessNotFound(backup_id.to_string()))?;
-        let media_info = self.get_media(&backup_info.library, media_id.to_string(), requesting_user).await?.ok_or(RsError::NotFound)?;
-        let mut source_read = self.library_file(&backup_info.library, media_id, None, MediaFileQuery { raw: true, ..Default::default()}, requesting_user).await?;
-
-        let backup_file = self.upload_backup(source_read, media_id.to_string(), backup_id.to_string(), media_info.md5.clone().unwrap_or("none".to_string()), media_info.max_date(), Some(backup_info.library.clone()), Some(media_info), Some(id)).await?;
+        let backup_file = self.upload_backup(source_read, media_id.to_string(), backup_id.to_string(), media_info.md5.clone().unwrap_or("none".to_string()), media_info.max_date(),Some(library_id.to_string()), Some(media_info), Some(id)).await?;
 
         Ok(backup_file)
+
 
 		
 	}
 
-    pub async fn upload_backup_path(&self, backup_info: Backup, path: PathBuf, name: String) -> RsResult<BackupFile> {
+    pub async fn upload_backup_path(&self, backup_info: Backup, file_id: &str, path: PathBuf, name: String) -> RsResult<BackupFile> {
         let sourcehash = try_async_digest(&path).await?;
 
-        let existing_db_bakcups = self.get_backup_media_backup_files(&backup_info.id, "db", &ConnectedUser::ServerAdmin).await?;
+        let existing_db_bakcups = self.get_backup_media_backup_files(&backup_info.id, file_id, &ConnectedUser::ServerAdmin).await?;
 
         let exist = existing_db_bakcups.into_iter().find(|b| b.sourcehash == sourcehash);
         
         if let Some(exist) = exist {
-            log_info(crate::tools::log::LogServiceType::Scheduler, "Backup dbs identical already uploaded. Ignoring".to_string());
+            log_info(crate::tools::log::LogServiceType::Scheduler, format!("Backup {} identical already uploaded. Ignoring", file_id));
             Ok(exist)
         } else {
 
@@ -453,12 +546,12 @@ impl ModelController {
                 size: Some(metadata.len()),
                 accept_range: false,
                 range: None,
-                mime: Some("application/vnd.sqlite3".to_string()),
+                mime: Some(DEFAULT_MIME.to_string()),
                 name: Some(name),
                 cleanup: None,
             };
             let source_read = SourceRead::Stream(file_stream);
-            let backup_file = self.upload_backup(source_read, "db".to_string(), backup_info.id.clone(), sourcehash, now().timestamp_millis(), Some(backup_info.library.clone()), None, None).await?;
+            let backup_file = self.upload_backup(source_read, file_id.to_string(), backup_info.id.clone(), sourcehash, now().timestamp_millis(), backup_info.library.clone(), None, None).await?;
             let backup_file = self.add_backup_file(backup_file, &ConnectedUser::ServerAdmin).await?;
             
             Ok(backup_file)
@@ -469,7 +562,7 @@ impl ModelController {
     pub async fn remove_backup_file(&self, backup_file_id: &str, requesting_user: &ConnectedUser) -> RsResult<()> {
         let backup_file = self.get_backup_file(backup_file_id).await?;
         let backup_info = self.get_backup(&backup_file.backup, requesting_user).await?.ok_or(RsError::BackupProcessNotFound(backup_file.backup.to_string()))?;
-        requesting_user.check_library_role(&backup_info.library, LibraryRole::Admin)?;
+        ModelController::check_role_for_backup(&backup_file, requesting_user)?;
         
         let source = self.plugin_manager.provider_for_backup(backup_info.clone(), self.clone()).await?;
         

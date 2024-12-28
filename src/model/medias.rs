@@ -363,7 +363,7 @@ impl ModelController {
             let file = self.library_file(library_id, &media_id, 
                 None, MediaFileQuery { page: Some(n) , ..Default::default()}, requesting_user).await?;
             let filename = file.filename().unwrap_or(nanoid!());
-            let mut reader = file.into_reader(library_id, None, None, Some((self.clone(), requesting_user)), None).await?;
+            let mut reader = file.into_reader(Some(library_id), None, None, Some((self.clone(), requesting_user)), None).await?;
 
             let mut buffer = vec![];
             reader.stream.read_to_end(&mut buffer).await?;
@@ -472,7 +472,7 @@ impl ModelController {
 
             if !query.unsupported_mime.is_empty() && !query.raw {
                 if existing.kind == FileType::Photo && query.unsupported_mime.contains(&existing.mime) || query.unsupported_mime.contains(&"all".to_owned()) {
-                    let mut data = reader_response.into_reader(library_id, range, None, Some((self.clone(), &requesting_user)), None).await?; 
+                    let mut data = reader_response.into_reader(Some(library_id), range, None, Some((self.clone(), &requesting_user)), None).await?; 
                     let resized = convert_image_reader(&mut data.stream, "jpg", Some(80)).await?;
                     let len = resized.len();
                     let resized = Cursor::new(resized);
@@ -672,7 +672,7 @@ impl ModelController {
             for request in requests {
                 
                 
-                let reader = SourceRead::Request(request.clone()).into_reader(library_id, None, 
+                let reader = SourceRead::Request(request.clone()).into_reader(Some(library_id), None, 
                     None, Some((self.clone(), &ConnectedUser::ServerAdmin)), None).await;
 
                 if let Ok(mut reader) = reader {
@@ -768,7 +768,7 @@ impl ModelController {
                 }
 
 
-                let reader = SourceRead::Request(request).into_reader(library_id, None, 
+                let reader = SourceRead::Request(request).into_reader(Some(library_id), None, 
                     Some(tx_progress.clone()), Some((self.clone(), &ConnectedUser::ServerAdmin)), None).await?;
 
                 if let Some(reader_name) = reader.name {
@@ -941,7 +941,7 @@ impl ModelController {
                 let media_source: MediaSource = media.try_into()?;
                 println!("Photo {}", &media_source.source);
                 let reader = m.get_file(&media_source.source, None).await?;
-                let mut reader = reader.into_reader(library_id, None, None, Some((self.clone(), &requesting_user)), None).await?;
+                let mut reader = reader.into_reader(Some(library_id), None, None, Some((self.clone(), &requesting_user)), None).await?;
                 let image = resize_image_reader(&mut reader.stream, 512).await?;
                 Ok(image)
             },
@@ -949,7 +949,7 @@ impl ModelController {
                 let media_source: MediaSource = media.try_into()?;
                 println!("Photo {}", &media_source.source);
                 let reader = self.library_file(library_id, media_id, None, MediaFileQuery {page: Some(1), unsupported_mime: vec![], raw: false }, requesting_user).await?;
-                let mut reader = reader.into_reader(library_id, None, None, Some((self.clone(), &requesting_user)), None).await?;
+                let mut reader = reader.into_reader(Some(library_id), None, None, Some((self.clone(), &requesting_user)), None).await?;
                 let image = resize_image_reader(&mut reader.stream, 512).await?;
                 Ok(image)
             },
@@ -1262,7 +1262,7 @@ impl ModelController {
     pub async fn update_photo_infos(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser, notif: bool) -> crate::Result<()> {
         requesting_user.check_file_role(library_id, media_id, LibraryRole::Read)?;
         self.cache_check_library_notcrypt(library_id).await?;
-        let mut m = self.library_file(library_id, media_id, None, MediaFileQuery::default() , requesting_user).await?.into_reader(library_id, None, None, Some((self.clone(), &requesting_user)), None).await?;
+        let mut m = self.library_file(library_id, media_id, None, MediaFileQuery::default() , requesting_user).await?.into_reader(Some(library_id), None, None, Some((self.clone(), &requesting_user)), None).await?;
 
         let images_infos = image_tools::ImageCommandBuilder::new().infos(&mut m.stream).await?;
         if let Some(infos) = images_infos.first() {

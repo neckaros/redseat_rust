@@ -196,8 +196,13 @@ async fn handler_image(Path((library_id, serie_id, season, number)): Path<(Strin
 		let stream = ReaderStream::new(reader_response.stream);
 		let body = Body::from_stream(stream);
 		Ok((headers, body).into_response())
+	} else if let Ok(reader_response) = mc.serie_image(&library_id, &serie_id, Some(ImageType::Card), query.size.clone(), &user).await {
+		let headers = reader_response.hearders().map_err(|_| Error::GenericRedseatError)?;
+		let stream = ReaderStream::new(reader_response.stream);
+		let body = Body::from_stream(stream);
+		Ok((headers, body).into_response())
 	} else {
-		let reader_response = mc.serie_image(&library_id, &serie_id, Some(ImageType::Card), query.size, &user).await?;
+		let reader_response = mc.serie_image(&library_id, &serie_id, Some(ImageType::Background), query.size, &user).await?;
 		let headers = reader_response.hearders().map_err(|_| Error::GenericRedseatError)?;
 		let stream = ReaderStream::new(reader_response.stream);
 		let body = Body::from_stream(stream);

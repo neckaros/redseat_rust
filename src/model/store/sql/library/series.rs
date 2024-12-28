@@ -4,7 +4,7 @@ use crate::{domain::{serie::Serie, MediasIds}, model::{series::{SerieForUpdate, 
 use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
 
-
+const SERIE_SQL_FIELDS: &str = "id, name, type, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, year, modified, added, imdb_rating, imdb_votes, trailer, maxCreated, trakt_rating, trakt_votes, status, posterv, backgroundv, cardv";
 
 impl SqliteLibraryStore {
   
@@ -62,7 +62,7 @@ impl SqliteLibraryStore {
             where_query.add_oder(OrderBuilder::new(query.sort.to_string(), query.order));
 
 
-            let mut query = conn.prepare(&format!("SELECT id, name, type, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, year, modified, added, imdb_rating, imdb_votes, trailer, maxCreated, trakt_rating, trakt_votes, status, posterv, backgroundv, cardv  FROM series {}{}", where_query.format(), where_query.format_order()))?;
+            let mut query = conn.prepare(&format!("SELECT {}  FROM series {}{}", SERIE_SQL_FIELDS, where_query.format(), where_query.format_order()))?;
             let rows = query.query_map(
             where_query.values(), Self::row_to_serie,
             )?;
@@ -74,7 +74,7 @@ impl SqliteLibraryStore {
     pub async fn get_serie(&self, credential_id: &str) -> Result<Option<Serie>> {
         let credential_id = credential_id.to_string();
         let row = self.connection.call( move |conn| { 
-            let mut query = conn.prepare("SELECT id, name, type, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, year, modified, added, imdb_rating, imdb_votes, trailer, maxCreated, trakt_rating, trakt_votes, status, posterv, backgroundv, cardv FROM series WHERE id = ?")?;
+            let mut query = conn.prepare(&format!("SELECT {} FROM series WHERE id = ?", SERIE_SQL_FIELDS))?;
             let row = query.query_row(
             [credential_id],Self::row_to_serie).optional()?;
             Ok(row)
@@ -84,11 +84,11 @@ impl SqliteLibraryStore {
 
     pub async fn get_serie_by_external_id(&self, ids: MediasIds) -> Result<Option<Serie>> {
         let row = self.connection.call( move |conn| { 
-            let mut query = conn.prepare("SELECT 
-            id, name, type, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, year, modified, added, imdb_rating, imdb_votes, trailer, maxCreated, trakt_rating, trakt_votes, status 
+            let mut query = conn.prepare(&format!("SELECT 
+            {} 
             FROM series 
             WHERE 
-            id = ? or imdb = ? or slug = ? or tmdb = ? or trakt = ? or tvdb = ?")?;
+            id = ? or imdb = ? or slug = ? or tmdb = ? or trakt = ? or tvdb = ?", SERIE_SQL_FIELDS))?;
             let row = query.query_row(
             params![ids.redseat.unwrap_or("zz".to_string()), ids.imdb.unwrap_or("zz".to_string()), ids.slug.unwrap_or("zz".to_string()), ids.tmdb.unwrap_or(0), ids.trakt.unwrap_or(0), ids.tvdb.unwrap_or(0)],Self::row_to_serie).optional()?;
             Ok(row)

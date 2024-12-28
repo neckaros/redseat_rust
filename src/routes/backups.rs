@@ -1,6 +1,6 @@
 
 use crate::{domain::backup::BackupWithStatus, error::RsError, model::{backups::{BackupForAdd, BackupForUpdate}, users::ConnectedUser, ModelController}, tools::scheduler::{backup::BackupTask, RsSchedulerTask}, Result};
-use axum::{extract::{Path, State}, routing::{delete, get, patch, post}, Json, Router};
+use axum::{body::Body, extract::{Path, State}, response::Response, routing::{delete, get, patch, post}, Json, Router};
 use serde_json::{json, Value};
 
 
@@ -12,7 +12,10 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/:id", get(handler_get))
 		.route("/:id", patch(handler_patch))
 		.route("/:id", delete(handler_delete))
+
 		
+		.route("/:id/medias/:media_id", get(handler_get_last_backup_media))
+
 		.route("/:id/start", get(handler_backup))
 		.with_state(mc)
         
@@ -46,6 +49,15 @@ async fn handler_post(State(mc): State<ModelController>, user: ConnectedUser, Js
 	let body = Json(json!(credential));
 	Ok(body)
 }
+
+async fn handler_get_last_backup_media(Path((backup_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Response<Body>> {
+	let backups = mc.get_backup_media_backup_files(&backup_id, &media_id, &user).await?;
+	let last = backups.last().ok_or(RsError::NotFound)?;
+	let reader = mc.get_backup_file_reader(&last.id, &user).await?;
+	let response = reader.into_response("nope", None, None, Some((mc.clone(), &user))).await?;
+	Ok(response)
+}
+
 
 async fn handler_backup(Path(backup_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
 	tokio::spawn(async move {
