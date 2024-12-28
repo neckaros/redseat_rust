@@ -139,7 +139,7 @@ struct ConvertParams {
 	pub to: String,
 }
 
-async fn handler_convert(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ConvertParams>, mut multipart: Multipart) -> Result<Vec<u8>> {
+async fn handler_convert(State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ConvertParams>, mut multipart: Multipart) -> Result<Vec<u8>> {
 	let mut info:MediaForUpdate = MediaForUpdate::default();
 	while let Some(field) = multipart.next_field().await.unwrap() {
         let name = field.name().unwrap().to_string();
