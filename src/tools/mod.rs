@@ -12,6 +12,7 @@ pub mod file_tools;
 pub mod http_tools;
 pub mod scheduler;
 pub mod encryption;
+pub mod convert;
 
 pub mod text_tools;
 

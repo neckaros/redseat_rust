@@ -85,6 +85,7 @@ hex-literal = "0.4.1"
 pbkdf2 = "0.12.2"
 sha1 = "0.10.6"
 hex = "0.4.3"
+rs_torrent_magnet = "0.3.0"
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }

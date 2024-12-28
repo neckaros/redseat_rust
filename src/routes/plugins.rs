@@ -1,9 +1,11 @@
 
-use crate::{domain::plugin::{PluginForAdd, PluginForInstall, PluginForUpdate}, model::{credentials::CredentialForAdd, plugins::PluginQuery, users::ConnectedUser}, tools::array_tools::value_to_hashmap, ModelController, Result};
-use axum::{extract::{Path, Query, State}, routing::{delete, get, patch, post}, Json, Router};
+use crate::{domain::{media::{MediaForUpdate, DEFAULT_MIME}, plugin::{PluginForAdd, PluginForInstall, PluginForUpdate}}, error::RsError, model::{credentials::CredentialForAdd, plugins::PluginQuery, users::ConnectedUser}, tools::{array_tools::value_to_hashmap, convert::{convert_from_to, ConvertFileSource}}, ModelController, Result};
+use axum::{extract::{Multipart, Path, Query, State}, routing::{delete, get, patch, post}, Json, Router};
+use futures::TryStreamExt;
 use rs_plugin_common_interfaces::{request::RsRequest, url::RsLink, CredentialType, PluginType};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tokio_util::io::StreamReader;
 
 
 
@@ -16,6 +18,7 @@ pub fn routes(mc: ModelController) -> Router {
 
 		.route("/parse", get(handler_parse))
 		.route("/expand", post(handler_expand))
+		.route("/convert", post(handler_convert))
 
 		.route("/urlrequest", get(handler_urlrequest))
 		.route("/", post(handler_post))
@@ -129,4 +132,45 @@ async fn handler_post(State(mc): State<ModelController>, user: ConnectedUser, Js
 	let credential = mc.add_plugin(plugin, &user).await?;
 	let body = Json(json!(credential));
 	Ok(body)
+}
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+struct ConvertParams {
+	pub from: Option<String>,
+	pub to: String,
+}
+
+async fn handler_convert(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ConvertParams>, mut multipart: Multipart) -> Result<Vec<u8>> {
+	let mut info:MediaForUpdate = MediaForUpdate::default();
+	while let Some(field) = multipart.next_field().await.unwrap() {
+        let name = field.name().unwrap().to_string();
+		if name == "info" {
+			let text = &field.text().await?;
+			info = serde_json::from_str(&text)?;
+		} else if name == "file" {
+			let filename = field.file_name().unwrap().to_string();
+			let mime = if query.from.is_none() { field.content_type().map(|c| c.to_owned()) } else { query.from.clone() };
+			let size = field.headers().get("Content-Length")
+            .and_then(|len| len.to_str().ok())
+            .and_then(|len_str| len_str.parse::<u64>().ok());
+        	
+			println!("Expected file length: {:?}", size);
+
+			info.name = info.name.or(Some(filename.clone()));
+			info.mimetype = mime.clone();
+			info.size = size;
+			
+			let reader = StreamReader::new(field.map_err(|multipart_error| {
+				std::io::Error::new(std::io::ErrorKind::Other, multipart_error)
+			}));
+
+			let source = ConvertFileSource { 
+				mime: mime.unwrap_or(DEFAULT_MIME.to_string()),
+				reader
+			};
+			
+			let result = convert_from_to(source, &query.to).await?;
+			return Ok(result)
+		}
+    }
+	Err(RsError::Error("No media provided".to_owned()))
 }

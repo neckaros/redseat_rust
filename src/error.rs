@@ -60,6 +60,10 @@ pub enum Error {
 	PluginUnsupportedCredentialType(CredentialType, Option<CredentialType>),
 	PluginError(i32, String),
 
+	// -- Convert
+	CouldNotFindConvertor(String, String),
+	ConversionFailed(String, String),
+
 	// -- Auth errors.
 
 	Forbiden,
