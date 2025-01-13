@@ -46,6 +46,7 @@ pub enum Error {
 	BackupNotFound(String, String),
 	BackupFileNotFound(String),
 
+	CorruptedImage,
 
 	// Prediction Error 
 
@@ -229,6 +230,8 @@ impl Error {
 			},
 			// -- Prediction
 			Self::NoModelFound => (StatusCode::NOT_FOUND, ClientError::NOT_FOUND),
+			Self::Model(model_error) => model_error.client_status_and_error(),
+			Self::Source(source_error) => source_error.client_status_and_error(),
 			// -- Fallback.
 			_ => (
 				StatusCode::INTERNAL_SERVER_ERROR,

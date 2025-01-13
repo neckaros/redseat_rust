@@ -215,6 +215,7 @@ impl  ModelController {
 						log_info(crate::tools::log::LogServiceType::Other, format!("Creating image size: {} {} {} {}", folder, id, ImageType::optional_to_filename_element(&kind), int_size));
 						resize_image_path(&m.get_full_path(&original_filepath),  &m.get_full_path(&source_filepath), int_size.to_size()).await?;
 						let reader = m.get_file(&source_filepath, None).await?;
+
 						if let SourceRead::Stream(reader) = reader {
 							return Ok(reader);
 						} else {
@@ -226,6 +227,9 @@ impl  ModelController {
 			}
 		}
 		let reader = reader_response?;
+		if reader.size().unwrap_or(200) == 0 {
+			return Err(RsError::CorruptedImage)
+		}
 		if let SourceRead::Stream(reader) = reader {
 			return Ok(reader);
 		} else {

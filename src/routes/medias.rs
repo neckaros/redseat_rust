@@ -1,7 +1,7 @@
 
 use std::{path::PathBuf, str::FromStr};
 
-use crate::{domain::{media::{GroupMediaDownload, MediaDownloadUrl, MediaForUpdate, MediaItemReference, MediaWithAction, MediasMessage}, ElementAction}, model::{medias::{MediaFileQuery, MediaQuery}, series::{SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, plugins::sources::SourceRead, tools::{prediction::predict_net, video_tools::VideoConvertRequest}, Error, Result};
+use crate::{domain::{media::{self, GroupMediaDownload, MediaDownloadUrl, MediaForUpdate, MediaItemReference, MediaWithAction, MediasMessage}, ElementAction}, error::RsError, model::{self, medias::{MediaFileQuery, MediaQuery}, series::{SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, plugins::sources::SourceRead, tools::{log::{log_error, log_info}, prediction::predict_net, video_tools::VideoConvertRequest}, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
 use futures::TryStreamExt;
 use hyper::{header::ACCEPT_RANGES, StatusCode};
@@ -265,7 +265,15 @@ struct MediasRemoveRequest {
 async fn handler_multi_delete(Path(library_id): Path<String>, State(mc): State<ModelController>, requesting_user: ConnectedUser, Json(updates): Json<MediasRemoveRequest>) -> Result<Json<Value>> {
 	let mut removed = vec![];
 	for id in updates.ids {
-        removed.push(mc.remove_media(&library_id, &id, &requesting_user).await?);
+		let removed_media = mc.remove_media(&library_id, &id, &requesting_user).await;
+		if let Err(RsError::Model(model::error::Error::MediaNotFound(media_id))) = removed_media {
+			log_info(crate::tools::log::LogServiceType::Other, format!("Media id {} not delete (not found)", media_id));
+		} else if let Err(error) = removed_media {
+			log_error(crate::tools::log::LogServiceType::Other, format!("Media id {} not delete (error: {:?})", id, error));
+		} else if let Ok(media) = removed_media {
+			removed.push(media);
+		}
+        
     }
 	mc.send_media(MediasMessage { library: library_id.to_string(), medias: removed.iter().map(|m| MediaWithAction { media: m.clone(), action: ElementAction::Deleted}).collect()});
 	Ok(Json(json!(removed)))
@@ -283,6 +291,7 @@ async fn handler_multi_patch(Path(library_id): Path<String>, State(mc): State<Mo
         updated.push(mc.update_media(&library_id, id, updates.update.clone(), true, &requesting_user).await?);
     }
 	mc.send_media(MediasMessage { library: library_id.to_string(), medias: updated.iter().map(|m| MediaWithAction { media: m.clone(), action: ElementAction::Updated}).collect()});
+
 	Ok(Json(json!(updated)))
 }
 

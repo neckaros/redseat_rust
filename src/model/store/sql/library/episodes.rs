@@ -57,27 +57,27 @@ impl SqliteLibraryStore {
         let row = self.connection.call( move |conn| { 
             let mut where_query = QueryBuilder::new();
             if let Some(q) = &query.after {
-                where_query.add_where(QueryWhereType::After("modified", q));
+                where_query.add_where(QueryWhereType::After("u.modified", q));
             }
             
             if let Some(q) = &query.aired_after {
-                where_query.add_where(QueryWhereType::After("airdate", q));
+                where_query.add_where(QueryWhereType::After("u.airdate", q));
             }
             if let Some(q) = &query.aired_before {
-                where_query.add_where(QueryWhereType::Before("airdate", q));
+                where_query.add_where(QueryWhereType::Before("u.airdate", q));
             }
 
             if let Some(q) = &query.serie_ref {
-                where_query.add_where(QueryWhereType::Equal("serie_ref", q));
+                where_query.add_where(QueryWhereType::Equal("u.serie_ref", q));
             }
             if let Some(q) = &query.season {
-                where_query.add_where(QueryWhereType::Equal("season", q));
+                where_query.add_where(QueryWhereType::Equal("u.season", q));
             }
 
             
             if query.not_seasons.len() > 0 {
                 let refed = query.not_seasons.iter().map(|t| t as &dyn ToSql).collect::<Vec<_>>();
-                where_query.add_where(QueryWhereType::NotIn("season", refed));
+                where_query.add_where(QueryWhereType::NotIn("u.season", refed));
             }
             
             for sorts in query.sorts {
@@ -89,8 +89,75 @@ impl SqliteLibraryStore {
             //where_query.add_oder(OrderBuilder::new("number".to_string(), SqlOrder::ASC));
             
 
+            
+            let mut query = conn.prepare(&format!("
+SELECT * FROM (
+SELECT 
+    e.serie_ref,
+    COALESCE(e.season, 0) AS season,
+    COALESCE(e.number, 0) AS number,
+    e.abs,
+    e.name,
+    e.overview,
+    e.airdate,
+    e.duration,
+    e.alt,
+    e.params,
+    e.imdb,
+    e.slug,
+    e.tmdb,
+    e.trakt,
+    e.tvdb,
+    e.otherids,
+    COALESCE(e.modified, 0) as modified,
+    COALESCE(e.added, 0) as added,
+    e.imdb_rating,
+    e.imdb_votes,
+    e.trakt_rating,
+    e.trakt_votes, 
+    null as serie_name
+FROM 
+    episodes e
+	
+	UNION
 
-            let mut query = conn.prepare(&format!("SELECT serie_ref, season, number, abs, name, overview, airdate, duration, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, modified, added, imdb_rating, imdb_votes, trakt_rating, trakt_votes, null as serie_name  FROM episodes {}{}", where_query.format(), where_query.format_order()))?;
+
+SELECT 
+    msm.serie_ref,
+    COALESCE(msm.season, 0) AS season,
+    COALESCE(msm.episode, 0) AS number,
+    e.abs,
+    e.name,
+    e.overview,
+    e.airdate,
+    e.duration,
+    e.alt,
+    e.params,
+    e.imdb,
+    e.slug,
+    e.tmdb,
+    e.trakt,
+    e.tvdb,
+    e.otherids,
+    COALESCE(e.modified, 0) as modified,
+    COALESCE(e.added, 0) as added,
+    e.imdb_rating,
+    e.imdb_votes,
+    e.trakt_rating,
+    e.trakt_votes, 
+    null as serie_name
+FROM 
+    media_serie_mapping msm
+LEFT JOIN 
+    episodes e
+ON 
+    msm.serie_ref = e.serie_ref 
+    AND msm.season = e.season 
+    AND msm.episode = e.number
+    {}
+    )
+    as u
+    {}",where_query.format_order(), where_query.format() ))?;
             //println!("query {:?}", query.expanded_sql());
             let rows = query.query_map(
             where_query.values(), Self::row_to_episode,

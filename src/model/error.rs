@@ -31,6 +31,7 @@ pub enum Error {
 	ServiceError(String, Option<String>),
 
 	NotFound,
+	LibraryStoreNotFound,
 	UserNotFound(String),
 	TagNotFound(String),
 	LibraryNotFound(String),

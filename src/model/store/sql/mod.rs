@@ -543,6 +543,40 @@ impl <'a> QueryBuilder<'a> {
         }*/
         params_from_iter(all_values)
     }
+    pub fn values_raw(&'a mut self) -> &Vec<&'a (dyn ToSql + 'a)> {
+        let all_values = &mut self.values_recursive;
+        all_values.append(&mut self.values_update);
+
+        for w in &self.wheres {
+            let r = w.expand();
+            let (_, mut v) = r.unwrap();
+            all_values.append(&mut v);
+        }
+        /*for value in &mut *all_values {
+            println!("{:?}", value.to_sql())
+        }*/
+        all_values
+    }
+    pub fn values_twice(&'a mut self) -> ParamsFromIter<&Vec<&'a (dyn ToSql + 'a)>> {
+        let all_values = &mut self.values_recursive;
+        all_values.append(&mut self.values_update);
+    
+        for w in &self.wheres {
+            let r = w.expand();
+            let (_, mut v) = r.unwrap();
+            all_values.append(&mut v);
+        }
+        for w in &self.wheres {
+            let r = w.expand();
+            let (_, mut v) = r.unwrap();
+            all_values.append(&mut v);
+        }
+        /*for value in &mut *all_values {
+            println!("{:?}", value.to_sql())
+        }*/
+        params_from_iter(all_values)
+    
+    }
 }
 
 

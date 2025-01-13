@@ -286,7 +286,7 @@ impl ModelController {
 
     pub async fn remove_media(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> RsResult<Media> {
         requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let store = self.store.get_library_store(library_id).ok_or(Error::LibraryStoreNotFound)?;
         let existing = store.get_media(media_id).await?;
         if let Some(existing) = existing { 
             self.remove_library_file(library_id, media_id, requesting_user).await?;
@@ -294,7 +294,7 @@ impl ModelController {
             self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media: existing.clone(), action: ElementAction::Deleted}] });
             Ok(existing)
         } else {
-            Err(Error::NotFound.into())
+            Err(Error::MediaNotFound(media_id.to_string()).into())
         }
 	}
 
@@ -323,6 +323,10 @@ impl ModelController {
         let result = self.library_image(library_id, ".thumbs", media_id, None, size.clone(), requesting_user).await;
         if let Err(error) = result {
             if let crate::Error::Source(SourcesError::NotFound(_)) = &error {
+                self.generate_thumb(library_id, media_id, requesting_user).await.map_err(|_| Error::NotFound)?;
+                self.library_image(library_id, ".thumbs", media_id, None, size, requesting_user).await
+
+            } else if let crate::Error::CorruptedImage = &error {
                 self.generate_thumb(library_id, media_id, requesting_user).await.map_err(|_| Error::NotFound)?;
                 self.library_image(library_id, ".thumbs", media_id, None, size, requesting_user).await
 
