@@ -206,7 +206,7 @@ impl ModelController {
     pub async fn get_media(&self, library_id: &str, media_id: String, requesting_user: &ConnectedUser) -> Result<Option<Media>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
-		let mut media = store.get_media(&media_id).await?;
+		let mut media = store.get_media(&media_id, requesting_user.user_id().ok()).await?;
         if let Some(ref mut media) = media {
             if !requesting_user.is_admin() {
                 media.source = None;
@@ -235,7 +235,7 @@ impl ModelController {
             update.origin = Some(self.exec_parse(Some(library_id.to_owned()), origin.to_owned(), requesting_user).await?)
         }
 		store.update_media(&media_id, update, requesting_user.user_id().ok()).await?;
-        let media = store.get_media(&media_id).await?.ok_or(Error::NotFound)?;
+        let media = store.get_media(&media_id, requesting_user.user_id().ok()).await?.ok_or(Error::NotFound)?;
         if notif {
             self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media: media.clone(), action: ElementAction::Updated}] });
         }
@@ -287,7 +287,7 @@ impl ModelController {
     pub async fn remove_media(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> RsResult<Media> {
         requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::LibraryStoreNotFound)?;
-        let existing = store.get_media(media_id).await?;
+        let existing = store.get_media(media_id, requesting_user.user_id().ok()).await?;
         if let Some(existing) = existing { 
             self.remove_library_file(library_id, media_id, requesting_user).await?;
             self.add_deleted(library_id, RsDeleted::media(media_id.to_owned()), requesting_user).await?;
@@ -342,7 +342,7 @@ impl ModelController {
     pub async fn split_media(&self, library_id: &str, media_id: String, from: u32, to: u32, requesting_user: &ConnectedUser) -> RsResult<Media> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
-		let media = store.get_media(&media_id).await?.ok_or(Error::NotFound)?;
+		let media = store.get_media(&media_id, requesting_user.user_id().ok()).await?.ok_or(Error::NotFound)?;
         let mut infos: MediaForUpdate = media.clone().into();
         if media.kind != FileType::Album {
             return Err(Error::ServiceError("SPLIT".to_string(), Some(format!("{} media is not an albul", media_id))).into());
@@ -413,7 +413,7 @@ impl ModelController {
             log_error(crate::tools::log::LogServiceType::Source, format!("Unable to generate thumb {:#}", r));
         }
 
-        let media = store.get_media(&id).await?.ok_or(Error::NotFound)?;
+        let media = store.get_media(&id, requesting_user.user_id().ok()).await?.ok_or(Error::NotFound)?;
 
         Ok(media)
 	}
@@ -607,7 +607,7 @@ impl ModelController {
         }
 
 
-        let media = store.get_media(&id).await?.ok_or(Error::NotFound)?;
+        let media = store.get_media(&id, requesting_user.user_id().ok()).await?.ok_or(Error::NotFound)?;
         self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media: media.clone(), action: ElementAction::Added}] });
 
         Ok(media)
@@ -732,7 +732,7 @@ impl ModelController {
                 log_error(crate::tools::log::LogServiceType::Source, format!("Unable to generate thumb {:#}", r));
             }
 
-            let media = store.get_media(&id).await?.ok_or(Error::NotFound)?;
+            let media = store.get_media(&id, requesting_user.user_id().ok()).await?.ok_or(Error::NotFound)?;
             let _ = tx_progress.send(RsProgress { id: upload_id.clone(), total: media.size, current: media.size, kind: RsProgressType::Finished, filename: Some(media.name.to_owned()) }).await;
 
             self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media: media.clone(), action: ElementAction::Added}] });
@@ -832,7 +832,7 @@ impl ModelController {
                 if let Err(r) = r {
                     log_error(crate::tools::log::LogServiceType::Source, format!("Unable to generate thumb {:#}", r));
                 }
-                let media = store.get_media(&id).await?.ok_or(Error::NotFound)?;
+                let media = store.get_media(&id, requesting_user.user_id().ok()).await?.ok_or(Error::NotFound)?;
                 let _ = tx_progress.send(RsProgress { id: upload_id.clone(), total: media.size, current: media.size, kind: RsProgressType::Finished, filename: Some(media.name.to_owned()) }).await;
                 self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media: media.clone(), action: ElementAction::Added}] });
                 
@@ -926,7 +926,7 @@ impl ModelController {
             self.process_media_spawn(library_id.to_string(), id.clone(), true, library.kind == LibraryType::Photos, requesting_user.clone());
         }
 
-        let media = store.get_media(&id).await?.ok_or(Error::MediaNotFound(id.to_owned()))?;
+        let media = store.get_media(&id, requesting_user.user_id().ok()).await?.ok_or(Error::MediaNotFound(id.to_owned()))?;
         self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media: media.clone(), action: ElementAction::Added}] });
 
         Ok(media)
@@ -938,7 +938,7 @@ impl ModelController {
 
         let m = self.source_for_library(library_id).await?; 
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
-        let media = store.get_media(media_id).await?.ok_or(Error::NotFound)?;
+        let media = store.get_media(media_id, requesting_user.user_id().ok()).await?.ok_or(Error::NotFound)?;
         
         let thumb = match media.kind {
             FileType::Photo => { 
@@ -1060,7 +1060,7 @@ impl ModelController {
     pub async fn convert(&self, library_id: &str, media_id: &str, request: VideoConvertRequest, requesting_user: &ConnectedUser) -> crate::Result<()> {
         requesting_user.check_file_role(library_id, media_id, LibraryRole::Write)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
-        let media = store.get_media(media_id).await?.ok_or(Error::NotFound)?;
+        let media = store.get_media(media_id, requesting_user.user_id().ok()).await?.ok_or(Error::NotFound)?;
 
 
         let filename = format!("{}.{}", remove_extension(&media.name), request.format);
@@ -1105,7 +1105,7 @@ impl ModelController {
         element.user.check_file_role(&element.library, &element.media, LibraryRole::Write)?;
 
         let store = self.store.get_library_store(&element.library).ok_or(Error::NotFound)?;
-        let media = store.get_media(&element.media).await?.ok_or(Error::NotFound)?;
+        let media = store.get_media(&element.media, None).await?.ok_or(Error::NotFound)?;
 
         let m = self.source_for_library(&element.library).await?; 
         let local = self.library_source_for_library(&element.library).await?; 

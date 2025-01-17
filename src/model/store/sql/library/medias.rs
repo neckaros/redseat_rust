@@ -4,8 +4,9 @@ use chrono::Utc;
 use rs_plugin_common_interfaces::url::RsLink;
 use rusqlite::{params, params_from_iter, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, Row, ToSql};
 use serde::{Deserialize, Serialize};
+use stream_map_any::StreamMapAnyVariant;
 
-use crate::{domain::{library::LibraryLimits, media::{FileEpisode, FileType, Media, MediaForInsert, MediaForUpdate, MediaItemReference, RsGpsPosition}, MediasIds}, error::RsResult, model::{medias::{MediaQuery, MediaSource, RsSort}, people::PeopleQuery, series::SerieQuery, store::{from_comma_separated_optional, from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType}, to_comma_separated_optional, to_pipe_separated_optional}, tags::{TagForInsert, TagForUpdate, TagQuery}}, tools::{array_tools::AddOrSetArray, file_tools::{file_type_from_mime, get_mime_from_filename}, log::{log_info, LogServiceType}, text_tools::{extract_people, extract_tags}}};
+use crate::{domain::{library::LibraryLimits, media::{self, FileEpisode, FileType, Media, MediaForInsert, MediaForUpdate, MediaItemReference, RsGpsPosition}, MediasIds}, error::RsResult, model::{medias::{MediaQuery, MediaSource, RsSort}, people::PeopleQuery, series::SerieQuery, store::{from_comma_separated_optional, from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType}, to_comma_separated_optional, to_pipe_separated_optional}, tags::{TagForInsert, TagForUpdate, TagQuery}}, tools::{array_tools::AddOrSetArray, file_tools::{file_type_from_mime, get_mime_from_filename}, log::{log_info, LogServiceType}, text_tools::{extract_people, extract_tags}}};
 use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -92,7 +93,7 @@ impl From<MediasIds> for Vec<String> {
 
 const MEDIA_QUERY: &str = "SELECT 
             m.id, m.source, m.name, m.description, m.type, m.mimetype, m.size,
-            (select avg(rating ) from ratings where media_ref = m.id) as rating,
+            art.rating as rating,
             m.md5, m.params, 
             m.width, m.height, m.phash, m.thumbhash, m.focal, m.iso, m.colorSpace, m.sspeed, m.orientation, m.duration, 
             m.acodecs, m.achan, m.vcodecs, m.fps, m.bitrate, m.long, m.lat, m.model, m.pages, m.progress, 
@@ -104,7 +105,64 @@ const MEDIA_QUERY: &str = "SELECT
             m.fnumber, m.icc, m.mp
 			
             FROM medias as m
+            LEFT JOIN 
+					(SELECT 
+							media_ref, 
+							AVG(rating) AS rating
+						FROM 
+							ratings
+						GROUP BY 
+							media_ref
+					) as art
+				ON 
+					art.media_ref = m.id
         ";
+
+fn media_query(user_id: &Option<String>) -> String {
+    if let Some(user_id) = user_id {
+        format!("SELECT 
+            m.id, m.source, m.name, m.description, m.type, m.mimetype, m.size,
+            art.rating as rating,
+            m.md5, m.params, 
+            m.width, m.height, m.phash, m.thumbhash, m.focal, m.iso, m.colorSpace, m.sspeed, m.orientation, m.duration, 
+            m.acodecs, m.achan, m.vcodecs, m.fps, m.bitrate, m.long, m.lat, m.model, m.pages, m.progress, 
+            m.thumb, m.thumbv, m.thumbsize, m.iv, m.origin, m.movie, m.lang, m.uploader, m.uploadkey, m.modified, 
+            m.added, m.created
+			,(select GROUP_CONCAT(tag_ref || '|' || IFNULL(confidence, 100)) from media_tag_mapping where media_ref = m.id and (confidence != -1 or confidence IS NULL)) as tags
+			,(select GROUP_CONCAT(people_ref ) from media_people_mapping where media_ref = m.id) as people
+			,(select GROUP_CONCAT(serie_ref || '|' || printf('%04d', season) || '|' || printf('%04d', episode)) from media_serie_mapping where media_ref = m.id) as series,
+            m.fnumber, m.icc, m.mp,
+			mp.progress as user_progress,
+			rt.rating as user_rating
+
+            FROM medias as m
+            LEFT JOIN 
+					media_progress mp
+				ON 
+					mp.media_ref = m.id and mp.user_ref = '{}'
+			LEFT JOIN 
+					ratings rt
+				ON 
+					rt.media_ref = m.id and mp.user_ref = '{}'
+          LEFT JOIN 
+					(SELECT 
+							media_ref, 
+							AVG(rating) AS rating
+						FROM 
+							ratings
+						GROUP BY 
+							media_ref
+					) as art
+				ON 
+					art.media_ref = m.id          
+                    
+                    
+                    ", user_id, user_id)
+                    
+    } else {
+        MEDIA_QUERY.to_string()
+    }
+}
 
     const MEDIA_BACKUP_QUERY: &str = "SELECT 
             m.id, m.name, m.size, m.md5,
@@ -139,7 +197,7 @@ impl SqliteLibraryStore {
             mimetype: row.get(5)?,
             size: row.get(6)?,
 
-            rating: row.get(7)?,
+            avg_rating: row.get(7)?,
             md5: row.get(8)?,
 
             params: row.get(9)?,
@@ -170,7 +228,7 @@ impl SqliteLibraryStore {
 
             pages: row.get(28)?,
 
-            progress: row.get(29)?,
+            progress: row.get(48)?,
             thumb: row.get(30)?,
             thumbv: row.get(31)?,
 
@@ -198,6 +256,8 @@ impl SqliteLibraryStore {
             f_number: row.get(45)?,
             icc: row.get(46)?,
             mp: row.get(47)?,
+
+            rating: row.get(49)?
             //series: None,
         })
     }
@@ -352,6 +412,8 @@ impl SqliteLibraryStore {
     pub async fn get_medias(&self, query: MediaQuery, limits: LibraryLimits) -> Result<Vec<Media>> {
         let row = self.connection.call( move |conn| { 
 
+            let media_raw_query = media_query(&limits.user_id);
+            
             let limit = query.limit.unwrap_or(200);
             let mut where_query = Self::build_media_query(query, limits);
 
@@ -363,7 +425,7 @@ impl SqliteLibraryStore {
             {}
              LIMIT {}", 
              where_query.format_recursive(), 
-             MEDIA_QUERY, 
+             media_raw_query, 
              where_query.format(), 
              where_query.format_order(), limit))?;
 
@@ -409,10 +471,11 @@ impl SqliteLibraryStore {
         Ok(row)
     }
     
-    pub async fn get_media(&self, media_id: &str) -> Result<Option<Media>> {
+    pub async fn get_media(&self, media_id: &str, user_id: Option<String>) -> Result<Option<Media>> {
         let media_id = media_id.to_string();
         let row = self.connection.call( move |conn| { 
-            let mut query = conn.prepare(&format!("{} WHERE id = ?", MEDIA_QUERY))?;
+            let media_raw_query = media_query(&user_id);
+            let mut query = conn.prepare(&format!("{} WHERE id = ?", media_raw_query))?;
             let row = query.query_row(
             [media_id],Self::row_to_media).optional()?;
             Ok(row)
@@ -422,7 +485,8 @@ impl SqliteLibraryStore {
 
     pub async fn get_media_by_hash(&self, hash: String) -> Option<Media> {
         let row = self.connection.call( move |conn| { 
-            let mut query = conn.prepare(&format!("{} WHERE md5 = ?", MEDIA_QUERY))?;
+            let media_raw_query = media_query(&None);
+            let mut query = conn.prepare(&format!("{} WHERE md5 = ?", media_raw_query))?;
             let row = query.query_row(
             params![hash],Self::row_to_media)?;
             Ok(row)
@@ -438,9 +502,9 @@ impl SqliteLibraryStore {
             } else {
                 (vec![origin.platform.to_owned(), origin.id.to_owned()], "where json_extract(origin, '$.platform') = ? and json_extract(origin, '$.id') = ?")
             };
-            
+            let media_raw_query = media_query(&None);
 
-            let mut query = conn.prepare(&format!("{} {}", MEDIA_QUERY,query_elements.1))?;
+            let mut query = conn.prepare(&format!("{} {}", media_raw_query,query_elements.1))?;
             //println!("q {:?}", query.expanded_sql());
             let row = query.query_row(
                 params_from_iter(query_elements.0) ,Self::row_to_media)?;
@@ -549,7 +613,7 @@ impl SqliteLibraryStore {
 
     pub async fn update_media(&self, media_id: &str, mut update: MediaForUpdate, user_id: Option<String>) -> Result<()> {
         let id = media_id.to_string();
-        let existing = self.get_media(media_id).await?.ok_or_else( || Error::NotFound)?;
+        let existing = self.get_media(media_id, user_id.clone()).await?.ok_or_else( || Error::NotFound)?;
 
 
         if let Some(rename) = &update.name {
@@ -672,7 +736,7 @@ impl SqliteLibraryStore {
 
             where_query.add_update(&update.duration, "duration");
 
-            where_query.add_update(&update.progress, "progress");
+            //where_query.add_update(&update.progress, "progress");
 
 
             where_query.add_update(&update.long, "long");
@@ -695,11 +759,13 @@ impl SqliteLibraryStore {
 
             if let Some(user_id) = user_id {
                 if let Some(rating) = update.rating {
-
                     conn.execute("INSERT OR REPLACE INTO ratings (media_ref, user_ref, rating) VALUES (? ,? , ?)", params![id, user_id, rating])?;
-
+                }
+                if let Some(progress) = update.progress {
+                    conn.execute("INSERT OR REPLACE INTO media_progress (media_ref, user_ref, progress) VALUES (? ,? , ?)", params![id, user_id, progress])?;
                 }
             }
+            
 
 
             let all_tags: Vec<String> = existing.tags.clone().unwrap_or(vec![]).into_iter().filter(|t| t.conf.unwrap_or(1) == 1).map(|t| t.id).collect();

@@ -97,7 +97,9 @@ pub struct Media {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rating: Option<f32>,
-    
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avg_rating: Option<f32>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub md5: Option<String>,
 

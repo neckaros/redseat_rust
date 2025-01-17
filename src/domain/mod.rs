@@ -19,6 +19,8 @@ pub mod movie;
 pub mod watched;
 pub mod deleted;
 pub mod view_progress;
+pub mod media_progress;
+pub mod media_rating;
 
 pub mod progress;
 pub mod player;

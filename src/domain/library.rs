@@ -45,7 +45,17 @@ pub struct LibraryLimits {
     pub albums: bool,
     #[serde(default)]
     pub delay: Option<i64>,
+    #[serde(default)]
+    pub user_id: Option<String>,
 
+}
+
+impl LibraryLimits {
+    pub fn init_with_user(user_id: Option<String>) -> Self {
+        let mut limits = LibraryLimits::default();
+        limits.user_id = user_id;
+        limits
+    }
 }
 
 impl FromSql for LibraryLimits {

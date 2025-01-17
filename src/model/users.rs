@@ -98,7 +98,7 @@ impl ConnectedUser {
     }
     pub fn check_library_role(&self, library_id: &str, role: LibraryRole) -> Result<LibraryLimits> {
         if self.is_admin() {
-            Ok(LibraryLimits::default())
+            Ok(LibraryLimits::init_with_user(self.user_id().ok()))
         } else if let ConnectedUser::Server(user) = &self {
             if let Some(limits) = user.has_library_role(&library_id, &role) {
                 Ok(limits)

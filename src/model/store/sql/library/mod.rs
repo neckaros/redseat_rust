@@ -11,6 +11,8 @@ pub mod episodes;
 pub mod medias;
 pub mod movie;
 pub mod deleted;
+pub mod media_ratings;
+pub mod media_progress;
 
 pub struct SqliteLibraryStore {
 	connection: Connection,
@@ -68,6 +70,14 @@ impl SqliteLibraryStore {
                     let initial = String::from_utf8_lossy(include_bytes!("031 - MEDIAS INDEX.sql"));
                     conn.execute_batch(&initial)?;
                     version = 31;
+                    conn.pragma_update(None, "user_version", version)?;
+                    log_info(LogServiceType::Database, format!("Update Library Database to version: {}", version));                   
+                }
+                
+                if version < 32 {
+                    let initial = String::from_utf8_lossy(include_bytes!("032 - PROGRESS.sql"));
+                    conn.execute_batch(&initial)?;
+                    version = 32;
                     conn.pragma_update(None, "user_version", version)?;
                     log_info(LogServiceType::Database, format!("Update Library Database to version: {}", version));                   
                 }

@@ -14,6 +14,8 @@ pub mod episodes;
 pub mod medias;
 pub mod movies;
 pub mod deleted;
+pub mod media_ratings;
+pub mod media_progresses;
 pub mod player;
 
 use std::{collections::{HashMap, VecDeque}, io::Read, path::PathBuf, pin::Pin, sync::Arc, thread::JoinHandle};

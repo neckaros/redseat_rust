@@ -1,5 +1,5 @@
 
-use crate::{domain::library::{LibraryLimits, LibraryRole}, model::{deleted::DeletedQuery, libraries::{ServerLibraryForAdd, ServerLibraryForUpdate}, users::ConnectedUser, ModelController}, tools::scheduler::backup::BackupTask, Error, Result};
+use crate::{domain::library::{LibraryLimits, LibraryRole}, model::{deleted::DeletedQuery, libraries::{ServerLibraryForAdd, ServerLibraryForUpdate}, media_progresses::MediaProgressesQuery, media_ratings::MediaRatingsQuery, users::ConnectedUser, ModelController}, tools::scheduler::backup::BackupTask, Error, Result};
 use axum::{extract::{Path, Query, State}, response::Response, routing::{delete, get, patch, post}, Json, Router};
 use hyper::StatusCode;
 use serde::Deserialize;
@@ -16,6 +16,8 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/:id", patch(handler_patch))
 		.route("/:id", delete(handler_delete))
 		.route("/:id/deleted", get(handler_list_deleted))
+		.route("/:id/progresses", get(handler_list_progress))
+		.route("/:id/ratings", get(handler_list_ratings))
 		.route("/", post(handler_post))
 		
 		.route("/:id/clean", get(handler_clean))
@@ -76,6 +78,23 @@ async fn handler_list_deleted(Path(library_id): Path<String>, State(mc): State<M
 	Ok(body)
 	
 }
+
+async fn handler_list_ratings(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<MediaRatingsQuery>) -> Result<Json<Value>> {
+	let deleted = mc.get_medias_ratings(&library_id, query, &user).await?;
+
+	let body = Json(json!(deleted));
+	Ok(body)
+	
+}
+
+async fn handler_list_progress(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<MediaProgressesQuery>) -> Result<Json<Value>> {
+	let deleted = mc.get_medias_progresses(&library_id, query, &user).await?;
+
+	let body = Json(json!(deleted));
+	Ok(body)
+	
+}
+
 
 async fn handler_clean(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
 	let cleaned = mc.clean_library(&library_id, &user).await?;

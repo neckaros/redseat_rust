@@ -64,13 +64,14 @@ impl SqliteStore {
                     let mut stmt = conn.prepare("SELECT lur.library_ref, lur.roles, lib.name, lib.type, lur.limits FROM Libraries_Users_Rights as lur LEFT JOIN Libraries as lib ON lur.library_ref = lib.id WHERE user_ref = ?1")?;
                     
                     let person_iter = stmt.query_map([&user_id], |row| {
-
+                        let mut limits: LibraryLimits = deserialize_from_row(row, 4)?;
+                        limits.user_id = Some(user_id.clone());
                         Ok(ServerUserLibrariesRights {
                             id: row.get(0)?,
                             name: row.get(2)?,
                             kind: row.get(3)?,
                             roles: from_comma_separated(row.get(1)?),
-                            limits:  deserialize_from_row(row, 4)?
+                            limits
                         })
                     })?;
                     user.libraries = person_iter.flat_map(|e| e.ok()).collect::<Vec<ServerUserLibrariesRights>>();
@@ -109,13 +110,17 @@ impl SqliteStore {
             let mut query = conn.prepare("SELECT lur.library_ref, lur.roles, lib.name, lib.type, lur.user_ref, lur.limits FROM Libraries_Users_Rights as lur LEFT JOIN Libraries as lib ON lur.library_ref = lib.id")?;
             let rights = query.query_map([],
             |row| {
+                let user_id: String = row.get(4)?;
+                let mut limits: LibraryLimits = deserialize_from_row(row, 5)?;
+                limits.user_id = Some(user_id.clone());
+
                 Ok(ServerUserLibrariesRightsWithUser {
                     id: row.get(0)?,
-                    user_id: row.get(4)?,
+                    user_id,
                     name: row.get(2)?,
                     kind: row.get(3)?,
                     roles: from_comma_separated(row.get(1)?),
-                    limits:  deserialize_from_row(row, 5)?
+                    limits
                 })
             },
             )?;
