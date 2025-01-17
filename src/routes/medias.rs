@@ -39,6 +39,8 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/:id/backup/:backupid", get(handler_get_backup))
 		.route("/:id/backup/metadatas", get(handler_get_backup_medata))
 		.route("/:id", patch(handler_patch))
+		.route("/:id/progress", patch(handler_patch_progress))
+		.route("/:id/rating", patch(handler_patch_rating))
 		.route("/:id", delete(handler_delete))
 		.route("/:id/image", get(handler_image))
 		.route("/:id/image", post(handler_post_image))
@@ -214,6 +216,23 @@ async fn handler_get_backup_medata(Path((library_id, media_id)): Path<(String, S
 }
 
 async fn handler_patch(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(update): Json<MediaForUpdate>) -> Result<Json<Value>> {
+	let new_credential = mc.update_media(&library_id, media_id, update, true, &user).await?;
+	Ok(Json(json!(new_credential)))
+}
+
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+struct MediaProgressUpdateQuery {
+	#[serde(default)]
+	pub progress: u64
+}
+
+async fn handler_patch_progress(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, body: Json<MediaProgressUpdateQuery>) -> Result<Json<Value>> {
+	let new_credential = mc.set_media_progress(&library_id, media_id, body.progress, &user).await?;
+	Ok(Json(json!(new_credential)))
+}
+
+async fn handler_patch_rating(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(update): Json<MediaForUpdate>) -> Result<Json<Value>> {
 	let new_credential = mc.update_media(&library_id, media_id, update, true, &user).await?;
 	Ok(Json(json!(new_credential)))
 }

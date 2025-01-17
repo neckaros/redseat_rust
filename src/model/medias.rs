@@ -176,7 +176,9 @@ impl TryFrom<Media> for MediaSource {
 impl ModelController {
 
 	pub async fn get_medias(&self, library_id: &str, query: MediaQuery, requesting_user: &ConnectedUser) -> Result<Vec<Media>> {
-        let limits = requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        let progress_user = self.get_library_mapped_user(library_id, requesting_user).await.ok();
+        let mut limits = requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        limits.user_id = progress_user;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
 		let people = store.get_medias(query, limits).await?;
 		Ok(people)

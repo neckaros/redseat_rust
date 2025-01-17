@@ -102,7 +102,9 @@ const MEDIA_QUERY: &str = "SELECT
 			,(select GROUP_CONCAT(tag_ref || '|' || IFNULL(confidence, 100)) from media_tag_mapping where media_ref = m.id and (confidence != -1 or confidence IS NULL)) as tags
 			,(select GROUP_CONCAT(people_ref ) from media_people_mapping where media_ref = m.id) as people
 			,(select GROUP_CONCAT(serie_ref || '|' || printf('%04d', season) || '|' || printf('%04d', episode)) from media_serie_mapping where media_ref = m.id) as series,
-            m.fnumber, m.icc, m.mp
+            m.fnumber, m.icc, m.mp,
+			m.progress as user_progress,
+			art.rating as user_rating
 			
             FROM medias as m
             LEFT JOIN 
@@ -143,7 +145,7 @@ fn media_query(user_id: &Option<String>) -> String {
 			LEFT JOIN 
 					ratings rt
 				ON 
-					rt.media_ref = m.id and mp.user_ref = '{}'
+					rt.media_ref = m.id and rt.user_ref = '{}'
           LEFT JOIN 
 					(SELECT 
 							media_ref, 
@@ -411,7 +413,7 @@ impl SqliteLibraryStore {
 
     pub async fn get_medias(&self, query: MediaQuery, limits: LibraryLimits) -> Result<Vec<Media>> {
         let row = self.connection.call( move |conn| { 
-
+            println!("progress user, {:?}", limits.user_id);
             let media_raw_query = media_query(&limits.user_id);
             
             let limit = query.limit.unwrap_or(200);

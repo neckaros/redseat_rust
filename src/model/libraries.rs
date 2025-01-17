@@ -5,7 +5,7 @@ use rs_plugin_common_interfaces::RsRequest;
 use serde::{Deserialize, Serialize};
 use tokio::fs::{create_dir_all, read_dir};
 
-use crate::{domain::{library::{LibraryLimits, LibraryMessage, LibraryRole, LibraryType, ServerLibrary, ServerLibrarySettings}, ElementAction}, error::RsResult, plugins::sources::{path_provider::PathProvider, Source, SourceRead}, tools::auth::{sign_local, ClaimsLocal, ClaimsLocalType}};
+use crate::{domain::{library::{LibraryLimits, LibraryMessage, LibraryRole, LibraryType, ServerLibrary, ServerLibrarySettings, UserMapping}, ElementAction}, error::RsResult, plugins::sources::{path_provider::PathProvider, Source, SourceRead}, tools::auth::{sign_local, ClaimsLocal, ClaimsLocalType}};
 
 use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
 
@@ -237,6 +237,26 @@ impl ModelController {
 		Ok(libraries.collect::<Vec<super::libraries::ServerLibraryForRead>>())
 	}
 
+    pub async fn get_library_mapped_users(&self, library_id: &str) -> Result<Vec<UserMapping>> {
+        let library = self.get_library(library_id, &ConnectedUser::ServerAdmin).await?.ok_or(Error::NotFound)?;
+        
+        return Ok(library.settings.and_then(|s| s.map_progress).unwrap_or_default())
+
+	}
+
+    pub async fn get_library_mapped_user(&self, library_id: &str, requesting_user: &ConnectedUser) -> Result<String> {
+        let mut user_id = requesting_user.user_id()?;
+        let library = self.get_library(library_id, requesting_user).await?.ok_or(Error::NotFound)?;
+        if let Some(mapping) = library.settings.and_then(|m| m.map_progress) {
+            if let Some(mapping) = mapping.into_iter().find(|m| m.from == user_id) {
+                user_id = mapping.to;
+            }
+        }
+
+        return Ok(user_id)
+
+	}
+ 
 	pub async fn update_library(&self, library_id: &str, update: ServerLibraryForUpdate, requesting_user: &ConnectedUser) -> Result<Option<super::libraries::ServerLibraryForRead>> {
         requesting_user.check_library_role(&library_id, LibraryRole::Admin)?;
 		self.store.update_library(library_id, update).await?;

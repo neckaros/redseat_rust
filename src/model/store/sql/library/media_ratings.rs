@@ -17,13 +17,24 @@ impl SqliteLibraryStore {
     }
 
 
-    pub async fn get_medias_ratings(&self, query: MediaRatingsQuery) -> Result<Vec<RsMediaRating>> {
+    pub async fn get_medias_ratings(&self, query: MediaRatingsQuery, user_ref: String) -> Result<Vec<RsMediaRating>> {
         let row = self.connection.call( move |conn| { 
             let mut where_query = RsQueryBuilder::new();
             if let Some(q) = query.after {
                 where_query.add_where(SqlWhereType::After("modified".to_owned(), Box::new(q)));
             }
+            if let Some(q) = query.media {
+                where_query.add_where(SqlWhereType::Equal("media_ref".to_owned(), Box::new(q)));
+            }
+            if let Some(q) = query.min_rating {
+                where_query.add_where(SqlWhereType::GreaterOrEqual("rating".to_owned(), Box::new(q)));
+            }
+            
+            if let Some(q) = query.max_rating {
+                where_query.add_where(SqlWhereType::SmallerOrEqual("rating".to_owned(), Box::new(q)));
+            }
 
+            where_query.add_where(SqlWhereType::Equal("user_ref".to_owned(), Box::new(user_ref)));
             where_query.add_oder(OrderBuilder::new("modified".to_owned(), query.order));
 
             let mut query = conn.prepare(&format!("SELECT media_ref, user_ref, rating, modified FROM ratings {}{}", where_query.format(), where_query.format_order()))?;
@@ -35,6 +46,22 @@ impl SqliteLibraryStore {
             Ok(backups)
         }).await?;
         Ok(row)
+    }
+
+
+    pub async fn set_media_rating(&self, media_ref: String, user_ref: String, rating: f64) -> Result<()> {
+        self.connection.call( move |conn| { 
+
+            conn.execute("INSERT OR REPLACE INTO ratings (media_ref, user_ref, rating)
+            VALUES (?, ? ,?)", params![
+                media_ref,
+                user_ref,
+                rating
+            ])?;
+
+            Ok(())
+        }).await?;
+        Ok(())
     }
 
 }

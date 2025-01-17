@@ -91,15 +91,24 @@ pub enum LibraryType {
 }
 
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")] 
+pub struct UserMapping {
+    pub from: String,
+    pub to: String
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")] 
 pub struct ServerLibrarySettings {
     #[serde(skip_serializing_if = "Option::is_none")]
-    face_threshold: Option<f32>,
+    pub face_threshold: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    ignore_groups: Option<bool>,
+    pub ignore_groups: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    preduction_model: Option<String>,
+    pub preduction_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub map_progress: Option<Vec<UserMapping>>,
 }
 
 
