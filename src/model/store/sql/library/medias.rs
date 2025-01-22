@@ -759,14 +759,14 @@ impl SqliteLibraryStore {
             }
 
 
-            if let Some(user_id) = user_id {
+           /*  if let Some(user_id) = user_id {
                 if let Some(rating) = update.rating {
                     conn.execute("INSERT OR REPLACE INTO ratings (media_ref, user_ref, rating) VALUES (? ,? , ?)", params![id, user_id, rating])?;
                 }
                 if let Some(progress) = update.progress {
                     conn.execute("INSERT OR REPLACE INTO media_progress (media_ref, user_ref, progress) VALUES (? ,? , ?)", params![id, user_id, progress])?;
                 }
-            }
+            }*/
             
 
 

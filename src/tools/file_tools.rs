@@ -48,7 +48,7 @@ pub fn file_type_from_mime(mime: &str) -> FileType {
         FileType::Video
     } else if mime == "application/zip" {
         FileType::Album
-    } else if mime == "application/vnd.comicbook+cbz" {
+    } else if mime == "application/vnd.comicbook+cbz" || mime == "application/x-cbr" {
         FileType::Album
     } else {
         FileType::Other

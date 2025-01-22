@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
 use tokio::{fs::File, io::{copy, AsyncRead, AsyncReadExt, AsyncWriteExt}, sync::mpsc};
 use tokio_stream::StreamExt;
-use tokio_util::{compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt}, io::{ReaderStream, StreamReader}};
+use tokio_util::{compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt}, io::{ReaderStream, StreamReader, SyncIoBridge}};
 use zip::ZipWriter;
 
 use crate::{domain::{deleted::RsDeleted, library::LibraryType, media::{self, ConvertMessage, ConvertProgress, RsGpsPosition, DEFAULT_MIME}, plugin, MediaElement}, error::RsError, model::store::sql::SqlOrder, plugins::sources::{path_provider::PathProvider, Source}, routes::infos, tools::{file_tools::{filename_from_path, remove_extension}, image_tools::convert_image_reader, video_tools::{VideoCommandBuilder, VideoConvertRequest, VideoOverlayPosition}}};
@@ -236,6 +236,14 @@ impl ModelController {
         if let Some(origin) = &update.origin_url {
             update.origin = Some(self.exec_parse(Some(library_id.to_owned()), origin.to_owned(), requesting_user).await?)
         }
+
+        if let Some(rating) = update.rating.clone() {
+            self.set_media_rating(library_id, media_id.clone(), rating as f64, requesting_user).await?;
+        }
+        if let Some(progress) = update.progress.clone() {
+            self.set_media_progress(library_id, media_id.clone(), progress as u64, requesting_user).await?;
+        }
+
 		store.update_media(&media_id, update, requesting_user.user_id().ok()).await?;
         let media = store.get_media(&media_id, requesting_user.user_id().ok()).await?.ok_or(Error::NotFound)?;
         if notif {
@@ -444,7 +452,7 @@ impl ModelController {
             }
             let mut reader_response = m.get_file(&existing.source, range.clone()).await?;
 
-            if existing.kind == FileType::Album && !query.raw {
+            if existing.kind == FileType::Album && !query.raw && query.page.is_some() {
                 let local_path = m.local_path(&existing.source);
                 if let Some(local_path) = local_path {
                     let archive = std::fs::File::open(local_path)?;
@@ -528,6 +536,11 @@ impl ModelController {
             let r = self.update_photo_infos(library_id, media_id, requesting_user, false).await;
             if let Err(r) = r {
                 log_error(LogServiceType::Source, format!("unable to get photos infos for {}: {:?}", media_id, r));
+            }
+        } else if existing.kind == FileType::Album {
+            let r = self.update_album_infos(library_id, media_id, requesting_user, false).await;
+            if let Err(r) = r {
+                log_error(LogServiceType::Source, format!("unable to get album infos for {}: {:?}", media_id, r));
             }
         }
     
@@ -1296,6 +1309,30 @@ impl ModelController {
             self.update_media(library_id, media_id.to_owned(), update, notif, requesting_user).await?;
         }
         Ok(())
+    }
+
+    pub async fn update_album_infos(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser, notif: bool) -> crate::Result<()> {
+        requesting_user.check_file_role(library_id, media_id, LibraryRole::Read)?;
+        self.cache_check_library_notcrypt(library_id).await?;
+        let m = self.source_for_library(library_id).await?;
+        let existing = self.get_media(library_id, media_id.to_string(), requesting_user).await?.ok_or(RsError::NotFound)?;
+        let local_path = m.local_path(&existing.source.ok_or(RsError::NotFound)?);
+        if let Some(local_path) = local_path {
+            let mut update = MediaForUpdate::default();
+            let archive = std::fs::File::open(local_path)?;
+            let buffreader = std::io::BufReader::new(archive);
+
+            let mut archive = zip::ZipArchive::new(buffreader).unwrap();
+
+            update.pages = Some(archive.len());
+
+            self.update_media(library_id, media_id.to_owned(), update, notif, requesting_user).await?;
+        }
+
+        Ok(())
+    
+          
+        
     }
 
     pub async fn remove_library_file(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> RsResult<()> {
