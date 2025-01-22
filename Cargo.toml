@@ -3,6 +3,7 @@ name = "redseat-rust"
 version = "0.1.0"
 edition = "2021"
 default-run = "redseat-rust"
+build = "build.rs"
 
 [[bin]]
 name = "redseat-daemon"
@@ -86,6 +87,10 @@ pbkdf2 = "0.12.2"
 sha1 = "0.10.6"
 hex = "0.4.3"
 rs_torrent_magnet = "0.3.0"
+libheif-sys = { version = "3.1.0"}
+
+[target.'cfg(windows)'.dependencies]
+libheif-sys = { version = "3.1.0", features = ["compile-libheif", "embedded-libheif-plugins"] }
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }

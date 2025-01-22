@@ -3,6 +3,7 @@ use ort::Utf8Data;
 use rs_torrent_magnet::magnet_from_torrent;
 use tokio::io::{AsyncRead, AsyncReadExt};
 pub mod magnet;
+pub mod heic;
 
 pub struct ConvertFileSource<T: Sized + AsyncRead + Send + Unpin > {
     pub mime: String,

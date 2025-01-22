@@ -41,6 +41,7 @@ mod domain;
 
 #[tokio::main]
 async fn main() ->  Result<()> {
+    tools::convert::heic::read_heic_file_to_image();
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
     log_info(tools::log::LogServiceType::Register, format!("Architecture: {}-{}", os, arch));

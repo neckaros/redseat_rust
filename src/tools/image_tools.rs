@@ -10,6 +10,8 @@ use webp::WebPEncodingError;
 use derive_more::From;
 use which::which;
 
+use libheif_sys as lh;
+
 use crate::{error::RsResult, Error};
 
 use self::image_magick::ImageMagickInfo;
@@ -309,6 +311,9 @@ fn resize(image: DynamicImage, size: u32) -> DynamicImage {
 }
 
 
+
+
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -335,4 +340,6 @@ mod tests {
         println!("INFOS: {:?}", info)
         //convert_to_pipe("C:/Users/arnau/Downloads/IMG_5020.mov", None).await;
     }
+
+    
 }
