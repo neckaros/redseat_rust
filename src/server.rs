@@ -1,4 +1,5 @@
 use std::{cell::{OnceCell, RefCell}, env, path::PathBuf, sync::OnceLock, time::Duration};
+use axum::serve::Serve;
 use query_external_ip::Consensus;
 use reqwest::Client;
 use tokio::{fs::{create_dir_all, metadata, read_to_string, File}, io::AsyncWriteExt, sync::Mutex};
@@ -6,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use nanoid::nanoid;
 use clap::Parser;
 use tracing_subscriber::fmt::format;
-use crate::{error::{Error, RsResult}, model::{users::ConnectedUser, ModelController}, tools::log::{log_info, LogServiceType}, RegisterInfo, Result};
+use crate::{error::{Error, RsResult}, model::{users::ConnectedUser, ModelController}, tools::{image_tools::has_image_magick, log::{log_info, LogServiceType}}, RegisterInfo, Result};
 
 
 static CONFIG: OnceLock<Mutex<ServerConfig>> = OnceLock::new();
@@ -26,6 +27,8 @@ pub struct ServerConfig {
     pub exp_port: Option<u16>,
     pub local: Option<String>,
     pub token: Option<String>,
+    #[serde(default = "default_false")]
+    pub noIM: bool
 }
 
 #[derive(Parser, Debug)]
@@ -38,16 +41,20 @@ struct Args {
 
     #[arg(short = 'k', long)]
     docker: bool,
+
+    #[arg(short = 'm', long)]
+    noIM: bool,
     
     #[arg(short, long)]
     dir: Option<String>,
 }
 
-pub async fn initialize_config() {
+pub async fn initialize_config() -> ServerConfig {
     let local_path = get_server_local_path().await.expect("Unable to create local library path");
     log_info(LogServiceType::Register, format!("LocalPath: {:?}", local_path));
     let config = get_config_with_overrides().await.unwrap();
-    let _ = CONFIG.set(Mutex::new(config));
+    let _ = CONFIG.set(Mutex::new(config.clone()));
+    return config
 }
 
 pub async fn get_server_local_path() -> Result<PathBuf> {
@@ -102,6 +109,10 @@ fn get_config_override_serverid() -> Option<String> {
 
 pub async fn get_server_id() -> Option<String> {
     get_config().await.id
+}
+
+fn default_false() -> bool {
+    false
 }
 
 fn default_home() -> String {
@@ -183,11 +194,16 @@ pub async fn check_unregistered() -> Result<()> {
 }
 
 pub async fn get_config_with_overrides() -> Result<ServerConfig> {
-
+    let args = Args::parse();
     let mut config = get_raw_config().await?;
 
     if let Some(id) = get_config_override_serverid() {
         config.id = Some(id);
+    }
+    if args.noIM {
+        config.noIM = true
+    } else if !has_image_magick() {
+        config.noIM = true
     }
 
     return Ok(config)

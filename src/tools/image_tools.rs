@@ -1,20 +1,22 @@
 use core::fmt;
-use std::{fs::{remove_file, File}, io::{Seek, Write}, num::ParseIntError, path::PathBuf, process::Stdio, str::{from_utf8, FromStr}};
+use std::{fs::{remove_file, File}, io::{Cursor, Seek, Write}, num::ParseIntError, path::PathBuf, process::Stdio, str::{from_utf8, FromStr}};
 
 use image::{ColorType, DynamicImage, ImageEncoder, ImageOutputFormat};
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr};
 use strum_macros::{Display, EnumIter, EnumString};
-use tokio::{io::{AsyncRead, AsyncWrite, AsyncWriteExt}, process::{Child, Command}};
+use tokio::{io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt}, process::{Child, Command}};
 use webp::WebPEncodingError;
 use derive_more::From;
 use which::which;
 
 use libheif_sys as lh;
 
-use crate::{error::RsResult, Error};
+use crate::{error::RsResult, server::get_config, Error};
 
 use self::image_magick::ImageMagickInfo;
+
+use super::convert::heic::read_heic_file_to_image;
 
 pub mod image_magick;
 
@@ -242,6 +244,49 @@ pub async fn resize_image_path(path: &PathBuf, to: &PathBuf, size: u32) -> Image
     Ok(())
 }
 pub async fn resize_image_reader<R>(reader: &mut R, size: u32) -> ImageResult<Vec<u8>>where
+    R: AsyncRead + Unpin + ?Sized,   {
+    let config = get_config().await;
+    
+    let data = if config.noIM {
+        resize_image_reader_native(reader, size).await?
+    } else {
+        resize_image_reader_im(reader, size).await?
+    };
+    
+    Ok(data)
+}
+
+fn is_heic(data: &[u8]) -> bool {
+    // Check if the data is large enough to contain the magic bytes
+    if data.len() < 12 {
+        return false;
+    }
+
+    // HEIC magic bytes typically start at offset 4
+    let magic = &data[4..12];
+    matches!(magic, b"ftypheic" | b"ftypheix" | b"ftypmif1" | b"ftypmsf1")
+}
+
+pub async fn resize_image_reader_native<R>(reader: &mut R, size: u32) -> ImageResult<Vec<u8>>where
+    R: AsyncRead + Unpin + ?Sized,   {
+
+    let mut data = Vec::new();
+    let mut reader = tokio::io::BufReader::new(reader);
+    reader.read_to_end(&mut data).await?;
+    let heic = is_heic(&data);
+    let image = if heic {
+        println!("using HEIC");
+        read_heic_file_to_image(&data)
+    } else {
+        image::io::Reader::new(Cursor::new(data)).with_guessed_format()?.decode()?
+    };
+    let scaled = resize(image, size);
+    let webp_data = webp::Encoder::from_image(&scaled).map_err(|e| ImageError::UnableToDecodeWebp(e.into()))?
+        .encode_simple(false, 80.0)?;
+    Ok(webp_data.to_vec())
+}
+
+pub async fn resize_image_reader_im<R>(reader: &mut R, size: u32) -> ImageResult<Vec<u8>>where
     R: AsyncRead + Unpin + ?Sized,   {
     let mut builder = ImageCommandBuilder::new();
     builder.auto_orient();

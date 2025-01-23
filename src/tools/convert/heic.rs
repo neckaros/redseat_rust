@@ -1,23 +1,26 @@
 use std::ffi;
 use std::ptr;
+use std::ffi::c_void;
 
+use image::DynamicImage;
 use image::RgbImage;
 use image::RgbaImage;
 use libheif_sys as lh;
 
 use crate::error::RsError;
 
-pub fn read_heic_file_to_image() {
+pub fn read_heic_file_to_image(heif_data: &[u8]) -> DynamicImage {
     unsafe {
         lh::heif_init(ptr::null_mut());
-
+        let data_len = heif_data.len();
         let ctx = lh::heif_context_alloc();
         assert!(!ctx.is_null());
 
         let c_name = ffi::CString::new("test_data/image.heic").unwrap();
-        let err = lh::heif_context_read_from_file(
+        let err = lh::heif_context_read_from_memory_without_copy(
             ctx,
-            c_name.as_ptr(),
+            heif_data.as_ptr() as *const c_void,
+            data_len,
             ptr::null()
         );
         assert_eq!(err.code, lh::heif_error_code_heif_error_Ok);
@@ -28,9 +31,7 @@ pub fn read_heic_file_to_image() {
         assert!(!handle.is_null());
 
         let width = lh::heif_image_handle_get_width(handle);
-        assert_eq!(width, 4284);
         let height = lh::heif_image_handle_get_height(handle);
-        assert_eq!(height, 5712);
 
         let mut image = ptr::null_mut();
         let options = lh::heif_decoding_options_alloc();
@@ -82,12 +83,13 @@ pub fn read_heic_file_to_image() {
         
         let image = RgbImage::from_raw(width as u32, height as u32, buffer)
             .ok_or_else(|| RsError::Error("Failed to create image buffer".to_string())).unwrap();
-        image.save("test_data/testout.jpg");
+        //image.save("test_data/testout.jpg");
 
         lh::heif_context_free(ctx);
 
         lh::heif_deinit();
-    };
+        DynamicImage::from(image)
+    }
 }
 
 
@@ -114,9 +116,7 @@ fn read_heic_file_to_image() {
         assert!(!handle.is_null());
 
         let width = lh::heif_image_handle_get_width(handle);
-        assert_eq!(width, 4284);
         let height = lh::heif_image_handle_get_height(handle);
-        assert_eq!(height, 5712);
 
         let mut image = ptr::null_mut();
         let options = lh::heif_decoding_options_alloc();

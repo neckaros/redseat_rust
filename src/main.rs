@@ -18,7 +18,7 @@ use routes::{mw_auth, mw_range};
 
 use server::{get_home, get_server_id, get_server_port, PublicServerInfos};
 use tokio::net::TcpListener;
-use tools::{auth::{sign_local, Claims}, log::LogServiceType, prediction};
+use tools::{auth::{sign_local, Claims}, image_tools::has_image_magick, log::LogServiceType, prediction};
 use tower::ServiceBuilder;
 use tower_http::{cors::{Any, CorsLayer}, trace::TraceLayer};
 use crate::{server::{get_config, update_ip}, tools::{auth::{get_or_init_keys, verify_local, ClaimsLocal}, image_tools::resize_image_path, log::log_info}};
@@ -41,13 +41,19 @@ mod domain;
 
 #[tokio::main]
 async fn main() ->  Result<()> {
-    tools::convert::heic::read_heic_file_to_image();
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
     log_info(tools::log::LogServiceType::Register, format!("Architecture: {}-{}", os, arch));
     log_info(tools::log::LogServiceType::Register, "Starting redseat server".to_string());
     log_info(tools::log::LogServiceType::Register, "Initializing config".to_string());
-    server::initialize_config().await;
+
+    let config = server::initialize_config().await;
+
+    if config.noIM {
+        log_info(tools::log::LogServiceType::Register, "Will use native libraries for image conversions".to_string());
+    } else {
+        log_info(tools::log::LogServiceType::Register, "Will use ImageMagick for image conversions".to_string());
+    }
 
     /*tokio::spawn(async move {
         //let tmdb = TmdbContext::new("4a01db3a73eed5cf17e9c7c27fd9d008".to_string()).await.unwrap();
