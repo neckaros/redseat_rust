@@ -1,7 +1,7 @@
 use core::fmt;
 use std::{fs::{remove_file, File}, io::{Cursor, Seek, Write}, num::ParseIntError, path::PathBuf, process::Stdio, str::{from_utf8, FromStr}};
 
-use image::{ColorType, DynamicImage, ImageEncoder, ImageOutputFormat};
+use image::{ColorType, DynamicImage, ExtendedColorType, ImageEncoder, ImageFormat};
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr};
 use strum_macros::{Display, EnumIter, EnumString};
@@ -308,42 +308,8 @@ pub async fn convert_image_reader<R>(reader: &mut R, format: &str, quality: Opti
 }
 
 
-pub async fn resize_image_path_native(path: &PathBuf, to: &PathBuf, size: u32) -> ImageResult<()> {
-    let mut output = File::create(to)?;
-    let img = image::open(path)?;
-    let scaled = resize(img, size);
-    let result = webp::Encoder::from_image(&scaled).map_err(|e| ImageError::UnableToDecodeWebp(e.into()))?
-        .encode_simple(false, 80.0);
 
-    if result.is_err() {
-        let _ = remove_file(&to);
-    } else {
-        output.write_all(&*result.unwrap())?;
-    }
-    Ok(())
-}
-
-pub async fn resize_image_path_avif(path: &PathBuf, to: &PathBuf, size: u32) -> ImageResult<()> {
-    let mut output = File::create(to)?;
-    let img = image::open(path)?;
-    
-    let scaled = resize(img, size);
-    let imbuf = scaled.to_rgba8();
-
-    let mut encoded = Vec::new();
-    let encoder = image::codecs::avif::AvifEncoder::new_with_speed_quality(&mut encoded, 8, 80);
-    let result = encoder.write_image(&imbuf, imbuf.width(), imbuf.height(), ColorType::Rgba8);
-   
-    if result.is_err() {
-        let _ = remove_file(&to);
-    } else {
-        output.write_all(&*encoded)?;
-    }
-    Ok(())
-}
-
-
-pub fn resize_image<T: Write + Seek>(buffer: &[u8], to: &mut T, size: u32, format: ImageOutputFormat) -> ImageResult<()> {
+pub fn resize_image<T: Write + Seek>(buffer: &[u8], to: &mut T, size: u32, format: ImageFormat) -> ImageResult<()> {
     let img = image::load_from_memory(buffer)?;
     let thumb = resize(img, size);
     thumb.write_to(to, format)?;

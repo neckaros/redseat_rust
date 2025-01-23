@@ -52,11 +52,11 @@ strum_macros = "0.26.1"
 tokio-util = { version = "0.7.11", features = ["compat", "io", "io-util"] }
 time = "0.3.34"
 tokio-stream = { version = "0.1.14", features = ["io-util"] }
-image = { version = "0.24" , features = ["avif", "avif-encoder"]}
 socketioxide = { version = "0.13.1", features = ["extensions","state", "v4"] }
 async-trait = "0.1.77"
 mime_guess = "2.0.4"
-webp = "0.2.6"
+image ="0.25.5"
+webp = "0.3.0"
 which = "6.0.0"
 strum = "0.26.1"
 futures = "0.3.30"
