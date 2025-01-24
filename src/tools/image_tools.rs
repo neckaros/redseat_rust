@@ -360,7 +360,7 @@ pub async fn convert_image_reader_native<R>(reader: &mut R, format: ImageFormat,
         let color = image.image.color();
 
         if format == ImageFormat::Avif {
-            let mut encoder = image::codecs::avif::AvifEncoder::new_with_speed_quality(&mut buffer, if fast {10} else {5}, quality.unwrap_or(80) as u8);
+            let mut encoder = image::codecs::avif::AvifEncoder::new_with_speed_quality(&mut buffer, if fast {8} else {5}, quality.unwrap_or(80) as u8);
             if let Some(profile) = image.profile {
                 encoder.set_icc_profile(profile);
             }
