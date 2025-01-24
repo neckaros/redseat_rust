@@ -48,6 +48,7 @@ pub enum Error {
 	BackupFileNotFound(String),
 
 	CorruptedImage,
+	HeifErrorCode(i32),
 
 	// Prediction Error 
 
@@ -163,6 +164,11 @@ pub enum Error {
 	
 	#[from]
 	ChronoParseError(#[serde_as(as = "DisplayFromStr")] chrono::ParseError),
+	
+
+	#[from]
+	TryFromSlideError(#[serde_as(as = "DisplayFromStr")] std::array::TryFromSliceError),
+	
 	
 
 }

@@ -49,7 +49,7 @@ async fn main() ->  Result<()> {
 
     let config = server::initialize_config().await;
 
-    if config.noIM {
+    if !config.imagesUseIm {
         log_info(tools::log::LogServiceType::Register, "Will use native libraries for image conversions".to_string());
     } else {
         log_info(tools::log::LogServiceType::Register, "Will use ImageMagick for image conversions".to_string());

@@ -495,8 +495,8 @@ impl ModelController {
                         size: Some(len as u64),
                         accept_range: false,
                         range: None,
-                        mime: Some("image/avif".to_owned()),
-                        name: Some("converted.avif".to_owned()),
+                        mime: Some("image/jpeg".to_owned()),
+                        name: Some("converted.jpg".to_owned()),
                         cleanup: None,
                     }))
                 } else {

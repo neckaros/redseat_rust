@@ -84,7 +84,7 @@ impl Image {
             let mut splitted = focals.split('/').map(|s| s.trim());
             let a = splitted.next().and_then(|m| m.parse::<f64>().ok());
             let b = splitted.next().and_then(|m| m.parse::<f64>().ok());
-            a.map(|a| a / b.unwrap_or(1.0))
+            a.map(|a| a / b.unwrap_or(1.0)).map(|f| (f * 1000.0).round() / 1000.0) 
         } else {
             None
         }

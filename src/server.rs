@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use nanoid::nanoid;
 use clap::Parser;
 use tracing_subscriber::fmt::format;
-use crate::{error::{Error, RsResult}, model::{users::ConnectedUser, ModelController}, tools::{image_tools::has_image_magick, log::{log_info, LogServiceType}}, RegisterInfo, Result};
+use crate::{error::{Error, RsResult}, model::{users::ConnectedUser, ModelController}, tools::{image_tools::has_image_magick, log::{log_error, log_info, LogServiceType}}, RegisterInfo, Result};
 
 
 static CONFIG: OnceLock<Mutex<ServerConfig>> = OnceLock::new();
@@ -28,23 +28,25 @@ pub struct ServerConfig {
     pub local: Option<String>,
     pub token: Option<String>,
     #[serde(default = "default_false")]
-    pub noIM: bool
+    pub imagesUseIm: bool
 }
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Name of the person to greet
+    /// Force server id
     #[arg(short, long)]
     serverid: Option<String>,
 
-
+    // Use docker specific settings
     #[arg(short = 'k', long)]
     docker: bool,
 
+    // Use image magick if installed for images conversion
     #[arg(short = 'm', long)]
-    noIM: bool,
+    imagesUseIm: bool,
     
+    // Server local folder
     #[arg(short, long)]
     dir: Option<String>,
 }
@@ -200,10 +202,15 @@ pub async fn get_config_with_overrides() -> Result<ServerConfig> {
     if let Some(id) = get_config_override_serverid() {
         config.id = Some(id);
     }
-    if args.noIM {
-        config.noIM = true
-    } else if !has_image_magick() {
-        config.noIM = true
+    if args.imagesUseIm {
+        if has_image_magick() {
+            config.imagesUseIm = true;
+        } else {
+            config.imagesUseIm = false;
+            log_error(LogServiceType::Other, "Trying to use ImageMagick but not found on computer".to_string());
+        }
+    } else {
+        config.imagesUseIm = false
     }
 
     return Ok(config)
