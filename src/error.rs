@@ -8,6 +8,7 @@ use derive_more::From;
 use serde_json::json;
 use serde_with::{serde_as, DisplayFromStr};
 use nanoid::nanoid;
+use webp::WebPEncodingError;
 use crate::{domain::{MediaElement, MediasIds}, plugins::sources::error::SourcesError, tools::{image_tools, log::{log_error, LogServiceType}}};
 
 
@@ -156,8 +157,22 @@ pub enum Error {
 
 	#[from]
 	InvalidHeaderValue(#[serde_as(as = "DisplayFromStr")] http::header::InvalidHeaderValue),
+	#[from]
+	ExifError(#[serde_as(as = "DisplayFromStr")] exif::Error),
+
 	
+	#[from]
+	ChronoParseError(#[serde_as(as = "DisplayFromStr")] chrono::ParseError),
+	
+
 }
+
+impl From<WebPEncodingError> for RsError {
+    fn from(error: WebPEncodingError) -> Self {
+        image_tools::ImageError::UnableToDecodeWebp((error as i32).to_string()).into()
+    }
+}
+
 
 // region:    --- Error Boilerplate
 impl core::fmt::Display for Error {

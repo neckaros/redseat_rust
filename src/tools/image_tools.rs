@@ -1,18 +1,23 @@
 use core::fmt;
 use std::{fs::{remove_file, File}, io::{Cursor, Seek, Write}, num::ParseIntError, path::PathBuf, process::Stdio, str::{from_utf8, FromStr}};
 
-use image::{ColorType, DynamicImage, ExtendedColorType, ImageEncoder, ImageFormat};
+use chrono::{TimeZone, Utc};
+use exif::{In, Tag};
+use image::{ColorType, DynamicImage, ExtendedColorType, ImageDecoder, ImageEncoder, ImageFormat};
+use image_magick::Image;
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr};
 use strum_macros::{Display, EnumIter, EnumString};
 use tokio::{io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt}, process::{Child, Command}};
+use tokio_util::{compat::TokioAsyncReadCompatExt, io::SyncIoBridge};
+
 use webp::WebPEncodingError;
 use derive_more::From;
 use which::which;
 
 use libheif_sys as lh;
 
-use crate::{error::RsResult, server::get_config, Error};
+use crate::{domain::media::MediaForUpdate, error::{RsError, RsResult}, server::get_config, Error};
 
 use self::image_magick::ImageMagickInfo;
 
@@ -157,6 +162,9 @@ pub struct ImageCommandBuilder {
 }
 
 impl ImageCommandBuilder {
+    pub fn image_format_to_extension(format: &ImageFormat) -> String {
+        format.extensions_str().concat()
+    }
     pub fn new() -> Self {
         let mut cmd = Command::new("magick");
         cmd.arg("-");
@@ -243,18 +251,7 @@ pub async fn resize_image_path(path: &PathBuf, to: &PathBuf, size: u32) -> Image
     file.write_all(&data).await?;
     Ok(())
 }
-pub async fn resize_image_reader<R>(reader: &mut R, size: u32) -> ImageResult<Vec<u8>>where
-    R: AsyncRead + Unpin + ?Sized,   {
-    let config = get_config().await;
-    
-    let data = if config.noIM {
-        resize_image_reader_native(reader, size).await?
-    } else {
-        resize_image_reader_im(reader, size).await?
-    };
-    
-    Ok(data)
-}
+
 
 fn is_heic(data: &[u8]) -> bool {
     // Check if the data is large enough to contain the magic bytes
@@ -267,7 +264,7 @@ fn is_heic(data: &[u8]) -> bool {
     matches!(magic, b"ftypheic" | b"ftypheix" | b"ftypmif1" | b"ftypmsf1")
 }
 
-pub async fn resize_image_reader_native<R>(reader: &mut R, size: u32) -> ImageResult<Vec<u8>>where
+pub async fn reader_to_image<R>(reader: &mut R) -> RsResult<DynamicImage> where
     R: AsyncRead + Unpin + ?Sized,   {
 
     let mut data = Vec::new();
@@ -275,11 +272,35 @@ pub async fn resize_image_reader_native<R>(reader: &mut R, size: u32) -> ImageRe
     reader.read_to_end(&mut data).await?;
     let heic = is_heic(&data);
     let image = if heic {
-        println!("using HEIC");
         read_heic_file_to_image(&data)
     } else {
-        image::io::Reader::new(Cursor::new(data)).with_guessed_format()?.decode()?
+        let mut decoder = image::io::Reader::new(Cursor::new(data)).with_guessed_format()?.into_decoder()?;
+        let orientation = decoder.orientation()?;
+        let mut image = DynamicImage::from_decoder(decoder)?;
+        image.apply_orientation(orientation);
+        image
     };
+
+    Ok(image)
+}
+
+pub async fn resize_image_reader<R>(reader: &mut R, size: u32) -> RsResult<Vec<u8>>where
+    R: AsyncRead + Unpin + ?Sized,   {
+    let config = get_config().await;
+    
+    let data = if config.noIM {
+        resize_image_reader_native(reader, size).await?
+    } else {
+        resize_image_reader_im(reader, size).await?
+    };
+    
+    Ok(data)
+}
+
+pub async fn resize_image_reader_native<R>(reader: &mut R, size: u32) -> RsResult<Vec<u8>>where
+    R: AsyncRead + Unpin + ?Sized,   {
+
+    let image = reader_to_image(reader).await?;
     let scaled = resize(image, size);
     let webp_data = webp::Encoder::from_image(&scaled).map_err(|e| ImageError::UnableToDecodeWebp(e.into()))?
         .encode_simple(false, 80.0)?;
@@ -293,17 +314,52 @@ pub async fn resize_image_reader_im<R>(reader: &mut R, size: u32) -> ImageResult
     builder.set_quality(80);
     builder.set_size(&format!("{}x{}^", size, size));
     let data = builder.run("webp",reader).await?;
-    
     Ok(data)
 }
 
-pub async fn convert_image_reader<R>(reader: &mut R, format: &str, quality: Option<u16>) -> ImageResult<Vec<u8>>where
+pub async fn convert_image_reader<R>(reader: &mut R, format: ImageFormat, quality: Option<u16>, fast: bool) -> RsResult<Vec<u8>>where
+    R: AsyncRead + Unpin + ?Sized,   {
+        let config = get_config().await;
+    
+        let data = if config.noIM {
+            convert_image_reader_native(reader, format, quality, fast).await
+        } else {
+            convert_image_reader_im(reader, format, quality, fast).await
+        };
+        data
+}
+
+pub async fn convert_image_reader_im<R>(reader: &mut R, format: ImageFormat, quality: Option<u16>, fast: bool) -> RsResult<Vec<u8>>where
     R: AsyncRead + Unpin + ?Sized,   {
     let mut builder = ImageCommandBuilder::new();
     builder.auto_orient();
     builder.set_quality(quality.unwrap_or(80));
-    let data = builder.run(format,reader).await?;
+    let data = builder.run(&ImageCommandBuilder::image_format_to_extension(&format),reader).await?;
     
+    Ok(data)
+}
+
+pub async fn convert_image_reader_native<R>(reader: &mut R, format: ImageFormat, quality: Option<u16>, fast: bool) -> RsResult<Vec<u8>>where
+    R: AsyncRead + Unpin + ?Sized,   {
+    let image = reader_to_image(reader).await?;
+    let data = if format == ImageFormat::WebP { webp::Encoder::from_image(&image).map_err(|e| ImageError::UnableToDecodeWebp(e.into()))?
+        .encode_simple(false, 80.0)?.to_vec()
+    } else {
+        let mut buffer = Cursor::new(Vec::new());
+        let width = image.width();
+        let height = image.height();
+        let color = image.color();
+
+        if format == ImageFormat::Avif {
+            println!("fast?: {:?}", fast);
+            let encoder = image::codecs::avif::AvifEncoder::new_with_speed_quality(&mut buffer, if fast {10} else {5}, quality.unwrap_or(80) as u8);
+            encoder.write_image(&image.into_bytes(), width, height, color.into())?;
+        } else {
+            let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, quality.unwrap_or(80) as u8);
+            encoder.write_image(&image.into_bytes(), width, height, color.into())?;
+        }
+        buffer.into_inner()
+    };
     Ok(data)
 }
 
@@ -321,6 +377,134 @@ fn resize(image: DynamicImage, size: u32) -> DynamicImage {
     thumb
 }
 
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExifInfos {
+    pub colorspace: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub orientation: Option<String>,
+    pub focal: Option<u32>,
+    pub model: Option<String>,
+    pub lat: Option<f64>,
+    pub long: Option<f64>,
+    pub date: Option<i64>,
+
+}
+
+pub async fn image_infos<R>(reader: &mut R) -> RsResult<MediaForUpdate>where
+    R: AsyncRead + Unpin + ?Sized,   {
+        let config = get_config().await;
+    
+        let data = if config.noIM {
+            image_infos_native(reader).await
+        } else {
+            image_infos_im(reader).await
+        };
+        data
+}
+
+pub async fn image_infos_native<R>(reader: &mut R) -> RsResult<MediaForUpdate> where R: AsyncRead + Unpin + ?Sized    {
+    let mut data = Vec::new();
+    let mut reader = tokio::io::BufReader::new(reader);
+    reader.read_to_end(&mut data).await?;
+
+    let mut bufreader = std::io::BufReader::new(std::io::Cursor::new(data));
+        
+    
+    let exifreader = exif::Reader::new();
+    let exif = exifreader.read_from_container(&mut bufreader)?;
+    let mut update = MediaForUpdate::default();
+
+    update.width = exif.get_field(Tag::PixelXDimension, In::PRIMARY).map(|f| f.value.get_uint(0)).flatten();
+    update.height = exif.get_field(Tag::PixelYDimension, In::PRIMARY).map(|f| f.value.get_uint(0)).flatten();
+    //update.orientation = exif.get_field(Tag::Orientation, In::PRIMARY).map(|f| f.display_value().to_string());
+    update.focal = exif.get_field(Tag::FocalLengthIn35mmFilm, In::PRIMARY).map(|f| f.value.get_uint(0)).flatten().map(|f| f as u64 );
+         
+    for field in exif.fields() {
+        match field.tag {
+            Tag::Model => {
+                if let exif::Value::Ascii(_) = field.value {
+                    let string_value = format!("{}", field.value.display_as(field.tag));
+                    update.model = Some(string_value);
+                }
+            }
+            Tag::DateTimeOriginal | Tag::DateTime => {
+                if let exif::Value::Ascii(_) = field.value {
+                    let string_value = format!("{}", field.value.display_as(field.tag));
+                    update.created = Some(
+                        Utc.datetime_from_str(string_value.as_str(), "%F %T")?
+                            .timestamp_millis(),
+                    );
+                }
+            }
+            Tag::GPSLatitude => {
+                if let exif::Value::Rational(ref x) = field.value {
+                    update.lat = Some(to_decimal_coordinate(x));
+                }
+            }
+           /*  Tag::GPSLatitudeRef => {
+                let string_value = format!("{}", field.value.display_as(field.tag));
+                if let "S" = string_value.as_str() {
+                    latitude_sign = -1.0
+                }
+            }*/
+            Tag::GPSLongitude => {
+                if let exif::Value::Rational(ref x) = field.value {
+                    update.long = Some(to_decimal_coordinate(x));
+                }
+            }
+            /*
+            Tag::GPSLongitudeRef => {
+                let string_value = format!("{}", field.value.display_as(field.tag));
+                if let "W" = string_value.as_str() {
+                    longitude_sign = -1.0
+                }
+            }*/
+            _ => {}
+        }
+    }
+    /*for f in exif.fields() {
+        println!("{} {}: {} ({})",
+                    f.tag, f.ifd_num, f.display_value().with_unit(&exif), f.display_value());
+    }*/
+
+
+    Ok(update)
+}
+
+pub async fn image_infos_im<R>(reader: &mut R) -> RsResult<MediaForUpdate> where R: AsyncRead + Unpin + ?Sized    {
+    let images_infos = ImageCommandBuilder::new().infos(reader).await?;
+    let mut update = MediaForUpdate::default();
+    if let Some(infos) = images_infos.first() {
+        
+
+        update.mp = Some(u32::from(infos.image.geometry.width * infos.image.geometry.height / 1000000));
+
+
+        update.width = Some(infos.image.geometry.width);
+        update.height = Some(infos.image.geometry.height);
+        update.orientation = infos.image.orientation();
+        update.iso = infos.image.iso();
+        update.focal = infos.image.focal();
+        update.f_number = infos.image.f_number();
+        update.model = infos.image.properties.exif_model.clone();
+        update.sspeed = infos.image.properties.exif_exposure_time.clone();
+        update.icc = infos.image.properties.icc_description.clone();
+        update.created = infos.image.created();
+
+        if let Some(color_space) = &infos.image.colorspace {
+            update.color_space = Some(color_space.clone());
+        }
+    }
+
+
+    Ok(update)
+}
+
+fn to_decimal_coordinate(dms: &[exif::Rational]) -> f64 {
+    dms[0].to_f64() + dms[1].to_f64() / 60.0 + dms[2].to_f64() / 3600.0
+}
 
 
 

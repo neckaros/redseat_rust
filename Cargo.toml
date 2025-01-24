@@ -55,8 +55,11 @@ tokio-stream = { version = "0.1.14", features = ["io-util"] }
 socketioxide = { version = "0.13.1", features = ["extensions","state", "v4"] }
 async-trait = "0.1.77"
 mime_guess = "2.0.4"
+
 image ="0.25.5"
 webp = "0.3.0"
+kamadak-exif = "0.6.1"
+
 which = "6.0.0"
 strum = "0.26.1"
 futures = "0.3.30"

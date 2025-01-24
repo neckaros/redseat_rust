@@ -1,3 +1,4 @@
+use chrono::{TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 
 
@@ -84,6 +85,34 @@ impl Image {
             let a = splitted.next().and_then(|m| m.parse::<f64>().ok());
             let b = splitted.next().and_then(|m| m.parse::<f64>().ok());
             a.map(|a| a / b.unwrap_or(1.0))
+        } else {
+            None
+        }
+    }
+
+    pub fn created(&self) -> Option<i64> {
+        if let Some(time) = &self.properties.exif_date_time_original {
+            if let Some(date) = Utc.datetime_from_str(time.as_str(), "%Y:%m:%d %H:%M:%S").ok() {
+                Some(date.timestamp_millis())
+            } else {
+                None
+            }
+                            
+        } else {
+            None
+        }
+    }
+
+    pub fn xdim(&self) -> Option<i64> {
+        if let Some(dim) = &self.properties.exif_pixel_xdimension {
+            dim.parse::<i64>().ok()
+        } else {
+            None
+        }
+    }
+    pub fn ydim(&self) -> Option<i64> {
+        if let Some(dim) = &self.properties.exif_pixel_ydimension {
+            dim.parse::<i64>().ok()
         } else {
             None
         }

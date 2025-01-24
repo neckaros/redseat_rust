@@ -417,12 +417,12 @@ impl ModelController {
         Ok(Box::pin(body_reader))
     }
 
-    pub async fn update_serie_image<T: AsyncRead + Unpin>(&self, library_id: &str, serie_id: &str, kind: &ImageType, mut reader: T, requesting_user: &ConnectedUser) -> Result<()> {
+    pub async fn update_serie_image<T: AsyncRead + Unpin>(&self, library_id: &str, serie_id: &str, kind: &ImageType, mut reader: T, requesting_user: &ConnectedUser) -> RsResult<()> {
         if MediasIds::is_id(serie_id) {
-            return Err(Error::InvalidIdForAction("udpate image".to_string(), serie_id.to_string()))
+            return Err(Error::InvalidIdForAction("udpate image".to_string(), serie_id.to_string()).into())
         }
 
-        let converted = convert_image_reader(&mut reader, "webp", Some(80)).await?;
+        let converted = convert_image_reader(&mut reader, image::ImageFormat::WebP, Some(80), false).await?;
         let converted_reader = Cursor::new(converted);
         self.update_library_image(library_id, ".series", serie_id, &Some(kind.clone()), converted_reader, requesting_user).await;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;

@@ -21,7 +21,7 @@ use tokio_stream::StreamExt;
 use tokio_util::{compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt}, io::{ReaderStream, StreamReader, SyncIoBridge}};
 use zip::ZipWriter;
 
-use crate::{domain::{deleted::RsDeleted, library::LibraryType, media::{self, ConvertMessage, ConvertProgress, RsGpsPosition, DEFAULT_MIME}, plugin, MediaElement}, error::RsError, model::store::sql::SqlOrder, plugins::sources::{path_provider::PathProvider, Source}, routes::infos, tools::{file_tools::{filename_from_path, remove_extension}, image_tools::convert_image_reader, video_tools::{VideoCommandBuilder, VideoConvertRequest, VideoOverlayPosition}}};
+use crate::{domain::{deleted::RsDeleted, library::LibraryType, media::{self, ConvertMessage, ConvertProgress, RsGpsPosition, DEFAULT_MIME}, plugin, MediaElement}, error::RsError, model::store::sql::SqlOrder, plugins::sources::{path_provider::PathProvider, Source}, routes::infos, tools::{file_tools::{filename_from_path, remove_extension}, image_tools::{convert_image_reader, image_infos}, video_tools::{VideoCommandBuilder, VideoConvertRequest, VideoOverlayPosition}}};
 
 use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaItemReference, MediaWithAction, MediasMessage, ProgressMessage}, progress::{RsProgress, RsProgressType}, ElementAction}, error::RsResult, plugins::{get_plugin_fodler, sources::{async_reader_progress::ProgressReader, error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{self, resize_image, resize_image_reader, ImageSize, ImageType}, log::{log_error, log_info, LogServiceType}, prediction::{predict_net, preload_model, PredictionTagResult}, video_tools::{self, probe_video, VideoTime}}};
 
@@ -487,7 +487,7 @@ impl ModelController {
             if !query.unsupported_mime.is_empty() && !query.raw {
                 if existing.kind == FileType::Photo && query.unsupported_mime.contains(&existing.mime) || query.unsupported_mime.contains(&"all".to_owned()) {
                     let mut data = reader_response.into_reader(Some(library_id), range, None, Some((self.clone(), &requesting_user)), None).await?; 
-                    let resized = convert_image_reader(&mut data.stream, "jpg", Some(80)).await?;
+                    let resized = convert_image_reader(&mut data.stream, image::ImageFormat::Jpeg, Some(80), true).await?;
                     let len = resized.len();
                     let resized = Cursor::new(resized);
                     Ok(SourceRead::Stream(FileStreamResult {
@@ -495,8 +495,8 @@ impl ModelController {
                         size: Some(len as u64),
                         accept_range: false,
                         range: None,
-                        mime: Some("image/webp".to_owned()),
-                        name: Some("converted.webp".to_owned()),
+                        mime: Some("image/avif".to_owned()),
+                        name: Some("converted.avif".to_owned()),
                         cleanup: None,
                     }))
                 } else {
@@ -1281,33 +1281,15 @@ impl ModelController {
     pub async fn update_photo_infos(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser, notif: bool) -> crate::Result<()> {
         requesting_user.check_file_role(library_id, media_id, LibraryRole::Read)?;
         self.cache_check_library_notcrypt(library_id).await?;
+
         let mut m = self.library_file(library_id, media_id, None, MediaFileQuery::default() , requesting_user).await?.into_reader(Some(library_id), None, None, Some((self.clone(), &requesting_user)), None).await?;
 
-        let images_infos = image_tools::ImageCommandBuilder::new().infos(&mut m.stream).await?;
-        if let Some(infos) = images_infos.first() {
-            let mut update = MediaForUpdate::default();
 
-            update.mp = Some(u32::from(infos.image.geometry.width * infos.image.geometry.height / 1000000));
-
-
-            update.width = Some(infos.image.geometry.width);
-            update.height = Some(infos.image.geometry.height);
-            update.orientation = infos.image.orientation();
-            update.iso = infos.image.iso();
-            update.focal = infos.image.focal();
-            update.f_number = infos.image.f_number();
-            update.model = infos.image.properties.exif_model.clone();
-            update.sspeed = infos.image.properties.exif_exposure_time.clone();
-            update.icc = infos.image.properties.icc_description.clone();
-            
-
-            if let Some(color_space) = &infos.image.colorspace {
-                update.color_space = Some(color_space.clone());
-            }
+        let update = image_infos(&mut m.stream).await?;
         
     
-            self.update_media(library_id, media_id.to_owned(), update, notif, requesting_user).await?;
-        }
+        self.update_media(library_id, media_id.to_owned(), update, notif, requesting_user).await?;
+        
         Ok(())
     }
 
