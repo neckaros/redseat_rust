@@ -274,7 +274,7 @@ impl ModelController {
                     let stream = image_reader.bytes_stream();
                     let body_with_io_error = stream.map_err(|err| io::Error::new(io::ErrorKind::Other, err));
                     let mut body_reader = StreamReader::new(body_with_io_error);
-                    let resized = resize_image_reader(&mut body_reader, ImageSize::Large.to_size()).await?;
+                    let resized = resize_image_reader(&mut body_reader, ImageSize::Large.to_size(), image::ImageFormat::Avif, Some(60), false).await?;
 
                     writer.write_all(&resized).await?;
                 }

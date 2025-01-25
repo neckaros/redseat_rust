@@ -333,11 +333,11 @@ impl ModelController {
         let result = self.library_image(library_id, ".thumbs", media_id, None, size.clone(), requesting_user).await;
         if let Err(error) = result {
             if let crate::Error::Source(SourcesError::NotFound(_)) = &error {
-                self.generate_thumb(library_id, media_id, requesting_user).await.map_err(|_| Error::NotFound)?;
+                self.generate_thumb(library_id, media_id, requesting_user).await?;
                 self.library_image(library_id, ".thumbs", media_id, None, size, requesting_user).await
 
             } else if let crate::Error::CorruptedImage = &error {
-                self.generate_thumb(library_id, media_id, requesting_user).await.map_err(|_| Error::NotFound)?;
+                self.generate_thumb(library_id, media_id, requesting_user).await?;
                 self.library_image(library_id, ".thumbs", media_id, None, size, requesting_user).await
 
             } else {
@@ -958,18 +958,16 @@ impl ModelController {
         let thumb = match media.kind {
             FileType::Photo => { 
                 let media_source: MediaSource = media.try_into()?;
-                println!("Photo {}", &media_source.source);
                 let reader = m.get_file(&media_source.source, None).await?;
                 let mut reader = reader.into_reader(Some(library_id), None, None, Some((self.clone(), &requesting_user)), None).await?;
-                let image = resize_image_reader(&mut reader.stream, 512).await?;
+                let image = resize_image_reader(&mut reader.stream, 512, image::ImageFormat::Avif, Some(80), false).await?;
                 Ok(image)
             },
             FileType::Album => { 
                 let media_source: MediaSource = media.try_into()?;
-                println!("Photo {}", &media_source.source);
                 let reader = self.library_file(library_id, media_id, None, MediaFileQuery {page: Some(1), unsupported_mime: vec![], raw: false }, requesting_user).await?;
                 let mut reader = reader.into_reader(Some(library_id), None, None, Some((self.clone(), &requesting_user)), None).await?;
-                let image = resize_image_reader(&mut reader.stream, 512).await?;
+                let image = resize_image_reader(&mut reader.stream, 512, image::ImageFormat::Avif, Some(80), false).await?;
                 Ok(image)
             },
             FileType::Video => { 
@@ -978,7 +976,7 @@ impl ModelController {
             },
             _ => Err(crate::model::error::Error::UnsupportedTypeForThumb),
         }?;
-        
+        print!("humm?");
         self.update_library_image(&library_id, ".thumbs", &media_id, &None, thumb.as_slice(), requesting_user).await?;
 
         Ok(())
@@ -999,7 +997,7 @@ impl ModelController {
         };
         let thumb = video_tools::thumb_video(&uri, time).await?;
         let mut cursor = std::io::Cursor::new(thumb);
-        let thumb = resize_image_reader(&mut cursor, 512).await?;
+        let thumb = resize_image_reader(&mut cursor, 512, image::ImageFormat::Avif, Some(80), false).await?;
 
         println!("Got thumb {}", thumb.len());
         Ok(thumb)

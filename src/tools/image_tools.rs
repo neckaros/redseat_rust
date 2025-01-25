@@ -293,27 +293,26 @@ pub async fn reader_to_image<R>(reader: &mut R) -> RsResult<ImageAndProfile> whe
     Ok(image)
 }
 
-pub async fn resize_image_reader<R>(reader: &mut R, size: u32) -> RsResult<Vec<u8>>where
+pub async fn resize_image_reader<R>(reader: &mut R, size: u32, format: ImageFormat, quality: Option<u16>, fast: bool) -> RsResult<Vec<u8>>where
     R: AsyncRead + Unpin + ?Sized,   {
     let config = get_config().await;
     
     let data = if config.imagesUseIm {
         resize_image_reader_im(reader, size).await?
     } else {
-        resize_image_reader_native(reader, size).await?
+        resize_image_reader_native(reader, size, format, quality, fast).await?
     };
     
     Ok(data)
 }
 
-pub async fn resize_image_reader_native<R>(reader: &mut R, size: u32) -> RsResult<Vec<u8>>where
+pub async fn resize_image_reader_native<R>(reader: &mut R, size: u32, format: ImageFormat, quality: Option<u16>, fast: bool) -> RsResult<Vec<u8>>where
     R: AsyncRead + Unpin + ?Sized,   {
 
-    let image = reader_to_image(reader).await?;
+    let mut image = reader_to_image(reader).await?;
     let scaled = resize(image.image, size);
-    let webp_data = webp::Encoder::from_image(&scaled).map_err(|e| ImageError::UnableToDecodeWebp(e.into()))?
-        .encode_simple(false, 80.0)?;
-    Ok(webp_data.to_vec())
+    image.image = scaled;
+    save_image_native(image, format, quality, fast).await
 }
 
 pub async fn resize_image_reader_im<R>(reader: &mut R, size: u32) -> ImageResult<Vec<u8>>where
@@ -351,8 +350,12 @@ pub async fn convert_image_reader_im<R>(reader: &mut R, format: ImageFormat, qua
 pub async fn convert_image_reader_native<R>(reader: &mut R, format: ImageFormat, quality: Option<u16>, fast: bool) -> RsResult<Vec<u8>>where
     R: AsyncRead + Unpin + ?Sized,   {
     let image = reader_to_image(reader).await?;
+    save_image_native(image, format, quality, fast).await
+}
+
+pub async fn save_image_native(image: ImageAndProfile, format: ImageFormat, quality: Option<u16>, fast: bool) -> RsResult<Vec<u8>>  {
     let data = if format == ImageFormat::WebP { webp::Encoder::from_image(&image.image).map_err(|e| ImageError::UnableToDecodeWebp(e.into()))?
-        .encode_simple(false, 80.0)?.to_vec()
+        .encode_simple(false, quality.unwrap_or(80) as f32)?.to_vec()
     } else {
         let mut buffer = Cursor::new(Vec::new());
         let width = image.image.width();

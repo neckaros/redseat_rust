@@ -206,12 +206,19 @@ impl  ModelController {
 		self.cache_check_library_notcrypt(library_id).await?;
 
         let m = self.library_source_for_library(&library_id).await?;
-		let source_filepath = format!("{}/{}{}{}.webp", folder, id, ImageType::optional_to_filename_element(&kind), ImageSize::optional_to_filename_element(&size));
+		let mut source_filepath = format!("{}/{}{}{}.webp", folder, id, ImageType::optional_to_filename_element(&kind), ImageSize::optional_to_filename_element(&size));
+		let avif = false;
+		if !m.exists(&source_filepath).await {
+			source_filepath = format!("{}/{}{}{}.avif", folder, id, ImageType::optional_to_filename_element(&kind), ImageSize::optional_to_filename_element(&size));
+		}
 		let reader_response = m.get_file(&source_filepath, None).await;
 		if let Some(int_size) = size {
 			if let Err(error) = &reader_response {
 				if matches!(error, RsError::Source(SourcesError::NotFound(_))) {
-					let original_filepath = format!("{}/{}{}.webp", folder, id, ImageType::optional_to_filename_element(&kind));
+					let mut original_filepath = format!("{}/{}{}.webp", folder, id, ImageType::optional_to_filename_element(&kind));
+					if !m.exists(&original_filepath).await {
+						original_filepath = format!("{}/{}{}.avif", folder, id, ImageType::optional_to_filename_element(&kind));
+					}
 					let exist = m.exists(&original_filepath).await;
 					if exist {
 						log_info(crate::tools::log::LogServiceType::Other, format!("Creating image size: {} {} {} {}", folder, id, ImageType::optional_to_filename_element(&kind), int_size));

@@ -56,7 +56,7 @@ socketioxide = { version = "0.13.1", features = ["extensions","state", "v4"] }
 async-trait = "0.1.77"
 mime_guess = "2.0.4"
 
-image = { version = "0.25.5", features = ["nasm", "rayon"] }
+image = { version = "0.25.5", features = ["nasm", "rayon", "avif-native"] }
 webp = "0.3.0"
 kamadak-exif = "0.6.1"
 
