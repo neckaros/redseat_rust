@@ -60,13 +60,13 @@ pub fn read_heic_file_to_image(heif_data: &[u8]) -> RsResult<ImageAndProfile> {
             ptr::null()
         ) };
         if err.code != lh::heif_error_code_heif_error_Ok {
-            return Err(RsError::HeifErrorCode(err.code))
+            return Err(RsError::HeifErrorCode(err.code as i32))
         }
 
         let mut handle = ptr::null_mut();
         let err = unsafe { lh::heif_context_get_primary_image_handle(ctx, &mut handle) };
         if err.code != lh::heif_error_code_heif_error_Ok {
-            return Err(RsError::HeifErrorCode(err.code))
+            return Err(RsError::HeifErrorCode(err.code as i32))
         }
         if handle.is_null() {
             return Err(RsError::HeifErrorCode(0))
@@ -89,7 +89,7 @@ pub fn read_heic_file_to_image(heif_data: &[u8]) -> RsResult<ImageAndProfile> {
         ) };
         unsafe { lh::heif_decoding_options_free(options) };
         if err.code != lh::heif_error_code_heif_error_Ok {
-            return Err(RsError::HeifErrorCode(err.code))
+            return Err(RsError::HeifErrorCode(err.code as i32))
         }
         if image.is_null() {
             return Err(RsError::HeifErrorCode(0))
@@ -168,13 +168,13 @@ pub fn read_heic_infos(heif_data: &[u8]) -> RsResult<HeicFileInfos> {
         ptr::null()
     ) };
     if err.code != lh::heif_error_code_heif_error_Ok {
-        return Err(RsError::HeifErrorCode(err.code))
+        return Err(RsError::HeifErrorCode(err.code as i32))
     }
     
     let mut handle = ptr::null_mut();
     let err = unsafe { lh::heif_context_get_primary_image_handle(ctx, &mut handle) };
     if err.code != lh::heif_error_code_heif_error_Ok {
-        return Err(RsError::HeifErrorCode(err.code))
+        return Err(RsError::HeifErrorCode(err.code as i32))
     }
     if handle.is_null() {
         return Err(RsError::HeifErrorCode(0))

@@ -20,5 +20,7 @@ Display advanced properties. Verify public ip and port you exposed from your doc
 
 # Setup Dev Environment
 Windows: vcpkg install libheif:x64-windows-static-md
-You must have ImageMagick, YT-DLP and FFMPEG installed (setup in your PATH)
-
+You must have YT-DLP and FFMPEG installed (setup in your PATH)
+Env variagles:
+SYSTEM_DEPS_DAV1D_LINK=static
+SYSTEM_DEPS_DAV1D_BUILD_INTERNAL=auto
