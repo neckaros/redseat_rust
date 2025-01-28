@@ -177,6 +177,11 @@ pub struct Media {
     pub uploader: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uploadkey: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub original_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub original_id: Option<String>,
 } 
 
 impl Media {
@@ -289,6 +294,10 @@ pub struct MediaForUpdate {
     pub uploadkey: Option<String>,
     pub upload_id: Option<String>,
 
+    
+    pub original_hash: Option<String>,
+    pub original_id: Option<String>,
+
 } 
 
 
@@ -348,6 +357,9 @@ pub struct MediaForAdd {
     pub lang: Option<String>,
     pub uploader: Option<String>,
     pub uploadkey: Option<String>,
+
+    pub original_hash: Option<String>,
+    pub original_id: Option<String>,
 
     pub created: Option<i64>,
 } 
@@ -478,6 +490,8 @@ impl From<Media> for MediaForAdd {
             created: value.created,
             origin: value.origin,
             series: value.series,
+            original_hash: value.md5,
+            original_id: Some(value.original_id.unwrap_or(value.id)),
             ..Default::default()
         }
     }
@@ -495,6 +509,8 @@ impl From<Media> for MediaForUpdate {
             origin: value.origin,
             add_series: value.series,
             pages: value.pages,
+            original_hash: value.original_hash.or(value.md5),
+            original_id: Some(value.original_id.unwrap_or(value.id)),
             ..Default::default()
         }
     }

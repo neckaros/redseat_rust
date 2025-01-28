@@ -17,7 +17,7 @@ use which::which;
 
 use libheif_sys as lh;
 
-use crate::{domain::media::MediaForUpdate, error::{RsError, RsResult}, server::get_config, Error};
+use crate::{domain::media::MediaForUpdate, error::{RsError, RsResult}, plugins::sources::AsyncReadPinBox, server::get_config, Error};
 
 use self::image_magick::ImageMagickInfo;
 
@@ -263,6 +263,16 @@ fn is_heic(data: &[u8]) -> bool {
     let magic = &data[4..12];
     matches!(magic, b"ftypheic" | b"ftypheix" | b"ftypmif1" | b"ftypmsf1")
 }
+fn is_avif(data: &[u8]) -> bool {
+    // Check if the data is large enough to contain the magic bytes
+    println!("=============================== {}", data.len());
+    if data.len() < 12 {
+        return false;
+    }
+    // HEIC magic bytes typically start at offset 4
+    let magic = &data[4..12];
+    matches!(magic, b"ftypavif")
+}
 #[derive(Default, Debug, Clone)]
 pub struct ImageAndProfile {
     pub image: DynamicImage,
@@ -276,8 +286,21 @@ pub async fn reader_to_image<R>(reader: &mut R) -> RsResult<ImageAndProfile> whe
     let mut reader = tokio::io::BufReader::new(reader);
     reader.read_to_end(&mut data).await?;
     let heic = is_heic(&data);
+    let avif = is_avif(&data);
     let image = if heic {
         read_heic_file_to_image(&data)?
+    } else if avif {
+        let mut reader = image::io::Reader::new(Cursor::new(data));
+        reader.set_format(ImageFormat::Avif);
+        let mut decoder = reader.into_decoder()?;
+        let orientation = decoder.orientation()?;
+        let profile = decoder.icc_profile().ok().flatten();
+        let mut image = DynamicImage::from_decoder(decoder)?;
+        image.apply_orientation(orientation);
+        ImageAndProfile {
+            image,
+            profile
+        }
     } else {
         let mut decoder = image::io::Reader::new(Cursor::new(data)).with_guessed_format()?.into_decoder()?;
         let orientation = decoder.orientation()?;
@@ -293,8 +316,7 @@ pub async fn reader_to_image<R>(reader: &mut R) -> RsResult<ImageAndProfile> whe
     Ok(image)
 }
 
-pub async fn resize_image_reader<R>(reader: &mut R, size: u32, format: ImageFormat, quality: Option<u16>, fast: bool) -> RsResult<Vec<u8>>where
-    R: AsyncRead + Unpin + ?Sized,   {
+pub async fn resize_image_reader(reader: AsyncReadPinBox, size: u32, format: ImageFormat, quality: Option<u16>, fast: bool) -> RsResult<Vec<u8>>    {
     let config = get_config().await;
     
     let data = if config.imagesUseIm {
@@ -306,27 +328,26 @@ pub async fn resize_image_reader<R>(reader: &mut R, size: u32, format: ImageForm
     Ok(data)
 }
 
-pub async fn resize_image_reader_native<R>(reader: &mut R, size: u32, format: ImageFormat, quality: Option<u16>, fast: bool) -> RsResult<Vec<u8>>where
-    R: AsyncRead + Unpin + ?Sized,   {
-
-    let mut image = reader_to_image(reader).await?;
-    let scaled = resize(image.image, size);
-    image.image = scaled;
-    save_image_native(image, format, quality, fast).await
+pub async fn resize_image_reader_native(mut reader: AsyncReadPinBox, size: u32, format: ImageFormat, quality: Option<u16>, fast: bool) -> RsResult<Vec<u8> >   {
+        let task = tokio::task::spawn(async move {
+            let mut image = reader_to_image(&mut reader).await?;
+            let scaled = resize(image.image, size);
+            image.image = scaled;
+            save_image_native(image, format, quality, fast).await
+        });
+        task.await?
 }
 
-pub async fn resize_image_reader_im<R>(reader: &mut R, size: u32) -> ImageResult<Vec<u8>>where
-    R: AsyncRead + Unpin + ?Sized,   {
+pub async fn resize_image_reader_im(mut reader: AsyncReadPinBox, size: u32) -> ImageResult<Vec<u8>>  {
     let mut builder = ImageCommandBuilder::new();
     builder.auto_orient();
     builder.set_quality(80);
     builder.set_size(&format!("{}x{}^", size, size));
-    let data = builder.run("webp",reader).await?;
+    let data = builder.run("webp",&mut reader).await?;
     Ok(data)
 }
 
-pub async fn convert_image_reader<R>(reader: &mut R, format: ImageFormat, quality: Option<u16>, fast: bool) -> RsResult<Vec<u8>>where
-    R: AsyncRead + Unpin + ?Sized,   {
+pub async fn convert_image_reader(reader:AsyncReadPinBox, format: ImageFormat, quality: Option<u16>, fast: bool) -> RsResult<Vec<u8>> {
         let config = get_config().await;
     
         let data = if config.imagesUseIm {
@@ -337,20 +358,21 @@ pub async fn convert_image_reader<R>(reader: &mut R, format: ImageFormat, qualit
         data
 }
 
-pub async fn convert_image_reader_im<R>(reader: &mut R, format: ImageFormat, quality: Option<u16>, fast: bool) -> RsResult<Vec<u8>>where
-    R: AsyncRead + Unpin + ?Sized,   {
+pub async fn convert_image_reader_im(mut reader: AsyncReadPinBox, format: ImageFormat, quality: Option<u16>, fast: bool) -> RsResult<Vec<u8>> {
     let mut builder = ImageCommandBuilder::new();
     builder.auto_orient();
     builder.set_quality(quality.unwrap_or(80));
-    let data = builder.run(&ImageCommandBuilder::image_format_to_extension(&format),reader).await?;
+    let data = builder.run(&ImageCommandBuilder::image_format_to_extension(&format),&mut reader).await?;
     
     Ok(data)
 }
 
-pub async fn convert_image_reader_native<R>(reader: &mut R, format: ImageFormat, quality: Option<u16>, fast: bool) -> RsResult<Vec<u8>>where
-    R: AsyncRead + Unpin + ?Sized,   {
-    let image = reader_to_image(reader).await?;
-    save_image_native(image, format, quality, fast).await
+pub async fn convert_image_reader_native(mut reader: AsyncReadPinBox, format: ImageFormat, quality: Option<u16>, fast: bool) -> RsResult<Vec<u8>> {
+        let task = tokio::task::spawn(async move {
+            let image = reader_to_image(&mut reader).await?;
+            save_image_native(image, format, quality, fast).await
+        });
+        task.await?
 }
 
 pub async fn save_image_native(image: ImageAndProfile, format: ImageFormat, quality: Option<u16>, fast: bool) -> RsResult<Vec<u8>>  {
@@ -368,7 +390,7 @@ pub async fn save_image_native(image: ImageAndProfile, format: ImageFormat, qual
                 encoder.set_icc_profile(profile);
             }
             encoder.write_image(&image.image.into_bytes(), width, height, color.into())?;
-        } else {
+        } else if format == ImageFormat::Jpeg {
             let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, quality.unwrap_or(80) as u8);
             if let Some(profile) = image.profile {
                 println!("Setting icc profile {:?}", profile);
@@ -376,6 +398,16 @@ pub async fn save_image_native(image: ImageAndProfile, format: ImageFormat, qual
                 println!("result! {:?}", r);
             }
             encoder.write_image(&image.image.into_bytes(), width, height, color.into())?;
+        } else if format == ImageFormat::Png {
+            let mut encoder = image::codecs::png::PngEncoder::new(&mut buffer);
+            if let Some(profile) = image.profile {
+                println!("Setting icc profile {:?}", profile);
+                let r = encoder.set_icc_profile(profile);
+                println!("result! {:?}", r);
+            }
+            image.image.write_with_encoder(encoder)?;
+        } else {
+            image.image.write_to(&mut buffer, format)?;
         }
         buffer.into_inner()
     };

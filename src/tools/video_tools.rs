@@ -346,6 +346,10 @@ impl VideoCommandBuilder {
                     self.add_out_option("-surfaces");
                     self.add_out_option( "64");
 
+                    //for mac support 
+                    self.add_out_option("-tag:v");
+                    self.add_out_option( "hvc1");
+
                                         /*self.add_out_option("-preset");
                     self.add_out_option( "slow");
 
@@ -376,7 +380,11 @@ impl VideoCommandBuilder {
                 } else {
                     self.add_out_option("libx265");
                     self.add_out_option("-crf:v");
-                    self.add_out_option(crf.unwrap_or(26).to_string());
+                    self.add_out_option(crf.unwrap_or(28).to_string());
+                    
+                    //for mac support 
+                    self.add_out_option("-tag:v");
+                    self.add_out_option( "hvc1");
                 }
                 if self.format.is_none() {
                     

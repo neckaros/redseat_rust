@@ -206,13 +206,13 @@ impl  ModelController {
 		self.cache_check_library_notcrypt(library_id).await?;
 
         let m = self.library_source_for_library(&library_id).await?;
-		let mut source_filepath = format!("{}/{}{}{}.webp", folder, id, ImageType::optional_to_filename_element(&kind), ImageSize::optional_to_filename_element(&size));
+		let mut source_filepath = format!("{}/{}{}.avif", folder, id, ImageType::optional_to_filename_element(&kind));
 		let avif = false;
 		if !m.exists(&source_filepath).await {
-			source_filepath = format!("{}/{}{}{}.avif", folder, id, ImageType::optional_to_filename_element(&kind), ImageSize::optional_to_filename_element(&size));
+			source_filepath = format!("{}/{}{}.webp", folder, id, ImageType::optional_to_filename_element(&kind));
 		}
 		let reader_response = m.get_file(&source_filepath, None).await;
-		if let Some(int_size) = size {
+		/*if let Some(int_size) = size {
 			if let Err(error) = &reader_response {
 				if matches!(error, RsError::Source(SourcesError::NotFound(_))) {
 					let mut original_filepath = format!("{}/{}{}.webp", folder, id, ImageType::optional_to_filename_element(&kind));
@@ -234,7 +234,7 @@ impl  ModelController {
 					
 				}
 			}
-		}
+		}*/
 		let reader = reader_response?;
 		if reader.size().unwrap_or(200) == 0 {
 			return Err(RsError::CorruptedImage)
@@ -249,7 +249,7 @@ impl  ModelController {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
 
         let m = self.library_source_for_library(&library_id).await?;
-		let source_filepath = format!("{}/{}{}.webp", folder, id, ImageType::optional_to_filename_element(&kind));
+		let source_filepath = format!("{}/{}{}.avif", folder, id, ImageType::optional_to_filename_element(&kind));
         let exist = m.exists(&source_filepath).await;
 		Ok(exist)
 	}
@@ -259,7 +259,7 @@ impl  ModelController {
 
         let m = self.library_source_for_library(&library_id).await?;
 
-		let source_filepath = format!("{}/{}{}.webp", folder, id, ImageType::optional_to_filename_element(&kind));
+		let source_filepath = format!("{}/{}{}.avif", folder, id, ImageType::optional_to_filename_element(&kind));
 		let (_, writer) = m.get_file_write_stream(&source_filepath).await?;
 		tokio::pin!(reader);
 		tokio::pin!(writer);
@@ -273,14 +273,14 @@ impl  ModelController {
 
         let m = self.library_source_for_library(&library_id).await?;
 
-		let source_filepath = format!("{}/{}{}.webp", folder, id, ImageType::optional_to_filename_element(&kind));
+		let source_filepath = format!("{}/{}{}.avif", folder, id, ImageType::optional_to_filename_element(&kind));
 			let r = m.remove(&source_filepath).await;
 			if r.is_ok() {
 				log_info(crate::tools::log::LogServiceType::Other, format!("Deleted image {}", source_filepath));
 			}
 
 		for size in ImageSize::iter() {
-			let source_filepath = format!("{}/{}{}{}.webp", folder, id, ImageType::optional_to_filename_element(&kind), size.to_filename_element());
+			let source_filepath = format!("{}/{}{}{}.avif", folder, id, ImageType::optional_to_filename_element(&kind), size.to_filename_element());
 			let r = m.remove(&source_filepath).await;
 			if r.is_ok() {
 				log_info(crate::tools::log::LogServiceType::Other, format!("Deleted image {}", source_filepath));

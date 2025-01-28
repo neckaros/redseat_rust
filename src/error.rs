@@ -169,6 +169,8 @@ pub enum Error {
 	#[from]
 	TryFromSlideError(#[serde_as(as = "DisplayFromStr")] std::array::TryFromSliceError),
 	
+	#[from]
+	TaskJoinError(#[serde_as(as = "DisplayFromStr")] tokio::task::JoinError),
 	
 
 }

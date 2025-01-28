@@ -1,4 +1,6 @@
 
+use std::io::Cursor;
+
 use crate::{domain::{episode::{self, Episode}, media::{FileEpisode, Media, MediaForUpdate}, progress, view_progress::{ViewProgressForAdd, ViewProgressLigh}, watched::{WatchedForAdd, WatchedLight}, MediasIds}, model::{episodes::{EpisodeForUpdate, EpisodeQuery}, medias::MediaQuery, users::{ConnectedUser, HistoryQuery}, ModelController}, tools::image_tools::ImageType, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
 use futures::TryStreamExt;
@@ -220,13 +222,16 @@ async fn handler_post_image(Path((library_id, tag_id)): Path<(String, String)>, 
 		//let mime: String = field.content_type().unwrap().to_string();
         //let data = field.bytes().await.unwrap();
 
-		let reader = StreamReader::new(field.map_err(|multipart_error| {
+		let mut reader = StreamReader::new(field.map_err(|multipart_error| {
 			std::io::Error::new(std::io::ErrorKind::Other, multipart_error)
 		}));
 
-		
+		// Read all bytes from the field into a buffer
+		let mut data = Vec::new();
+		tokio::io::copy(&mut reader, &mut data).await?;
+		let reader = Box::pin(Cursor::new(data));
         //println!("Length of `{}` {}  {} is {} bytes", name, filename, mime, data.len());
-			mc.update_serie_image(&library_id, &tag_id, &query.kind, reader, &user).await?;
+		mc.update_serie_image(&library_id, &tag_id, &query.kind, reader, &user).await?;
     }
 	
     Ok(Json(json!({"data": "ok"})))

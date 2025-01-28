@@ -363,7 +363,7 @@ impl ModelController {
                     let stream = image_reader.bytes_stream();
                     let body_with_io_error = stream.map_err(|err| io::Error::new(io::ErrorKind::Other, err));
                     let mut body_reader = StreamReader::new(body_with_io_error);
-                    let resized = resize_image_reader(&mut body_reader, ImageSize::Large.to_size(), image::ImageFormat::Avif, Some(70), false).await?;
+                    let resized = resize_image_reader(Box::pin(body_reader), ImageSize::Large.to_size(), image::ImageFormat::Avif, Some(70), false).await?;
 
                     writer.write_all(&resized).await?;
                 }
@@ -417,12 +417,12 @@ impl ModelController {
         Ok(Box::pin(body_reader))
     }
 
-    pub async fn update_serie_image<T: AsyncRead + Unpin>(&self, library_id: &str, serie_id: &str, kind: &ImageType, mut reader: T, requesting_user: &ConnectedUser) -> RsResult<()> {
+    pub async fn update_serie_image(&self, library_id: &str, serie_id: &str, kind: &ImageType, mut reader: AsyncReadPinBox, requesting_user: &ConnectedUser) -> RsResult<()> {
         if MediasIds::is_id(serie_id) {
             return Err(Error::InvalidIdForAction("udpate image".to_string(), serie_id.to_string()).into())
         }
 
-        let converted = convert_image_reader(&mut reader, image::ImageFormat::WebP, Some(80), false).await?;
+        let converted = convert_image_reader(reader, image::ImageFormat::WebP, Some(80), false).await?;
         let converted_reader = Cursor::new(converted);
         self.update_library_image(library_id, ".series", serie_id, &Some(kind.clone()), converted_reader, requesting_user).await;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;

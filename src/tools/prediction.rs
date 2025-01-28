@@ -1,8 +1,8 @@
-use std::{collections::VecDeque, fs::read_to_string, io::Read, path::PathBuf, str::FromStr};
+use std::{collections::VecDeque, fs::read_to_string, io::{Read, Write}, path::PathBuf, str::FromStr};
 
 use ort::{inputs, GraphOptimizationLevel, Session, SessionOutputs, Tensor, ValueType};
 use ndarray::{s, Array, Array4, Axis};
-use image::{imageops::{self, FilterType}, DynamicImage, GenericImageView, ImageBuffer, Rgb, Rgba};
+use image::{imageops::{self, FilterType}, DynamicImage, GenericImageView, ImageBuffer, ImageFormat, Rgb, Rgba};
 use serde::{Deserialize, Serialize};
 use crate::{Error, Result};
 
@@ -26,7 +26,7 @@ pub fn predict(buffer_image: Vec<u8>) -> Result<Vec<PredictionTagResult>> {
 }*/
 
 pub fn prepare_image(buffer_image: Vec<u8>, width: u32, height: u32) -> Result<DynamicImage> {
-    let img = image::load_from_memory(&buffer_image)?;
+    let img = image::load_from_memory_with_format(&buffer_image, ImageFormat::Png)?;
     //let resized = img.resize_exact(width, height, image::imageops::FilterType::Nearest);
     let resized = resize_center_crop(&img, width, height);
     Ok(resized)
@@ -38,7 +38,7 @@ fn resize_center_crop(img: &DynamicImage, width: u32, height: u32) -> DynamicIma
     let min_dim = src_width.min(src_height);
     let crop_width = min_dim * width / height;
     let crop_height = min_dim * height / width;
-
+    
     // Recadrez l'image au centre
     let cropped_img = imageops::crop_imm(
         img,
@@ -47,8 +47,10 @@ fn resize_center_crop(img: &DynamicImage, width: u32, height: u32) -> DynamicIma
         crop_width,
         crop_height,
     ).to_image();
+    
     let dynamic_cropped_img = DynamicImage::ImageRgba8(cropped_img);
     // Redimensionnez l'image à la taille souhaitée
+    
     dynamic_cropped_img.resize_exact(width, height, FilterType::Lanczos3)
 }
 

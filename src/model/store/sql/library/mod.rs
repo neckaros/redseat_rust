@@ -81,6 +81,15 @@ impl SqliteLibraryStore {
                     conn.pragma_update(None, "user_version", version)?;
                     log_info(LogServiceType::Database, format!("Update Library Database to version: {}", version));                   
                 }
+
+                
+                if version < 33 {
+                    let initial = String::from_utf8_lossy(include_bytes!("033 - ORIGINAL.sql"));
+                    conn.execute_batch(&initial)?;
+                    version = 33;
+                    conn.pragma_update(None, "user_version", version)?;
+                    log_info(LogServiceType::Database, format!("Update Library Database to version: {}", version));                   
+                }
                 
                 Ok((initial_version, version))
         }).await?;
@@ -91,8 +100,6 @@ impl SqliteLibraryStore {
 
             Ok(())
         }).await?;*/
-
-
 
         if initial_version == 30 {
             log_info(LogServiceType::Database, format!("Update Library Database adding tag paths"));                   

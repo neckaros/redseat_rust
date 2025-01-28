@@ -104,7 +104,8 @@ const MEDIA_QUERY: &str = "SELECT
 			,(select GROUP_CONCAT(serie_ref || '|' || printf('%04d', season) || '|' || printf('%04d', episode)) from media_serie_mapping where media_ref = m.id) as series,
             m.fnumber, m.icc, m.mp,
 			m.progress as user_progress,
-			art.rating as user_rating
+			art.rating as user_rating,
+            m.originalhash, m.originalid
 			
             FROM medias as m
             LEFT JOIN 
@@ -135,7 +136,8 @@ fn media_query(user_id: &Option<String>) -> String {
 			,(select GROUP_CONCAT(serie_ref || '|' || printf('%04d', season) || '|' || printf('%04d', episode)) from media_serie_mapping where media_ref = m.id) as series,
             m.fnumber, m.icc, m.mp,
 			mp.progress as user_progress,
-			rt.rating as user_rating
+			rt.rating as user_rating,
+            m.originalhash, m.originalid
 
             FROM medias as m
             LEFT JOIN 
@@ -259,7 +261,11 @@ impl SqliteLibraryStore {
             icc: row.get(46)?,
             mp: row.get(47)?,
 
-            rating: row.get(49)?
+            rating: row.get(49)?,
+            
+
+            original_hash: row.get(50)?,
+            original_id: row.get(51)?
             //series: None,
         })
     }
@@ -397,6 +403,11 @@ impl SqliteLibraryStore {
         }
         if let Some(rating) = query.max_rating {
             where_query.add_where(SqlWhereType::SmallerOrEqual("rating".to_string(), Box::new(rating)));
+        }
+
+        
+        if let Some(codec) = query.vcodec {
+            where_query.add_where(SqlWhereType::SeparatedContain("vcodecs".to_string(), ",".to_string(), Box::new(codec)));
         }
 
         
@@ -751,6 +762,9 @@ impl SqliteLibraryStore {
 
             where_query.add_update(&update.uploader, "uploader");
             where_query.add_update(&update.uploadkey, "uploaderkey");
+            
+            where_query.add_update(&update.original_hash, "originalhash");
+            where_query.add_update(&update.original_id, "originalid");
 
             where_query.add_where(QueryWhereType::Equal("id", &id));
             if !where_query.columns_update.is_empty() {
@@ -847,13 +861,13 @@ impl SqliteLibraryStore {
             id, source, name, description, type, mimetype, size, md5, params, width, 
             height, phash, thumbhash, focal, iso, colorSpace, icc, mp, sspeed, fnumber, orientation, duration, acodecs, 
             achan, vcodecs, fps, bitrate, long, lat, model, pages, progress, thumb, 
-            thumbv, thumbsize, iv, origin, movie, lang, uploader, uploadkey
+            thumbv, thumbsize, iv, origin, movie, lang, uploader, uploadkey, originalhash, originalid
 
             )
             VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, 
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
-                ?, ?, ?, ?, ?, ?, ?, ?)", params![
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params![
                 insert.id,
                 insert.media.source,
                 insert.media.name,
@@ -898,6 +912,9 @@ impl SqliteLibraryStore {
                 insert.media.lang,
                 insert.media.uploader,
                 insert.media.uploadkey,
+
+                insert.media.original_hash,
+                insert.media.original_id
             ])?;
             
             Ok(())

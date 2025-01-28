@@ -10,7 +10,7 @@ use query_external_ip::SourceError;
 use sha256::try_async_digest;
 use tokio::{fs::{create_dir_all, remove_file, File}, io::{copy, AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter}};
 
-use crate::{domain::{backup::Backup, library::ServerLibrary, media::MediaForUpdate}, error::{RsError, RsResult}, model::ModelController, routes::mw_range::RangeDefinition, tools::{file_tools::get_mime_from_filename, image_tools::resize_image_reader, log::log_info}};
+use crate::{domain::{backup::Backup, library::ServerLibrary, media::MediaForUpdate}, error::{RsError, RsResult}, model::ModelController, routes::mw_range::RangeDefinition, tools::{file_tools::get_mime_from_filename, image_tools::resize_image_reader, log::{log_error, log_info}}};
 
 use super::{error::{SourcesError, SourcesResult}, AsyncReadPinBox, AsyncSeekableWrite, BoxedStringFuture, FileStreamResult, RangeResponse, Source, SourceRead};
 
@@ -364,7 +364,7 @@ impl Source for PathProvider {
         let existing = Self::get_all_file_paths(&self.root, false);
         println!("Got {} paths", existing.len());
         let mut total = 0u64;
-        for existing_file in existing {
+        for existing_file in existing.iter() {
             let existing_as_source = existing_file.replace(&self.root.to_string_lossy().into_owned(), "")[1..].to_string();
             
             if !sources.contains(&existing_as_source) {
@@ -377,6 +377,12 @@ impl Source for PathProvider {
             }
         }
         println!("Total clean: {} ({})", result.len(), human_bytes(total as f64));
+        let existing_files_sources: Vec<String> = existing.into_iter().map(|existing_file| existing_file.replace(&self.root.to_string_lossy().into_owned(), "")[1..].to_string()).collect();
+        for source in sources {
+            if !existing_files_sources.contains(&source) {
+                log_error(crate::tools::log::LogServiceType::Other, format!("Unable to find file {}", source));
+            }
+        }
         Ok(result)
     }
 

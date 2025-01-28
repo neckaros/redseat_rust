@@ -1,5 +1,5 @@
 
-use std::{path::PathBuf, str::FromStr};
+use std::{io::Cursor, path::PathBuf, str::FromStr};
 
 use crate::{domain::{media::{self, GroupMediaDownload, MediaDownloadUrl, MediaForUpdate, MediaItemReference, MediaWithAction, MediasMessage}, ElementAction}, error::RsError, model::{self, medias::{MediaFileQuery, MediaQuery}, series::{SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, plugins::sources::SourceRead, tools::{log::{log_error, log_info}, prediction::predict_net, video_tools::VideoConvertRequest}, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
@@ -350,18 +350,15 @@ async fn handler_image(Path((library_id, media_id)): Path<(String, String)>, Sta
 #[debug_handler]
 async fn handler_post_image(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, mut multipart: Multipart) -> Result<Json<Value>> {
 	while let Some(field) = multipart.next_field().await.unwrap() {
-        //let name = field.name().unwrap().to_string();
-		//let filename = field.file_name().unwrap().to_string();
-		//let mime: String = field.content_type().unwrap().to_string();
-        //let data = field.bytes().await.unwrap();
-
-		let reader = StreamReader::new(field.map_err(|multipart_error| {
+		let mut reader = StreamReader::new(field.map_err(|multipart_error| {
 			std::io::Error::new(std::io::ErrorKind::Other, multipart_error)
 		}));
 
-		
-        //println!("Length of `{}` {}  {} is {} bytes", name, filename, mime, data.len());
-			mc.update_media_image(&library_id, &media_id, reader, &user).await?;
+		// Read all bytes from the field into a buffer
+		let mut data = Vec::new();
+		tokio::io::copy(&mut reader, &mut data).await?;
+		let reader = Box::pin(Cursor::new(data));
+		mc.update_media_image(&library_id, &media_id, Box::pin(reader), &user).await?;
     }
 	
     Ok(Json(json!({"data": "ok"})))

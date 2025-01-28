@@ -79,6 +79,9 @@ pub struct MediaQuery {
 
     pub min_size: Option<u64>,
     pub max_size: Option<u64>,
+
+    
+    pub vcodec: Option<String>,
     
     
     pub page_key: Option<i64>,
@@ -330,7 +333,7 @@ impl ModelController {
 
         let size = size.filter(|s| !(s == &ImageSize::Large || s == &ImageSize::Small));
 
-        let result = self.library_image(library_id, ".thumbs", media_id, None, size.clone(), requesting_user).await;
+        let result = self.library_image(library_id, ".thumbs", media_id, None, None, requesting_user).await;
         if let Err(error) = result {
             if let crate::Error::Source(SourcesError::NotFound(_)) = &error {
                 self.generate_thumb(library_id, media_id, requesting_user).await?;
@@ -428,8 +431,11 @@ impl ModelController {
         Ok(media)
 	}
 
-    pub async fn update_media_image<T: AsyncRead>(&self, library_id: &str, media_id: &str, reader: T, requesting_user: &ConnectedUser) -> Result<()> {
+    pub async fn update_media_image(&self, library_id: &str, media_id: &str, mut reader: AsyncReadPinBox, requesting_user: &ConnectedUser) -> RsResult<()> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+
+		let converted = resize_image_reader(reader, 512, image::ImageFormat::Avif, Some(50), false).await?;
+        let reader = Cursor::new(converted);
         self.update_library_image(library_id, ".thumbs", media_id, &None, reader, requesting_user).await?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         store.update_media_thumb(media_id.to_owned()).await?;
@@ -487,7 +493,7 @@ impl ModelController {
             if !query.unsupported_mime.is_empty() && !query.raw {
                 if existing.kind == FileType::Photo && query.unsupported_mime.contains(&existing.mime) || query.unsupported_mime.contains(&"all".to_owned()) {
                     let mut data = reader_response.into_reader(Some(library_id), range, None, Some((self.clone(), &requesting_user)), None).await?; 
-                    let resized = convert_image_reader(&mut data.stream, image::ImageFormat::Avif, Some(80), true).await?;
+                    let resized = convert_image_reader(data.stream, image::ImageFormat::Avif, Some(80), true).await?;
                     let len = resized.len();
                     let resized = Cursor::new(resized);
                     Ok(SourceRead::Stream(FileStreamResult {
@@ -954,35 +960,34 @@ impl ModelController {
         let m = self.source_for_library(library_id).await?; 
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         let media = store.get_media(media_id, requesting_user.user_id().ok()).await?.ok_or(Error::NotFound)?;
-        
+        println!("GENERATE THUMB {:?}", media.kind);
         let thumb = match media.kind {
             FileType::Photo => { 
                 let media_source: MediaSource = media.try_into()?;
                 let reader = m.get_file(&media_source.source, None).await?;
                 let mut reader = reader.into_reader(Some(library_id), None, None, Some((self.clone(), &requesting_user)), None).await?;
-                let image = resize_image_reader(&mut reader.stream, 512, image::ImageFormat::Avif, Some(80), false).await?;
+                let image = resize_image_reader(reader.stream, 512, image::ImageFormat::Avif, Some(50), false).await?;
                 Ok(image)
             },
             FileType::Album => { 
                 let media_source: MediaSource = media.try_into()?;
                 let reader = self.library_file(library_id, media_id, None, MediaFileQuery {page: Some(1), unsupported_mime: vec![], raw: false }, requesting_user).await?;
                 let mut reader = reader.into_reader(Some(library_id), None, None, Some((self.clone(), &requesting_user)), None).await?;
-                let image = resize_image_reader(&mut reader.stream, 512, image::ImageFormat::Avif, Some(80), false).await?;
+                let image = resize_image_reader(reader.stream, 512, image::ImageFormat::Avif, Some(50), false).await?;
                 Ok(image)
             },
             FileType::Video => { 
-                let th = self.get_video_thumb(library_id, media_id, VideoTime::Percent(5), requesting_user).await?;
+                let th = self.get_video_thumb(library_id, media_id, VideoTime::Percent(5), image::ImageFormat::Avif, Some(50), requesting_user).await?;
                 Ok(th)
             },
             _ => Err(crate::model::error::Error::UnsupportedTypeForThumb),
         }?;
-        print!("humm?");
         self.update_library_image(&library_id, ".thumbs", &media_id, &None, thumb.as_slice(), requesting_user).await?;
 
         Ok(())
     }
 
-    pub async fn get_video_thumb(&self, library_id: &str, media_id: &str, time: VideoTime, requesting_user: &ConnectedUser) -> crate::error::Result<Vec<u8>> {
+    pub async fn get_video_thumb(&self, library_id: &str, media_id: &str, time: VideoTime, format: image::ImageFormat, quality: Option<u16>, requesting_user: &ConnectedUser) -> crate::error::Result<Vec<u8>> {
         requesting_user.check_file_role(library_id, media_id, LibraryRole::Read)?;
 
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
@@ -997,9 +1002,7 @@ impl ModelController {
         };
         let thumb = video_tools::thumb_video(&uri, time).await?;
         let mut cursor = std::io::Cursor::new(thumb);
-        let thumb = resize_image_reader(&mut cursor, 512, image::ImageFormat::Avif, Some(80), false).await?;
-
-        println!("Got thumb {}", thumb.len());
+        let thumb = resize_image_reader(Box::pin(cursor), 512, format, quality, false).await?;
         Ok(thumb)
     }
 
@@ -1037,13 +1040,14 @@ impl ModelController {
             let media = self.get_media(library_id, media_id.to_string(), requesting_user).await?.ok_or(Error::NotFound)?;
 
             let mut reader_response = self.media_image(&library_id, &media_id, None, &requesting_user).await?;
-            let mut buffer = Vec::new();
-            reader_response.stream.read_to_end(&mut buffer).await?;
+            let buffer = convert_image_reader(reader_response.stream, image::ImageFormat::Png, None, true).await?;
+            println!("===buffer {}", buffer.len());
             let mut images = vec![buffer];
             if media.kind == FileType::Video {
                 let percents = vec![15, 30, 45, 60, 75, 95];
+                //let percents = vec![15];
                 for percent in percents {
-                    let thumb = self.get_video_thumb(library_id, media_id, VideoTime::Percent(percent), requesting_user).await?;
+                    let thumb = self.get_video_thumb(library_id, media_id, VideoTime::Percent(percent), image::ImageFormat::Png, Some(70), requesting_user).await?;
                     images.push(thumb);
                 }
             }
@@ -1052,6 +1056,7 @@ impl ModelController {
                     path.push(&plugin.path);
                 let model: ort::Session = preload_model(&path)?;
                 for buffer in &images {
+                    
                     let mut prediction = predict_net(path.clone(), plugin.settings.bgr.unwrap_or(false), plugin.settings.normalize.unwrap_or(false), buffer.clone(), Some(&model))?;
                     prediction.sort_by(|a, b| b.probability.partial_cmp(&a.probability).unwrap());
                     if insert_tags {
