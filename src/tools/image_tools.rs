@@ -265,7 +265,6 @@ fn is_heic(data: &[u8]) -> bool {
 }
 fn is_avif(data: &[u8]) -> bool {
     // Check if the data is large enough to contain the magic bytes
-    println!("=============================== {}", data.len());
     if data.len() < 12 {
         return false;
     }

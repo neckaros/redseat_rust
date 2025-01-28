@@ -163,12 +163,8 @@ impl Source for PathProvider {
 
     async fn fill_infos(&self, source: &str, infos: &mut MediaForUpdate) -> RsResult<()> {
         let path = self.get_full_path(&source);
-        println!("path {:?} ({source}", path);
         let metadata = path.metadata()?;
-        println!("metadata {:?}", metadata);
         infos.size = Some(metadata.len());
-
-        println!("size {:?}", metadata.len());
         let md5 = try_async_digest(&path).await;
         if let Ok(md5) = md5 {
             infos.md5 = Some(md5);

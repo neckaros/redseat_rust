@@ -1041,7 +1041,7 @@ impl ModelController {
 
             let mut reader_response = self.media_image(&library_id, &media_id, None, &requesting_user).await?;
             let buffer = convert_image_reader(reader_response.stream, image::ImageFormat::Png, None, true).await?;
-            println!("===buffer {}", buffer.len());
+            
             let mut images = vec![buffer];
             if media.kind == FileType::Video {
                 let percents = vec![15, 30, 45, 60, 75, 95];
@@ -1207,10 +1207,17 @@ impl ModelController {
         let media_infos: MediaForUpdate = media.into();
         let reader = File::open(dest).await?;
         let media = self.add_library_file(&element.library, &filename, Some(media_infos), reader, &element.user).await;
+
+        
         
         local.remove(&dest_source).await?;
         match media {
             Ok(media) => {
+                let existing_thumb = self.media_image(&element.library, &element.media, None, &ConnectedUser::ServerAdmin).await;
+                if let Ok(existing_thumb) = existing_thumb {
+                    self.update_media_image(&element.library, &media.id, existing_thumb.stream, &ConnectedUser::ServerAdmin).await?;
+                }
+        
                 let message = ConvertMessage {
                     library: element.library.to_string(),
                     progress: ConvertProgress {
