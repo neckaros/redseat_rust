@@ -39,7 +39,7 @@ mod plugins;
 mod domain;
 
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread")]
 async fn main() ->  Result<()> {
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;

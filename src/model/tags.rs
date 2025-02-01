@@ -227,7 +227,7 @@ impl ModelController {
                 let mut updated = self.get_tags(library_id, TagQuery::new_with_path(format!("{}%",tag.childs_path())), requesting_user).await?;
                 all_updated.append(&mut updated);
             }
-            self.send_tags(TagMessage { library: library_id.to_string(), tags: all_updated.iter().map(|t| TagWithAction { action: ElementAction::Deleted, tag: t.clone()}).collect()});
+            self.send_tags(TagMessage { library: library_id.to_string(), tags: all_updated.iter().map(|t| TagWithAction { action: ElementAction::Updated, tag: t.clone()}).collect()});
             Ok(tag)
         } else {
             Err(Error::NotFound)

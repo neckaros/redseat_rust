@@ -238,9 +238,8 @@ impl VideoCommandBuilder {
 
     
     pub fn set_framerate(&mut self, fr: u16) -> &mut Self {
-        
-        self.add_out_option("-r");
-        self.add_out_option(fr.to_string());
+
+        self.add_video_effect(format!("tblend=all_mode=average,fps={}",fr));
         self
     }
 
@@ -281,10 +280,10 @@ impl VideoCommandBuilder {
                     self.add_out_option(cq.to_string());
 
                     self.add_out_option("-qmin");
-                    self.add_out_option((cq - 1).to_string());
+                    self.add_out_option((cq - 2).to_string());
 
                     self.add_out_option("-qmax");
-                    self.add_out_option((cq + 1).to_string());
+                    self.add_out_option((cq + 2).to_string());
 
                     self.add_out_option("-b:v");
                     self.add_out_option( "0");

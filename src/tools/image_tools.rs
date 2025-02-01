@@ -278,6 +278,36 @@ pub struct ImageAndProfile {
     pub profile: Option<Vec<u8>>
 }
 
+pub fn read_avif(data: Vec<u8>) -> RsResult<ImageAndProfile> {
+    let mut reader = image::io::Reader::new(Cursor::new(data));
+    reader.set_format(ImageFormat::Avif);
+    let mut decoder = reader.into_decoder()?;
+    let orientation = decoder.orientation();
+    let profile = decoder.icc_profile().ok().flatten();
+    let mut image = DynamicImage::from_decoder(decoder)?;
+    if let Ok(orientation) = orientation {
+        image.apply_orientation(orientation);
+    }
+    Ok(ImageAndProfile {
+        image,
+        profile
+    })
+}
+
+pub fn read_guess(data: Vec<u8>) -> RsResult<ImageAndProfile> {
+    let mut decoder = image::io::Reader::new(Cursor::new(data)).with_guessed_format()?.into_decoder()?;
+    let orientation = decoder.orientation();
+    let profile = decoder.icc_profile().ok().flatten();
+    let mut image = DynamicImage::from_decoder(decoder)?;
+    if let Ok(orientation) = orientation {
+        image.apply_orientation(orientation);
+    }
+    Ok(ImageAndProfile {
+        image,
+        profile
+    })
+}
+
 pub async fn reader_to_image<R>(reader: &mut R) -> RsResult<ImageAndProfile> where
     R: AsyncRead + Unpin + ?Sized,   {
 
@@ -287,29 +317,19 @@ pub async fn reader_to_image<R>(reader: &mut R) -> RsResult<ImageAndProfile> whe
     let heic = is_heic(&data);
     let avif = is_avif(&data);
     let image = if heic {
-        read_heic_file_to_image(&data)?
+        let result = tokio::task::spawn_blocking(move || {
+            read_heic_file_to_image(&data)
+        }).await?;
+        result?
     } else if avif {
-        let mut reader = image::io::Reader::new(Cursor::new(data));
-        reader.set_format(ImageFormat::Avif);
-        let mut decoder = reader.into_decoder()?;
-        let orientation = decoder.orientation()?;
-        let profile = decoder.icc_profile().ok().flatten();
-        let mut image = DynamicImage::from_decoder(decoder)?;
-        image.apply_orientation(orientation);
-        ImageAndProfile {
-            image,
-            profile
-        }
+        tokio::task::spawn_blocking(move || {
+            read_avif(data)
+        }).await??
+    
     } else {
-        let mut decoder = image::io::Reader::new(Cursor::new(data)).with_guessed_format()?.into_decoder()?;
-        let orientation = decoder.orientation()?;
-        let profile = decoder.icc_profile().ok().flatten();
-        let mut image = DynamicImage::from_decoder(decoder)?;
-        image.apply_orientation(orientation);
-        ImageAndProfile {
-            image,
-            profile
-        }
+        tokio::task::spawn_blocking(move || {
+            read_guess(data)
+        }).await??
     };
 
     Ok(image)
@@ -328,13 +348,14 @@ pub async fn resize_image_reader(reader: AsyncReadPinBox, size: u32, format: Ima
 }
 
 pub async fn resize_image_reader_native(mut reader: AsyncReadPinBox, size: u32, format: ImageFormat, quality: Option<u16>, fast: bool) -> RsResult<Vec<u8> >   {
-        let task = tokio::task::spawn(async move {
-            let mut image = reader_to_image(&mut reader).await?;
-            let scaled = resize(image.image, size);
-            image.image = scaled;
-            save_image_native(image, format, quality, fast).await
-        });
-        task.await?
+
+        let mut image = reader_to_image(&mut reader).await?;
+        let scaled = resize(image.image, size).await?;
+        image.image = scaled;
+        tokio::task::spawn_blocking(move || {
+        save_image_native(image, format, quality, fast)
+        }).await?
+
 }
 
 pub async fn resize_image_reader_im(mut reader: AsyncReadPinBox, size: u32) -> ImageResult<Vec<u8>>  {
@@ -367,14 +388,15 @@ pub async fn convert_image_reader_im(mut reader: AsyncReadPinBox, format: ImageF
 }
 
 pub async fn convert_image_reader_native(mut reader: AsyncReadPinBox, format: ImageFormat, quality: Option<u16>, fast: bool) -> RsResult<Vec<u8>> {
-        let task = tokio::task::spawn(async move {
-            let image = reader_to_image(&mut reader).await?;
-            save_image_native(image, format, quality, fast).await
-        });
-        task.await?
+
+    let image = reader_to_image(&mut reader).await?;
+    tokio::task::spawn_blocking(move || {
+    save_image_native(image, format, quality, fast)
+    }).await?
+
 }
 
-pub async fn save_image_native(image: ImageAndProfile, format: ImageFormat, quality: Option<u16>, fast: bool) -> RsResult<Vec<u8>>  {
+pub fn save_image_native(image: ImageAndProfile, format: ImageFormat, quality: Option<u16>, fast: bool) -> RsResult<Vec<u8>>  {
     let data = if format == ImageFormat::WebP { webp::Encoder::from_image(&image.image).map_err(|e| ImageError::UnableToDecodeWebp(e.into()))?
         .encode_simple(false, quality.unwrap_or(80) as f32)?.to_vec()
     } else {
@@ -414,17 +436,11 @@ pub async fn save_image_native(image: ImageAndProfile, format: ImageFormat, qual
 }
 
 
-
-pub fn resize_image<T: Write + Seek>(buffer: &[u8], to: &mut T, size: u32, format: ImageFormat) -> ImageResult<()> {
-    let img = image::load_from_memory(buffer)?;
-    let thumb = resize(img, size);
-    thumb.write_to(to, format)?;
-    Ok(())
-}
-
-fn resize(image: DynamicImage, size: u32) -> DynamicImage {
-    let thumb = image.thumbnail(size, size);
-    thumb
+async fn resize(image: DynamicImage, size: u32) -> RsResult<DynamicImage> {
+    let result = tokio::task::spawn_blocking(move || {
+        image.thumbnail(size, size)
+    }).await?;
+    Ok(result)
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
