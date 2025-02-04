@@ -392,6 +392,7 @@ pub struct GroupMediaDownload<T> {
     pub files: Vec<T>,
 
     pub referer: Option<String>,
+    pub headers: Option<Vec<String>>,
     pub cookies: Option<Vec<String>>,
     pub origin_url: Option<String>,
 
@@ -404,7 +405,23 @@ pub struct GroupMediaDownload<T> {
     pub series_lookup: Option<Vec<String>>,
     pub tags_lookup: Option<Vec<String>>,
 }
-
+impl<T> GroupMediaDownload<T> {
+    pub fn headers_as_tuple(&self) -> Option<Vec<(String, String)>> {
+        if let Some(headers) = &self.headers {
+            headers.iter().map(|v| {
+                    let splitted: Vec<&str> = v.split(':').collect();
+                    let result = if let (Some(name), Some(value)) = (splitted.get(0), splitted.get(1)) {
+                        Some((name.to_string(), value.to_string()))
+                    } else {
+                        None
+                    };
+                    return result;
+            }).collect()
+        } else {
+            None
+        }
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")] 
@@ -451,6 +468,8 @@ impl From<MediaDownloadUrl> for RsRequest {
 
 impl From<GroupMediaDownload<MediaDownloadUrl>> for Vec<RsRequest> {
     fn from(value: GroupMediaDownload<MediaDownloadUrl>) -> Self {
+        let headers = value.headers_as_tuple();
+        println!("Headers parsed {:?}", headers);
         let mut output = Vec::new();
         for file in value.files {
             output.push(
@@ -461,7 +480,7 @@ impl From<GroupMediaDownload<MediaDownloadUrl>> for Vec<RsRequest> {
                         size: None,
                         filename: file.filename,
                         status: if file.parse { RsRequestStatus::NeedParsing } else { RsRequestStatus::Unprocessed },
-                        headers: None,
+                        headers: headers.clone(),
                         cookies: value.cookies.as_ref().and_then(|c| c.iter().map(|s| RsCookie::from_str(s).ok()).collect()),
                         files: None,
                         selected_file: None,

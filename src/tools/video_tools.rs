@@ -1,28 +1,40 @@
 use std::io::{BufRead, Read};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::{path::Path, process::Stdio};
 use std::{default, str};
+use regex::Regex;
 use rs_plugin_common_interfaces::{RsVideoCodec, RsVideoFormat};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use strum_macros::EnumString;
 use time::Instant;
 use tokio::sync::mpsc::Sender;
+use tokio::sync::{OnceCell, RwLock};
 use tokio::{io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader}, process::Command};
 use tokio_util::io::ReaderStream;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::LinesStream;
-
+use tokio::fs::File;
 use crate::domain::progress;
-use crate::error::RsResult;
+use crate::error::{RsError, RsResult};
 use crate::{domain::ffmpeg::FfprobeResult, Error};
+use crate::{server::get_server_temp_file_path, tools};
 
 use super::log::{log_error, LogServiceType};
 
 pub mod ytdl;
+use lazy_static::lazy_static;
 
 pub type VideoResult<T> = core::result::Result<T, VideoError>;
 
+lazy_static! {
+    static ref FFMPEG_LOCK : Arc<RwLock<()>> = Arc::new(RwLock::new(()));
+}
+
+lazy_static! {
+    static ref FFPROBE_LOCK : Arc<RwLock<()>> = Arc::new(RwLock::new(()));
+}
 
 
 #[serde_as]
@@ -135,7 +147,7 @@ pub struct VideoCommandBuilder {
 
 impl VideoCommandBuilder {
     pub fn new() -> Self {
-        let cmd = Command::new("ffmpeg");
+        let cmd = Command::new("./ffmpeg");
         Self {
             cmd,
             inputs: Vec::new(),
@@ -150,6 +162,183 @@ impl VideoCommandBuilder {
             format: None,
             progress: None
         }
+    }
+
+    pub async fn version() -> RsResult<Option<String>> {
+        // Run the "ffmpeg -version" command
+        let _lock = FFMPEG_LOCK.read().await;
+        let output = Command::new("./ffmpeg").arg("-version").output().await;
+        drop(_lock);
+        if let Ok(output) = output {
+            if !output.status.success() {
+                return Err(RsError::Error(format!("ffmpeg command failed with status: {:?}", output.status).into()));
+            }
+            
+            // Convert stdout from bytes to String
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            
+            // The first line is expected to be like:
+            // "ffmpeg version 6.0-full_build-www.gyan.dev Copyright (c) ..."
+            // We use a regex to capture the version number.
+            let re = Regex::new(r"^ffmpeg version (\S+)").map_err(|_| RsError::Error("unable to parse ffmpeg version string".to_string()))?;
+            if let Some(caps) = re.captures(&stdout) {
+                // Extract the version number (e.g. "6.0-full_build-www.gyan.dev")
+                let version = caps.get(1).unwrap().as_str().to_string();
+                Ok(Some(version))
+            } else {
+                Err(RsError::Error("Failed to parse ffmpeg version".into()))
+            }
+        } else {
+            Ok(None)
+        }
+        
+    }
+
+    #[cfg(target_os = "windows")]
+    async fn create_file(path: impl AsRef<Path>) -> tokio::io::Result<File> {
+        
+
+        File::create(&path).await
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    async fn create_file(path: impl AsRef<Path>) -> tokio::io::Result<File> {
+        use tokio::fs::OpenOptions;
+
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .mode(0o744)
+            .open(&path)
+            .await
+    }
+
+    #[cfg(target_os = "windows")]
+    pub async fn download() -> RsResult<()> {
+
+
+        let _lock = FFMPEG_LOCK.write().await;
+        let _lock = FFPROBE_LOCK.write().await;
+        tokio::fs::remove_file(Path::new("ffmpeg.exe")).await;
+        tokio::fs::remove_file(Path::new("ffprobe.exe")).await;
+        const WINDOWS_URL: &str = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-full.7z";
+
+        let path = get_server_temp_file_path().await?;
+        let mut file = tokio::fs::File::create(&path).await?;
+        let mut file_buff = tokio::io::BufWriter::new(file);
+        let mut response = reqwest::get(WINDOWS_URL).await?
+            .error_for_status()?;
+
+        
+        while let Some(chunk) = response.chunk().await? {
+            file_buff.write_all(&chunk).await?;
+        }
+
+        let extract_path = get_server_temp_file_path().await?;
+        tokio::fs::create_dir(&extract_path);
+        tools::compression::unpack_7z(path.clone(), extract_path.clone()).await?;
+        let root_folder = tokio::fs::read_dir(&extract_path).await?.next_entry().await?.ok_or::<RsError>("Unable to decompress".into())?;
+        let mut path_ffmpeg = root_folder.path();
+        path_ffmpeg.push("bin");
+        path_ffmpeg.push("ffmpeg.exe");
+        let mut path_ffprobe = root_folder.path();
+        path_ffprobe.push("bin");
+        path_ffprobe.push("ffprobe.exe");
+        println!("full path: {:?}", path_ffmpeg);
+
+        tokio::fs::copy(path_ffmpeg, "ffmpeg.exe").await?;
+        tokio::fs::copy(path_ffprobe, "ffprobe.exe").await?;
+
+        tokio::fs::remove_file(path).await?;
+        tokio::fs::remove_dir_all(extract_path).await?;
+
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    pub async fn download() -> RsResult<()> {
+
+        let _lock = FFMPEG_LOCK.write().await;
+        tokio::fs::remove_file(Path::new("ffmpeg")).await;
+        tokio::fs::remove_file(Path::new("ffprobe")).await;
+        const UNIX_FFMPEG_URL: &str = "https://evermeet.cx/ffmpeg/ffmpeg-7.1.7z";
+        const UNIX_FFPROBE_URL: &str = "https://evermeet.cx/ffmpeg/ffprobe-7.1.7z";
+
+        let path = get_server_temp_file_path().await?;
+        let mut file = tokio::fs::File::create(&path).await?;
+        let mut response = reqwest::get(UNIX_FFMPEG_URL).await?
+            .error_for_status()?;
+        while let Some(chunk) = response.chunk().await? {
+            file.write_all(&chunk).await?;
+        }
+
+        let extract_path = get_server_temp_file_path().await?;
+        tokio::fs::create_dir(&extract_path);
+        tools::compression::unpack_7z(path.clone(), extract_path.clone()).await?;
+
+        tokio::fs::remove_file(&path).await?;
+        let mut file = tokio::fs::File::create(&path).await?;
+        let mut response = reqwest::get(UNIX_FFPROBE_URL).await?
+            .error_for_status()?;
+        while let Some(chunk) = response.chunk().await? {
+            file.write_all(&chunk).await?;
+        }
+        tools::compression::unpack_7z(path.clone(), extract_path.clone()).await?;
+
+        let mut path_ffmpeg = extract_path.clone();
+        path_ffmpeg.push("ffmpeg");
+        let mut path_ffprobe = extract_path.clone();
+        path_ffprobe.push("ffprobe");
+        println!("full path: {:?}", path_ffmpeg);
+
+        tokio::fs::copy(path_ffmpeg, "ffmpeg").await?;
+        tokio::fs::copy(path_ffprobe, "ffprobe").await?;
+
+        tokio::fs::remove_file(path).await?;
+        tokio::fs::remove_dir_all(extract_path).await?;
+
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    pub async fn download() -> RsResult<()> {
+
+        let _lock = FFMPEG_LOCK.write().await;
+        tokio::fs::remove_file(Path::new("ffmpeg")).await;
+        tokio::fs::remove_file(Path::new("ffprobe")).await;
+
+        #[cfg(target_arch = "x86_64")]
+        const WINDOWS_URL: &str = "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz";
+        #[cfg(target_arch = "aarch64")]
+        const WINDOWS_URL: &str = "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz";
+
+        let path = get_server_temp_file_path().await?;
+        let mut file = tokio::fs::File::create(&path).await?;
+        let mut response = reqwest::get(WINDOWS_URL).await?
+            .error_for_status()?;
+
+        while let Some(chunk) = response.chunk().await? {
+            file.write_all(&chunk).await?;
+        }
+
+        let extract_path = get_server_temp_file_path().await?;
+        tokio::fs::create_dir(&extract_path);
+        tools::compression::unpack_tar_xz(&path, PathBuf::from(&extract_path)).await?;
+        let root_folder = tokio::fs::read_dir(&extract_path).await?.next_entry().await?.ok_or::<RsError>("Unable to decompress".into())?;
+        let mut path_ffmpeg = root_folder.path();
+        path_ffmpeg.push("ffmpeg");
+        let mut path_ffprobe = root_folder.path();
+        path_ffprobe.push("ffprobe");
+        println!("full path: {:?}", path_ffmpeg);
+
+        tokio::fs::copy(path_ffmpeg, "ffmpeg").await?;
+        tokio::fs::copy(path_ffprobe, "ffprobe").await?;
+
+        tokio::fs::remove_file(path).await?;
+        tokio::fs::remove_dir_all(extract_path).await?;
+
+        Ok(())
     }
 
     pub fn set_progress(&mut self, sender: Sender<f64>) {
@@ -649,7 +838,8 @@ impl VideoCommandBuilder {
 
 
 pub async fn video_hardware() -> Result<Vec<String>, Error> {
-    let mut child = Command::new("ffmpeg")
+    let _lock = FFMPEG_LOCK.read().await;
+    let mut child = Command::new("./ffmpeg")
     .arg("-hide_banner")
     .arg("-init_hw_device")
     .arg("list")
@@ -669,7 +859,8 @@ pub async fn video_hardware() -> Result<Vec<String>, Error> {
 
 
 pub async fn probe_video(uri: &str) -> Result<FfprobeResult, Error> {
-    let output = Command::new("ffprobe")
+    let _lock = FFPROBE_LOCK.read().await;
+    let output = Command::new("./ffprobe")
     .arg("-v")
     .arg("error")
     .arg("-show_streams")
@@ -726,7 +917,8 @@ impl VideoTime {
 pub async fn thumb_video(uri: &str, at_time: VideoTime) -> Result<Vec<u8>, Error> {
     let duration = get_duration(uri).await?.ok_or(Error::Error("Unable to get video duration".to_owned()))?;
     let ss = at_time.position(duration);
-    let output = Command::new("ffmpeg")
+    let _lock = FFMPEG_LOCK.read().await;
+    let output = Command::new("./ffmpeg")
     .arg("-ss")
     .arg(ss.to_string())
     .arg("-i")
@@ -769,7 +961,8 @@ pub async fn get_duration(uri: &str) -> RsResult<Option<f64>> {
 
 pub async fn convert(uri: &str, to: &str, args: Option<Vec<String>>) {
     let frames = get_number_of_frames(uri).await;
-    let mut command = Command::new("ffmpeg");
+    let _lock = FFMPEG_LOCK.read().await;
+    let mut command = Command::new("./ffmpeg");
         command.arg("-i")
         .arg(uri)
         .arg("-y")

@@ -4,7 +4,8 @@ use rs_torrent_magnet::magnet_from_torrent;
 use tokio::io::{AsyncRead, AsyncReadExt};
 pub mod magnet;
 pub mod heic;
-
+pub mod raw;
+pub mod jxl;
 pub struct ConvertFileSource<T: Sized + AsyncRead + Send + Unpin > {
     pub mime: String,
     pub reader: T
@@ -22,4 +23,10 @@ pub async fn convert_from_to<T: Sized + AsyncRead + Send + Unpin >(mut source: C
     
 
 
+}
+
+async fn read_magic_bytes(data: &Vec<u8>, n: usize) -> RsResult<Vec<u8>> {
+
+    let mut buffer = data.iter().take(n).cloned().collect();
+    Ok(buffer)
 }

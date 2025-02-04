@@ -17,17 +17,17 @@ use which::which;
 
 use libheif_sys as lh;
 
-use crate::{domain::media::MediaForUpdate, error::{RsError, RsResult}, plugins::sources::AsyncReadPinBox, server::get_config, Error};
+use crate::{domain::media::MediaForUpdate, error::{RsError, RsResult}, plugins::sources::AsyncReadPinBox, server::get_config, tools::convert::jxl::{is_jxl, read_jxl_file_to_image}, Error};
 
 use self::image_magick::ImageMagickInfo;
 
-use super::convert::heic::{read_heic_file_to_image, read_heic_infos};
+use super::convert::{heic::{read_heic_file_to_image, read_heic_infos}, raw::is_raw};
 
 pub mod image_magick;
 
 pub type ImageResult<T> = core::result::Result<T, ImageError>;
 
-
+pub static IMAGES_MIME_FULL_BROWSER_SUPPORT: [&str; 5] = ["image/jpeg", "image/gif", "image/png", "image/avif", "image/webp"];
 
 #[derive(Debug, Serialize, Deserialize, Clone, EnumIter, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -261,6 +261,7 @@ fn is_heic(data: &[u8]) -> bool {
 
     // HEIC magic bytes typically start at offset 4
     let magic = &data[4..12];
+    //println!("Magic: {:?}", magic);
     matches!(magic, b"ftypheic" | b"ftypheix" | b"ftypmif1" | b"ftypmsf1")
 }
 fn is_avif(data: &[u8]) -> bool {
@@ -316,6 +317,7 @@ pub async fn reader_to_image<R>(reader: &mut R) -> RsResult<ImageAndProfile> whe
     reader.read_to_end(&mut data).await?;
     let heic = is_heic(&data);
     let avif = is_avif(&data);
+    let raw = is_raw(&data);
     let image = if heic {
         let result = tokio::task::spawn_blocking(move || {
             read_heic_file_to_image(&data)
@@ -326,6 +328,10 @@ pub async fn reader_to_image<R>(reader: &mut R) -> RsResult<ImageAndProfile> whe
             read_avif(data)
         }).await??
     
+    } else if is_jxl(&data) {
+        tokio::task::spawn_blocking(move || {
+            read_jxl_file_to_image(&data)
+        }).await??
     } else {
         tokio::task::spawn_blocking(move || {
             read_guess(data)
@@ -481,103 +487,117 @@ pub async fn image_infos_native<R>(reader: &mut R) -> RsResult<MediaForUpdate> w
     let mut reader = tokio::io::BufReader::new(reader);
     reader.read_to_end(&mut data).await?;
 
-    let mut bufreader = std::io::BufReader::new(std::io::Cursor::new(data));
+
         
     
     let exifreader = exif::Reader::new();
-    let exif = exifreader.read_from_container(&mut bufreader)?;
+    
     let mut update = MediaForUpdate::default();
 
+    let mut asyncbufreader = tokio::io::BufReader::new(std::io::Cursor::new(&data));
+    let image = reader_to_image(&mut asyncbufreader).await;
+    if let Ok(image) = image {
+        update.width = Some(image.image.width());
+        update.height = Some(image.image.height());
+    }
+
+    let mut bufreader = std::io::BufReader::new(std::io::Cursor::new(data));
+
     //update.orientation = exif.get_field(Tag::Orientation, In::PRIMARY).map(|f| f.display_value().to_string());
-         
-    for field in exif.fields() {
-        match field.tag {
-            Tag::Model => {
-                if let exif::Value::Ascii(_) = field.value {
-                    let string_value = format!("{}", field.value.display_as(field.tag)).replace("\"", "");
-                    update.model = Some(string_value);
+    let exif = exifreader.read_from_container(&mut bufreader);
+    if let Ok(exif) = exif {    
+        for field in exif.fields() {
+            match field.tag {
+                Tag::Model => {
+                    if let exif::Value::Ascii(_) = field.value {
+                        let string_value = format!("{}", field.value.display_as(field.tag)).replace("\"", "");
+                        update.model = Some(string_value);
+                    }
                 }
-            }
 
-            Tag::Orientation => {
-                if let exif::Value::Short(ref orientation) = field.value {
-                    update.orientation = orientation.first().map(|i| i.to_owned() as u8);
+                Tag::Orientation => {
+                    if let exif::Value::Short(ref orientation) = field.value {
+                        update.orientation = orientation.first().map(|i| i.to_owned() as u8);
+                    }
                 }
-            }
 
-            Tag::FocalLengthIn35mmFilm => {
-                if let exif::Value::Short(ref x) = field.value {
-                    update.focal = x.first().map(|i| i.to_owned().into());
+                Tag::FocalLengthIn35mmFilm => {
+                    if let exif::Value::Short(ref x) = field.value {
+                        update.focal = x.first().map(|i| i.to_owned().into());
+                    }
                 }
-            }
 
-            Tag::DateTimeOriginal | Tag::DateTime => {
-                if let exif::Value::Ascii(_) = field.value {
+                Tag::DateTimeOriginal | Tag::DateTime => {
+                    if let exif::Value::Ascii(_) = field.value {
+                        let string_value = format!("{}", field.value.display_as(field.tag));
+                        update.created = Some(
+                            Utc.datetime_from_str(string_value.as_str(), "%F %T")?
+                                .timestamp_millis(),
+                        );
+                    }
+                }
+                Tag::GPSLatitude => {
+                    if let exif::Value::Rational(ref x) = field.value {
+                        update.lat = Some(to_decimal_coordinate(x));
+                    }
+                }
+                
+                Tag::PixelXDimension => {
+                    if let exif::Value::Long(ref x) = field.value {
+                        update.width = x.first().map(|i| i.to_owned().into());
+                    }
+                }
+                Tag::PixelYDimension => {
+                    if let exif::Value::Long(ref x) = field.value {
+                        update.height = x.first().map(|i| i.to_owned().into());
+                    }
+                }
+                Tag::PhotographicSensitivity => {
+                    if let exif::Value::Short(ref x) = field.value {
+                        update.iso = x.first().map(|i| i.to_owned().into());
+                    }
+                }
+                Tag::ExposureTime => {
+                    if let exif::Value::Rational(ref x) = field.value {
+                        update.sspeed = x.first().map(|i| format!("{}/{}", i.num, i.denom));
+                    }
+                }
+                Tag::FNumber => {
+                    if let exif::Value::Rational(ref x) = field.value {
+                        update.f_number = x.first().map(|i| ((i.num as f64 / i.denom as f64) * 1000.0).round() / 1000.0);
+                    }
+                }
+            /*  Tag::GPSLatitudeRef => {
                     let string_value = format!("{}", field.value.display_as(field.tag));
-                    update.created = Some(
-                        Utc.datetime_from_str(string_value.as_str(), "%F %T")?
-                            .timestamp_millis(),
-                    );
+                    if let "S" = string_value.as_str() {
+                        latitude_sign = -1.0
+                    }
+                }*/
+                Tag::GPSLongitude => {
+                    if let exif::Value::Rational(ref x) = field.value {
+                        update.long = Some(to_decimal_coordinate(x));
+                    }
                 }
+                /*
+                Tag::GPSLongitudeRef => {
+                    let string_value = format!("{}", field.value.display_as(field.tag));
+                    if let "W" = string_value.as_str() {
+                        longitude_sign = -1.0
+                    }
+                }*/
+                _ => {}
             }
-            Tag::GPSLatitude => {
-                if let exif::Value::Rational(ref x) = field.value {
-                    update.lat = Some(to_decimal_coordinate(x));
-                }
-            }
-            
-            Tag::PixelXDimension => {
-                if let exif::Value::Long(ref x) = field.value {
-                    update.width = x.first().map(|i| i.to_owned().into());
-                }
-            }
-            Tag::PixelYDimension => {
-                if let exif::Value::Long(ref x) = field.value {
-                    update.height = x.first().map(|i| i.to_owned().into());
-                }
-            }
-            Tag::PhotographicSensitivity => {
-                if let exif::Value::Short(ref x) = field.value {
-                    update.iso = x.first().map(|i| i.to_owned().into());
-                }
-            }
-            Tag::ExposureTime => {
-                if let exif::Value::Rational(ref x) = field.value {
-                    update.sspeed = x.first().map(|i| format!("{}/{}", i.num, i.denom));
-                }
-            }
-            Tag::FNumber => {
-                if let exif::Value::Rational(ref x) = field.value {
-                    update.f_number = x.first().map(|i| ((i.num as f64 / i.denom as f64) * 1000.0).round() / 1000.0);
-                }
-            }
-           /*  Tag::GPSLatitudeRef => {
-                let string_value = format!("{}", field.value.display_as(field.tag));
-                if let "S" = string_value.as_str() {
-                    latitude_sign = -1.0
-                }
-            }*/
-            Tag::GPSLongitude => {
-                if let exif::Value::Rational(ref x) = field.value {
-                    update.long = Some(to_decimal_coordinate(x));
-                }
-            }
-            /*
-            Tag::GPSLongitudeRef => {
-                let string_value = format!("{}", field.value.display_as(field.tag));
-                if let "W" = string_value.as_str() {
-                    longitude_sign = -1.0
-                }
-            }*/
-            _ => {}
         }
     }
     // for f in exif.fields() {
     //     println!("{} {}: {} ({})",
     //                 f.tag, f.ifd_num, f.display_value().with_unit(&exif), f.display_value());
     // }
-    let infos = read_heic_infos(&bufreader.into_inner().into_inner())?;
-    update.icc = infos.profile_name;
+    let data = bufreader.get_ref().get_ref();
+    if (is_heic(data)) {
+        let infos = read_heic_infos(data)?;
+        update.icc = infos.profile_name;
+    }
 
     Ok(update)
 }

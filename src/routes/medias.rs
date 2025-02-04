@@ -86,7 +86,7 @@ struct ExistQuery {
 
 async fn handler_exist(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ExistQuery>) -> Result<Json<Value>> {
 	
-	let media = mc.get_media_by_hash(&library_id, query.hash, &user).await?;
+	let media = mc.get_media_by_hash(&library_id, query.hash, true, &user).await?;
 	
 	let body = Json(json!({"exist": media.is_some(), "media": media}));
 	Ok(body)

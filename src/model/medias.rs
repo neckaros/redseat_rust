@@ -21,7 +21,7 @@ use tokio_stream::StreamExt;
 use tokio_util::{compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt}, io::{ReaderStream, StreamReader, SyncIoBridge}};
 use zip::ZipWriter;
 
-use crate::{domain::{deleted::RsDeleted, library::LibraryType, media::{self, ConvertMessage, ConvertProgress, RsGpsPosition, DEFAULT_MIME}, plugin, MediaElement}, error::RsError, model::store::sql::SqlOrder, plugins::sources::{path_provider::PathProvider, Source}, routes::infos, tools::{file_tools::{filename_from_path, remove_extension}, image_tools::{convert_image_reader, image_infos}, video_tools::{VideoCommandBuilder, VideoConvertRequest, VideoOverlayPosition}}};
+use crate::{domain::{deleted::RsDeleted, library::LibraryType, media::{self, ConvertMessage, ConvertProgress, RsGpsPosition, DEFAULT_MIME}, plugin, MediaElement}, error::RsError, model::store::sql::SqlOrder, plugins::sources::{path_provider::PathProvider, Source}, routes::infos, tools::{file_tools::{filename_from_path, remove_extension}, image_tools::{convert_image_reader, image_infos, IMAGES_MIME_FULL_BROWSER_SUPPORT}, video_tools::{VideoCommandBuilder, VideoConvertRequest, VideoOverlayPosition}}};
 
 use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaItemReference, MediaWithAction, MediasMessage, ProgressMessage}, progress::{RsProgress, RsProgressType}, ElementAction}, error::RsResult, plugins::{get_plugin_fodler, sources::{async_reader_progress::ProgressReader, error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{self, resize_image_reader, ImageSize, ImageType}, log::{log_error, log_info, LogServiceType}, prediction::{predict_net, preload_model, PredictionTagResult}, video_tools::{self, probe_video, VideoTime}}};
 
@@ -220,10 +220,10 @@ impl ModelController {
 		Ok(media)
 	}
 
-    pub async fn get_media_by_hash(&self, library_id: &str, hash: String, requesting_user: &ConnectedUser) -> RsResult<Option<Media>> {
+    pub async fn get_media_by_hash(&self, library_id: &str, hash: String, check_original: bool, requesting_user: &ConnectedUser) -> RsResult<Option<Media>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
-		let mut media = store.get_media_by_hash(hash).await;
+		let mut media = store.get_media_by_hash(hash, check_original).await;
         
         if let Some(media) = &mut media {
             if requesting_user.is_admin() {
@@ -401,7 +401,7 @@ impl ModelController {
         m.fill_infos(&source, &mut infos).await?;
 
         if let Some(hash) = &infos.md5 {
-            let existing = store.get_media_by_hash(hash.to_owned()).await;
+            let existing = store.get_media_by_hash(hash.to_owned(), true).await;
             if let Some(existing) = existing {
                 m.remove(&source).await?;
                 //let _ = tx_progress.send(RsProgress { id: upload_id.clone(), total: existing.size, current: existing.size, kind: RsProgressType::Duplicate(existing.id.clone()), filename: Some(existing.name.to_owned()) }).await;
@@ -491,7 +491,7 @@ impl ModelController {
             }
 
             if !query.unsupported_mime.is_empty() && !query.raw {
-                if existing.kind == FileType::Photo && query.unsupported_mime.contains(&existing.mime) || query.unsupported_mime.contains(&"all".to_owned()) {
+                if existing.kind == FileType::Photo && !IMAGES_MIME_FULL_BROWSER_SUPPORT.contains(&existing.mime.as_str()) && (query.unsupported_mime.contains(&existing.mime) || query.unsupported_mime.contains(&"all".to_owned())) {
                     let mut data = reader_response.into_reader(Some(library_id), range, None, Some((self.clone(), &requesting_user)), None).await?; 
                     let resized = convert_image_reader(data.stream, image::ImageFormat::Avif, Some(80), true).await?;
                     let len = resized.len();
@@ -590,7 +590,7 @@ impl ModelController {
             let _ = m.fill_infos(&source, &mut infos).await;
         }
         if let Some(hash) = &infos.md5 {
-            let existing = store.get_media_by_hash(hash.to_owned()).await;
+            let existing = store.get_media_by_hash(hash.to_owned(), true).await;
             if let Some(existing) = existing {
                 m.remove(&source).await?;
                 let _ = tx_progress.send(RsProgress { id: upload_id.clone(), total: existing.size, current: existing.size, kind: RsProgressType::Duplicate(existing.id.clone()), filename: Some(existing.name.to_owned()) }).await;
@@ -728,7 +728,7 @@ impl ModelController {
             m.fill_infos(&source, &mut infos).await?;
 
             if let Some(hash) = &infos.md5 {
-                let existing = store.get_media_by_hash(hash.to_owned()).await;
+                let existing = store.get_media_by_hash(hash.to_owned(), true).await;
                 if let Some(existing) = existing {
                     m.remove(&source).await?;
                     //let _ = tx_progress.send(RsProgress { id: upload_id.clone(), total: existing.size, current: existing.size, kind: RsProgressType::Duplicate(existing.id.clone()), filename: Some(existing.name.to_owned()) }).await;
@@ -821,7 +821,7 @@ impl ModelController {
                 let _ = m.fill_infos(&source, &mut infos).await;
 
                 if let Some(hash) = &infos.md5 {
-                    let existing = store.get_media_by_hash(hash.to_owned()).await;
+                    let existing = store.get_media_by_hash(hash.to_owned(), true).await;
                     if let Some(existing) = existing {
                         m.remove(&source).await?;
                         let _ = tx_progress.send(RsProgress { id: upload_id.clone(), total: existing.size, current: existing.size, kind: RsProgressType::Duplicate(existing.id.clone()), filename: Some(existing.name.to_owned()) }).await;

@@ -496,12 +496,11 @@ impl SqliteLibraryStore {
         Ok(row)
     }
 
-    pub async fn get_media_by_hash(&self, hash: String) -> Option<Media> {
+    pub async fn get_media_by_hash(&self, hash: String, check_original: bool) -> Option<Media> {
         let row = self.connection.call( move |conn| { 
             let media_raw_query = media_query(&None);
-            let mut query = conn.prepare(&format!("{} WHERE md5 = ?", media_raw_query))?;
-            let row = query.query_row(
-            params![hash],Self::row_to_media)?;
+            let mut query = if check_original { conn.prepare(&format!("{} WHERE md5 = ? or originalhash = ?", media_raw_query))? } else { conn.prepare(&format!("{} WHERE md5 = ?", media_raw_query))? };
+            let row = if check_original { query.query_row(params![hash, hash],Self::row_to_media)? } else { query.query_row(params![hash],Self::row_to_media)? };
             Ok(row)
         }).await;
         row.ok()

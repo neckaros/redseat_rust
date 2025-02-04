@@ -151,6 +151,9 @@ pub enum Error {
 	Zip(#[serde_as(as = "DisplayFromStr")] zip::result::ZipError),
 	
 	#[from]
+	SevenZip(#[serde_as(as = "DisplayFromStr")] sevenz_rust::Error),
+	
+	#[from]
 	Trash(#[serde_as(as = "DisplayFromStr")] trash::Error),
 
 	#[from]
@@ -180,6 +183,14 @@ impl From<WebPEncodingError> for RsError {
         image_tools::ImageError::UnableToDecodeWebp((error as i32).to_string()).into()
     }
 }
+
+impl From<&str> for Error {
+    fn from(error: &str) -> Self {
+        Error::Error(error.to_string())
+    }
+}
+
+
 
 
 // region:    --- Error Boilerplate

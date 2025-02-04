@@ -20,7 +20,7 @@ pub mod serialization_tools;
 
 pub mod clock;
 pub mod download_external_libs;
-
+pub mod compression;
 
 pub fn get_time() -> Duration {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap()

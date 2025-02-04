@@ -8,7 +8,8 @@ use axum::{
 };
 use axum_server::tls_rustls::RustlsConfig;
 
-use domain::MediasIds;
+use domain::{ffmpeg, MediasIds};
+use error::RsError;
 use http::{StatusCode, Uri};
 use hyper::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, REFERRER_POLICY, REFERER};
 use model::{server::AuthMessage, store::SqliteStore, ModelController};
@@ -18,7 +19,7 @@ use routes::{mw_auth, mw_range};
 
 use server::{get_home, get_server_id, get_server_port, PublicServerInfos};
 use tokio::net::TcpListener;
-use tools::{auth::{sign_local, Claims}, image_tools::has_image_magick, log::LogServiceType, prediction};
+use tools::{auth::{sign_local, Claims}, image_tools::has_image_magick, log::{log_error, LogServiceType}, prediction, video_tools::VideoCommandBuilder};
 use tower::ServiceBuilder;
 use tower_http::{cors::{Any, CorsLayer}, trace::TraceLayer};
 use crate::{server::{get_config, update_ip}, tools::{auth::{get_or_init_keys, verify_local, ClaimsLocal}, image_tools::resize_image_path, log::log_info}};
@@ -46,6 +47,24 @@ async fn main() ->  Result<()> {
     log_info(tools::log::LogServiceType::Register, format!("Architecture: {}-{}", os, arch));
     log_info(tools::log::LogServiceType::Register, "Starting redseat server".to_string());
     log_info(tools::log::LogServiceType::Register, "Initializing config".to_string());
+
+    let ffmpeg_version = VideoCommandBuilder::version().await?;
+    if let Some(ffmpeg_version) = ffmpeg_version {
+        log_info(tools::log::LogServiceType::Register, format!("FFMPEG version {:?}", ffmpeg_version));
+    } else {
+        log_info(tools::log::LogServiceType::Register, "No FFMPEG found, downloading latest version in background. Video operations won't be available in the meantime".to_string());
+        tokio::spawn(async {
+            VideoCommandBuilder::download().await?;
+            let ffmpeg_version = VideoCommandBuilder::version().await?;
+            if let Some(ffmpeg_version) = ffmpeg_version {
+                log_info(tools::log::LogServiceType::Register, format!("FFMPEG version {:?}", ffmpeg_version));
+            } else {
+                log_error(tools::log::LogServiceType::Register, "We were not able to confirm FFMPEG installation".to_string());
+            }
+            Ok::<(), RsError>(())
+        });
+    }
+    
 
     let config = server::initialize_config().await;
 

@@ -197,7 +197,7 @@ impl RsRequestHeader for RequestBuilder {
         for (key, value) in request.headers.as_ref().unwrap_or(&vec![]) {
             headers.insert(reqwest::header::HeaderName::from_lowercase(key.to_lowercase().as_bytes()).map_err(|_| Error::UnableToFormatHeaders)?, reqwest::header::HeaderValue::from_str(value).map_err(|_| Error::UnableToFormatHeaders)?);
         }
-        
+        println!("Headers for request builder {:?}", headers);
 
         if let Some(referer) = &request.referer {
 
