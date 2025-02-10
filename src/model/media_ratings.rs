@@ -73,7 +73,7 @@ impl ModelController {
 
 	pub async fn get_medias_ratings(&self, library_id: &str, query: MediaRatingsQuery, requesting_user: &ConnectedUser) -> RsResult<Vec<RsMediaRating>> {
         let original_user_id = requesting_user.user_id()?;
-        let mut user_id = self.get_library_mapped_user(library_id, requesting_user).await?;
+        let mut user_id = self.get_library_mapped_user(library_id, original_user_id.clone()).await?;
 
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         let mut ratings = store.get_medias_ratings(query, user_id.clone()).await?;
@@ -96,7 +96,7 @@ impl ModelController {
 	}
 
     pub async fn set_media_rating(&self, library_id: &str, media_ref: String, rating: f64, requesting_user: &ConnectedUser) -> RsResult<RsMediaRating> {
-        let mut user_id = self.get_library_mapped_user(library_id, requesting_user).await?;
+        let mut user_id = self.get_library_mapped_user(library_id, requesting_user.user_id()?).await?;
 
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         store.set_media_rating(media_ref.clone(), user_id, rating).await?;

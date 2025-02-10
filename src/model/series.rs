@@ -357,7 +357,7 @@ impl ModelController {
                 let image_path = format!("cache/serie-{}-{}.webp", serie_id.replace(':', "-"), kind);
 
                 if !local_provider.exists(&image_path).await {
-                    let images = self.get_serie_image_url(&serie_ids, &kind).await?.ok_or(crate::Error::NotFound)?;
+                    let images = self.get_serie_image_url(&serie_ids, &kind, &None).await?.ok_or(crate::Error::NotFound)?;
                     let (_, mut writer) = local_provider.get_file_write_stream(&image_path).await?;
                     let image_reader = reqwest::get(images).await?;
                     let stream = image_reader.bytes_stream();
@@ -389,16 +389,16 @@ impl ModelController {
     pub async fn refresh_serie_image(&self, library_id: &str, serie_id: &str, kind: &ImageType, requesting_user: &ConnectedUser) -> RsResult<()> {
         let serie = self.get_serie(library_id, serie_id.to_string(), requesting_user).await?.ok_or(Error::NotFound)?;
         let ids: MediasIds = serie.into();
-        let reader = self.download_serie_image(&ids, kind).await?;
+        let reader = self.download_serie_image(&ids, kind, &None).await?;
         self.update_serie_image(library_id, serie_id, kind, reader, requesting_user).await?;
         Ok(())
 	}
 
-    pub async fn get_serie_image_url(&self, ids: &MediasIds, kind: &ImageType) -> RsResult<Option<String>> {
+    pub async fn get_serie_image_url(&self, ids: &MediasIds, kind: &ImageType, lang: &Option<String>) -> RsResult<Option<String>> {
         let images = if kind == &ImageType::Card {
             None
         } else { 
-            self.tmdb.serie_image(ids.clone()).await?.into_kind(kind.clone())
+            self.tmdb.serie_image(ids.clone(), lang).await?.into_kind(kind.clone())
         };
         if images.is_none() {
             let images = self.fanart.serie_image(ids.clone()).await?.into_kind(kind.clone());
@@ -408,8 +408,8 @@ impl ModelController {
         }
     }
 
-    pub async fn download_serie_image(&self, ids: &MediasIds, kind: &ImageType) -> crate::Result<AsyncReadPinBox> {
-        let images = self.get_serie_image_url(ids, kind).await?.ok_or(crate::Error::NotFound)?;
+    pub async fn download_serie_image(&self, ids: &MediasIds, kind: &ImageType, lang: &Option<String>) -> crate::Result<AsyncReadPinBox> {
+        let images = self.get_serie_image_url(ids, kind, lang).await?.ok_or(crate::Error::NotFound)?;
         let image_reader = reqwest::get(images).await?;
         let stream = image_reader.bytes_stream();
         let body_with_io_error = stream.map_err(|err| io::Error::new(io::ErrorKind::Other, err));

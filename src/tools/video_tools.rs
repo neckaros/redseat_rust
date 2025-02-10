@@ -21,6 +21,8 @@ use crate::error::{RsError, RsResult};
 use crate::{domain::ffmpeg::FfprobeResult, Error};
 use crate::{server::get_server_temp_file_path, tools};
 
+use tools::text_tools::Printable;
+
 use super::log::{log_error, LogServiceType};
 
 pub mod ytdl;
@@ -616,9 +618,25 @@ impl VideoCommandBuilder {
             },
             Some(RsVideoCodec::AV1) => {
                 self.add_out_option("-c:v");
-                self.add_out_option("libaom-av1");
+                self.add_out_option("libsvtav1");
+
+                self.add_out_option("-preset");
+                self.add_out_option("5");
+
+                self.add_out_option("-crf");
+                self.add_out_option(crf.unwrap_or(32).to_string());
+
+                self.add_out_option("-g");
+                self.add_out_option("240");
+
+                self.add_out_option("-pix_fmt");
+                self.add_out_option("yuv420p10le");
+
+                self.add_out_option("-svtav1-params");
+                self.add_out_option("tune=0:film-grain=8");
+
                 if self.format.is_none() {
-                    self.format = Some(RsVideoFormat::WebM);
+                    self.format = Some(RsVideoFormat::Mp4);
                 }
             },
             Some(RsVideoCodec::Custom(custom)) => {
@@ -655,7 +673,7 @@ impl VideoCommandBuilder {
 
     pub fn add_overlay(&mut self, overlay: VideoOverlay) -> &mut Self {
         self.add_input(overlay.path);
-        self.add_video_effect(format!("[{}][#input#]scale2ref=h=ow/mdar:w='max(ih,iw)/{}'[#A logo][bird];[#A logo]format=argb,colorchannelmixer=aa=0.2[#B logo transparent];[bird][#B logo transparent]overlay='{}'", self.current_input, overlay.ratio, overlay.position.as_filter(overlay.margin.unwrap_or(0.02))));
+        self.add_video_effect(format!("[{}][#input#]scale=-1:'min(rh,rw)/{}'[logo];[logo]format=argb,colorchannelmixer=aa=0.2[logotrsp];[#input#][logotrsp]overlay='{}'", self.current_input, overlay.ratio, overlay.position.as_filter(overlay.margin.unwrap_or(0.02))));
         
         self
     }
@@ -734,6 +752,9 @@ impl VideoCommandBuilder {
             //.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+
+            println!("Video command: {}", self.cmd.printable());
+
  
              // Run the child command
         let mut child = self.cmd   

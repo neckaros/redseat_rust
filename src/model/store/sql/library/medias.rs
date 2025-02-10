@@ -424,7 +424,6 @@ impl SqliteLibraryStore {
 
     pub async fn get_medias(&self, query: MediaQuery, limits: LibraryLimits) -> Result<Vec<Media>> {
         let row = self.connection.call( move |conn| { 
-            println!("progress user, {:?}", limits.user_id);
             let media_raw_query = media_query(&limits.user_id);
             
             let limit = query.limit.unwrap_or(200);

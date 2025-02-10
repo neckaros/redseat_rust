@@ -1,7 +1,7 @@
 
 use std::io::Cursor;
 
-use crate::{domain::{episode::{self, Episode}, media::{FileEpisode, Media, MediaForUpdate}, progress, view_progress::{ViewProgressForAdd, ViewProgressLigh}, watched::{WatchedForAdd, WatchedLight}, MediasIds}, model::{episodes::{EpisodeForUpdate, EpisodeQuery}, medias::MediaQuery, users::{ConnectedUser, HistoryQuery}, ModelController}, tools::image_tools::ImageType, Error, Result};
+use crate::{domain::{episode::{self, Episode}, media::{FileEpisode, Media, MediaForUpdate}, progress, view_progress::{ViewProgressForAdd, ViewProgressLigh}, watched::{WatchedForAdd, WatchedLight}, MediasIds}, error::RsError, model::{episodes::{EpisodeForUpdate, EpisodeQuery}, medias::MediaQuery, users::{ConnectedUser, HistoryQuery}, ModelController}, tools::image_tools::ImageType, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
 use futures::TryStreamExt;
 use rs_plugin_common_interfaces::{lookup::{RsLookupEpisode, RsLookupQuery}, request::RsRequest, MediaType};
@@ -154,7 +154,7 @@ async fn handler_post(Path((library_id, serie_id)): Path<(String, String)>, Stat
 
 async fn handler_progress_get(Path((library_id, serie_id, season, number)): Path<(String, String, u32, u32)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
 	let episode = mc.get_episode(&library_id, serie_id, season, number, &user).await?;
-	let progress = mc.get_view_progress(episode.into(), &user).await?.ok_or(Error::NotFound)?;
+	let progress = mc.get_view_progress(episode.into(), &user, Some(library_id.to_string())).await?.ok_or(Error::NotFound)?;
 	Ok(Json(json!(progress)))
 }
 
@@ -164,7 +164,7 @@ async fn handler_progress_set(Path((library_id, serie_id, season, number)): Path
 	let id = MediasIds::from(episode).into_best_external().ok_or(Error::NotFound)?;
 	let serie_id = MediasIds::from(serie).into_best_external().ok_or(Error::NotFound)?;
 	let progress = ViewProgressForAdd { kind: MediaType::Episode, id, progress: progress.progress, parent: Some(serie_id) };
-	mc.add_view_progress(progress, &user).await?;
+	mc.add_view_progress(progress, &user, Some(library_id)).await?;
 
 	Ok(())
 }
@@ -175,7 +175,7 @@ async fn handler_watched_get(Path((library_id, serie_id, season, number)): Path<
 		id: Some(episode.into()),
 		..Default::default()
 	};
-	let progress = mc.get_watched(query, &user).await?.into_iter().next().ok_or(Error::NotFound)?;
+	let progress = mc.get_watched(query, &user, Some(library_id)).await?.into_iter().next().ok_or(Error::NotFound)?;
 	Ok(Json(json!(progress)))
 }
 
@@ -183,7 +183,7 @@ async fn handler_watched_set(Path((library_id, serie_id, season, number)): Path<
 	let episode = mc.get_episode(&library_id, serie_id.clone(), season, number, &user).await?;
 	let id = MediasIds::from(episode).into_best_external_or_local().ok_or(Error::NotFound)?;
 	let watched = WatchedForAdd { kind: MediaType::Episode, id, date: watched.date };
-	mc.add_watched(watched, &user).await?;
+	mc.add_watched(watched, &user, Some(library_id)).await?;
 
 	Ok(())
 }
@@ -198,20 +198,24 @@ async fn handler_image(Path((library_id, serie_id, season, number)): Path<(Strin
 		let stream = ReaderStream::new(reader_response.stream);
 		let body = Body::from_stream(stream);
 		Ok((headers, body).into_response())
-	} else if let Ok(reader_response) = mc.serie_image(&library_id, &serie_id, Some(ImageType::Card), query.size.clone(), &user).await {
-		let headers = reader_response.hearders().map_err(|_| Error::GenericRedseatError)?;
-		let stream = ReaderStream::new(reader_response.stream);
-		let body = Body::from_stream(stream);
-		Ok((headers, body).into_response())
+	} else if query.defaulting { 
+		if let Ok(reader_response) = mc.serie_image(&library_id, &serie_id, Some(ImageType::Card), query.size.clone(), &user).await {
+			let headers = reader_response.hearders().map_err(|_| Error::GenericRedseatError)?;
+			let stream = ReaderStream::new(reader_response.stream);
+			let body = Body::from_stream(stream);
+			Ok((headers, body).into_response())
+		} else {
+			let reader_response = mc.serie_image(&library_id, &serie_id, Some(ImageType::Background), query.size, &user).await?;
+			let headers = reader_response.hearders().map_err(|_| Error::GenericRedseatError)?;
+			let stream = ReaderStream::new(reader_response.stream);
+			let body = Body::from_stream(stream);
+			Ok((headers, body).into_response())
+		}
 	} else {
-		let reader_response = mc.serie_image(&library_id, &serie_id, Some(ImageType::Background), query.size, &user).await?;
-		let headers = reader_response.hearders().map_err(|_| Error::GenericRedseatError)?;
-		let stream = ReaderStream::new(reader_response.stream);
-		let body = Body::from_stream(stream);
-		Ok((headers, body).into_response())
+		Err(RsError::NotFound)
 	}
 	
-
+	
 }
 
 #[debug_handler]

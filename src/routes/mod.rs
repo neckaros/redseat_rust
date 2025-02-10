@@ -25,7 +25,10 @@ pub mod medias;
 pub struct ImageRequestOptions {
     size: Option<ImageSize>,
     #[serde(rename = "type")]
-    kind: Option<ImageType>
+    kind: Option<ImageType>,
+    #[serde(default)]
+    defaulting: bool
+
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

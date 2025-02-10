@@ -1,5 +1,5 @@
 
-use crate::{domain::{media::MediaForUpdate, movie::{Movie, MovieForUpdate}, view_progress::{ViewProgressForAdd, ViewProgressLigh}, watched::{WatchedForAdd, WatchedLight}, MediasIds}, model::{episodes::EpisodeQuery, medias::MediaQuery, movies::{MovieQuery, RsMovieSort}, store::sql::SqlOrder, users::{ConnectedUser, HistoryQuery}, ModelController}, tools::{clock::now, image_tools::ImageType}, Error, Result};
+use crate::{domain::{media::MediaForUpdate, movie::{Movie, MovieForUpdate}, view_progress::{ViewProgressForAdd, ViewProgressLigh}, watched::{WatchedForAdd, WatchedLight}, MediasIds}, error::RsError, model::{episodes::EpisodeQuery, medias::MediaQuery, movies::{MovieQuery, RsMovieSort}, store::sql::SqlOrder, users::{ConnectedUser, HistoryQuery}, ModelController}, tools::{clock::now, image_tools::ImageType}, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post, put}, Json, Router};
 use futures::TryStreamExt;
 use rs_plugin_common_interfaces::{lookup::{RsLookupMovie, RsLookupQuery}, MediaType, RsRequest};
@@ -135,7 +135,7 @@ async fn handler_delete(Path((library_id, movie_id)): Path<(String, String)>, St
 
 async fn handler_progress_get(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
 	let movie = mc.get_movie(&library_id, movie_id, &user).await?;
-	let progress = mc.get_view_progress(movie.into(), &user).await?.ok_or(Error::NotFound)?;
+	let progress = mc.get_view_progress(movie.into(), &user, Some(library_id.to_string())).await?.ok_or(Error::NotFound)?;
 	Ok(Json(json!(progress)))
 }
 
@@ -143,7 +143,7 @@ async fn handler_progress_set(Path((library_id, movie_id)): Path<(String, String
 	let movie = mc.get_movie(&library_id, movie_id, &user).await?;
 	let id = MediasIds::from(movie).into_best_external().ok_or(Error::NotFound)?;
 	let progress = ViewProgressForAdd { kind: MediaType::Movie, id, progress: progress.progress, parent: None };
-	mc.add_view_progress(progress, &user).await?;
+	mc.add_view_progress(progress, &user, Some(library_id)).await?;
 
 	Ok(())
 }
@@ -154,7 +154,7 @@ async fn handler_watched_get(Path((library_id, movie_id)): Path<(String, String)
 		id: Some(movie.into()),
 		..Default::default()
 	};
-	let progress = mc.get_watched(query, &user).await?.into_iter().next().ok_or(Error::NotFound)?;
+	let progress = mc.get_watched(query, &user, Some(library_id)).await?.into_iter().next().ok_or(Error::NotFound)?;
 	Ok(Json(json!(progress)))
 }
 
@@ -162,7 +162,7 @@ async fn handler_watched_set(Path((library_id, movie_id)): Path<(String, String)
 	let movie = mc.get_movie(&library_id, movie_id, &user).await?;
 	let id = MediasIds::from(movie).into_best_external().ok_or(Error::NotFound)?;
 	let watched = WatchedForAdd { kind: MediaType::Movie, id, date: watched.date };
-	mc.add_watched(watched, &user).await?;
+	mc.add_watched(watched, &user, Some(library_id)).await?;
 
 	Ok(())
 }
@@ -185,15 +185,19 @@ async fn handler_image(Path((library_id, movie_id)): Path<(String, String)>, Sta
 		let body = Body::from_stream(stream);
 		
 		Ok((headers, body).into_response())
-	} else if query.kind.as_ref().unwrap_or(&ImageType::Poster) == &ImageType::Card {
-		let reader_response = mc.movie_image(&library_id, &movie_id, Some(ImageType::Background), query.size, &user).await?;
-		let headers = reader_response.hearders().map_err(|_| Error::GenericRedseatError)?;
-		let stream = ReaderStream::new(reader_response.stream);
-		let body = Body::from_stream(stream);
-		
-		Ok((headers, body).into_response())
+	} else if query.defaulting {
+		if query.kind.as_ref().unwrap_or(&ImageType::Poster) == &ImageType::Card {
+			let reader_response = mc.movie_image(&library_id, &movie_id, Some(ImageType::Background), query.size, &user).await?;
+			let headers = reader_response.hearders().map_err(|_| Error::GenericRedseatError)?;
+			let stream = ReaderStream::new(reader_response.stream);
+			let body = Body::from_stream(stream);
+			
+			Ok((headers, body).into_response())
+		} else {
+			Err(Error::NotFound)
+		}
 	} else {
-		Err(Error::NotFound)
+		Err(RsError::NotFound)
 	}
 
 	

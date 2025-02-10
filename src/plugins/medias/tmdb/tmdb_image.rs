@@ -22,12 +22,26 @@ pub struct TmdbImage {
 }
 
 pub trait ToBest {
-    fn into_best(self) -> Option<TmdbImage>;
+    fn into_best(self, lang: &Option<String>) -> Option<TmdbImage>;
 }
 
 impl ToBest for Vec<TmdbImage> {
-    fn into_best(mut self) -> Option<TmdbImage> {
+    fn into_best(mut self, lang: &Option<String>) -> Option<TmdbImage> {
         self.sort_by(|a, b| b.vote_average.partial_cmp(&a.vote_average).unwrap());
+
+        if let Some(lang) = &lang {
+            let next = self.iter().filter(|i| i.iso_639_1.as_ref() == Some(lang)).next();
+            if let Some(next) = next {
+                return Some(next.to_owned());
+            }
+        }
+        let default_lang = "en".to_string();
+        let next = self.iter().filter(|i| i.iso_639_1.as_deref() == Some("en")).next();
+        if let Some(next) = next {
+            return Some(next.to_owned());
+        }
+        
+
         self.into_iter().next()
     }
 }
@@ -49,12 +63,12 @@ pub struct TmdbImageResponse {
 }
 
 impl TmdbImageResponse {
-    pub fn into_external(self, configuration: &TmdbConfiguration) -> ExternalSerieImages {
+    pub fn into_external(self, configuration: &TmdbConfiguration, lang: &Option<String>) -> ExternalSerieImages {
         ExternalSerieImages {
-            backdrop: self.backdrops.and_then(|l| l.into_best()).and_then(|p| Some(p.full_path(&configuration.images.secure_base_url))),
-            logo: self.logos.and_then(|l| l.into_best()).and_then(|p| Some(p.full_path(&configuration.images.secure_base_url))),
-            poster:  self.posters.and_then(|l| l.into_best()).and_then(|p| Some(p.full_path(&configuration.images.secure_base_url))),
-            still: self.stills.and_then(|l| l.into_best()).and_then(|p| Some(p.full_path(&configuration.images.secure_base_url))),
+            backdrop: self.backdrops.and_then(|l| l.into_best(lang)).and_then(|p| Some(p.full_path(&configuration.images.secure_base_url))),
+            logo: self.logos.and_then(|l| l.into_best(lang)).and_then(|p| Some(p.full_path(&configuration.images.secure_base_url))),
+            poster:  self.posters.and_then(|l| l.into_best(lang)).and_then(|p| Some(p.full_path(&configuration.images.secure_base_url))),
+            still: self.stills.and_then(|l| l.into_best(lang)).and_then(|p| Some(p.full_path(&configuration.images.secure_base_url))),
             ..Default::default()
         }
     }

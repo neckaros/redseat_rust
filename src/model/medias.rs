@@ -21,7 +21,7 @@ use tokio_stream::StreamExt;
 use tokio_util::{compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt}, io::{ReaderStream, StreamReader, SyncIoBridge}};
 use zip::ZipWriter;
 
-use crate::{domain::{deleted::RsDeleted, library::LibraryType, media::{self, ConvertMessage, ConvertProgress, RsGpsPosition, DEFAULT_MIME}, plugin, MediaElement}, error::RsError, model::store::sql::SqlOrder, plugins::sources::{path_provider::PathProvider, Source}, routes::infos, tools::{file_tools::{filename_from_path, remove_extension}, image_tools::{convert_image_reader, image_infos, IMAGES_MIME_FULL_BROWSER_SUPPORT}, video_tools::{VideoCommandBuilder, VideoConvertRequest, VideoOverlayPosition}}};
+use crate::{domain::{deleted::RsDeleted, library::LibraryType, media::{self, ConvertMessage, ConvertProgress, RsGpsPosition, DEFAULT_MIME}, plugin, MediaElement}, error::RsError, model::store::sql::SqlOrder, plugins::sources::{path_provider::PathProvider, Source}, routes::infos, tools::{file_tools::{filename_from_path, remove_extension}, image_tools::{convert_image_reader, image_infos, IMAGES_MIME_FULL_BROWSER_SUPPORT}, recognition, video_tools::{VideoCommandBuilder, VideoConvertRequest, VideoOverlayPosition}}};
 
 use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaItemReference, MediaWithAction, MediasMessage, ProgressMessage}, progress::{RsProgress, RsProgressType}, ElementAction}, error::RsResult, plugins::{get_plugin_fodler, sources::{async_reader_progress::ProgressReader, error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{self, resize_image_reader, ImageSize, ImageType}, log::{log_error, log_info, LogServiceType}, prediction::{predict_net, preload_model, PredictionTagResult}, video_tools::{self, probe_video, VideoTime}}};
 
@@ -179,7 +179,7 @@ impl TryFrom<Media> for MediaSource {
 impl ModelController {
 
 	pub async fn get_medias(&self, library_id: &str, query: MediaQuery, requesting_user: &ConnectedUser) -> Result<Vec<Media>> {
-        let progress_user = self.get_library_mapped_user(library_id, requesting_user).await.ok();
+        let progress_user = self.get_library_mapped_user(library_id, requesting_user.user_id()?).await.ok();
         let mut limits = requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         limits.user_id = progress_user;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
@@ -528,6 +528,11 @@ impl ModelController {
         if thumb {
             let _ = self.generate_thumb(library_id, media_id, requesting_user).await;
         }
+        /*println!("parsing");
+        let mut m = self.library_file(library_id, media_id, None, MediaFileQuery::default() , requesting_user).await?.into_reader(Some(library_id), None, None, Some((self.clone(), &requesting_user)), None).await?;
+        let image = image_tools::reader_to_image(&mut m.stream).await?;
+        let r = recognition::pro(image.image);
+        println!("parsed {:?}", r);*/
 
         self.cache_check_library_notcrypt(library_id).await?;
 
@@ -960,7 +965,7 @@ impl ModelController {
         let m = self.source_for_library(library_id).await?; 
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         let media = store.get_media(media_id, requesting_user.user_id().ok()).await?.ok_or(Error::NotFound)?;
-        println!("GENERATE THUMB {:?}", media.kind);
+        //println!("GENERATE THUMB {:?}", media.kind);
         let thumb = match media.kind {
             FileType::Photo => { 
                 let media_source: MediaSource = media.try_into()?;
@@ -1278,7 +1283,7 @@ impl ModelController {
         requesting_user.check_file_role(library_id, media_id, LibraryRole::Write)?;
         self.cache_check_library_notcrypt(library_id).await?;
         let media = self.get_media(library_id, media_id.to_owned(), requesting_user).await?.ok_or(crate::model::Error::MediaNotFound(media_id.to_string()))?;
-        println!("media: {:?}", media);
+
         let mut update = MediaForUpdate::default();
         let m = self.source_for_library(&library_id).await?;
         m.fill_infos(&media.source.unwrap_or_default(), &mut update).await?;

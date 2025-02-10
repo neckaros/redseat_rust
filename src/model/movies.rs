@@ -103,7 +103,7 @@ impl ModelController {
         let watched_query = query.watched;
 		let mut movies = store.get_movies(query).await?;
 
-        self.fill_movies_watched(&mut movies, requesting_user).await?;
+        self.fill_movies_watched(&mut movies, requesting_user, Some(library_id.to_string())).await?;
         if let Some(watched) = watched_query {
             movies.retain(|m| if watched { m.watched.is_some() } else { m.watched.is_none() });
         }
@@ -118,16 +118,16 @@ impl ModelController {
             let id: MediasIds = movie_id.try_into().map_err(|_| Error::NotFound)?;
             let movie = store.get_movie_by_external_id(id.clone()).await?;
             if let Some(mut movie) = movie {
-                self.fill_movie_watched(&mut movie, requesting_user).await?;
+                self.fill_movie_watched(&mut movie, requesting_user, Some(library_id.to_string())).await?;
                 Ok(movie)
             } else {
                 let mut trakt_movie = self.trakt.get_movie(&id).await.map_err(|_| Error::NotFound)?;
-                self.fill_movie_watched(&mut trakt_movie, requesting_user).await?;
+                self.fill_movie_watched(&mut trakt_movie, requesting_user, Some(library_id.to_string())).await?;
                 Ok(trakt_movie)
             }
         } else {
             let mut movie = store.get_movie(&movie_id).await?.ok_or(Error::NotFound)?;
-            self.fill_movie_watched(&mut movie, requesting_user).await?;
+            self.fill_movie_watched(&mut movie, requesting_user, Some(library_id.to_string())).await?;
             Ok(movie)
         }
 	}
@@ -139,17 +139,17 @@ impl ModelController {
 		Ok(searched)
 	}
 
-    pub async fn fill_movie_watched(&self, movie: &mut Movie, requesting_user: &ConnectedUser) -> RsResult<()> {
+    pub async fn fill_movie_watched(&self, movie: &mut Movie, requesting_user: &ConnectedUser, library_id: Option<String>) -> RsResult<()> {
         movie.fill_imdb_ratings(&self.imdb).await;
-        let watched = self.get_watched(HistoryQuery { types: vec![MediaType::Movie], id: Some(movie.clone().into()), ..Default::default() }, requesting_user).await?;
+        let watched = self.get_watched(HistoryQuery { types: vec![MediaType::Movie], id: Some(movie.clone().into()), ..Default::default() }, requesting_user, library_id).await?;
         let watched = watched.first();
         if let Some(watched) = watched {
             movie.watched = Some(watched.date);
         }
         Ok(())
     }
-    pub async fn fill_movies_watched(&self, movies: &mut Vec<Movie>, requesting_user: &ConnectedUser) -> RsResult<()> {
-        let watched = self.get_watched(HistoryQuery { types: vec![MediaType::Movie], ..Default::default() }, requesting_user).await?.into_iter().map(|e| (e.id, e.date)).collect::<HashMap<_, _>>();
+    pub async fn fill_movies_watched(&self, movies: &mut Vec<Movie>, requesting_user: &ConnectedUser, library_id: Option<String>) -> RsResult<()> {
+        let watched = self.get_watched(HistoryQuery { types: vec![MediaType::Movie], ..Default::default() }, requesting_user, library_id).await?.into_iter().map(|e| (e.id, e.date)).collect::<HashMap<_, _>>();
         for movie in movies {
             movie.fill_imdb_ratings(&self.imdb).await;
             if let Some(trakt) = movie.trakt {
@@ -179,7 +179,7 @@ impl ModelController {
     pub async fn trending_movies(&self, requesting_user: &ConnectedUser )  -> RsResult<Vec<Movie>> {
         let mut movies = self.trakt.trending_movies().await?;
         
-        self.fill_movies_watched(&mut movies, requesting_user).await?;
+        self.fill_movies_watched(&mut movies, requesting_user, None).await?;
         Ok(movies)
     }
 
@@ -341,7 +341,7 @@ impl ModelController {
                 let image_path = format!("cache/movie-{}-{}.webp", movie_id.replace(':', "-"), kind);
 
                 if !local_provider.exists(&image_path).await {
-                    let images = self.get_movie_image_url(&movie_ids, &kind).await?.ok_or(crate::Error::NotFound)?;
+                    let images = self.get_movie_image_url(&movie_ids, &kind, &None).await?.ok_or(crate::Error::NotFound)?;
                     let (_, mut writer) = local_provider.get_file_write_stream(&image_path).await?;
                     let image_reader = reqwest::get(images).await?;
                     let stream = image_reader.bytes_stream();
@@ -372,17 +372,17 @@ impl ModelController {
     /// download and update image
     pub async fn refresh_movie_image(&self, library_id: &str, movie_id: &str, kind: &ImageType, requesting_user: &ConnectedUser) -> RsResult<()> {
         let movie = self.get_movie(library_id, movie_id.to_string(), requesting_user).await?;
-        let ids: MediasIds = movie.into();
-        let reader = self.download_movie_image(&ids, kind).await?;
+        let ids: MediasIds = movie.clone().into();
+        let reader = self.download_movie_image(&ids, kind, &movie.lang).await?;
         self.update_movie_image(library_id, movie_id, kind, reader, requesting_user).await?;
         Ok(())
 	}
 
-    pub async fn get_movie_image_url(&self, ids: &MediasIds, kind: &ImageType) -> RsResult<Option<String>> {
+    pub async fn get_movie_image_url(&self, ids: &MediasIds, kind: &ImageType, lang: &Option<String>) -> RsResult<Option<String>> {
         let images = if kind == &ImageType::Card {
             None
         } else { 
-            self.tmdb.movie_image(ids.clone()).await?.into_kind(kind.clone())
+            self.tmdb.movie_image(ids.clone(), lang).await?.into_kind(kind.clone())
         };
         if images.is_none() {
             let images = self.fanart.movie_image(ids.clone()).await?.into_kind(kind.clone());
@@ -393,8 +393,8 @@ impl ModelController {
     }
 
 
-    pub async fn download_movie_image(&self, ids: &MediasIds, kind: &ImageType) -> crate::Result<AsyncReadPinBox> {
-        let images = self.get_movie_image_url(ids, kind).await?.ok_or(crate::Error::NotFound)?;
+    pub async fn download_movie_image(&self, ids: &MediasIds, kind: &ImageType, lang: &Option<String>) -> crate::Result<AsyncReadPinBox> {
+        let images = self.get_movie_image_url(ids, kind, lang).await?.ok_or(crate::Error::NotFound)?;
         let image_reader = reqwest::get(images).await?;
         let stream = image_reader.bytes_stream();
         let body_with_io_error = stream.map_err(|err| io::Error::new(io::ErrorKind::Other, err));

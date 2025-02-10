@@ -8,7 +8,7 @@ pub mod plugins;
 use std::fmt::Display;
 
 use rsa::{pkcs8::der::TagNumber, rand_core::le};
-use rusqlite::{params_from_iter, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, ParamsFromIter, Row, ToSql};
+use rusqlite::{params, params_from_iter, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, ParamsFromIter, Row, ToSql};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use strum::additional_attributes;
@@ -69,6 +69,7 @@ pub async fn migrate_database(connection: &Connection) -> Result<usize> {
                 println!("Update SQL to verison 6 (backup error management)")
             }
             
+            conn.execute("VACUUM;", params![])?;
             Ok(6)
     }).await?;
 

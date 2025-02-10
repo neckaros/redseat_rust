@@ -169,6 +169,7 @@ impl MediasIds {
         }
     }   
 
+    /// check if the provided id need parsing like "trakt:xxxxx" and is not directly the local id from this server
     pub fn is_id(id: &str) -> bool {
         id.contains(":") && id.split(":").count() == 2
     }
