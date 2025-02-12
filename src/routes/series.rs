@@ -1,7 +1,7 @@
 
 use std::io::Cursor;
 
-use crate::{domain::serie::Serie, error::RsError, model::{episodes::EpisodeQuery, series::{SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, tools::image_tools::ImageType, Error, Result};
+use crate::{domain::{serie::Serie, MediasIds}, error::RsError, model::{episodes::EpisodeQuery, series::{ExternalImage, SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, tools::image_tools::ImageType, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post, put}, Json, Router};
 use futures::TryStreamExt;
 use rs_plugin_common_interfaces::lookup::RsLookupMovie;
@@ -29,6 +29,8 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/:id", delete(handler_delete))
 		.route("/:id/image", get(handler_image))
 		.route("/:id/image", post(handler_post_image))
+		.route("/:id/image/search", get(handler_image_search))
+		.route("/:id/image/fetch", post(handler_image_fetch))
 		.with_state(mc.clone())
 		.nest("/:id/", super::episodes::routes(mc))
         
@@ -132,6 +134,30 @@ async fn handler_image(Path((library_id, serie_id)): Path<(String, String)>, Sta
 	} else {
 		Err(RsError::NotFound)
 	}
+}
+
+async fn handler_image_search(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ImageRequestOptions>) -> Result<Json<Value>> {
+	let serie = mc.get_serie(&library_id, serie_id, &user).await?.ok_or(RsError::NotFound)?;
+	let ids: MediasIds = serie.into();
+	let result = mc.get_serie_images(&ids).await?;
+
+	Ok(Json(json!(result)))
+}
+
+
+
+
+
+async fn handler_image_fetch(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(externalImage): Json<ExternalImage>) -> Result<Json<Value>> {
+	let url = externalImage.url;
+
+	let kind = externalImage.kind.ok_or(RsError::Error("Missing image type".to_string()))?;
+
+	let mut reader = mc.url_to_reader(&library_id, url, &user).await?;
+
+	mc.update_serie_image(&library_id, &serie_id, &kind, reader.stream, &user).await?;
+	
+    Ok(Json(json!({"data": "ok"})))
 }
 
 #[debug_handler]

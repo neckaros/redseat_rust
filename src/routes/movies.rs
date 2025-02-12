@@ -1,7 +1,7 @@
 
 use std::io::Cursor;
 
-use crate::{domain::{media::MediaForUpdate, movie::{Movie, MovieForUpdate}, view_progress::{ViewProgressForAdd, ViewProgressLigh}, watched::{WatchedForAdd, WatchedLight}, MediasIds}, error::RsError, model::{episodes::EpisodeQuery, medias::MediaQuery, movies::{MovieQuery, RsMovieSort}, store::sql::SqlOrder, users::{ConnectedUser, HistoryQuery}, ModelController}, tools::{clock::now, image_tools::ImageType}, Error, Result};
+use crate::{domain::{media::MediaForUpdate, movie::{Movie, MovieForUpdate}, view_progress::{ViewProgressForAdd, ViewProgressLigh}, watched::{WatchedForAdd, WatchedLight}, MediasIds}, error::RsError, model::{episodes::EpisodeQuery, medias::MediaQuery, movies::{MovieQuery, RsMovieSort}, series::ExternalImage, store::sql::SqlOrder, users::{ConnectedUser, HistoryQuery}, ModelController}, tools::{clock::now, image_tools::ImageType}, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post, put}, Json, Router};
 use futures::TryStreamExt;
 use rs_plugin_common_interfaces::{lookup::{RsLookupMovie, RsLookupQuery}, MediaType, RsRequest};
@@ -31,6 +31,8 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/:id/refresh", get(handler_refresh))
 		.route("/:id", delete(handler_delete))
 		.route("/:id/image", get(handler_image))
+		.route("/:id/image/search", get(handler_image_search))
+		.route("/:id/image/fetch", post(handler_image_fetch))
 		.route("/:id/image", post(handler_post_image))
 		.route("/:id/progress", get(handler_progress_get))
 		.route("/:id/progress", post(handler_progress_set))
@@ -203,6 +205,27 @@ async fn handler_image(Path((library_id, movie_id)): Path<(String, String)>, Sta
 	}
 
 	
+}
+
+async fn handler_image_fetch(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(externalImage): Json<ExternalImage>) -> Result<Json<Value>> {
+	let url = externalImage.url;
+
+	let kind = externalImage.kind.ok_or(RsError::Error("Missing image type".to_string()))?;
+
+	let mut reader = mc.url_to_reader(&library_id, url, &user).await?;
+
+	mc.update_movie_image(&library_id, &serie_id, &kind, reader.stream, &user).await?;
+	
+    Ok(Json(json!({"data": "ok"})))
+}
+
+
+async fn handler_image_search(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ImageRequestOptions>) -> Result<Json<Value>> {
+	let serie = mc.get_movie(&library_id, movie_id, &user).await?;
+	let ids: MediasIds = serie.into();
+	let result = mc.get_movie_images(&ids).await?;
+
+	Ok(Json(json!(result)))
 }
 
 #[debug_handler]

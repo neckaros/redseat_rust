@@ -101,6 +101,23 @@ pub struct ExternalSerieImages {
     pub card: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalImage {
+    #[serde(rename = "type")]
+    pub kind: Option<ImageType>,
+    pub url: String,
+    pub aspect_ratio: Option<f64>,
+    pub height: Option<i64>,
+    pub lang: Option<String>,
+    pub vote_average: Option<f64>,
+    pub vote_count: Option<i64>,
+    pub width: Option<i64>,
+}
+
+
+
+
 impl ExternalSerieImages {
     pub fn into_kind(self, kind: ImageType) -> Option<String> {
         match kind {
@@ -407,6 +424,15 @@ impl ModelController {
             Ok(images)
         }
     }
+
+    pub async fn get_serie_images(&self, ids: &MediasIds) -> RsResult<Vec<ExternalImage>> {
+        let mut images = self.tmdb.serie_images(ids.clone()).await?;
+       
+        let mut fanart = self.fanart.serie_images(ids.clone()).await?;
+        images.append(&mut fanart);
+        Ok(images)
+    }
+
 
     pub async fn download_serie_image(&self, ids: &MediasIds, kind: &ImageType, lang: &Option<String>) -> crate::Result<AsyncReadPinBox> {
         let images = self.get_serie_image_url(ids, kind, lang).await?.ok_or(crate::Error::NotFound)?;

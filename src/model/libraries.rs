@@ -3,9 +3,9 @@ use std::{cmp::Ordering, collections::HashSet, str::FromStr};
 use nanoid::nanoid;
 use rs_plugin_common_interfaces::RsRequest;
 use serde::{Deserialize, Serialize};
-use tokio::fs::{create_dir_all, read_dir};
+use tokio::{fs::{create_dir_all, read_dir}, io::AsyncReadExt};
 
-use crate::{domain::{library::{LibraryLimits, LibraryMessage, LibraryRole, LibraryType, ServerLibrary, ServerLibrarySettings, UserMapping}, ElementAction}, error::RsResult, plugins::sources::{path_provider::PathProvider, Source, SourceRead}, tools::auth::{sign_local, ClaimsLocal, ClaimsLocalType}};
+use crate::{domain::{library::{LibraryLimits, LibraryMessage, LibraryRole, LibraryType, ServerLibrary, ServerLibrarySettings, UserMapping}, ElementAction}, error::RsResult, plugins::sources::{path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source, SourceRead}, tools::auth::{sign_local, ClaimsLocal, ClaimsLocalType}};
 
 use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
 
@@ -449,6 +449,45 @@ impl ModelController {
     
 }
 
+
+impl ModelController {
+
+
+    pub async fn url_to_source(&self, library_id: &str, url: String, requesting_user: &ConnectedUser) -> RsResult<SourceRead> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+
+		let request = RsRequest {
+			url,
+			..Default::default()
+		};
+		let source = SourceRead::Request(request);
+
+       
+		Ok(source)
+	}
+
+    pub async fn url_to_reader(&self, library_id: &str, url: String, requesting_user: &ConnectedUser) -> RsResult<FileStreamResult<AsyncReadPinBox>> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        let source = self.url_to_source(library_id, url, requesting_user).await?;
+		
+		let mut reader = source.into_reader(Some(library_id), None, None, Some((self.clone(), requesting_user)), None).await?;
+       
+		Ok(reader)
+	}
+
+        
+	pub async fn url_to_bufer(&self, library_id: &str, url: String, requesting_user: &ConnectedUser) -> RsResult<Vec<u8>> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        let mut reader = self.url_to_reader(library_id, url, requesting_user).await?;
+        // Create a buffer to hold the data
+        let mut buffer = Vec::new();
+
+        // Read the entire file into the buffer
+        reader.stream.read_to_end(&mut buffer).await?;
+        
+		Ok(buffer)
+	}
+}
 
 #[cfg(test)]
 mod tests {

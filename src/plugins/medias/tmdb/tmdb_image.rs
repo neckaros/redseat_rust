@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::model::series::ExternalSerieImages;
+use crate::{model::series::{ExternalImage, ExternalSerieImages}, tools::image_tools::ImageType};
 
 use super::tmdb_configuration::TmdbConfiguration;
 
@@ -21,8 +21,10 @@ pub struct TmdbImage {
     pub width: i64,
 }
 
+
 pub trait ToBest {
     fn into_best(self, lang: &Option<String>) -> Option<TmdbImage>;
+    fn into_externals(self, root: &str, kind: Option<ImageType>) -> Vec<ExternalImage>;
 }
 
 impl ToBest for Vec<TmdbImage> {
@@ -44,11 +46,30 @@ impl ToBest for Vec<TmdbImage> {
 
         self.into_iter().next()
     }
+
+    fn into_externals(self, root: &str, kind: Option<ImageType>) -> Vec<ExternalImage> {
+
+        self.into_iter().map(|i| i.into_external(root, kind.clone())).collect()
+    }
+
 }
 
 impl TmdbImage {
     pub fn full_path(&self, root: &str) -> String {
         format!("{}original{}", root, self.file_path)
+    }
+
+    fn into_external(self, root: &str, kind: Option<ImageType>) -> ExternalImage {
+        ExternalImage {
+            kind,
+            url: self.full_path(root),
+            aspect_ratio: Some(self.aspect_ratio),
+            height: Some(self.height),
+            lang: self.iso_639_1,
+            vote_average: Some(self.vote_average),
+            vote_count: Some(self.vote_count),
+            width: Some(self.width),
+        }
     }
 }
 
@@ -71,5 +92,27 @@ impl TmdbImageResponse {
             still: self.stills.and_then(|l| l.into_best(lang)).and_then(|p| Some(p.full_path(&configuration.images.secure_base_url))),
             ..Default::default()
         }
+    }
+
+    pub fn into_externals(self, configuration: &TmdbConfiguration) -> Vec<ExternalImage> {
+        let mut images = vec![];
+
+        for image in self.backdrops {
+            let mut target = image.into_externals(&configuration.images.secure_base_url, Some(ImageType::Background));
+            images.append(&mut target);
+        }
+        for image in self.logos {
+            let mut target = image.into_externals(&configuration.images.secure_base_url, Some(ImageType::ClearLogo));
+            images.append(&mut target);
+        }
+        for image in self.posters {
+            let mut target = image.into_externals(&configuration.images.secure_base_url, Some(ImageType::Poster));
+            images.append(&mut target);
+        }
+        for image in self.stills {
+            let mut target = image.into_externals(&configuration.images.secure_base_url, Some(ImageType::Still));
+            images.append(&mut target);
+        }
+        images
     }
 }

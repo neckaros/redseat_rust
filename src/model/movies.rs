@@ -16,7 +16,7 @@ use tokio_util::io::StreamReader;
 
 use crate::{domain::{deleted::RsDeleted, library::LibraryRole, movie::{Movie, MovieForUpdate, MovieWithAction, MoviesMessage}, people::{PeopleMessage, Person}, ElementAction, MediaElement, MediasIds}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source}}, server::get_server_folder_path_array, tools::{image_tools::{convert_image_reader, resize_image_reader, ImageSize, ImageType}, log::log_info}};
 
-use super::{error::{Error, Result}, store::sql::SqlOrder, users::{ConnectedUser, HistoryQuery}, ModelController};
+use super::{error::{Error, Result}, series::ExternalImage, store::sql::SqlOrder, users::{ConnectedUser, HistoryQuery}, ModelController};
 
 
 
@@ -385,6 +385,15 @@ impl ModelController {
             Ok(image)
         }
 	}
+
+    /// fetch the plugins to get images for this movie
+    pub async fn get_movie_images(&self, ids: &MediasIds) -> RsResult<Vec<ExternalImage>> {
+        let mut images = self.tmdb.movie_images(ids.clone()).await?;
+       
+        let mut fanart = self.fanart.movie_images(ids.clone()).await?;
+        images.append(&mut fanart);
+        Ok(images)
+    }
 
     /// download and update image
     pub async fn refresh_movie_image(&self, library_id: &str, movie_id: &str, kind: &ImageType, requesting_user: &ConnectedUser) -> RsResult<()> {
