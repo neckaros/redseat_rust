@@ -141,7 +141,6 @@ async fn handler_post_image(Path((library_id, serie_id)): Path<(String, String)>
 		//let filename = field.file_name().unwrap().to_string();
 		//let mime: String = field.content_type().unwrap().to_string();
         //let data = field.bytes().await.unwrap();
-
 		let mut reader = StreamReader::new(field.map_err(|multipart_error| {
 			std::io::Error::new(std::io::ErrorKind::Other, multipart_error)
 		}));
@@ -152,6 +151,8 @@ async fn handler_post_image(Path((library_id, serie_id)): Path<(String, String)>
 		let reader = Box::pin(Cursor::new(data));
         //println!("Length of `{}` {}  {} is {} bytes", name, filename, mime, data.len());
 		mc.update_serie_image(&library_id, &serie_id, &query.kind, reader, &user).await?;
+		
+
     }
 	
     Ok(Json(json!({"data": "ok"})))

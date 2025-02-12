@@ -1,7 +1,7 @@
 
 
 
-use std::{collections::HashMap, io::{self, Read}, pin::Pin};
+use std::{collections::HashMap, io::{self, Cursor, Read}, pin::Pin};
 
 use async_recursion::async_recursion;
 use futures::TryStreamExt;
@@ -14,7 +14,7 @@ use tokio::{fs::File, io::{AsyncRead, AsyncWriteExt, BufReader}};
 use tokio_util::io::StreamReader;
 
 
-use crate::{domain::{deleted::RsDeleted, library::LibraryRole, movie::{Movie, MovieForUpdate, MoviesMessage}, people::{PeopleMessage, Person}, ElementAction, MediaElement, MediasIds}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source}}, server::get_server_folder_path_array, tools::{image_tools::{resize_image_reader, ImageSize, ImageType}, log::log_info}};
+use crate::{domain::{deleted::RsDeleted, library::LibraryRole, movie::{Movie, MovieForUpdate, MovieWithAction, MoviesMessage}, people::{PeopleMessage, Person}, ElementAction, MediaElement, MediasIds}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source}}, server::get_server_folder_path_array, tools::{image_tools::{convert_image_reader, resize_image_reader, ImageSize, ImageType}, log::log_info}};
 
 use super::{error::{Error, Result}, store::sql::SqlOrder, users::{ConnectedUser, HistoryQuery}, ModelController};
 
@@ -141,6 +141,14 @@ impl ModelController {
 
     pub async fn fill_movie_watched(&self, movie: &mut Movie, requesting_user: &ConnectedUser, library_id: Option<String>) -> RsResult<()> {
         movie.fill_imdb_ratings(&self.imdb).await;
+
+        let ids: MediasIds = movie.clone().into();
+
+        let progress = self.get_view_progress(ids, requesting_user, library_id.clone()).await?;
+        if let Some(progress) = progress {
+            movie.progress = Some(progress.progress);
+        }
+
         let watched = self.get_watched(HistoryQuery { types: vec![MediaType::Movie], id: Some(movie.clone().into()), ..Default::default() }, requesting_user, library_id).await?;
         let watched = watched.first();
         if let Some(watched) = watched {
@@ -149,15 +157,24 @@ impl ModelController {
         Ok(())
     }
     pub async fn fill_movies_watched(&self, movies: &mut Vec<Movie>, requesting_user: &ConnectedUser, library_id: Option<String>) -> RsResult<()> {
+        let progresses = self.get_all_view_progress(HistoryQuery { types: vec![MediaType::Movie], ..Default::default() }, requesting_user, library_id.clone()).await?.into_iter().map(|e| (e.id, e.progress)).collect::<HashMap<_, _>>();
         let watched = self.get_watched(HistoryQuery { types: vec![MediaType::Movie], ..Default::default() }, requesting_user, library_id).await?.into_iter().map(|e| (e.id, e.date)).collect::<HashMap<_, _>>();
         for movie in movies {
-            movie.fill_imdb_ratings(&self.imdb).await;
-            if let Some(trakt) = movie.trakt {
-                let watch = watched.get(&format!("trakt:{}", trakt));
+            let ids = MediasIds::from(movie.clone());
+            let ids_string: Vec<String> = ids.into();
+
+            for id in ids_string {
+                let watch = watched.get(&id);
                 if let Some(watch) = watch {
                     movie.watched = Some(*watch);
                 }
+                let progress = progresses.get(&id);
+                if let Some(progress) = progress {
+                    movie.progress = Some(*progress);
+                }
             }
+            
+            movie.fill_imdb_ratings(&self.imdb).await;
         }
         Ok(())
     }
@@ -195,7 +212,7 @@ impl ModelController {
             let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
             store.update_movie(&movie_id, update).await?;
             let person = store.get_movie(&movie_id).await?.ok_or(Error::NotFound)?;
-            self.send_movie(MoviesMessage { library: library_id.to_string(), action: ElementAction::Updated, movies: vec![person.clone()] });
+            self.send_movie(MoviesMessage { library: library_id.to_string(), movies: vec![MovieWithAction {action: ElementAction::Updated, movie: person.clone()}] });
             Ok(person)
         } else {
             let movie = self.get_movie(library_id, movie_id, requesting_user).await?;
@@ -241,7 +258,7 @@ impl ModelController {
         new_movie.id = id.clone();
 		store.add_movie(new_movie).await?;
         let new_person = self.get_movie(library_id, id, requesting_user).await?;
-        self.send_movie(MoviesMessage { library: library_id.to_string(), action: ElementAction::Added, movies: vec![new_person.clone()] });
+        self.send_movie(MoviesMessage { library: library_id.to_string(), movies: vec![MovieWithAction {action: ElementAction::Added, movie: new_person.clone()}] });
 		Ok(new_person)
 	}
 
@@ -256,7 +273,7 @@ impl ModelController {
         if let Some(existing) = existing { 
             store.remove_movie(movie_id.to_string()).await?;
             self.add_deleted(library_id, RsDeleted::movie(movie_id.to_owned()), requesting_user).await?;
-            self.send_movie(MoviesMessage { library: library_id.to_string(), action: ElementAction::Deleted, movies: vec![existing.clone()] });
+            self.send_movie(MoviesMessage { library: library_id.to_string(), movies: vec![MovieWithAction {action: ElementAction::Deleted, movie: existing.clone()}] });
             Ok(existing)
         } else {
             Err(Error::NotFound.into())
@@ -374,7 +391,7 @@ impl ModelController {
         let movie = self.get_movie(library_id, movie_id.to_string(), requesting_user).await?;
         let ids: MediasIds = movie.clone().into();
         let reader = self.download_movie_image(&ids, kind, &movie.lang).await?;
-        self.update_movie_image(library_id, movie_id, kind, reader, requesting_user).await?;
+        self.update_movie_image(library_id, movie_id, kind, reader, &ConnectedUser::ServerAdmin).await?;
         Ok(())
 	}
 
@@ -402,11 +419,25 @@ impl ModelController {
         Ok(Box::pin(body_reader))
     }
 
-    pub async fn update_movie_image<T: AsyncRead>(&self, library_id: &str, movie_id: &str, kind: &ImageType, reader: T, requesting_user: &ConnectedUser) -> Result<()> {
+    pub async fn update_movie_image(&self, library_id: &str, movie_id: &str, kind: &ImageType, reader: AsyncReadPinBox, requesting_user: &ConnectedUser) -> RsResult<()> {
+
+        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         if MediasIds::is_id(movie_id) {
-            return Err(Error::InvalidIdForAction("udpate image".to_string(), movie_id.to_string()))
+            return Err(Error::InvalidIdForAction("udpate movie image".to_string(), movie_id.to_string()).into())
         }
-        self.update_library_image(library_id, ".movies", movie_id, &Some(kind.clone()), reader, requesting_user).await
+
+        let converted = convert_image_reader(reader, image::ImageFormat::Avif, Some(60), false).await?;
+        let converted_reader = Cursor::new(converted);
+        
+        self.update_library_image(library_id, ".movies", movie_id, &Some(kind.clone()), converted_reader, requesting_user).await?;
+        
+        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+		store.update_movie_image(movie_id.to_string(), kind.clone()).await;
+
+        let movie = self.get_movie(library_id, movie_id.to_owned(), requesting_user).await?;
+        self.send_movie(MoviesMessage { library: library_id.to_string(), movies: vec![MovieWithAction { movie, action: ElementAction::Updated}] });
+        Ok(())
+
 	}
     
 }

@@ -206,19 +206,12 @@ impl  ModelController {
 		self.cache_check_library_notcrypt(library_id).await?;
 
         let m = self.library_source_for_library(&library_id).await?;
-		let mut source_filepath = format!("{}/{}{}.avif", folder, id, ImageType::optional_to_filename_element(&kind));
-		let avif = false;
-		if !m.exists(&source_filepath).await {
-			source_filepath = format!("{}/{}{}.webp", folder, id, ImageType::optional_to_filename_element(&kind));
-		}
+		let mut source_filepath = format!("{}/{}{}{}.avif", folder, id, ImageType::optional_to_filename_element(&kind), ImageSize::optional_to_filename_element(&size));
 		let reader_response = m.get_file(&source_filepath, None).await;
-		/*if let Some(int_size) = size {
+		if let Some(int_size) = size {
 			if let Err(error) = &reader_response {
 				if matches!(error, RsError::Source(SourcesError::NotFound(_))) {
-					let mut original_filepath = format!("{}/{}{}.webp", folder, id, ImageType::optional_to_filename_element(&kind));
-					if !m.exists(&original_filepath).await {
-						original_filepath = format!("{}/{}{}.avif", folder, id, ImageType::optional_to_filename_element(&kind));
-					}
+					let mut original_filepath = format!("{}/{}{}.avif", folder, id, ImageType::optional_to_filename_element(&kind));
 					let exist = m.exists(&original_filepath).await;
 					if exist {
 						log_info(crate::tools::log::LogServiceType::Other, format!("Creating image size: {} {} {} {}", folder, id, ImageType::optional_to_filename_element(&kind), int_size));
@@ -234,7 +227,7 @@ impl  ModelController {
 					
 				}
 			}
-		}*/
+		}
 		let reader = reader_response?;
 		if reader.size().unwrap_or(200) == 0 {
 			return Err(RsError::CorruptedImage)
@@ -260,6 +253,7 @@ impl  ModelController {
         let m = self.library_source_for_library(&library_id).await?;
 
 		let source_filepath = format!("{}/{}{}.avif", folder, id, ImageType::optional_to_filename_element(&kind));
+
 		let (_, writer) = m.get_file_write_stream(&source_filepath).await?;
 		tokio::pin!(reader);
 		tokio::pin!(writer);

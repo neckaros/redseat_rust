@@ -390,7 +390,7 @@ impl ModelController {
         let serie = self.get_serie(library_id, serie_id.to_string(), requesting_user).await?.ok_or(Error::NotFound)?;
         let ids: MediasIds = serie.into();
         let reader = self.download_serie_image(&ids, kind, &None).await?;
-        self.update_serie_image(library_id, serie_id, kind, reader, requesting_user).await?;
+        self.update_serie_image(library_id, serie_id, kind, reader, &ConnectedUser::ServerAdmin).await?;
         Ok(())
 	}
 
@@ -418,15 +418,19 @@ impl ModelController {
     }
 
     pub async fn update_serie_image(&self, library_id: &str, serie_id: &str, kind: &ImageType, mut reader: AsyncReadPinBox, requesting_user: &ConnectedUser) -> RsResult<()> {
+        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         if MediasIds::is_id(serie_id) {
             return Err(Error::InvalidIdForAction("udpate image".to_string(), serie_id.to_string()).into())
         }
 
-        let converted = convert_image_reader(reader, image::ImageFormat::WebP, Some(80), false).await?;
+        let converted = convert_image_reader(reader, image::ImageFormat::Avif, Some(60), false).await?;
         let converted_reader = Cursor::new(converted);
-        self.update_library_image(library_id, ".series", serie_id, &Some(kind.clone()), converted_reader, requesting_user).await;
+        
+        self.update_library_image(library_id, ".series", serie_id, &Some(kind.clone()), converted_reader, requesting_user).await?;
+        
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
 		store.update_serie_image(serie_id.to_string(), kind.clone()).await;
+
         let serie = self.get_serie(library_id, serie_id.to_owned(), requesting_user).await?.ok_or(Error::NotFound)?;
         self.send_serie(SeriesMessage { library: library_id.to_string(), series: vec![SerieWithAction { serie, action: ElementAction::Updated}] });
         Ok(())

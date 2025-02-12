@@ -312,7 +312,7 @@ impl ModelController {
         let ids: MediasIds = self.get_episode_ids(library_id, serie_id, *season, *episode, requesting_user).await?;
 
         let reader = self.download_episode_image(&ids, season, episode, &None).await?;
-        self.update_episode_image(library_id, serie_id, season, episode, reader, requesting_user).await?;
+        self.update_episode_image(library_id, serie_id, season, episode, reader, &ConnectedUser::ServerAdmin).await?;
         Ok(())
     }
     pub async fn download_episode_image(&self, ids: &MediasIds, season: &u32, episode: &u32, lang: &Option<String>) -> crate::Result<AsyncReadPinBox> {
