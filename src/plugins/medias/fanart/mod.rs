@@ -1,8 +1,9 @@
 
 use reqwest::{Client, RequestBuilder};
+use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, ExternalImage, ImageType};
 use serde::{Deserialize, Serialize};
 
-use crate::{domain::MediasIds, model::series::{ExternalImage, ExternalSerieImages}, tools::image_tools::ImageType};
+use crate::model::series::ExternalSerieImages;
 
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -163,12 +164,6 @@ pub struct FanArtContext {
     client: Client,
 }
 
-impl MediasIds {
-    fn try_tvdb(self) -> crate::Result<u64> {
-        self.tvdb.ok_or(crate::Error::NoMediaIdRequired(Box::new(self.clone())))
-    }
-}
-
 impl FanArtContext {
     pub fn add_auth(&self, request: RequestBuilder) -> RequestBuilder {
         request.query(&[("api_key", &self.token)])
@@ -189,7 +184,7 @@ impl FanArtContext {
         }
     }
 
-    pub async fn serie_image(&self, ids: MediasIds) -> crate::Result<ExternalSerieImages> {
+    pub async fn serie_image(&self, ids: RsIds) -> crate::Result<ExternalSerieImages> {
         let id = ids.try_tvdb()?;
         let request = self.get_request_builder(&format!("tv/{}", id));
         let response = request.send().await?;
@@ -198,7 +193,7 @@ impl FanArtContext {
         let bests: ExternalSerieImages = images.into();
         Ok(bests)
     }
-    pub async fn serie_images(&self, ids: MediasIds) -> crate::Result<Vec<ExternalImage>> {
+    pub async fn serie_images(&self, ids: RsIds) -> crate::Result<Vec<ExternalImage>> {
         let id = ids.try_tvdb()?;
         let request = self.get_request_builder(&format!("tv/{}", id));
         let response = request.send().await?;
@@ -208,7 +203,7 @@ impl FanArtContext {
         Ok(bests)
     }
 
-    pub async fn movie_image(&self, ids: MediasIds) -> crate::Result<ExternalSerieImages> {
+    pub async fn movie_image(&self, ids: RsIds) -> crate::Result<ExternalSerieImages> {
         let id = ids.try_tmdb()?;
         let request = self.get_request_builder(&format!("movies/{}", id));
 
@@ -218,7 +213,7 @@ impl FanArtContext {
         Ok(bests)
     }
 
-    pub async fn movie_images(&self, ids: MediasIds) -> crate::Result<Vec<ExternalImage>> {
+    pub async fn movie_images(&self, ids: RsIds) -> crate::Result<Vec<ExternalImage>> {
         let id = ids.try_tmdb()?;
         let request = self.get_request_builder(&format!("movies/{}", id));
 

@@ -1,7 +1,8 @@
+use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, ImageType};
 use rusqlite::{params, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, Row, ToSql};
 
 use super::{Result, SqliteLibraryStore};
-use crate::{domain::{movie::{Movie, MovieForUpdate, MovieStatus}, MediasIds}, model::{movies::MovieQuery, store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType}, to_pipe_separated_optional}, Error}, tools::{array_tools::replace_add_remove_from_array, clock::now, image_tools::ImageType}};
+use crate::{domain::{movie::{Movie, MovieForUpdate, MovieStatus}}, model::{movies::MovieQuery, store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType}, to_pipe_separated_optional}, Error}, tools::{array_tools::replace_add_remove_from_array, clock::now}};
 
 impl FromSql for MovieStatus {
     fn column_result(value: ValueRef) -> FromSqlResult<Self> {
@@ -117,7 +118,7 @@ impl SqliteLibraryStore {
         Ok(row)
     }
 
-    pub async fn get_movie_by_external_id(&self, ids: MediasIds) -> Result<Option<Movie>> {
+    pub async fn get_movie_by_external_id(&self, ids: RsIds) -> Result<Option<Movie>> {
         
         //println!("{}, {}, {}, {}, {}",i.imdb.unwrap_or("zz".to_string()), i.slug.unwrap_or("zz".to_string()), i.tmdb.unwrap_or(0), i.trakt.unwrap_or(0), i.tvdb.unwrap_or(0));
         let row = self.connection.call( move |conn| { 

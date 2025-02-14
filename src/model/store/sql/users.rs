@@ -1,7 +1,8 @@
+use rs_plugin_common_interfaces::domain::rs_ids::RsIds;
 use rusqlite::{params, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, Row, ToSql};
 use serde::{Deserialize, Serialize};
 
-use crate::{domain::{library::LibraryLimits, view_progress::{ViewProgress, ViewProgressForAdd}, watched::{Watched, WatchedForAdd}, MediasIds}, model::{store::{from_comma_separated, sql::library, SqliteStore}, users::{HistoryQuery, ServerUser, ServerUserForUpdate, ServerUserLibrariesRights, ServerUserLibrariesRightsWithUser, ServerUserPreferences, UploadKey, UserRole, ViewProgressQuery}}};
+use crate::{domain::{library::LibraryLimits, view_progress::{ViewProgress, ViewProgressForAdd}, watched::{Watched, WatchedForAdd}}, model::{store::{from_comma_separated, sql::library, SqliteStore}, users::{HistoryQuery, ServerUser, ServerUserForUpdate, ServerUserLibrariesRights, ServerUserLibrariesRightsWithUser, ServerUserPreferences, UploadKey, UserRole, ViewProgressQuery}}};
 
 use super::{super::Error, deserialize_from_row, OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType};
 use super::Result;
@@ -372,7 +373,7 @@ impl SqliteStore {
     }
 
 
-    pub async fn get_view_progess(&self, ids: MediasIds, user_id: String) -> Result<Option<ViewProgress>> {
+    pub async fn get_view_progess(&self, ids: RsIds, user_id: String) -> Result<Option<ViewProgress>> {
         let row = self.server_store.call( move |conn| { 
             let mut builder_query = RsQueryBuilder::new();
 

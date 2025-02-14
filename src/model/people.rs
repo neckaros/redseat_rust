@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::{fs::File, io::{AsyncRead, BufReader}};
 
-use rs_plugin_common_interfaces::url::RsLink;
-use crate::{domain::{deleted::RsDeleted, library::LibraryRole, people::{PeopleMessage, Person, PersonWithAction}, tag::Tag, ElementAction, MediasIds}, error::RsResult, plugins::sources::{AsyncReadPinBox, FileStreamResult}, tools::image_tools::{ImageSize, ImageType}};
+use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, url::RsLink, ImageType};
+use crate::{domain::{deleted::RsDeleted, library::LibraryRole, people::{PeopleMessage, Person, PersonWithAction}, tag::Tag, ElementAction}, error::RsResult, plugins::sources::{AsyncReadPinBox, FileStreamResult}, tools::image_tools::ImageSize};
 
 use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
 
@@ -168,7 +168,7 @@ impl ModelController {
 	}
 
     pub async fn update_person_image<T: AsyncRead>(&self, library_id: &str, person_id: &str, kind: &Option<ImageType>, reader: T, requesting_user: &ConnectedUser) -> Result<Person> {
-        if MediasIds::is_id(&person_id) {
+        if RsIds::is_id(&person_id) {
             return Err(Error::InvalidIdForAction("udpate person image".to_string(), person_id.to_string()))
         }
         self.update_library_image(library_id, ".portraits", person_id, kind, reader, requesting_user).await?;

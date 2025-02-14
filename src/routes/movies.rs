@@ -1,10 +1,10 @@
 
 use std::io::Cursor;
 
-use crate::{domain::{media::MediaForUpdate, movie::{Movie, MovieForUpdate}, view_progress::{ViewProgressForAdd, ViewProgressLigh}, watched::{WatchedForAdd, WatchedLight}, MediasIds}, error::RsError, model::{episodes::EpisodeQuery, medias::MediaQuery, movies::{MovieQuery, RsMovieSort}, series::ExternalImage, store::sql::SqlOrder, users::{ConnectedUser, HistoryQuery}, ModelController}, tools::{clock::now, image_tools::ImageType}, Error, Result};
+use crate::{domain::{media::MediaForUpdate, movie::{Movie, MovieForUpdate}, view_progress::{ViewProgressForAdd, ViewProgressLigh}, watched::{WatchedForAdd, WatchedLight}}, error::RsError, model::{episodes::EpisodeQuery, medias::MediaQuery, movies::{MovieQuery, RsMovieSort}, store::sql::SqlOrder, users::{ConnectedUser, HistoryQuery}, ModelController}, tools::clock::now, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post, put}, Json, Router};
 use futures::TryStreamExt;
-use rs_plugin_common_interfaces::{lookup::{RsLookupMovie, RsLookupQuery}, MediaType, RsRequest};
+use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, lookup::{RsLookupMovie, RsLookupQuery}, ExternalImage, ImageType, MediaType, RsRequest};
 use serde_json::{json, Value};
 use tokio::io::AsyncRead;
 use tokio_util::io::{ReaderStream, StreamReader};
@@ -86,13 +86,11 @@ async fn handler_medias(Path((library_id, movie_id)): Path<(String, String)>, St
 
 async fn handler_lookup(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
 	let movie = mc.get_movie(&library_id, movie_id, &user).await?;
+	let name = movie.name.clone();
+	let ids: RsIds = movie.into();
 	let query = RsLookupQuery::Movie(RsLookupMovie {
-		name: movie.name,
-		imdb: movie.imdb,
-		slug: movie.slug,
-		tmdb: movie.tmdb,
-		trakt: movie.trakt,
-		otherids: movie.otherids,
+		name,
+		ids: Some(ids),
 	});
 	let library = mc.exec_lookup(query, Some(library_id), &user).await?;
 	let body = Json(json!(library));
@@ -145,7 +143,7 @@ async fn handler_progress_get(Path((library_id, movie_id)): Path<(String, String
 
 async fn handler_progress_set(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(progress): Json<ViewProgressLigh>) -> Result<()> {
 	let movie = mc.get_movie(&library_id, movie_id, &user).await?;
-	let id = MediasIds::from(movie).into_best_external().ok_or(Error::NotFound)?;
+	let id = RsIds::from(movie).into_best_external().ok_or(Error::NotFound)?;
 	let progress = ViewProgressForAdd { kind: MediaType::Movie, id, progress: progress.progress, parent: None };
 	mc.add_view_progress(progress, &user, Some(library_id)).await?;
 
@@ -164,7 +162,7 @@ async fn handler_watched_get(Path((library_id, movie_id)): Path<(String, String)
 
 async fn handler_watched_set(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(watched): Json<WatchedLight>) -> Result<()> {
 	let movie = mc.get_movie(&library_id, movie_id, &user).await?;
-	let id = MediasIds::from(movie).into_best_external().ok_or(Error::NotFound)?;
+	let id = RsIds::from(movie).into_best_external().ok_or(Error::NotFound)?;
 	let watched = WatchedForAdd { kind: MediaType::Movie, id, date: watched.date };
 	mc.add_watched(watched, &user, Some(library_id)).await?;
 
@@ -222,7 +220,7 @@ async fn handler_image_fetch(Path((library_id, serie_id)): Path<(String, String)
 
 async fn handler_image_search(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ImageRequestOptions>) -> Result<Json<Value>> {
 	let serie = mc.get_movie(&library_id, movie_id, &user).await?;
-	let ids: MediasIds = serie.into();
+	let ids: RsIds = serie.into();
 	let result = mc.get_movie_images(&ids).await?;
 
 	Ok(Json(json!(result)))

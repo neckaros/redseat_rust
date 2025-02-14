@@ -1,12 +1,12 @@
 use std::u64;
 
 use chrono::Utc;
-use rs_plugin_common_interfaces::url::RsLink;
+use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, url::RsLink};
 use rusqlite::{params, params_from_iter, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, Row, ToSql};
 use serde::{Deserialize, Serialize};
 use stream_map_any::StreamMapAnyVariant;
 
-use crate::{domain::{library::LibraryLimits, media::{self, FileEpisode, FileType, Media, MediaForInsert, MediaForUpdate, MediaItemReference, RsGpsPosition}, MediasIds}, error::RsResult, model::{medias::{MediaQuery, MediaSource, RsSort}, people::PeopleQuery, series::SerieQuery, store::{from_comma_separated_optional, from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType}, to_comma_separated_optional, to_pipe_separated_optional}, tags::{TagForInsert, TagForUpdate, TagQuery}}, tools::{array_tools::AddOrSetArray, file_tools::{file_type_from_mime, get_mime_from_filename}, log::{log_info, LogServiceType}, text_tools::{extract_people, extract_tags}}};
+use crate::{domain::{library::LibraryLimits, media::{self, FileEpisode, FileType, Media, MediaForInsert, MediaForUpdate, MediaItemReference, RsGpsPosition}}, error::RsResult, model::{medias::{MediaQuery, MediaSource, RsSort}, people::PeopleQuery, series::SerieQuery, store::{from_comma_separated_optional, from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType}, to_comma_separated_optional, to_pipe_separated_optional}, tags::{TagForInsert, TagForUpdate, TagQuery}}, tools::{array_tools::AddOrSetArray, file_tools::{file_type_from_mime, get_mime_from_filename}, log::{log_info, LogServiceType}, text_tools::{extract_people, extract_tags}}};
 use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -55,40 +55,8 @@ impl RsSort {
     }
 }
 
-impl TryFrom<Vec<String>> for MediasIds {
-    type Error = crate::Error;
-    
-    fn try_from(values: Vec<String>) -> RsResult<Self> {
-        let mut ids = Self::default();
-        for value in values {
-            ids.try_add(value)?;
-        }
-        Ok(ids)
-    }
-}
 
-impl From<MediasIds> for Vec<String> {
-    
-    fn from(value: MediasIds) -> Self {
-        let mut ids = vec![];
-        if let Some(id) = value.as_redseat() {
-            ids.push(id)
-        }
-        if let Some(id) = value.as_imdb() {
-            ids.push(id)
-        }
-        if let Some(id) = value.as_tmdb() {
-            ids.push(id.to_string())
-        }
-        if let Some(id) = value.as_trakt() {
-            ids.push(id.to_string())
-        }
-        if let Some(id) = value.as_tvdb() {
-            ids.push(id.to_string())
-        }
-        ids
-    }
-}
+
 
 
 const MEDIA_QUERY: &str = "SELECT 

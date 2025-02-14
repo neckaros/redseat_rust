@@ -37,6 +37,20 @@ impl Printable for std::process::Command {
     }
 }
 
+pub trait ToHms {
+    fn to_hms(&self) -> String;
+}
+
+impl ToHms for u32 {
+    fn to_hms(&self) -> String {
+        let total_seconds = *self;
+        let hours = total_seconds / 3600;
+        let minutes = (total_seconds % 3600) / 60;
+        let seconds = total_seconds % 60;
+        format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

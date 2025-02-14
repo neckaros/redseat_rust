@@ -23,7 +23,7 @@ use zip::ZipWriter;
 
 use crate::{domain::{deleted::RsDeleted, library::LibraryType, media::{self, ConvertMessage, ConvertProgress, RsGpsPosition, DEFAULT_MIME}, plugin, MediaElement}, error::RsError, model::store::sql::SqlOrder, plugins::sources::{path_provider::PathProvider, Source}, routes::infos, tools::{file_tools::{filename_from_path, remove_extension}, image_tools::{convert_image_reader, image_infos, IMAGES_MIME_FULL_BROWSER_SUPPORT}, recognition, video_tools::{VideoCommandBuilder, VideoConvertRequest, VideoOverlayPosition}}};
 
-use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaItemReference, MediaWithAction, MediasMessage, ProgressMessage}, progress::{RsProgress, RsProgressType}, ElementAction}, error::RsResult, plugins::{get_plugin_fodler, sources::{async_reader_progress::ProgressReader, error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{self, resize_image_reader, ImageSize, ImageType}, log::{log_error, log_info, LogServiceType}, prediction::{predict_net, preload_model, PredictionTagResult}, video_tools::{self, probe_video, VideoTime}}};
+use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaItemReference, MediaWithAction, MediasMessage, ProgressMessage}, progress::{RsProgress, RsProgressType}, ElementAction}, error::RsResult, plugins::{get_plugin_fodler, sources::{async_reader_progress::ProgressReader, error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{self, resize_image_reader, ImageSize}, log::{log_error, log_info, LogServiceType}, prediction::{predict_net, preload_model, PredictionTagResult}, video_tools::{self, probe_video, VideoTime}}};
 
 use super::{error::{Error, Result}, plugins::PluginQuery, store::{self, sql::library::medias::MediaBackup}, users::ConnectedUser, ModelController, VideoConvertQueueElement};
 
@@ -1134,6 +1134,7 @@ impl ModelController {
         let local = self.library_source_for_library(&element.library).await?; 
         let path = m.local_path(media.source.as_ref().ok_or(Error::ServiceError("Convert".to_owned(), Some("Unable to convert video without source".to_owned())))?).ok_or(Error::ServiceError("Convert".to_owned(), Some("Unable to convert video that is not local".to_owned())))?;
  
+        let path = path.to_str().ok_or(RsError::Error(format!("Unable to convert video path to string: {:?}", path)))?.to_string();
         let filename = element.status.filename;
         let dest_source = format!(".cache/{}", filename);
         let dest = local.get_full_path(&dest_source);
@@ -1179,7 +1180,7 @@ impl ModelController {
             }
         });
 
-        let mut video_builder = VideoCommandBuilder::new();
+        let mut video_builder = VideoCommandBuilder::new(path).await;
         video_builder.set_progress(tx_progress);
 
 
@@ -1195,7 +1196,7 @@ impl ModelController {
         }
         let progress_id = element.request.id.clone();
         video_builder.set_request(element.request.clone()).await?;
-        video_builder.run_file(path.to_str().unwrap(), dest.to_str().unwrap()).await?;
+        video_builder.run_file(dest.to_str().unwrap()).await?;
         let message = ConvertMessage {
             library: element.library.to_string(),
             progress: ConvertProgress {

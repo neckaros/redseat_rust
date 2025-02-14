@@ -1,7 +1,8 @@
 use http::header::AUTHORIZATION;
 use reqwest::{Client, Request, RequestBuilder, Url};
+use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, ExternalImage};
 
-use crate::{domain::MediasIds, model::series::{ExternalImage, ExternalSerieImages}, plugins::medias::tmdb::tmdb_image::{TmdbImage, ToBest}};
+use crate::{ model::series::ExternalSerieImages, plugins::medias::tmdb::tmdb_image::{TmdbImage, ToBest}};
 
 use self::{tmdb_configuration::TmdbConfiguration, tmdb_image::TmdbImageResponse};
 
@@ -33,12 +34,6 @@ impl TmdbContext {
     }
 }
 
-impl MediasIds {
-    pub fn try_tmdb(self) -> crate::Result<u64> {
-        self.tmdb.ok_or(crate::Error::NoMediaIdRequired(Box::new(self.clone())))
-    }
-}
-
 impl TmdbContext {
     pub fn add_auth(&self, request: RequestBuilder) -> RequestBuilder {
         request.query(&[("api_key", &self.client_id)])
@@ -53,7 +48,7 @@ impl TmdbContext {
 
 
 impl TmdbContext {
-    pub async fn serie_image(&self, ids: MediasIds, lang: &Option<String>) -> crate::Result<ExternalSerieImages> {
+    pub async fn serie_image(&self, ids: RsIds, lang: &Option<String>) -> crate::Result<ExternalSerieImages> {
         let id = ids.try_tmdb()?;
         let request = self.get_request_builder(&format!("tv/{}/images", id));
         let response = request/*.query(&[("include_image_language", "en,fr")])*/.send().await?;
@@ -63,7 +58,7 @@ impl TmdbContext {
         Ok(bests)
     }
 
-    pub async fn serie_images(&self, ids: MediasIds) -> crate::Result<Vec<ExternalImage>> {
+    pub async fn serie_images(&self, ids: RsIds) -> crate::Result<Vec<ExternalImage>> {
         let id = ids.try_tmdb()?;
         let request = self.get_request_builder(&format!("tv/{}/images", id));
         let response = request/*.query(&[("include_image_language", "en,fr")])*/.send().await?;
@@ -73,7 +68,7 @@ impl TmdbContext {
         Ok(bests)
     }
 
-    pub async fn episode_image(&self, ids: MediasIds, season: &u32, episode: &u32, lang: &Option<String>) -> crate::Result<ExternalSerieImages> {
+    pub async fn episode_image(&self, ids: RsIds, season: &u32, episode: &u32, lang: &Option<String>) -> crate::Result<ExternalSerieImages> {
         let id = ids.try_tmdb()?;
         let request = self.get_request_builder(&format!("tv/{}/season/{}/episode/{}/images", id, season, episode));
         let response = request.send().await?;
@@ -83,7 +78,7 @@ impl TmdbContext {
         Ok(bests)
     }
 
-    pub async fn episode_images(&self, ids: MediasIds, season: &u32, episode: &u32) -> crate::Result<Vec<ExternalImage>> {
+    pub async fn episode_images(&self, ids: RsIds, season: &u32, episode: &u32) -> crate::Result<Vec<ExternalImage>> {
         let id = ids.try_tmdb()?;
         let request = self.get_request_builder(&format!("tv/{}/season/{}/episode/{}/images", id, season, episode));
         let response = request.send().await?;
@@ -93,7 +88,7 @@ impl TmdbContext {
         Ok(bests)
     }
 
-    pub async fn movie_image(&self, ids: MediasIds, lang: &Option<String>) -> crate::Result<ExternalSerieImages> {
+    pub async fn movie_image(&self, ids: RsIds, lang: &Option<String>) -> crate::Result<ExternalSerieImages> {
         let id = ids.try_tmdb()?;
         let request = self.get_request_builder(&format!("movie/{}/images", id));
 
@@ -103,7 +98,7 @@ impl TmdbContext {
         Ok(bests)
     }
 
-    pub async fn movie_images(&self, ids: MediasIds) -> crate::Result<Vec<ExternalImage>> {
+    pub async fn movie_images(&self, ids: RsIds) -> crate::Result<Vec<ExternalImage>> {
         let id = ids.try_tmdb()?;
         let request = self.get_request_builder(&format!("movie/{}/images", id));
 

@@ -6,7 +6,7 @@ use std::{collections::HashMap, io::{self, Cursor, Read}, pin::Pin};
 use async_recursion::async_recursion;
 use futures::TryStreamExt;
 use nanoid::nanoid;
-use rs_plugin_common_interfaces::{lookup::RsLookupMovie, MediaType};
+use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, lookup::RsLookupMovie, ExternalImage, ImageType, MediaType};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use strum_macros::EnumString;
@@ -14,9 +14,9 @@ use tokio::{fs::File, io::{AsyncRead, AsyncWriteExt, BufReader}};
 use tokio_util::io::StreamReader;
 
 
-use crate::{domain::{deleted::RsDeleted, library::LibraryRole, movie::{Movie, MovieForUpdate, MovieWithAction, MoviesMessage}, people::{PeopleMessage, Person}, ElementAction, MediaElement, MediasIds}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source}}, server::get_server_folder_path_array, tools::{image_tools::{convert_image_reader, resize_image_reader, ImageSize, ImageType}, log::log_info}};
+use crate::{domain::{deleted::RsDeleted, library::LibraryRole, movie::{Movie, MovieForUpdate, MovieWithAction, MoviesMessage}, people::{PeopleMessage, Person}, ElementAction, MediaElement}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source}}, server::get_server_folder_path_array, tools::{image_tools::{convert_image_reader, resize_image_reader, ImageSize}, log::log_info}};
 
-use super::{error::{Error, Result}, series::ExternalImage, store::sql::SqlOrder, users::{ConnectedUser, HistoryQuery}, ModelController};
+use super::{error::{Error, Result}, store::sql::SqlOrder, users::{ConnectedUser, HistoryQuery}, ModelController};
 
 
 
@@ -114,8 +114,8 @@ impl ModelController {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
 
-        if MediasIds::is_id(&movie_id) {
-            let id: MediasIds = movie_id.try_into().map_err(|_| Error::NotFound)?;
+        if RsIds::is_id(&movie_id) {
+            let id: RsIds = movie_id.try_into().map_err(|_| Error::NotFound)?;
             let movie = store.get_movie_by_external_id(id.clone()).await?;
             if let Some(mut movie) = movie {
                 self.fill_movie_watched(&mut movie, requesting_user, Some(library_id.to_string())).await?;
@@ -142,7 +142,7 @@ impl ModelController {
     pub async fn fill_movie_watched(&self, movie: &mut Movie, requesting_user: &ConnectedUser, library_id: Option<String>) -> RsResult<()> {
         movie.fill_imdb_ratings(&self.imdb).await;
 
-        let ids: MediasIds = movie.clone().into();
+        let ids: RsIds = movie.clone().into();
 
         let progress = self.get_view_progress(ids, requesting_user, library_id.clone()).await?;
         if let Some(progress) = progress {
@@ -160,7 +160,7 @@ impl ModelController {
         let progresses = self.get_all_view_progress(HistoryQuery { types: vec![MediaType::Movie], ..Default::default() }, requesting_user, library_id.clone()).await?.into_iter().map(|e| (e.id, e.progress)).collect::<HashMap<_, _>>();
         let watched = self.get_watched(HistoryQuery { types: vec![MediaType::Movie], ..Default::default() }, requesting_user, library_id).await?.into_iter().map(|e| (e.id, e.date)).collect::<HashMap<_, _>>();
         for movie in movies {
-            let ids = MediasIds::from(movie.clone());
+            let ids = RsIds::from(movie.clone());
             let ids_string: Vec<String> = ids.into();
 
             for id in ids_string {
@@ -179,7 +179,7 @@ impl ModelController {
         Ok(())
     }
     
-    pub async fn get_movie_by_external_id(&self, library_id: &str, ids: MediasIds, requesting_user: &ConnectedUser) -> RsResult<Movie> {
+    pub async fn get_movie_by_external_id(&self, library_id: &str, ids: RsIds, requesting_user: &ConnectedUser) -> RsResult<Movie> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         let movie = store.get_movie_by_external_id(ids).await?.ok_or(Error::NotFound)?;
@@ -187,9 +187,9 @@ impl ModelController {
     }
 
 
-    pub async fn get_movie_ids(&self, library_id: &str, movie_id: &str, requesting_user: &ConnectedUser) -> RsResult<MediasIds> {
+    pub async fn get_movie_ids(&self, library_id: &str, movie_id: &str, requesting_user: &ConnectedUser) -> RsResult<RsIds> {
         let movie = self.get_movie(library_id, movie_id.to_string(), requesting_user).await?;
-        let ids: MediasIds = movie.into();
+        let ids: RsIds = movie.into();
         Ok(ids)
     }
 
@@ -205,7 +205,7 @@ impl ModelController {
 
     pub async fn update_movie(&self, library_id: &str, movie_id: String, update: MovieForUpdate, requesting_user: &ConnectedUser) -> RsResult<Movie> {
         requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
-        if MediasIds::is_id(&movie_id) {
+        if RsIds::is_id(&movie_id) {
             return Err(Error::InvalidIdForAction("udpate".to_string(), movie_id).into())
         }
         if update.has_update() {
@@ -248,7 +248,7 @@ impl ModelController {
 
     pub async fn add_movie(&self, library_id: &str, mut new_movie: Movie, requesting_user: &ConnectedUser) -> RsResult<Movie> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;        
-        let ids: MediasIds = new_movie.clone().into();
+        let ids: RsIds = new_movie.clone().into();
         let existing = self.get_movie_by_external_id(library_id, ids, requesting_user).await;
         if let Ok(existing) = existing {
             return Err(Error::Duplicate(existing.id.to_owned(), MediaElement::Movie(existing)).into())
@@ -265,7 +265,7 @@ impl ModelController {
 
     pub async fn remove_movie(&self, library_id: &str, movie_id: &str, requesting_user: &ConnectedUser) -> RsResult<Movie> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
-        if MediasIds::is_id(movie_id) {
+        if RsIds::is_id(movie_id) {
             return Err(Error::InvalidIdForAction("remove".to_string(), movie_id.to_string()).into())
         }
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
@@ -284,7 +284,7 @@ impl ModelController {
 
     pub async fn import_movie(&self, library_id: &str, movie_id: &str, requesting_user: &ConnectedUser) -> RsResult<Movie> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
-        if let Ok(ids) = MediasIds::try_from(movie_id.to_string()) {
+        if let Ok(ids) = RsIds::try_from(movie_id.to_string()) {
             let existing = self.get_movie_by_external_id(library_id, ids.clone(), requesting_user).await;
             if let Ok(existing) = existing {
                 Err(Error::Duplicate(existing.id.to_owned(), MediaElement::Movie(existing)).into())
@@ -339,8 +339,8 @@ impl ModelController {
     #[async_recursion]
 	pub async fn movie_image(&self, library_id: &str, movie_id: &str, kind: Option<ImageType>, size: Option<ImageSize>, requesting_user: &ConnectedUser) -> crate::Result<FileStreamResult<AsyncReadPinBox>> {
         let kind = kind.unwrap_or(ImageType::Poster);
-        if MediasIds::is_id(movie_id) {
-            let mut movie_ids: MediasIds = movie_id.to_string().try_into()?;
+        if RsIds::is_id(movie_id) {
+            let mut movie_ids: RsIds = movie_id.to_string().try_into()?;
 
             let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
             let existing_movie = store.get_movie_by_external_id(movie_ids.clone()).await?;
@@ -387,7 +387,7 @@ impl ModelController {
 	}
 
     /// fetch the plugins to get images for this movie
-    pub async fn get_movie_images(&self, ids: &MediasIds) -> RsResult<Vec<ExternalImage>> {
+    pub async fn get_movie_images(&self, ids: &RsIds) -> RsResult<Vec<ExternalImage>> {
         let mut images = self.tmdb.movie_images(ids.clone()).await?;
        
         let mut fanart = self.fanart.movie_images(ids.clone()).await?;
@@ -398,13 +398,13 @@ impl ModelController {
     /// download and update image
     pub async fn refresh_movie_image(&self, library_id: &str, movie_id: &str, kind: &ImageType, requesting_user: &ConnectedUser) -> RsResult<()> {
         let movie = self.get_movie(library_id, movie_id.to_string(), requesting_user).await?;
-        let ids: MediasIds = movie.clone().into();
+        let ids: RsIds = movie.clone().into();
         let reader = self.download_movie_image(&ids, kind, &movie.lang).await?;
         self.update_movie_image(library_id, movie_id, kind, reader, &ConnectedUser::ServerAdmin).await?;
         Ok(())
 	}
 
-    pub async fn get_movie_image_url(&self, ids: &MediasIds, kind: &ImageType, lang: &Option<String>) -> RsResult<Option<String>> {
+    pub async fn get_movie_image_url(&self, ids: &RsIds, kind: &ImageType, lang: &Option<String>) -> RsResult<Option<String>> {
         let images = if kind == &ImageType::Card {
             None
         } else { 
@@ -419,7 +419,7 @@ impl ModelController {
     }
 
 
-    pub async fn download_movie_image(&self, ids: &MediasIds, kind: &ImageType, lang: &Option<String>) -> crate::Result<AsyncReadPinBox> {
+    pub async fn download_movie_image(&self, ids: &RsIds, kind: &ImageType, lang: &Option<String>) -> crate::Result<AsyncReadPinBox> {
         let images = self.get_movie_image_url(ids, kind, lang).await?.ok_or(crate::Error::NotFound)?;
         let image_reader = reqwest::get(images).await?;
         let stream = image_reader.bytes_stream();
@@ -431,7 +431,7 @@ impl ModelController {
     pub async fn update_movie_image(&self, library_id: &str, movie_id: &str, kind: &ImageType, reader: AsyncReadPinBox, requesting_user: &ConnectedUser) -> RsResult<()> {
 
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
-        if MediasIds::is_id(movie_id) {
+        if RsIds::is_id(movie_id) {
             return Err(Error::InvalidIdForAction("udpate movie image".to_string(), movie_id.to_string()).into())
         }
 

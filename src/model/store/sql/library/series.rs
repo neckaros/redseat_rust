@@ -1,6 +1,7 @@
+use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, ImageType};
 use rusqlite::{params, OptionalExtension, Row};
 
-use crate::{domain::{serie::Serie, MediasIds}, model::{series::{SerieForUpdate, SerieQuery}, store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType}, to_pipe_separated_optional}}, tools::{array_tools::replace_add_remove_from_array, image_tools::ImageType}};
+use crate::{domain::{serie::Serie}, model::{series::{SerieForUpdate, SerieQuery}, store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType}, to_pipe_separated_optional}}, tools::{array_tools::replace_add_remove_from_array}};
 use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
 
@@ -82,7 +83,7 @@ impl SqliteLibraryStore {
         Ok(row)
     }
 
-    pub async fn get_serie_by_external_id(&self, ids: MediasIds) -> Result<Option<Serie>> {
+    pub async fn get_serie_by_external_id(&self, ids: RsIds) -> Result<Option<Serie>> {
         let row = self.connection.call( move |conn| { 
             let mut query = conn.prepare(&format!("SELECT 
             {} 

@@ -1,6 +1,7 @@
+use rs_plugin_common_interfaces::{ExternalImage, ImageType};
 use serde::{Deserialize, Serialize};
 
-use crate::{model::series::{ExternalImage, ExternalSerieImages}, tools::image_tools::ImageType};
+use crate::model::series::ExternalSerieImages;
 
 use super::tmdb_configuration::TmdbConfiguration;
 

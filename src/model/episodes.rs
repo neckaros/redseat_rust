@@ -6,14 +6,14 @@ use std::{collections::HashMap, io::{self, Read}, num, pin::Pin};
 use async_recursion::async_recursion;
 use futures::TryStreamExt;
 use nanoid::nanoid;
-use rs_plugin_common_interfaces::MediaType;
+use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, ImageType, MediaType};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::{fs::File, io::{AsyncRead, AsyncWriteExt, BufReader}};
 use tokio_util::io::StreamReader;
 
 
-use crate::{domain::{deleted::RsDeleted, episode::{self, Episode, EpisodeWithAction, EpisodeWithShow, EpisodesMessage}, library::LibraryRole, people::{PeopleMessage, Person}, serie::{self, Serie, SeriesMessage}, ElementAction, MediasIds}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{AsyncReadPinBox, FileStreamResult, Source}}, tools::{array_tools::Dedup, clock::now, image_tools::{resize_image_reader, ImageSize, ImageType}, log::log_info}};
+use crate::{domain::{deleted::RsDeleted, episode::{self, Episode, EpisodeWithAction, EpisodeWithShow, EpisodesMessage}, library::LibraryRole, people::{PeopleMessage, Person}, serie::{self, Serie, SeriesMessage}, ElementAction}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{AsyncReadPinBox, FileStreamResult, Source}}, tools::{array_tools::Dedup, clock::now, image_tools::{resize_image_reader, ImageSize}, log::log_info}};
 
 use super::{error::{Error, Result}, medias::{RsSort, RsSortOrder}, store::sql::SqlOrder, users::{ConnectedUser, HistoryQuery}, ModelController};
 
@@ -110,8 +110,8 @@ impl ModelController {
     pub async fn get_episodes_by_id(&self, library_id: &str, serie_id: String, mut query: EpisodeQuery, requesting_user: &ConnectedUser) -> RsResult<Vec<Episode>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
-        let mut episodes = if MediasIds::is_id(&serie_id) {
-            let id: MediasIds = serie_id.try_into().map_err(|_| Error::NotFound)?;
+        let mut episodes = if RsIds::is_id(&serie_id) {
+            let id: RsIds = serie_id.try_into().map_err(|_| Error::NotFound)?;
             let serie = store.get_serie_by_external_id(id.clone()).await?;
 
             if let Some(serie) = serie {
@@ -130,7 +130,7 @@ impl ModelController {
 	}
 
     pub async fn fill_episode_watched_imdb(&self, episode: &mut Episode, requesting_user: &ConnectedUser, library_id: Option<String>) -> RsResult<()> {
-        let ids: MediasIds = episode.clone().into();
+        let ids: RsIds = episode.clone().into();
         let watched = self.get_watched(HistoryQuery { types: vec![MediaType::Episode], id: Some(ids.clone()), ..Default::default() }, requesting_user, library_id.clone()).await?; 
         let progress = self.get_view_progress(ids, requesting_user, library_id).await?;
         if let Some(progress) = progress {
@@ -148,7 +148,7 @@ impl ModelController {
         let progresses = self.get_all_view_progress(HistoryQuery { types: vec![MediaType::Episode], ..Default::default() }, requesting_user, library_id).await?.into_iter().map(|e| (e.id, e.progress)).collect::<HashMap<_, _>>();
 
         for episode in episodes {
-            let ids = MediasIds::from(episode.clone());
+            let ids = RsIds::from(episode.clone());
             let ids_string: Vec<String> = ids.into();
             for id in ids_string {
                 let watch = watched.get(&id);
@@ -251,8 +251,8 @@ impl ModelController {
 
     #[async_recursion]
 	pub async fn episode_image(&self, library_id: &str, serie_id: &str, season: &u32, episode: &u32, size: Option<ImageSize>, requesting_user: &ConnectedUser) -> RsResult<FileStreamResult<AsyncReadPinBox>> {
-        if MediasIds::is_id(serie_id) {
-            let mut serie_ids: MediasIds = serie_id.to_string().try_into()?;
+        if RsIds::is_id(serie_id) {
+            let mut serie_ids: RsIds = serie_id.to_string().try_into()?;
 
             let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
             let existing_serie = store.get_serie_by_external_id(serie_ids.clone()).await?;
@@ -301,21 +301,21 @@ impl ModelController {
         
 	}
 
-    pub async fn get_episode_ids(&self, library_id: &str, serie_id: &str, season: u32, episode: u32, requesting_user: &ConnectedUser) -> RsResult<MediasIds> {
+    pub async fn get_episode_ids(&self, library_id: &str, serie_id: &str, season: u32, episode: u32, requesting_user: &ConnectedUser) -> RsResult<RsIds> {
         let episode = self.get_episode(library_id, serie_id.to_string(), season, episode, requesting_user).await?;
-        let ids: MediasIds = episode.into();
+        let ids: RsIds = episode.into();
         Ok(ids)
     }
 
     /// download and update image
     pub async fn refresh_episode_image(&self, library_id: &str, serie_id: &str, season: &u32, episode: &u32, requesting_user: &ConnectedUser) -> RsResult<()> {
-        let ids: MediasIds = self.get_episode_ids(library_id, serie_id, *season, *episode, requesting_user).await?;
+        let ids: RsIds = self.get_episode_ids(library_id, serie_id, *season, *episode, requesting_user).await?;
 
         let reader = self.download_episode_image(&ids, season, episode, &None).await?;
         self.update_episode_image(library_id, serie_id, season, episode, reader, &ConnectedUser::ServerAdmin).await?;
         Ok(())
     }
-    pub async fn download_episode_image(&self, ids: &MediasIds, season: &u32, episode: &u32, lang: &Option<String>) -> crate::Result<AsyncReadPinBox> {
+    pub async fn download_episode_image(&self, ids: &RsIds, season: &u32, episode: &u32, lang: &Option<String>) -> crate::Result<AsyncReadPinBox> {
         let images = self.tmdb.episode_image(ids.clone(), season, episode, lang).await?.into_kind(ImageType::Still).ok_or(crate::Error::NotFound)?;
         let image_reader = reqwest::get(images).await?;
         let stream = image_reader.bytes_stream();

@@ -1,6 +1,7 @@
+use rs_plugin_common_interfaces::ImageType;
 use serde::{Deserialize, Serialize};
 
-use crate::tools::image_tools::{ImageSize, ImageType};
+use crate::tools::image_tools::ImageSize;
 
 pub mod ping;
 pub mod infos;

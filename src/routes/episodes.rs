@@ -1,10 +1,10 @@
 
 use std::io::Cursor;
 
-use crate::{domain::{episode::{self, Episode}, media::{FileEpisode, Media, MediaForUpdate}, progress, view_progress::{ViewProgressForAdd, ViewProgressLigh}, watched::{WatchedForAdd, WatchedLight}, MediasIds}, error::RsError, model::{episodes::{EpisodeForUpdate, EpisodeQuery}, medias::MediaQuery, users::{ConnectedUser, HistoryQuery}, ModelController}, tools::image_tools::ImageType, Error, Result};
+use crate::{domain::{episode::{self, Episode}, media::{FileEpisode, Media, MediaForUpdate}, progress, view_progress::{ViewProgressForAdd, ViewProgressLigh}, watched::{WatchedForAdd, WatchedLight}}, error::RsError, model::{episodes::{EpisodeForUpdate, EpisodeQuery}, medias::MediaQuery, users::{ConnectedUser, HistoryQuery}, ModelController}, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
 use futures::TryStreamExt;
-use rs_plugin_common_interfaces::{lookup::{RsLookupEpisode, RsLookupQuery}, request::RsRequest, MediaType};
+use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, lookup::{RsLookupEpisode, RsLookupQuery}, request::RsRequest, ImageType, MediaType};
 use serde_json::{json, ser, Value};
 use tokio::io::AsyncRead;
 use tokio_util::io::{ReaderStream, StreamReader};
@@ -51,14 +51,11 @@ async fn handler_refresh(Path((library_id, serie_id)): Path<(String, String)>, S
 
 async fn handler_lookup_season(Path((library_id, serie_id, season)): Path<(String, String, u32)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
 	let serie = mc.get_serie(&library_id, serie_id,  &user).await?.ok_or(Error::NotFound)?;
+	let name = serie.name.clone();
+	let ids: RsIds = serie.into();
 	let query_episode = RsLookupEpisode {
-    serie: serie.name,
-    imdb: serie.imdb,
-    slug: serie.slug,
-    tmdb: serie.tmdb,
-    trakt: serie.trakt,
-    tvdb: serie.tmdb,
-    otherids: serie.otherids,
+    serie: name,
+    ids: Some(ids),
 	season,
 	number: None
 	};
@@ -104,14 +101,11 @@ async fn handler_delete(Path((library_id, serie_id, season, number)): Path<(Stri
 async fn handler_lookup(Path((library_id, serie_id, season, number)): Path<(String, String, u32, u32)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
 	let episode = mc.get_episode(&library_id, serie_id.clone(), season, number, &user).await?;
 	let serie = mc.get_serie(&library_id, serie_id,  &user).await?.ok_or(Error::NotFound)?;
+	let name = serie.name.clone();
+	let ids: RsIds = serie.into();
 	let query_episode = RsLookupEpisode {
-    serie: serie.name,
-    imdb: episode.imdb,
-    slug: episode.slug,
-    tmdb: episode.tmdb,
-    trakt: episode.trakt,
-    tvdb: episode.tmdb,
-    otherids: episode.otherids,
+    serie: name,
+    ids: Some(ids),
     season: episode.season,
     number: Some(episode.number),
 	};
@@ -161,8 +155,8 @@ async fn handler_progress_get(Path((library_id, serie_id, season, number)): Path
 async fn handler_progress_set(Path((library_id, serie_id, season, number)): Path<(String, String, u32, u32)>, State(mc): State<ModelController>, user: ConnectedUser, Json(progress): Json<ViewProgressLigh>) -> Result<()> {
 	let episode = mc.get_episode(&library_id, serie_id.clone(), season, number, &user).await?;
 	let serie = mc.get_serie(&library_id, serie_id, &user).await?.ok_or(Error::NotFound)?;
-	let id = MediasIds::from(episode).into_best_external().ok_or(Error::NotFound)?;
-	let serie_id = MediasIds::from(serie).into_best_external().ok_or(Error::NotFound)?;
+	let id = RsIds::from(episode).into_best_external().ok_or(Error::NotFound)?;
+	let serie_id = RsIds::from(serie).into_best_external().ok_or(Error::NotFound)?;
 	let progress = ViewProgressForAdd { kind: MediaType::Episode, id, progress: progress.progress, parent: Some(serie_id) };
 	mc.add_view_progress(progress, &user, Some(library_id)).await?;
 
@@ -181,7 +175,7 @@ async fn handler_watched_get(Path((library_id, serie_id, season, number)): Path<
 
 async fn handler_watched_set(Path((library_id, serie_id, season, number)): Path<(String, String, u32, u32)>, State(mc): State<ModelController>, user: ConnectedUser, Json(watched): Json<WatchedLight>) -> Result<()> {
 	let episode = mc.get_episode(&library_id, serie_id.clone(), season, number, &user).await?;
-	let id = MediasIds::from(episode).into_best_external_or_local().ok_or(Error::NotFound)?;
+	let id = RsIds::from(episode).into_best_external_or_local().ok_or(Error::NotFound)?;
 	let watched = WatchedForAdd { kind: MediaType::Episode, id, date: watched.date };
 	mc.add_watched(watched, &user, Some(library_id)).await?;
 

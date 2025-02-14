@@ -1,10 +1,10 @@
 
 use std::io::Cursor;
 
-use crate::{domain::{serie::Serie, MediasIds}, error::RsError, model::{episodes::EpisodeQuery, series::{ExternalImage, SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, tools::image_tools::ImageType, Error, Result};
+use crate::{domain::{serie::Serie}, error::RsError, model::{episodes::EpisodeQuery, series::{SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post, put}, Json, Router};
 use futures::TryStreamExt;
-use rs_plugin_common_interfaces::lookup::RsLookupMovie;
+use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, lookup::RsLookupMovie, ExternalImage, ImageType};
 use serde_json::{json, Value};
 use tokio::io::AsyncRead;
 use tokio_util::io::{ReaderStream, StreamReader};
@@ -138,7 +138,7 @@ async fn handler_image(Path((library_id, serie_id)): Path<(String, String)>, Sta
 
 async fn handler_image_search(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ImageRequestOptions>) -> Result<Json<Value>> {
 	let serie = mc.get_serie(&library_id, serie_id, &user).await?.ok_or(RsError::NotFound)?;
-	let ids: MediasIds = serie.into();
+	let ids: RsIds = serie.into();
 	let result = mc.get_serie_images(&ids).await?;
 
 	Ok(Json(json!(result)))

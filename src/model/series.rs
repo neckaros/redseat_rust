@@ -6,7 +6,7 @@ use std::{io::{self, Cursor, Read}, pin::Pin};
 use async_recursion::async_recursion;
 use futures::TryStreamExt;
 use nanoid::nanoid;
-use rs_plugin_common_interfaces::lookup::RsLookupMovie;
+use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, lookup::RsLookupMovie, ExternalImage, ImageType};
 use rusqlite::{types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, ToSql};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -14,7 +14,7 @@ use tokio::{fs::File, io::{AsyncRead, AsyncWriteExt, BufReader}};
 use tokio_util::io::StreamReader;
 
 
-use crate::{domain::{deleted::RsDeleted, library::LibraryRole, people::{PeopleMessage, Person}, serie::{Serie, SerieStatus, SerieWithAction, SeriesMessage}, ElementAction, MediaElement, MediasIds}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source}}, server::get_server_folder_path_array, tools::{image_tools::{convert_image_reader, resize_image_reader, ImageSize, ImageType}, log::log_info}};
+use crate::{domain::{deleted::RsDeleted, library::LibraryRole, people::{PeopleMessage, Person}, serie::{Serie, SerieStatus, SerieWithAction, SeriesMessage}, ElementAction, MediaElement}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source}}, server::get_server_folder_path_array, tools::{image_tools::{convert_image_reader, resize_image_reader, ImageSize}, log::log_info}};
 
 use super::{episodes::{EpisodeForUpdate, EpisodeQuery}, error::{Error, Result}, medias::{MediaQuery, RsSort}, store::sql::SqlOrder, users::ConnectedUser, ModelController};
 
@@ -101,20 +101,6 @@ pub struct ExternalSerieImages {
     pub card: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct ExternalImage {
-    #[serde(rename = "type")]
-    pub kind: Option<ImageType>,
-    pub url: String,
-    pub aspect_ratio: Option<f64>,
-    pub height: Option<i64>,
-    pub lang: Option<String>,
-    pub vote_average: Option<f64>,
-    pub vote_count: Option<i64>,
-    pub width: Option<i64>,
-}
-
 
 
 
@@ -158,8 +144,8 @@ impl ModelController {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
 
-        if MediasIds::is_id(&serie_id) {
-            let id: MediasIds = serie_id.try_into().map_err(|_| Error::NotFound)?;
+        if RsIds::is_id(&serie_id) {
+            let id: RsIds = serie_id.try_into().map_err(|_| Error::NotFound)?;
             let serie = store.get_serie_by_external_id(id.clone()).await?;
             if let Some(serie) = serie {
                 Ok(Some(serie))
@@ -174,7 +160,7 @@ impl ModelController {
         }
 	}
 
-    pub async fn get_serie_by_external_id(&self, library_id: &str, ids: MediasIds, requesting_user: &ConnectedUser) -> RsResult<Option<Serie>> {
+    pub async fn get_serie_by_external_id(&self, library_id: &str, ids: RsIds, requesting_user: &ConnectedUser) -> RsResult<Option<Serie>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         let serie = store.get_serie_by_external_id(ids).await?;
@@ -182,9 +168,9 @@ impl ModelController {
     }
 
 
-    pub async fn get_serie_ids(&self, library_id: &str, serie_id: &str, requesting_user: &ConnectedUser) -> RsResult<MediasIds> {
+    pub async fn get_serie_ids(&self, library_id: &str, serie_id: &str, requesting_user: &ConnectedUser) -> RsResult<RsIds> {
         let serie = self.get_serie(library_id, serie_id.to_string(), requesting_user).await?.ok_or(Error::NotFound)?;
-        let ids: MediasIds = serie.into();
+        let ids: RsIds = serie.into();
         Ok(ids)
     }
 
@@ -202,7 +188,7 @@ impl ModelController {
 
     pub async fn update_serie(&self, library_id: &str, serie_id: String, update: SerieForUpdate, requesting_user: &ConnectedUser) -> Result<Serie> {
         requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
-        if MediasIds::is_id(&serie_id) {
+        if RsIds::is_id(&serie_id) {
             return Err(Error::InvalidIdForAction("udpate".to_string(), serie_id))
         }
         if update.has_update() {
@@ -230,7 +216,7 @@ impl ModelController {
 
     pub async fn add_serie(&self, library_id: &str, mut new_serie: Serie, requesting_user: &ConnectedUser) -> RsResult<Serie> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
-        let ids: MediasIds = new_serie.clone().into();
+        let ids: RsIds = new_serie.clone().into();
         let existing = self.get_serie_by_external_id(library_id, ids, requesting_user).await?;
         if let Some(existing) = existing {
             return Err(Error::Duplicate(existing.id.to_owned(), MediaElement::Serie(existing)).into())
@@ -256,7 +242,7 @@ impl ModelController {
 
     pub async fn remove_serie(&self, library_id: &str, serie_id: &str, delete_medias: bool, requesting_user: &ConnectedUser) -> RsResult<Serie> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
-        if MediasIds::is_id(serie_id) {
+        if RsIds::is_id(serie_id) {
             return Err(Error::InvalidIdForAction("remove".to_string(), serie_id.to_string()).into())
         }
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
@@ -335,7 +321,7 @@ impl ModelController {
 
     pub async fn import_serie(&self, library_id: &str, serie_id: &str, requesting_user: &ConnectedUser) -> RsResult<Serie> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
-        if let Ok(ids) = MediasIds::try_from(serie_id.to_string()) {
+        if let Ok(ids) = RsIds::try_from(serie_id.to_string()) {
             let existing = self.get_serie_by_external_id(library_id, ids.clone(), requesting_user).await?;
             if let Some(existing) = existing {
                 Err(Error::Duplicate(existing.id.to_owned(), MediaElement::Serie(existing)).into())
@@ -355,8 +341,8 @@ impl ModelController {
     #[async_recursion]
 	pub async fn serie_image(&self, library_id: &str, serie_id: &str, kind: Option<ImageType>, size: Option<ImageSize>, requesting_user: &ConnectedUser) -> crate::Result<FileStreamResult<AsyncReadPinBox>> {
         let kind = kind.unwrap_or(ImageType::Poster);
-        if MediasIds::is_id(serie_id) {
-            let mut serie_ids: MediasIds = serie_id.to_string().try_into()?;
+        if RsIds::is_id(serie_id) {
+            let mut serie_ids: RsIds = serie_id.to_string().try_into()?;
 
             let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
             let existing_serie = store.get_serie_by_external_id(serie_ids.clone()).await?;
@@ -405,13 +391,13 @@ impl ModelController {
     /// download and update image
     pub async fn refresh_serie_image(&self, library_id: &str, serie_id: &str, kind: &ImageType, requesting_user: &ConnectedUser) -> RsResult<()> {
         let serie = self.get_serie(library_id, serie_id.to_string(), requesting_user).await?.ok_or(Error::NotFound)?;
-        let ids: MediasIds = serie.into();
+        let ids: RsIds = serie.into();
         let reader = self.download_serie_image(&ids, kind, &None).await?;
         self.update_serie_image(library_id, serie_id, kind, reader, &ConnectedUser::ServerAdmin).await?;
         Ok(())
 	}
 
-    pub async fn get_serie_image_url(&self, ids: &MediasIds, kind: &ImageType, lang: &Option<String>) -> RsResult<Option<String>> {
+    pub async fn get_serie_image_url(&self, ids: &RsIds, kind: &ImageType, lang: &Option<String>) -> RsResult<Option<String>> {
         let images = if kind == &ImageType::Card {
             None
         } else { 
@@ -425,7 +411,7 @@ impl ModelController {
         }
     }
 
-    pub async fn get_serie_images(&self, ids: &MediasIds) -> RsResult<Vec<ExternalImage>> {
+    pub async fn get_serie_images(&self, ids: &RsIds) -> RsResult<Vec<ExternalImage>> {
         let mut images = self.tmdb.serie_images(ids.clone()).await?;
        
         let mut fanart = self.fanart.serie_images(ids.clone()).await?;
@@ -434,7 +420,7 @@ impl ModelController {
     }
 
 
-    pub async fn download_serie_image(&self, ids: &MediasIds, kind: &ImageType, lang: &Option<String>) -> crate::Result<AsyncReadPinBox> {
+    pub async fn download_serie_image(&self, ids: &RsIds, kind: &ImageType, lang: &Option<String>) -> crate::Result<AsyncReadPinBox> {
         let images = self.get_serie_image_url(ids, kind, lang).await?.ok_or(crate::Error::NotFound)?;
         let image_reader = reqwest::get(images).await?;
         let stream = image_reader.bytes_stream();
@@ -445,7 +431,7 @@ impl ModelController {
 
     pub async fn update_serie_image(&self, library_id: &str, serie_id: &str, kind: &ImageType, mut reader: AsyncReadPinBox, requesting_user: &ConnectedUser) -> RsResult<()> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
-        if MediasIds::is_id(serie_id) {
+        if RsIds::is_id(serie_id) {
             return Err(Error::InvalidIdForAction("udpate image".to_string(), serie_id.to_string()).into())
         }
 

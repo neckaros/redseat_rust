@@ -89,30 +89,8 @@ impl ImageSize {
 
 
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Display)]
-#[serde(rename_all = "camelCase")]
-pub enum ImageType {
-    Poster,
-    Background,
-    Still,
-    Card,
-    ClearLogo,
-    ClearArt,
-    Custom(String)
-}
 
-impl ImageType {
-    pub fn to_filename_element(&self) -> String {
-        format!(".{}", self.to_string())
-    }
-    pub fn optional_to_filename_element(optinal: &Option<Self>) -> String {
-        match optinal {
-            Some(kind) => kind.to_filename_element(),
-            None => "".to_string(),
-        }
-        
-    }
-}
+
 
 #[serde_as]
 #[derive(Debug, Serialize, strum_macros::AsRefStr, From)]

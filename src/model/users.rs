@@ -1,6 +1,6 @@
 use std::{cmp::Ordering, str::FromStr};
 
-use rs_plugin_common_interfaces::{MediaType, RsRequest};
+use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, MediaType, RsRequest};
 use rusqlite::{
     types::{FromSql, FromSqlError, FromSqlResult, ValueRef},
     ToSql,
@@ -8,7 +8,7 @@ use rusqlite::{
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
 
-use crate::{domain::{library::{LibraryLimits, LibraryRole, LibraryType}, view_progress::{ViewProgress, ViewProgressForAdd}, watched::{Watched, WatchedForAdd}, MediasIds}, error::RsResult, tools::auth::{ClaimsLocal, ClaimsLocalType}};
+use crate::{domain::{library::{LibraryLimits, LibraryRole, LibraryType}, view_progress::{ViewProgress, ViewProgressForAdd}, watched::{Watched, WatchedForAdd}}, error::RsResult, tools::auth::{ClaimsLocal, ClaimsLocalType}};
 
 use super::{error::{Error, Result}, libraries::ServerLibraryForRead, medias::RsSort, store::sql::{users::WatchedQuery, SqlOrder}, ModelController};
 
@@ -386,7 +386,7 @@ pub struct HistoryQuery {
     #[serde(default)]
     pub types: Vec<MediaType>,
 
-    pub id: Option<MediasIds>,
+    pub id: Option<RsIds>,
     
     pub page_key: Option<u64>,
 }
@@ -443,7 +443,7 @@ impl ModelController {
         Ok(())
     }
 
-    pub async fn get_view_progress(&self, ids: MediasIds, user: &ConnectedUser, library_id: Option<String>) -> RsResult<Option<ViewProgress>> {
+    pub async fn get_view_progress(&self, ids: RsIds, user: &ConnectedUser, library_id: Option<String>) -> RsResult<Option<ViewProgress>> {
         if matches!(user, ConnectedUser::ServerAdmin) {
             return Ok(None)
         }
@@ -473,7 +473,7 @@ impl ModelController {
         }
 
         user.check_role(&UserRole::Read)?;
-        let media_id = MediasIds::try_from(id)?;
+        let media_id = RsIds::try_from(id)?;
         let progress = match user {
             ConnectedUser::Server(user) => self.store.get_view_progess( media_id, user.id.clone()).await?,
             _ => None

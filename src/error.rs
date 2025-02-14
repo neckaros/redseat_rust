@@ -9,7 +9,7 @@ use serde_json::json;
 use serde_with::{serde_as, DisplayFromStr};
 use nanoid::nanoid;
 use webp::WebPEncodingError;
-use crate::{domain::{MediaElement, MediasIds}, plugins::sources::error::SourcesError, tools::{image_tools, log::{log_error, LogServiceType}}};
+use crate::{domain::{MediaElement}, plugins::sources::error::SourcesError, tools::{image_tools, log::{log_error, LogServiceType}}};
 
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -40,8 +40,6 @@ pub enum Error {
 	InvalidRangeHeader,
 	NoRangeHeader,
 
-	NotAMediaId(String),
-	NoMediaIdRequired(Box<MediasIds>),
 	BackupProcessNotFound(String),
 
 	BackupNotFound(String, String),
@@ -174,6 +172,9 @@ pub enum Error {
 	
 	#[from]
 	TaskJoinError(#[serde_as(as = "DisplayFromStr")] tokio::task::JoinError),
+
+	#[from]
+	RsIdsError(#[serde_as(as = "DisplayFromStr")] rs_plugin_common_interfaces::domain::rs_ids::RsIdsError),
 	
 
 }
