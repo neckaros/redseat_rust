@@ -763,7 +763,7 @@ impl VideoCommandBuilder {
             let text_color  = Self::rgb_to_bgr(&overlay.font_color.unwrap_or("FFFFFF".to_string()))?;
             let alignment = overlay.position.as_ass_alignment();
             formats.push(
-                format!("Style:  {}, Arial, {}, &H{opacity}{text_color}, &H{opacity}{shadow_color}, &{shadow_opacity}{shadow_color}, -1, 0, 0, 0, 100, 100, 0, 0, 1, 1, 1, {alignment}, {}, {}, {}, 1
+                format!("Style:  {}, Arial, {}, &H{opacity}{text_color}, &H{opacity}{shadow_color}, -1, 0, 0, 0, 100, 100, 0, 0, 1, 1, 0, {alignment}, {}, {}, {}, 1
                 ", id, overlay.font_size, overlay.margin_horizontal.unwrap_or(0), overlay.margin_horizontal.unwrap_or(0), overlay.margin_vertical.unwrap_or(0)));
             subs.push(
                 format!("
@@ -780,9 +780,9 @@ impl VideoCommandBuilder {
             ScaledBorderAndShadow: yes
 
             [V4+ Styles]
-            Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+            Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
             ; Set Alignment to 1 for bottom left. Adjust MarginL and MarginV to control exact placement.
-            Style: Default, Arial, 32, &H00FFFFFF, &H00000000, &H64000000, -1, 0, 0, 0, 100, 100, 0, 0, 1, 2, 0, 1, 20, 20, 20, 20, 1
+            Style: Default, Arial, 32, &H00FFFFFF, &H00000000, -1, 0, 0, 0, 100, 100, 0, 0, 1, 2, 0, 1, 20, 20, 20, 20, 1
             {}
 
             [Events]
