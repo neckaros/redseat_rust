@@ -309,14 +309,16 @@ impl ModelController {
 
     /// download and update image
     pub async fn refresh_episode_image(&self, library_id: &str, serie_id: &str, season: &u32, episode: &u32, requesting_user: &ConnectedUser) -> RsResult<()> {
-        let ids: RsIds = self.get_episode_ids(library_id, serie_id, *season, *episode, requesting_user).await?;
+        let episode_ids: RsIds = self.get_episode_ids(library_id, serie_id, *season, *episode, requesting_user).await?;
+        
+        let serie_ids: RsIds = self.get_serie_ids(library_id, serie_id, requesting_user).await?;
 
-        let reader = self.download_episode_image(&ids, season, episode, &None).await?;
+        let reader = self.download_episode_image(&serie_ids, &episode_ids, season, episode, &None).await?;
         self.update_episode_image(library_id, serie_id, season, episode, reader, &ConnectedUser::ServerAdmin).await?;
         Ok(())
     }
-    pub async fn download_episode_image(&self, ids: &RsIds, season: &u32, episode: &u32, lang: &Option<String>) -> crate::Result<AsyncReadPinBox> {
-        let images = self.tmdb.episode_image(ids.clone(), season, episode, lang).await?.into_kind(ImageType::Still).ok_or(crate::Error::NotFound)?;
+    pub async fn download_episode_image(&self, serie_ids: &RsIds, episodes_ids: &RsIds, season: &u32, episode: &u32, lang: &Option<String>) -> crate::Result<AsyncReadPinBox> {
+        let images = self.tmdb.episode_image(serie_ids.clone(), season, episode, lang).await?.into_kind(ImageType::Still).ok_or(crate::Error::NotFound)?;
         let image_reader = reqwest::get(images).await?;
         let stream = image_reader.bytes_stream();
         let body_with_io_error = stream.map_err(|err| io::Error::new(io::ErrorKind::Other, err));

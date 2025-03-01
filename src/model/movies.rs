@@ -341,7 +341,6 @@ impl ModelController {
         let kind = kind.unwrap_or(ImageType::Poster);
         if RsIds::is_id(movie_id) {
             let mut movie_ids: RsIds = movie_id.to_string().try_into()?;
-
             let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
             let existing_movie = store.get_movie_by_external_id(movie_ids.clone()).await?;
             if let Some(existing_movie) = existing_movie {
@@ -350,7 +349,6 @@ impl ModelController {
             } else {
 
                 let local_provider = self.library_source_for_library(library_id).await?;
-                
                 if movie_ids.tmdb.is_none() {
                     let movie = self.trakt.get_movie(&movie_ids).await?;
                     movie_ids = movie.into();
@@ -405,6 +403,7 @@ impl ModelController {
 	}
 
     pub async fn get_movie_image_url(&self, ids: &RsIds, kind: &ImageType, lang: &Option<String>) -> RsResult<Option<String>> {
+        println!("Movie image ids {:?}", ids);
         let images = if kind == &ImageType::Card {
             None
         } else { 
