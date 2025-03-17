@@ -591,6 +591,7 @@ impl SqliteLibraryStore {
     }
 
     pub async fn update_media(&self, media_id: &str, mut update: MediaForUpdate, user_id: Option<String>) -> Result<()> {
+        println!("update {:?}",update);
         let id = media_id.to_string();
         let existing = self.get_media(media_id, user_id.clone()).await?.ok_or_else( || Error::NotFound)?;
 
@@ -668,11 +669,13 @@ impl SqliteLibraryStore {
 
         // Find serie with lookup 
         if let Some(lookup_series) = update.series_lookup {
+            
             let mut found_series: Vec<FileEpisode> = vec![];
             for lookup_serie in lookup_series {
                 let found = self.get_series(SerieQuery { name: Some(lookup_serie), ..Default::default()}).await?;
                 if let Some(serie) = found.first() {
-                    found_series.push(FileEpisode { id: serie.id.to_string(), season: None, episode: None });
+                    
+                    found_series.push(FileEpisode { id: serie.id.to_string(), season: update.season, episode: update.episode, episode_to: None });
                 }
             }
             if !found_series.is_empty() {
@@ -791,9 +794,21 @@ impl SqliteLibraryStore {
             if let Some(add_serie) = update.add_series {
                 for file_episode in add_serie {
                     if !all_series.contains(&file_episode) {
-                        let r = conn.execute("INSERT INTO media_serie_mapping (media_ref, serie_ref, season, episode) VALUES (? ,? , ?, ?) ", params![id, file_episode.id, file_episode.season, file_episode.episode]);
-                        if let Err(error) = r {
-                            log_info(LogServiceType::Source, format!("unable to add serie {:?}: {:?}", file_episode, error));
+                        let mut current_episode = file_episode.episode.clone();
+                        loop {
+                            let r = conn.execute("INSERT INTO media_serie_mapping (media_ref, serie_ref, season, episode) VALUES (? ,? , ?, ?) ", params![id, file_episode.id, file_episode.season, current_episode]);
+                            if let Err(error) = r {
+                                log_info(LogServiceType::Source, format!("unable to add serie {:?}: {:?}", file_episode, error));
+                            }
+                            if let (Some(current), Some(to)) = (current_episode, file_episode.episode_to) {
+                                if current < to {
+                                    current_episode = Some(current + 1);
+                                } else {
+                                    break;
+                                }
+                            } else {
+                                break;
+                            }
                         }
                     }
                 }

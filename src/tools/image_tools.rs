@@ -334,6 +334,12 @@ pub async fn resize_image_reader(reader: AsyncReadPinBox, size: u32, format: Ima
 pub async fn resize_image_reader_native(mut reader: AsyncReadPinBox, size: u32, format: ImageFormat, quality: Option<u16>, fast: bool) -> RsResult<Vec<u8> >   {
 
         let mut image = reader_to_image(&mut reader).await?;
+        let width = image.image.width();
+        let height = image.image.height();
+        if (width as f64) / (height as f64) < 0.25 {
+            let square = image.image.crop(0, 0, width, width);
+            image.image = square;
+        }
         let scaled = resize(image.image, size).await?;
         image.image = scaled;
         tokio::task::spawn_blocking(move || {

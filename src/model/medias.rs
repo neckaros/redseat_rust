@@ -12,7 +12,7 @@ use mime::{Mime, APPLICATION_OCTET_STREAM};
 use mime_guess::get_mime_extensions_str;
 use nanoid::nanoid;
 use query_external_ip::SourceError;
-use rs_plugin_common_interfaces::{request::{RsRequest, RsRequestStatus}, url::{RsLink, RsLinkType}, PluginType};
+use rs_plugin_common_interfaces::{request::{RsRequest, RsRequestStatus}, url::{RsLink, RsLinkType}, PluginType, RsCookie};
 use rusqlite::{types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, ToSql};
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
@@ -463,9 +463,9 @@ impl ModelController {
                 if let Some(local_path) = local_path {
                     let archive = std::fs::File::open(local_path)?;
                     let buffreader = std::io::BufReader::new(archive);
-                    let mut archive = zip::ZipArchive::new(buffreader).unwrap();
-
-                    let mut file = archive.by_index(query.page.unwrap_or(1) as usize - 1).unwrap();
+                    let mut archive = zip::ZipArchive::new(buffreader).map_err(|_| RsError::Error(format!("Unable to open zip file")))?;
+                    let pages = archive.len();
+                    let mut file = archive.by_index(query.page.unwrap_or(1) as usize - 1).map_err(|_| RsError::Error(format!("Unable to get file at page {:?}. Files in zip: {}", query.page, pages)))?;
 
                     let mut data = Vec::new();
                     file.read_to_end(&mut data)?;
@@ -656,6 +656,7 @@ impl ModelController {
 
 
         if files.group.unwrap_or_default() {
+            let thumbnail = files.group_thumbnail_url.clone();
             let mut infos: MediaForUpdate = files.clone().into();
             infos.origin = origin.clone();
 
@@ -668,7 +669,7 @@ impl ModelController {
 
 
             if let Some(origin) = &mut infos.origin {
-                let origin_filename = if let Some(origin_url) = files.origin_url { filename_from_path(&origin_url) } else { None };
+                let origin_filename = if let Some(origin_url) = files.origin_url.clone() { filename_from_path(&origin_url) } else { None };
                 origin.file = origin_filename;
                 if !infos.ignore_origin_duplicate {
                     let existing = store.get_media_by_origin(origin.clone()).await;
@@ -700,7 +701,6 @@ impl ModelController {
             let mut total_size = 0u64;
             let len = requests.len() as u64;
             for request in requests {
-                
                 
                 let reader = SourceRead::Request(request.clone()).into_reader(Some(library_id), None, 
                     None, Some((self.clone(), &ConnectedUser::ServerAdmin)), None).await;
@@ -753,10 +753,46 @@ impl ModelController {
             let id = nanoid!();
             store.add_media(MediaForInsert { id: id.clone(), media: new_file }).await?;
             self.update_media(library_id, id.to_owned(), infos, false, requesting_user).await?;
-            let r = self.generate_thumb(&library_id, &id, &ConnectedUser::ServerAdmin).await;
-            if let Err(r) = r {
-                log_error(crate::tools::log::LogServiceType::Source, format!("Unable to generate thumb {:#}", r));
+
+            let mut loaded_thumb = false;
+            if let Some(thumbUrl) = thumbnail {
+                let headers = files.headers_as_tuple();
+                let request = RsRequest {
+                    upload_id: None,
+                    url: thumbUrl,
+                    mime: None,
+                    size: None,
+                    filename: None,
+                    status: RsRequestStatus::Unprocessed,
+                    headers: headers.clone(),
+                    cookies: files.cookies.as_ref().and_then(|c| c.iter().map(|s| RsCookie::from_str(s).ok()).collect()),
+                    files: None,
+                    selected_file: None,
+                    referer: files.referer.clone(),
+                    ..Default::default()
+                };
+
+                let thumb_reader = SourceRead::Request(request.clone()).into_reader(Some(library_id), None, 
+                    None, Some((self.clone(), &ConnectedUser::ServerAdmin)), None).await;
+
+                if let Ok(mut reader) = thumb_reader {
+
+                    let r = self.update_media_image(&library_id, &id, reader.stream, &ConnectedUser::ServerAdmin).await;
+                    if r.is_ok() {
+                        println!("Loaded thumb from request");
+                        loaded_thumb = true;
+                    }
+                }
+
             }
+
+            if !loaded_thumb {
+                let r = self.generate_thumb(&library_id, &id, &ConnectedUser::ServerAdmin).await;
+                if let Err(r) = r {
+                    log_error(crate::tools::log::LogServiceType::Source, format!("Unable to generate thumb {:#}", r));
+                }
+            }
+            
 
             let media = store.get_media(&id, requesting_user.user_id().ok()).await?.ok_or(Error::NotFound)?;
             let _ = tx_progress.send(RsProgress { id: upload_id.clone(), total: media.size, current: media.size, kind: RsProgressType::Finished, filename: Some(media.name.to_owned()) }).await;

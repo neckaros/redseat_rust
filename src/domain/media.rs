@@ -15,12 +15,15 @@ use super::{progress::RsProgress, ElementAction};
 pub const DEFAULT_MIME: &str = "application/octet-stream";
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct FileEpisode {
    pub id: String, 
    #[serde(skip_serializing_if = "Option::is_none")]
    pub season: Option<u32>,
    #[serde(skip_serializing_if = "Option::is_none")]
-   pub episode: Option<u32>
+   pub episode: Option<u32>,
+   #[serde(skip_serializing_if = "Option::is_none")]
+   pub episode_to: Option<u32>
 }
 
 impl FromStr for FileEpisode {
@@ -29,11 +32,11 @@ impl FromStr for FileEpisode {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let splitted: Vec<&str> = s.split("|").collect();
         if splitted.len() == 3 {
-            Ok(FileEpisode { id: splitted[0].to_string(), season: splitted[1].parse::<u32>().ok().and_then(|i| if i == 0 {None} else {Some(i)}), episode: splitted[2].parse::<u32>().ok().and_then(|i| if i == 0 {None} else {Some(i)}) })
+            Ok(FileEpisode { id: splitted[0].to_string(), season: splitted[1].parse::<u32>().ok().and_then(|i| if i == 0 {None} else {Some(i)}), episode: splitted[2].parse::<u32>().ok().and_then(|i| if i == 0 {None} else {Some(i)}) , episode_to: None})
         } else if splitted.len() == 2 {
-            Ok(FileEpisode { id: splitted[0].to_string(), season: splitted[1].parse::<u32>().ok().and_then(|i| if i == 0 {None} else {Some(i)}), episode: None })
+            Ok(FileEpisode { id: splitted[0].to_string(), season: splitted[1].parse::<u32>().ok().and_then(|i| if i == 0 {None} else {Some(i)}), episode: None, episode_to: None })
         } else {
-            Ok(FileEpisode { id: splitted[0].to_string(), season: None, episode: None })
+            Ok(FileEpisode { id: splitted[0].to_string(), season: None, episode: None, episode_to: None })
         }
     }
 }
@@ -267,6 +270,8 @@ pub struct MediaForUpdate {
     pub add_series: Option<Vec<FileEpisode>>,
     pub remove_series: Option<Vec<FileEpisode>>,
     pub series_lookup: Option<Vec<String>>,
+    pub season: Option<u32>,
+    pub episode: Option<u32>,
 
     pub add_people: Option<Vec<MediaItemReference>>,
     pub remove_people: Option<Vec<String>>,
@@ -404,6 +409,8 @@ pub struct GroupMediaDownload<T> {
     pub people_lookup: Option<Vec<String>>,
     pub series_lookup: Option<Vec<String>>,
     pub tags_lookup: Option<Vec<String>>,
+    pub season: Option<u32>,
+    pub episode: Option<u32>,
 }
 impl<T> GroupMediaDownload<T> {
     pub fn headers_as_tuple(&self) -> Option<Vec<(String, String)>> {
@@ -444,6 +451,8 @@ pub struct MediaDownloadUrl {
     pub people_lookup: Option<Vec<String>>,
     pub series_lookup: Option<Vec<String>>,
     pub tags_lookup: Option<Vec<String>>,
+    pub season: Option<i32>,
+    pub episode: Option<i32>,
 }
 
 impl From<MediaDownloadUrl> for RsRequest {
@@ -559,6 +568,8 @@ impl From<GroupMediaDownload<MediaDownloadUrl>> for MediaForUpdate {
             people_lookup: value.people_lookup,
             tags_lookup: value.tags_lookup,
             series_lookup: value.series_lookup,
+            season: value.season,
+            episode: value.episode,
             ..Default::default()
         };
 

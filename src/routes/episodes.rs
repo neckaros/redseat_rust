@@ -121,6 +121,7 @@ async fn handler_lookup_add(Path((library_id, serie_id, season, number)): Path<(
 			id: serie_id,
 			season: Some(season),
 			episode: Some(number),
+			episode_to: None
 		}]),
 		..Default::default()
 	};
