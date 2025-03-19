@@ -256,7 +256,7 @@ impl VideoCommandBuilder {
         Ok(())
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(target_os = "macos")]
     pub async fn download() -> RsResult<()> {
 
         let _lock = FFMPEG_LOCK.write().await;
@@ -301,8 +301,10 @@ impl VideoCommandBuilder {
         Ok(())
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(target_os = "linux")]
     pub async fn download() -> RsResult<()> {
+        use std::os::unix::fs::PermissionsExt;
+
 
         let _lock = FFMPEG_LOCK.write().await;
         tokio::fs::remove_file(Path::new("ffmpeg")).await;
@@ -334,6 +336,15 @@ impl VideoCommandBuilder {
 
         tokio::fs::copy(path_ffmpeg, "ffmpeg").await?;
         tokio::fs::copy(path_ffprobe, "ffprobe").await?;
+
+        let mut perms = tokio::fs::metadata("ffmpeg").await?.permissions();
+        perms.set_mode(0o744);
+        perms.set_readonly(false);
+        tokio::fs::set_permissions("ffmpeg", perms).await?;
+        let mut perms = tokio::fs::metadata("ffprobe").await?.permissions();
+        perms.set_mode(0o744);
+        perms.set_readonly(false);
+        tokio::fs::set_permissions("ffprobe", perms).await?;
 
         tokio::fs::remove_file(path).await?;
         tokio::fs::remove_dir_all(extract_path).await?;
