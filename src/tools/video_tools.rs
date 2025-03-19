@@ -25,6 +25,7 @@ use crate::{server::get_server_temp_file_path, tools};
 
 use tools::text_tools::{Printable, ToHms};
 
+use super::file_tools::executable_dir;
 use super::log::{log_error, LogServiceType};
 
 pub mod ytdl;
@@ -208,7 +209,7 @@ pub struct VideoCommandBuilder {
 
 impl VideoCommandBuilder {
     pub async fn new(path: String) -> Self {
-        let cmd = Command::new("./ffmpeg");
+        let cmd = Command::new(VideoCommandBuilder::get_ffmpeg_path());
         let supported_hw = video_hardware().await.unwrap_or_default();
         println!("supported transcoding hw: {:?}", supported_hw);
 
@@ -240,7 +241,7 @@ impl VideoCommandBuilder {
     pub async fn version() -> RsResult<Option<String>> {
         // Run the "ffmpeg -version" command
         let _lock = FFMPEG_LOCK.read().await;
-        let output = Command::new("./ffmpeg").arg("-version").output().await;
+        let output = Command::new(VideoCommandBuilder::get_ffmpeg_path()).arg("-version").output().await;
         drop(_lock);
         if let Ok(output) = output {
             if !output.status.success() {
@@ -320,8 +321,12 @@ impl VideoCommandBuilder {
         path_ffprobe.push("ffprobe.exe");
         println!("full path: {:?}", path_ffmpeg);
 
-        tokio::fs::copy(path_ffmpeg, "ffmpeg.exe").await?;
-        tokio::fs::copy(path_ffprobe, "ffprobe.exe").await?;
+        
+        let mut ffmpeg_target = VideoCommandBuilder::get_ffmpeg_path();
+        let mut ffprobe_target = VideoCommandBuilder::get_ffprobe_path();
+
+        tokio::fs::copy(path_ffmpeg, ffmpeg_target).await?;
+        tokio::fs::copy(path_ffprobe, ffprobe_target).await?;
 
         tokio::fs::remove_file(path).await?;
         tokio::fs::remove_dir_all(extract_path).await?;
@@ -329,8 +334,42 @@ impl VideoCommandBuilder {
         Ok(())
     }
 
+    #[cfg(target_os = "windows")]
+    fn get_ffmpeg_path() -> PathBuf {
+        let mut exec_dir = executable_dir().unwrap_or(PathBuf::from("./"));
+        exec_dir.push("ffmpeg.exe");
+        return exec_dir;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn get_ffmpeg_path() -> PathBuf {
+        let mut exec_dir = executable_dir().unwrap_or(PathBuf::from("./"));
+        exec_dir.push("ffmpeg");
+        return exec_dir;
+    }
+
+
+    #[cfg(target_os = "windows")]
+    fn get_ffprobe_path() -> PathBuf {
+        let mut exec_dir = executable_dir().unwrap_or(PathBuf::from("./"));
+        exec_dir.push("ffprobe.exe");
+        return exec_dir;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn get_ffprobe_path() -> PathBuf {
+        let mut exec_dir = executable_dir().unwrap_or(PathBuf::from("./"));
+        exec_dir.push("ffprobe");
+        return exec_dir;
+    }
+
+
     #[cfg(target_os = "macos")]
     pub async fn download() -> RsResult<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        use crate::tools::file_tools::executable_dir;
+
 
         let _lock = FFMPEG_LOCK.write().await;
         tokio::fs::remove_file(Path::new("ffmpeg")).await;
@@ -365,8 +404,24 @@ impl VideoCommandBuilder {
         path_ffprobe.push("ffprobe");
         println!("full path: {:?}", path_ffmpeg);
 
-        tokio::fs::copy(path_ffmpeg, "ffmpeg").await?;
-        tokio::fs::copy(path_ffprobe, "ffprobe").await?;
+        let mut ffmpeg_target = VideoCommandBuilder::get_ffmpeg_path();
+        let mut ffprobe_target = VideoCommandBuilder::get_ffprobe_path();
+        tokio::fs::copy(&path_ffmpeg, &ffmpeg_target).await?;
+        tokio::fs::copy(&path_ffprobe, &ffprobe_target).await?;
+
+        // Get the current permissions
+        let mut perms = std::fs::metadata(&ffmpeg_target)?.permissions();
+        // Add executable bit
+        perms.set_mode(perms.mode() | 0o744);
+        // Apply the new permissions
+        std::fs::set_permissions(&ffmpeg_target, perms)?;
+
+        // Get the current permissions
+        let mut perms = std::fs::metadata(&ffprobe_target)?.permissions();
+        // Add executable bit
+        perms.set_mode(perms.mode() | 0o744);
+        // Apply the new permissions
+        std::fs::set_permissions(&ffprobe_target, perms)?;
 
         tokio::fs::remove_file(path).await?;
         tokio::fs::remove_dir_all(extract_path).await?;
@@ -407,20 +462,25 @@ impl VideoCommandBuilder {
         path_ffprobe.push("ffprobe");
         println!("full path: {:?}", path_ffmpeg);
 
-        tokio::fs::copy(path_ffmpeg, "ffmpeg").await?;
-        tokio::fs::copy(path_ffprobe, "ffprobe").await?;
+        
+        let mut ffmpeg_target = VideoCommandBuilder::get_ffmpeg_path();
+        let mut ffprobe_target = VideoCommandBuilder::get_ffprobe_path();
+        tokio::fs::copy(&path_ffmpeg, &ffmpeg_target).await?;
+        tokio::fs::copy(&path_ffprobe, &ffprobe_target).await?;
 
-        let mut perms = tokio::fs::metadata("ffmpeg").await?.permissions();
-        perms.set_mode(0o744);
-        perms.set_readonly(false);
-        tokio::fs::set_permissions("ffmpeg", perms).await?;
-        let mut perms = tokio::fs::metadata("ffprobe").await?.permissions();
-        perms.set_mode(0o744);
-        perms.set_readonly(false);
-        tokio::fs::set_permissions("ffprobe", perms).await?;
+        // Get the current permissions
+        let mut perms = std::fs::metadata(&ffmpeg_target)?.permissions();
+        // Add executable bit
+        perms.set_mode(perms.mode() | 0o744);
+        // Apply the new permissions
+        std::fs::set_permissions(&ffmpeg_target, perms)?;
 
-        tokio::fs::remove_file(path).await?;
-        tokio::fs::remove_dir_all(extract_path).await?;
+        // Get the current permissions
+        let mut perms = std::fs::metadata(&ffprobe_target)?.permissions();
+        // Add executable bit
+        perms.set_mode(perms.mode() | 0o744);
+        // Apply the new permissions
+        std::fs::set_permissions(&ffprobe_target, perms)?;
 
         Ok(())
     }
@@ -1037,7 +1097,7 @@ impl VideoCommandBuilder {
 
 pub async fn video_hardware() -> Result<Vec<String>, Error> {
     let _lock = FFMPEG_LOCK.read().await;
-    let mut child = Command::new("./ffmpeg")
+    let mut child = Command::new(VideoCommandBuilder::get_ffmpeg_path())
     .arg("-hide_banner")
     .arg("-init_hw_device")
     .arg("list")
@@ -1058,7 +1118,7 @@ pub async fn video_hardware() -> Result<Vec<String>, Error> {
 
 pub async fn probe_video(uri: &str) -> Result<FfprobeResult, Error> {
     let _lock = FFPROBE_LOCK.read().await;
-    let output = Command::new("./ffprobe")
+    let output = Command::new(VideoCommandBuilder::get_ffprobe_path())
     .arg("-v")
     .arg("error")
     .arg("-show_streams")
@@ -1116,7 +1176,7 @@ pub async fn thumb_video(uri: &str, at_time: VideoTime) -> Result<Vec<u8>, Error
     let duration = get_duration(uri).await?.ok_or(Error::Error("Unable to get video duration".to_owned()))?;
     let ss = at_time.position(duration);
     let _lock = FFMPEG_LOCK.read().await;
-    let output = Command::new("./ffmpeg")
+    let output = Command::new(VideoCommandBuilder::get_ffmpeg_path())
     .arg("-ss")
     .arg(ss.to_string())
     .arg("-i")
@@ -1160,7 +1220,8 @@ pub async fn get_duration(uri: &str) -> RsResult<Option<f64>> {
 pub async fn convert(uri: &str, to: &str, args: Option<Vec<String>>) {
     let frames = get_number_of_frames(uri).await;
     let _lock = FFMPEG_LOCK.read().await;
-    let mut command = Command::new("./ffmpeg");
+    let ffmpegpath = VideoCommandBuilder::get_ffmpeg_path();
+    let mut command = Command::new(ffmpegpath);
         command.arg("-i")
         .arg(uri)
         .arg("-y")

@@ -1,6 +1,8 @@
+use std::{env, path::PathBuf};
+
 use mime_guess::get_mime_extensions_str;
 use nanoid::nanoid;
-use crate::domain::media::FileType;
+use crate::{domain::media::FileType, error::RsResult};
 
 pub fn filename_from_path(path: &str) -> Option<String> {
     let escaped = path.replace('\\', "/");
@@ -53,4 +55,15 @@ pub fn file_type_from_mime(mime: &str) -> FileType {
     } else {
         FileType::Other
     }
+}
+
+pub fn executable_dir() -> RsResult<PathBuf> {
+    let exe_path = env::current_exe()?;
+    
+    // Get the directory containing the executable
+    let exe_dir = exe_path.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::Other, "Failed to get parent directory of executable")
+    })?;
+
+    return Ok(exe_dir.to_path_buf())
 }
