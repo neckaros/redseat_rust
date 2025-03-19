@@ -4,9 +4,10 @@
 use nanoid::nanoid;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use strum_macros::EnumString;
 use tokio::{fs::File, io::{AsyncRead, BufReader}};
 
-use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, url::RsLink, ImageType};
+use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, url::RsLink, Gender, ImageType};
 use crate::{domain::{deleted::RsDeleted, library::LibraryRole, people::{PeopleMessage, Person, PersonWithAction}, tag::Tag, ElementAction}, error::RsResult, plugins::sources::{AsyncReadPinBox, FileStreamResult}, tools::image_tools::ImageSize};
 
 use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
@@ -24,20 +25,22 @@ pub struct PersonForAdd {
     pub birthday: Option<i64>,
     #[serde(default)]
     pub generated: bool,
+
+    pub imdb: Option<String>,
+    pub slug: Option<String>,
+    pub tmdb: Option<u64>,
+    pub trakt: Option<u64>,
+
+        
+    pub death: Option<i64>,
+    pub gender: Option<Gender>,
+    pub country: Option<String>,
+    pub bio: Option<String>,
 }
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct PersonForInsert {
     pub id: String,
-	pub name: String,
-    pub socials: Option<Vec<RsLink>>,
-    #[serde(rename = "type")]
-    pub kind: Option<String>,
-    pub alt: Option<Vec<String>>,
-    pub portrait: Option<String>,
-    pub params: Option<Value>,
-    pub birthday: Option<i64>,
-    #[serde(default)]
-    pub generated: bool,
+	pub person: PersonForAdd
 }
 
 
@@ -80,6 +83,16 @@ pub struct PersonForUpdate {
     pub params: Option<Value>,
     pub birthday: Option<i64>,
     pub generated: Option<bool>,
+
+    pub imdb: Option<String>,
+    pub slug: Option<String>,
+    pub tmdb: Option<u64>,
+    pub trakt: Option<u64>,
+    
+    pub death: Option<i64>,
+    pub gender: Option<Gender>,
+    pub country: Option<String>,
+    pub bio: Option<String>,
 }
 
 
@@ -131,14 +144,7 @@ impl ModelController {
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         let backup = PersonForInsert {
             id: nanoid!(),
-            name: new_person.name,
-            socials: new_person.socials,
-            kind: new_person.kind,
-            alt: new_person.alt,
-            portrait: new_person.portrait,
-            params: new_person.params,
-            birthday: new_person.birthday,
-            generated: new_person.generated,
+            person: new_person
         };
 		store.add_person(backup.clone()).await?;
         let new_person = self.get_person(library_id, backup.id, requesting_user).await?.ok_or(Error::NotFound)?;

@@ -1,4 +1,5 @@
 use chrono::{prelude::*, Duration, DurationRound};
+use serde::{Deserialize, Deserializer};
 
 use crate::error::RsResult;
 pub static SECONDS_IN_HOUR: u64 = 3600;
@@ -38,6 +39,41 @@ impl RsNaiveDate for NaiveDate {
     }
 }
 
+
+pub fn deserialize_optional_date_as_ms_timestamp<'de, D>(
+    deserializer: D,
+) -> Result<Option<i64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    // First deserialize to an Option<String>
+    let opt_date_str: Option<String> = Option::deserialize(deserializer)?;
+    
+    // If the value is null, return None
+    match opt_date_str {
+        None => Ok(None),
+        Some(date_str) => {
+            // Parse the date string
+            let date = NaiveDate::parse_from_str(&date_str, "%Y-%m-%d")
+                .map_err(serde::de::Error::custom)?;
+            
+            // Convert to DateTime at midnight UTC
+            let datetime = match date.and_hms_opt(0, 0, 0) {
+                Some(dt) => dt,
+                None => return Err(serde::de::Error::custom("Invalid time"))
+            };
+            
+            // Convert to UTC DateTime
+            let utc_datetime = DateTime::<Utc>::from_naive_utc_and_offset(datetime, Utc);
+            
+            // Get milliseconds timestamp as i64
+            let timestamp_ms = utc_datetime.timestamp_millis();
+            
+            Ok(Some(timestamp_ms))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::domain::library::LibraryRole;
@@ -55,3 +91,4 @@ mod tests {
 
     }
 }
+

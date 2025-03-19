@@ -9,7 +9,10 @@ use crate::model::Error;
 
 
 
+
 impl SqliteLibraryStore {
+
+    const PEOPLE_FIELDS: &str = "id, name, socials, type, alt, portrait, params, birthday, modified, added, posterv, generated, imdb, slug, tmdb, trakt, death, gender, country, bio";
   
     fn row_to_person(row: &Row) -> rusqlite::Result<Person> {
         Ok(Person {
@@ -25,8 +28,19 @@ impl SqliteLibraryStore {
             added: row.get(9)?,
             posterv: row.get(10)?,
             generated: row.get(11)?,
+
+            imdb: row.get(12)?,
+            slug: row.get(13)?,
+            tmdb: row.get(14)?,
+            trakt: row.get(15)?,
+
+            death: row.get(16)?,
+            gender: row.get(17)?,
+            country: row.get(18)?,
+            bio: row.get(19)?,
         })
     }
+
 
     pub async fn get_people(&self, query: PeopleQuery) -> Result<Vec<Person>> {
         let row = self.connection.call( move |conn| { 
@@ -60,7 +74,7 @@ else 0 end) as score", q, q, q, q, q, q);
                 
             }
 
-            let mut query = conn.prepare(&format!("SELECT id, name, socials, type, alt, portrait, params, birthday, modified, added, posterv, generated{}  FROM people {}{}", score, where_query.format(), where_query.format_order()))?;
+            let mut query = conn.prepare(&format!("SELECT {}{}  FROM people {}{}", Self::PEOPLE_FIELDS, score, where_query.format(), where_query.format_order()))?;
 
             //println!("sql: {:?}", query.expanded_sql());
 
@@ -75,7 +89,7 @@ else 0 end) as score", q, q, q, q, q, q);
     pub async fn get_person(&self, credential_id: &str) -> Result<Option<Person>> {
         let credential_id = credential_id.to_string();
         let row = self.connection.call( move |conn| { 
-            let mut query = conn.prepare("SELECT id, name, socials, type, alt, portrait, params, birthday, modified, added, posterv, generated FROM people WHERE id = ?")?;
+            let mut query = conn.prepare(&format!("SELECT {} FROM people WHERE id = ?", Self::PEOPLE_FIELDS))?;
             let row = query.query_row(
             [credential_id],Self::row_to_person).optional()?;
             Ok(row)
@@ -100,6 +114,18 @@ else 0 end) as score", q, q, q, q, q, q);
             where_query.add_update(&update.params, "params");
             where_query.add_update(&update.birthday, "birthday");
             where_query.add_update(&update.generated, "generated");
+            
+            where_query.add_update(&update.imdb, "imdb");
+            where_query.add_update(&update.slug, "slug");
+            where_query.add_update(&update.tmdb, "tmdb");
+            where_query.add_update(&update.trakt, "trakt");
+
+            
+            
+            where_query.add_update(&update.bio, "bio");
+            where_query.add_update(&update.gender, "gender");
+            where_query.add_update(&update.death, "death");
+            where_query.add_update(&update.country, "country");
 
             let alts = replace_add_remove_from_array(existing.alt, update.alt, update.add_alts, update.remove_alts);
             let v = to_pipe_separated_optional(alts);
@@ -132,14 +158,18 @@ else 0 end) as score", q, q, q, q, q, q);
 
     pub async fn add_person(&self, person: PersonForInsert) -> Result<()> {
         self.connection.call( move |conn| { 
+            
+            let id = person.id;
+            let person = person.person;
             let socials = if let Some(soc) = person.socials {
                 Some(serde_json::to_string(&soc).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?)
             } else {
                 None
             };
-            conn.execute("INSERT INTO people (id, name, socials, type, alt, portrait, params, birthday, generated)
-            VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?)", params![
-                person.id,
+
+            conn.execute("INSERT INTO people (id, name, socials, type, alt, portrait, params, birthday, generated, imdb, slug, tmdb, trakt, death, gender, country, bio)
+            VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params![
+                id,
                 person.name,
                 socials,
                 person.kind,
@@ -147,9 +177,20 @@ else 0 end) as score", q, q, q, q, q, q);
                 person.portrait,
                 person.params,
                 person.birthday,
-                person.generated
+                person.generated,
+
+                person.imdb,
+                person.slug,
+                person.tmdb,
+                person.trakt,
+                
+                person.death,
+                person.gender,
+                person.country,
+                person.bio
+                
             ])?;
-            
+
             Ok(())
         }).await?;
         Ok(())

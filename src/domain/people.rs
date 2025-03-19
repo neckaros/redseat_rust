@@ -1,11 +1,12 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+
 use super::ElementAction;
-use rs_plugin_common_interfaces::url::RsLink;
+use rs_plugin_common_interfaces::{url::RsLink, Gender};
 
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Person {
     pub id: String,
@@ -27,6 +28,18 @@ pub struct Person {
     pub posterv: u32,
     #[serde(default)]
     pub generated: bool,
+
+
+    pub imdb: Option<String>,
+    pub slug: Option<String>,
+    pub tmdb: Option<u64>,
+    pub trakt: Option<u64>,
+
+        
+    pub death: Option<i64>,
+    pub gender: Option<Gender>,
+    pub country: Option<String>,
+    pub bio: Option<String>,
 }
 
 

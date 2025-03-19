@@ -11,6 +11,7 @@ use unidecode::unidecode;
 mod trakt_show;
 mod trakt_episode;
 mod trakt_movie;
+mod trakt_people;
 
 #[derive(Debug, Clone)]
 pub struct TraktContext {
