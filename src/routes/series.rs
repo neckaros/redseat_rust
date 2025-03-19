@@ -1,10 +1,10 @@
 
 use std::io::Cursor;
 
-use crate::{domain::serie::Serie, model::{episodes::EpisodeQuery, series::{SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, tools::image_tools::ImageType, Error, Result};
+use crate::{domain::{serie::Serie}, error::RsError, model::{episodes::EpisodeQuery, series::{SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post, put}, Json, Router};
 use futures::TryStreamExt;
-use rs_plugin_common_interfaces::lookup::RsLookupMovie;
+use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, lookup::RsLookupMovie, ExternalImage, ImageType};
 use serde_json::{json, Value};
 use tokio::io::AsyncRead;
 use tokio_util::io::{ReaderStream, StreamReader};
@@ -29,6 +29,8 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/:id", delete(handler_delete))
 		.route("/:id/image", get(handler_image))
 		.route("/:id/image", post(handler_post_image))
+		.route("/:id/image/search", get(handler_image_search))
+		.route("/:id/image/fetch", post(handler_image_fetch))
 		.with_state(mc.clone())
 		.nest("/:id/", super::episodes::routes(mc))
         
@@ -118,16 +120,44 @@ async fn handler_image(Path((library_id, serie_id)): Path<(String, String)>, Sta
 		let body = Body::from_stream(stream);
 		
 		Ok((headers, body).into_response())
-	} else if query.kind.as_ref().unwrap_or(&ImageType::Poster) == &ImageType::Card {
-		let reader_response = mc.serie_image(&library_id, &serie_id, Some(ImageType::Background), query.size, &user).await?;
-		let headers = reader_response.hearders().map_err(|_| Error::GenericRedseatError)?;
-		let stream = ReaderStream::new(reader_response.stream);
-		let body = Body::from_stream(stream);
-		
-		Ok((headers, body).into_response())
+	} else if query.defaulting { 
+		if query.kind.as_ref().unwrap_or(&ImageType::Poster) == &ImageType::Card {
+			let reader_response = mc.serie_image(&library_id, &serie_id, Some(ImageType::Background), query.size, &user).await?;
+			let headers = reader_response.hearders().map_err(|_| Error::GenericRedseatError)?;
+			let stream = ReaderStream::new(reader_response.stream);
+			let body = Body::from_stream(stream);
+			
+			Ok((headers, body).into_response())
+		} else {
+			Err(Error::NotFound)
+		}
 	} else {
-		Err(Error::NotFound)
+		Err(RsError::NotFound)
 	}
+}
+
+async fn handler_image_search(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ImageRequestOptions>) -> Result<Json<Value>> {
+	let serie = mc.get_serie(&library_id, serie_id, &user).await?.ok_or(RsError::NotFound)?;
+	let ids: RsIds = serie.into();
+	let result = mc.get_serie_images(&ids).await?;
+
+	Ok(Json(json!(result)))
+}
+
+
+
+
+
+async fn handler_image_fetch(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(externalImage): Json<ExternalImage>) -> Result<Json<Value>> {
+	let url = externalImage.url;
+
+	let kind = externalImage.kind.ok_or(RsError::Error("Missing image type".to_string()))?;
+
+	let mut reader = mc.url_to_reader(&library_id, url, &user).await?;
+
+	mc.update_serie_image(&library_id, &serie_id, &kind, reader.stream, &user).await?;
+	
+    Ok(Json(json!({"data": "ok"})))
 }
 
 #[debug_handler]
@@ -137,7 +167,6 @@ async fn handler_post_image(Path((library_id, serie_id)): Path<(String, String)>
 		//let filename = field.file_name().unwrap().to_string();
 		//let mime: String = field.content_type().unwrap().to_string();
         //let data = field.bytes().await.unwrap();
-
 		let mut reader = StreamReader::new(field.map_err(|multipart_error| {
 			std::io::Error::new(std::io::ErrorKind::Other, multipart_error)
 		}));
@@ -148,6 +177,8 @@ async fn handler_post_image(Path((library_id, serie_id)): Path<(String, String)>
 		let reader = Box::pin(Cursor::new(data));
         //println!("Length of `{}` {}  {} is {} bytes", name, filename, mime, data.len());
 		mc.update_serie_image(&library_id, &serie_id, &query.kind, reader, &user).await?;
+		
+
     }
 	
     Ok(Json(json!({"data": "ok"})))

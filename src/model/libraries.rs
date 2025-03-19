@@ -1,11 +1,11 @@
-use std::{cmp::Ordering, str::FromStr};
+use std::{cmp::Ordering, collections::HashSet, str::FromStr};
 
 use nanoid::nanoid;
 use rs_plugin_common_interfaces::RsRequest;
 use serde::{Deserialize, Serialize};
-use tokio::fs::{create_dir_all, read_dir};
+use tokio::{fs::{create_dir_all, read_dir}, io::AsyncReadExt};
 
-use crate::{domain::{library::{LibraryLimits, LibraryMessage, LibraryRole, LibraryType, ServerLibrary, ServerLibrarySettings, UserMapping}, ElementAction}, error::RsResult, plugins::sources::{path_provider::PathProvider, Source, SourceRead}, tools::auth::{sign_local, ClaimsLocal, ClaimsLocalType}};
+use crate::{domain::{library::{LibraryLimits, LibraryMessage, LibraryRole, LibraryType, ServerLibrary, ServerLibrarySettings, UserMapping}, ElementAction}, error::RsResult, plugins::sources::{path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source, SourceRead}, tools::auth::{sign_local, ClaimsLocal, ClaimsLocalType}};
 
 use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
 
@@ -225,8 +225,7 @@ impl ModelController {
 		}
 	}
 
-    pub async fn get_internal_library(&self, library_id: &str, requesting_user: &ConnectedUser) -> Result<Option<super::libraries::ServerLibrary>> {
-        requesting_user.check_library_role(&library_id, LibraryRole::Read)?;
+    pub async fn get_internal_library(&self, library_id: &str) -> Result<Option<super::libraries::ServerLibrary>> {
 		let lib = self.store.get_library(library_id).await?;
 		Ok(lib)
 	}
@@ -244,17 +243,62 @@ impl ModelController {
 
 	}
 
-    pub async fn get_library_mapped_user(&self, library_id: &str, requesting_user: &ConnectedUser) -> Result<String> {
-        let mut user_id = requesting_user.user_id()?;
-        let library = self.get_library(library_id, requesting_user).await?.ok_or(Error::NotFound)?;
-        if let Some(mapping) = library.settings.and_then(|m| m.map_progress) {
+    /// Get list of user id this user is currently mapped from
+    /// Exemple if user A is mapped to B then passing user A will return B  
+    pub async fn get_library_progress_user_mappings(&self, library_id: &str, user_id: String) -> Result<Vec<String>> {
+        let mut mappings = vec![];
+        let library = self.get_internal_library(library_id).await?.ok_or(Error::NotFound)?;
+        if let Some(mapping) = library.settings.map_progress {
+            let filtered = mapping.into_iter().filter(|m| m.from == user_id);
+            for mapping in filtered {
+                mappings.push(mapping.to);
+            }
+        }
+        return Ok(mappings)
+	}
+
+    /// Get list of user id this user is currently mapped to
+    /// Exemple if user A is mapped to B then passing user B will return A  
+    pub async fn get_library_progress_user_mapped(&self, library_id: &str, user_id: String) -> Result<Vec<String>> {
+        let mut mappings = vec![];
+        let library = self.get_internal_library(library_id).await?.ok_or(Error::NotFound)?;
+        if let Some(mapping) = library.settings.map_progress {
+            let filtered = mapping.into_iter().filter(|m| m.to == user_id);
+            for mapping in filtered {
+                mappings.push(mapping.from);
+            }
+        }
+        return Ok(mappings)
+	}
+
+    /// Get list of users that are either in a to or a from mapping with the *user_id* including *user_id*
+    /// plux all users mapped to those users
+    pub async fn get_library_progress_merged_users(&self, library_id: &str, user_id: String) -> Result<HashSet<String>> {
+        let mut mappings = HashSet::new();
+        let library = self.get_internal_library(library_id).await?.ok_or(Error::NotFound)?;
+        if let Some(mapping) = library.settings.map_progress {
+            let filtered = mapping.iter().filter(|m| m.to == user_id || m.from == user_id);
+            for mapped in filtered {
+                mappings.insert(mapped.from.clone());
+                mappings.insert(mapped.to.clone());
+                let subfil = mapping.iter().filter(|m| &m.to == &mapped.to || &m.from == &mapped.from || &m.to == &mapped.from || &m.from == &mapped.to);
+                for m in subfil {
+                    mappings.insert(m.from.clone());
+                    mappings.insert(m.to.clone());
+                }
+            }
+        }
+        return Ok(mappings)
+	}
+
+    pub async fn get_library_mapped_user(&self, library_id: &str, mut user_id: String) -> Result<String> {
+        let library = self.get_internal_library(library_id).await?.ok_or(Error::NotFound)?;
+        if let Some(mapping) = library.settings.map_progress {
             if let Some(mapping) = mapping.into_iter().find(|m| m.from == user_id) {
                 user_id = mapping.to;
             }
         }
-
         return Ok(user_id)
-
 	}
  
 	pub async fn update_library(&self, library_id: &str, update: ServerLibraryForUpdate, requesting_user: &ConnectedUser) -> Result<Option<super::libraries::ServerLibraryForRead>> {
@@ -405,6 +449,45 @@ impl ModelController {
     
 }
 
+
+impl ModelController {
+
+
+    pub async fn url_to_source(&self, library_id: &str, url: String, requesting_user: &ConnectedUser) -> RsResult<SourceRead> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+
+		let request = RsRequest {
+			url,
+			..Default::default()
+		};
+		let source = SourceRead::Request(request);
+
+       
+		Ok(source)
+	}
+
+    pub async fn url_to_reader(&self, library_id: &str, url: String, requesting_user: &ConnectedUser) -> RsResult<FileStreamResult<AsyncReadPinBox>> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        let source = self.url_to_source(library_id, url, requesting_user).await?;
+		
+		let mut reader = source.into_reader(Some(library_id), None, None, Some((self.clone(), requesting_user)), None).await?;
+       
+		Ok(reader)
+	}
+
+        
+	pub async fn url_to_bufer(&self, library_id: &str, url: String, requesting_user: &ConnectedUser) -> RsResult<Vec<u8>> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        let mut reader = self.url_to_reader(library_id, url, requesting_user).await?;
+        // Create a buffer to hold the data
+        let mut buffer = Vec::new();
+
+        // Read the entire file into the buffer
+        reader.stream.read_to_end(&mut buffer).await?;
+        
+		Ok(buffer)
+	}
+}
 
 #[cfg(test)]
 mod tests {

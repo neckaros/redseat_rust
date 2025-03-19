@@ -91,6 +91,8 @@ impl SqliteLibraryStore {
                     log_info(LogServiceType::Database, format!("Update Library Database to version: {}", version));                   
                 }
                 
+                conn.execute("VACUUM;", params![])?;
+
                 Ok((initial_version, version))
         }).await?;
 

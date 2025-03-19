@@ -1,6 +1,7 @@
+use rs_plugin_common_interfaces::ImageType;
 use serde::{Deserialize, Serialize};
 
-use crate::tools::image_tools::{ImageSize, ImageType};
+use crate::tools::image_tools::ImageSize;
 
 pub mod ping;
 pub mod infos;
@@ -25,7 +26,10 @@ pub mod medias;
 pub struct ImageRequestOptions {
     size: Option<ImageSize>,
     #[serde(rename = "type")]
-    kind: Option<ImageType>
+    kind: Option<ImageType>,
+    #[serde(default)]
+    defaulting: bool
+
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

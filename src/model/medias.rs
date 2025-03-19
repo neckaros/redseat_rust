@@ -12,7 +12,7 @@ use mime::{Mime, APPLICATION_OCTET_STREAM};
 use mime_guess::get_mime_extensions_str;
 use nanoid::nanoid;
 use query_external_ip::SourceError;
-use rs_plugin_common_interfaces::{request::{RsRequest, RsRequestStatus}, url::{RsLink, RsLinkType}, PluginType};
+use rs_plugin_common_interfaces::{request::{RsRequest, RsRequestStatus}, url::{RsLink, RsLinkType}, PluginType, RsCookie};
 use rusqlite::{types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, ToSql};
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
@@ -21,9 +21,9 @@ use tokio_stream::StreamExt;
 use tokio_util::{compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt}, io::{ReaderStream, StreamReader, SyncIoBridge}};
 use zip::ZipWriter;
 
-use crate::{domain::{deleted::RsDeleted, library::LibraryType, media::{self, ConvertMessage, ConvertProgress, RsGpsPosition, DEFAULT_MIME}, plugin, MediaElement}, error::RsError, model::store::sql::SqlOrder, plugins::sources::{path_provider::PathProvider, Source}, routes::infos, tools::{file_tools::{filename_from_path, remove_extension}, image_tools::{convert_image_reader, image_infos, IMAGES_MIME_FULL_BROWSER_SUPPORT}, video_tools::{VideoCommandBuilder, VideoConvertRequest, VideoOverlayPosition}}};
+use crate::{domain::{deleted::RsDeleted, library::LibraryType, media::{self, ConvertMessage, ConvertProgress, RsGpsPosition, DEFAULT_MIME}, plugin, MediaElement}, error::RsError, model::store::sql::SqlOrder, plugins::sources::{path_provider::PathProvider, Source}, routes::infos, tools::{file_tools::{filename_from_path, remove_extension}, image_tools::{convert_image_reader, image_infos, IMAGES_MIME_FULL_BROWSER_SUPPORT}, recognition, video_tools::{VideoCommandBuilder, VideoConvertRequest, VideoOverlayPosition}}};
 
-use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaItemReference, MediaWithAction, MediasMessage, ProgressMessage}, progress::{RsProgress, RsProgressType}, ElementAction}, error::RsResult, plugins::{get_plugin_fodler, sources::{async_reader_progress::ProgressReader, error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{self, resize_image_reader, ImageSize, ImageType}, log::{log_error, log_info, LogServiceType}, prediction::{predict_net, preload_model, PredictionTagResult}, video_tools::{self, probe_video, VideoTime}}};
+use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaItemReference, MediaWithAction, MediasMessage, ProgressMessage}, progress::{RsProgress, RsProgressType}, ElementAction}, error::RsResult, plugins::{get_plugin_fodler, sources::{async_reader_progress::ProgressReader, error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{self, resize_image_reader, ImageSize}, log::{log_error, log_info, LogServiceType}, prediction::{predict_net, preload_model, PredictionTagResult}, video_tools::{self, probe_video, VideoTime}}};
 
 use super::{error::{Error, Result}, plugins::PluginQuery, store::{self, sql::library::medias::MediaBackup}, users::ConnectedUser, ModelController, VideoConvertQueueElement};
 
@@ -179,7 +179,7 @@ impl TryFrom<Media> for MediaSource {
 impl ModelController {
 
 	pub async fn get_medias(&self, library_id: &str, query: MediaQuery, requesting_user: &ConnectedUser) -> Result<Vec<Media>> {
-        let progress_user = self.get_library_mapped_user(library_id, requesting_user).await.ok();
+        let progress_user = self.get_library_mapped_user(library_id, requesting_user.user_id()?).await.ok();
         let mut limits = requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         limits.user_id = progress_user;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
@@ -463,9 +463,9 @@ impl ModelController {
                 if let Some(local_path) = local_path {
                     let archive = std::fs::File::open(local_path)?;
                     let buffreader = std::io::BufReader::new(archive);
-                    let mut archive = zip::ZipArchive::new(buffreader).unwrap();
-
-                    let mut file = archive.by_index(query.page.unwrap_or(1) as usize - 1).unwrap();
+                    let mut archive = zip::ZipArchive::new(buffreader).map_err(|_| RsError::Error(format!("Unable to open zip file")))?;
+                    let pages = archive.len();
+                    let mut file = archive.by_index(query.page.unwrap_or(1) as usize - 1).map_err(|_| RsError::Error(format!("Unable to get file at page {:?}. Files in zip: {}", query.page, pages)))?;
 
                     let mut data = Vec::new();
                     file.read_to_end(&mut data)?;
@@ -528,6 +528,11 @@ impl ModelController {
         if thumb {
             let _ = self.generate_thumb(library_id, media_id, requesting_user).await;
         }
+        /*println!("parsing");
+        let mut m = self.library_file(library_id, media_id, None, MediaFileQuery::default() , requesting_user).await?.into_reader(Some(library_id), None, None, Some((self.clone(), &requesting_user)), None).await?;
+        let image = image_tools::reader_to_image(&mut m.stream).await?;
+        let r = recognition::pro(image.image);
+        println!("parsed {:?}", r);*/
 
         self.cache_check_library_notcrypt(library_id).await?;
 
@@ -651,6 +656,7 @@ impl ModelController {
 
 
         if files.group.unwrap_or_default() {
+            let thumbnail = files.group_thumbnail_url.clone();
             let mut infos: MediaForUpdate = files.clone().into();
             infos.origin = origin.clone();
 
@@ -663,7 +669,7 @@ impl ModelController {
 
 
             if let Some(origin) = &mut infos.origin {
-                let origin_filename = if let Some(origin_url) = files.origin_url { filename_from_path(&origin_url) } else { None };
+                let origin_filename = if let Some(origin_url) = files.origin_url.clone() { filename_from_path(&origin_url) } else { None };
                 origin.file = origin_filename;
                 if !infos.ignore_origin_duplicate {
                     let existing = store.get_media_by_origin(origin.clone()).await;
@@ -695,7 +701,6 @@ impl ModelController {
             let mut total_size = 0u64;
             let len = requests.len() as u64;
             for request in requests {
-                
                 
                 let reader = SourceRead::Request(request.clone()).into_reader(Some(library_id), None, 
                     None, Some((self.clone(), &ConnectedUser::ServerAdmin)), None).await;
@@ -748,10 +753,46 @@ impl ModelController {
             let id = nanoid!();
             store.add_media(MediaForInsert { id: id.clone(), media: new_file }).await?;
             self.update_media(library_id, id.to_owned(), infos, false, requesting_user).await?;
-            let r = self.generate_thumb(&library_id, &id, &ConnectedUser::ServerAdmin).await;
-            if let Err(r) = r {
-                log_error(crate::tools::log::LogServiceType::Source, format!("Unable to generate thumb {:#}", r));
+
+            let mut loaded_thumb = false;
+            if let Some(thumbUrl) = thumbnail {
+                let headers = files.headers_as_tuple();
+                let request = RsRequest {
+                    upload_id: None,
+                    url: thumbUrl,
+                    mime: None,
+                    size: None,
+                    filename: None,
+                    status: RsRequestStatus::Unprocessed,
+                    headers: headers.clone(),
+                    cookies: files.cookies.as_ref().and_then(|c| c.iter().map(|s| RsCookie::from_str(s).ok()).collect()),
+                    files: None,
+                    selected_file: None,
+                    referer: files.referer.clone(),
+                    ..Default::default()
+                };
+
+                let thumb_reader = SourceRead::Request(request.clone()).into_reader(Some(library_id), None, 
+                    None, Some((self.clone(), &ConnectedUser::ServerAdmin)), None).await;
+
+                if let Ok(mut reader) = thumb_reader {
+
+                    let r = self.update_media_image(&library_id, &id, reader.stream, &ConnectedUser::ServerAdmin).await;
+                    if r.is_ok() {
+                        println!("Loaded thumb from request");
+                        loaded_thumb = true;
+                    }
+                }
+
             }
+
+            if !loaded_thumb {
+                let r = self.generate_thumb(&library_id, &id, &ConnectedUser::ServerAdmin).await;
+                if let Err(r) = r {
+                    log_error(crate::tools::log::LogServiceType::Source, format!("Unable to generate thumb {:#}", r));
+                }
+            }
+            
 
             let media = store.get_media(&id, requesting_user.user_id().ok()).await?.ok_or(Error::NotFound)?;
             let _ = tx_progress.send(RsProgress { id: upload_id.clone(), total: media.size, current: media.size, kind: RsProgressType::Finished, filename: Some(media.name.to_owned()) }).await;
@@ -960,7 +1001,7 @@ impl ModelController {
         let m = self.source_for_library(library_id).await?; 
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         let media = store.get_media(media_id, requesting_user.user_id().ok()).await?.ok_or(Error::NotFound)?;
-        println!("GENERATE THUMB {:?}", media.kind);
+        //println!("GENERATE THUMB {:?}", media.kind);
         let thumb = match media.kind {
             FileType::Photo => { 
                 let media_source: MediaSource = media.try_into()?;
@@ -1129,6 +1170,7 @@ impl ModelController {
         let local = self.library_source_for_library(&element.library).await?; 
         let path = m.local_path(media.source.as_ref().ok_or(Error::ServiceError("Convert".to_owned(), Some("Unable to convert video without source".to_owned())))?).ok_or(Error::ServiceError("Convert".to_owned(), Some("Unable to convert video that is not local".to_owned())))?;
  
+        let path = path.to_str().ok_or(RsError::Error(format!("Unable to convert video path to string: {:?}", path)))?.to_string();
         let filename = element.status.filename;
         let dest_source = format!(".cache/{}", filename);
         let dest = local.get_full_path(&dest_source);
@@ -1174,7 +1216,7 @@ impl ModelController {
             }
         });
 
-        let mut video_builder = VideoCommandBuilder::new();
+        let mut video_builder = VideoCommandBuilder::new(path).await;
         video_builder.set_progress(tx_progress);
 
 
@@ -1190,7 +1232,7 @@ impl ModelController {
         }
         let progress_id = element.request.id.clone();
         video_builder.set_request(element.request.clone()).await?;
-        video_builder.run_file(path.to_str().unwrap(), dest.to_str().unwrap()).await?;
+        video_builder.run_file(dest.to_str().unwrap()).await?;
         let message = ConvertMessage {
             library: element.library.to_string(),
             progress: ConvertProgress {
@@ -1278,7 +1320,7 @@ impl ModelController {
         requesting_user.check_file_role(library_id, media_id, LibraryRole::Write)?;
         self.cache_check_library_notcrypt(library_id).await?;
         let media = self.get_media(library_id, media_id.to_owned(), requesting_user).await?.ok_or(crate::model::Error::MediaNotFound(media_id.to_string()))?;
-        println!("media: {:?}", media);
+
         let mut update = MediaForUpdate::default();
         let m = self.source_for_library(&library_id).await?;
         m.fill_infos(&media.source.unwrap_or_default(), &mut update).await?;

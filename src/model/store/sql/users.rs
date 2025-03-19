@@ -1,7 +1,8 @@
+use rs_plugin_common_interfaces::domain::rs_ids::RsIds;
 use rusqlite::{params, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, Row, ToSql};
 use serde::{Deserialize, Serialize};
 
-use crate::{domain::{library::LibraryLimits, view_progress::{ViewProgress, ViewProgressForAdd}, watched::{Watched, WatchedForAdd}, MediasIds}, model::{store::{from_comma_separated, sql::library, SqliteStore}, users::{HistoryQuery, ServerUser, ServerUserForUpdate, ServerUserLibrariesRights, ServerUserLibrariesRightsWithUser, ServerUserPreferences, UploadKey, UserRole, ViewProgressQuery}}};
+use crate::{domain::{library::LibraryLimits, view_progress::{ViewProgress, ViewProgressForAdd}, watched::{Watched, WatchedForAdd}}, model::{store::{from_comma_separated, sql::library, SqliteStore}, users::{HistoryQuery, ServerUser, ServerUserForUpdate, ServerUserLibrariesRights, ServerUserLibrariesRightsWithUser, ServerUserPreferences, UploadKey, UserRole, ViewProgressQuery}}};
 
 use super::{super::Error, deserialize_from_row, OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType};
 use super::Result;
@@ -242,7 +243,7 @@ impl SqliteStore {
     }
 
 
-    pub async fn get_watched(&self, query: HistoryQuery, user_id: String) -> Result<Vec<Watched>> {
+    pub async fn get_watched(&self, query: HistoryQuery, user_id: String, other_users: Vec<String>) -> Result<Vec<Watched>> {
         let row = self.server_store.call( move |conn| { 
             let mut where_query = RsQueryBuilder::new();
             if let Some(q) = query.after {
@@ -255,7 +256,18 @@ impl SqliteStore {
                 }
                 where_query.add_where(SqlWhereType::Or(types));
             }
-            where_query.add_where(SqlWhereType::Equal("user_ref".to_owned(), Box::new(user_id)));
+            if other_users.len() > 0 {
+                let mut types = vec![];
+                 types.push(SqlWhereType::Equal("user_ref".to_owned(), Box::new(user_id)));
+                 for other_user in other_users {
+                    types.push(SqlWhereType::Equal("user_ref".to_owned(), Box::new(other_user)));
+                 }
+                 
+                where_query.add_where(SqlWhereType::Or(types));
+            } else {
+                where_query.add_where(SqlWhereType::Equal("user_ref".to_owned(), Box::new(user_id)));
+            }
+            
             
             if let Some(ids) = query.id {
                 let ids: Vec<String> = ids.into();
@@ -301,6 +313,15 @@ impl SqliteStore {
 
 
 }
+
+
+// Copy watched
+/*BEGIN TRANSACTION;
+INSERT INTO Watched (type, id, user_ref, date, modified)
+SELECT type, id, '7YDaetkfMjcbf9cNlJLZsVtwbNu2', date, modified
+FROM Watched
+WHERE user_ref = 'VMBGvIefEVhfRoa7Fu7cXXcfdux1';
+COMMIT; */
 
 /// Progress Store
 impl SqliteStore {
@@ -352,7 +373,7 @@ impl SqliteStore {
     }
 
 
-    pub async fn get_view_progess(&self, ids: MediasIds, user_id: String) -> Result<Option<ViewProgress>> {
+    pub async fn get_view_progess(&self, ids: RsIds, user_id: String) -> Result<Option<ViewProgress>> {
         let row = self.server_store.call( move |conn| { 
             let mut builder_query = RsQueryBuilder::new();
 

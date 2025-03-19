@@ -197,7 +197,7 @@ impl RsRequestHeader for RequestBuilder {
         for (key, value) in request.headers.as_ref().unwrap_or(&vec![]) {
             headers.insert(reqwest::header::HeaderName::from_lowercase(key.to_lowercase().as_bytes()).map_err(|_| Error::UnableToFormatHeaders)?, reqwest::header::HeaderValue::from_str(value).map_err(|_| Error::UnableToFormatHeaders)?);
         }
-        println!("Headers for request builder {:?}", headers);
+        //println!("Headers for request builder {:?}", headers);
 
         if let Some(referer) = &request.referer {
 
@@ -207,9 +207,9 @@ impl RsRequestHeader for RequestBuilder {
             let (key, val) = range.header();
             headers.insert(key, val);
         }
-
-        headers.insert(reqwest::header::USER_AGENT, reqwest::header::HeaderValue::from_str("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36").map_err(|_| Error::UnableToFormatHeaders)?);
-        
+        if !headers.contains_key(reqwest::header::USER_AGENT) {
+            headers.insert(reqwest::header::USER_AGENT, reqwest::header::HeaderValue::from_str("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36").map_err(|_| Error::UnableToFormatHeaders)?);
+        }
         let request = self.headers(headers);
         Ok(request)
     }
@@ -248,7 +248,7 @@ impl SourceRead {
                         }
                     },
                     RsRequestStatus::FinalPrivate | RsRequestStatus::FinalPublic => {
-                      
+                       
                         let client = reqwest::Client::new();
                         let r = client.get(request.url.clone())
                             .add_request_headers(&request, &range)?

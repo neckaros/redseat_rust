@@ -1,5 +1,5 @@
 
-use crate::{domain::library::{LibraryLimits, LibraryRole}, model::{deleted::DeletedQuery, libraries::{ServerLibraryForAdd, ServerLibraryForUpdate}, media_progresses::MediaProgressesQuery, media_ratings::MediaRatingsQuery, users::ConnectedUser, ModelController}, tools::scheduler::backup::BackupTask, Error, Result};
+use crate::{domain::library::{LibraryLimits, LibraryRole}, model::{deleted::DeletedQuery, libraries::{ServerLibraryForAdd, ServerLibraryForUpdate}, media_progresses::MediaProgressesQuery, media_ratings::MediaRatingsQuery, users::ConnectedUser, ModelController}, tools::scheduler::{backup::BackupTask, refresh::RefreshTask, RsSchedulerTask}, Error, Result};
 use axum::{extract::{Path, Query, State}, response::Response, routing::{delete, get, patch, post}, Json, Router};
 use hyper::StatusCode;
 use serde::Deserialize;
@@ -21,6 +21,7 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/", post(handler_post))
 		
 		.route("/:id/clean", get(handler_clean))
+		.route("/:id/refresh", get(handler_refresh))
 
 		.route("/:id/invitation", post(handler_invitation))
 		.with_state(mc)
@@ -100,6 +101,17 @@ async fn handler_clean(Path(library_id): Path<String>, State(mc): State<ModelCon
 	let cleaned = mc.clean_library(&library_id, &user).await?;
 		
 	Ok(Json(json!(cleaned)))
+}
+
+async fn handler_refresh(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	let task = RefreshTask {
+		specific_library: Some(library_id)
+	};
+	tokio::spawn(async move {
+		task.execute(mc).await;
+	});
+		
+	Ok(Json(json!({"started": true})))
 }
 
 #[derive(Deserialize)]

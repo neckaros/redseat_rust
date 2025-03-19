@@ -1,12 +1,12 @@
 use std::u64;
 
 use chrono::Utc;
-use rs_plugin_common_interfaces::url::RsLink;
+use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, url::RsLink};
 use rusqlite::{params, params_from_iter, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, Row, ToSql};
 use serde::{Deserialize, Serialize};
 use stream_map_any::StreamMapAnyVariant;
 
-use crate::{domain::{library::LibraryLimits, media::{self, FileEpisode, FileType, Media, MediaForInsert, MediaForUpdate, MediaItemReference, RsGpsPosition}, MediasIds}, error::RsResult, model::{medias::{MediaQuery, MediaSource, RsSort}, people::PeopleQuery, series::SerieQuery, store::{from_comma_separated_optional, from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType}, to_comma_separated_optional, to_pipe_separated_optional}, tags::{TagForInsert, TagForUpdate, TagQuery}}, tools::{array_tools::AddOrSetArray, file_tools::{file_type_from_mime, get_mime_from_filename}, log::{log_info, LogServiceType}, text_tools::{extract_people, extract_tags}}};
+use crate::{domain::{library::LibraryLimits, media::{self, FileEpisode, FileType, Media, MediaForInsert, MediaForUpdate, MediaItemReference, RsGpsPosition}}, error::RsResult, model::{medias::{MediaQuery, MediaSource, RsSort}, people::PeopleQuery, series::SerieQuery, store::{from_comma_separated_optional, from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType}, to_comma_separated_optional, to_pipe_separated_optional}, tags::{TagForInsert, TagForUpdate, TagQuery}}, tools::{array_tools::AddOrSetArray, file_tools::{file_type_from_mime, get_mime_from_filename}, log::{log_info, LogServiceType}, text_tools::{extract_people, extract_tags}}};
 use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -55,40 +55,8 @@ impl RsSort {
     }
 }
 
-impl TryFrom<Vec<String>> for MediasIds {
-    type Error = crate::Error;
-    
-    fn try_from(values: Vec<String>) -> RsResult<Self> {
-        let mut ids = Self::default();
-        for value in values {
-            ids.try_add(value)?;
-        }
-        Ok(ids)
-    }
-}
 
-impl From<MediasIds> for Vec<String> {
-    
-    fn from(value: MediasIds) -> Self {
-        let mut ids = vec![];
-        if let Some(id) = value.as_redseat() {
-            ids.push(id)
-        }
-        if let Some(id) = value.as_imdb() {
-            ids.push(id)
-        }
-        if let Some(id) = value.as_tmdb() {
-            ids.push(id.to_string())
-        }
-        if let Some(id) = value.as_trakt() {
-            ids.push(id.to_string())
-        }
-        if let Some(id) = value.as_tvdb() {
-            ids.push(id.to_string())
-        }
-        ids
-    }
-}
+
 
 
 const MEDIA_QUERY: &str = "SELECT 
@@ -424,7 +392,6 @@ impl SqliteLibraryStore {
 
     pub async fn get_medias(&self, query: MediaQuery, limits: LibraryLimits) -> Result<Vec<Media>> {
         let row = self.connection.call( move |conn| { 
-            println!("progress user, {:?}", limits.user_id);
             let media_raw_query = media_query(&limits.user_id);
             
             let limit = query.limit.unwrap_or(200);
@@ -624,6 +591,7 @@ impl SqliteLibraryStore {
     }
 
     pub async fn update_media(&self, media_id: &str, mut update: MediaForUpdate, user_id: Option<String>) -> Result<()> {
+        println!("update {:?}",update);
         let id = media_id.to_string();
         let existing = self.get_media(media_id, user_id.clone()).await?.ok_or_else( || Error::NotFound)?;
 
@@ -701,11 +669,13 @@ impl SqliteLibraryStore {
 
         // Find serie with lookup 
         if let Some(lookup_series) = update.series_lookup {
+            
             let mut found_series: Vec<FileEpisode> = vec![];
             for lookup_serie in lookup_series {
                 let found = self.get_series(SerieQuery { name: Some(lookup_serie), ..Default::default()}).await?;
                 if let Some(serie) = found.first() {
-                    found_series.push(FileEpisode { id: serie.id.to_string(), season: None, episode: None });
+                    
+                    found_series.push(FileEpisode { id: serie.id.to_string(), season: update.season, episode: update.episode, episode_to: None });
                 }
             }
             if !found_series.is_empty() {
@@ -824,9 +794,21 @@ impl SqliteLibraryStore {
             if let Some(add_serie) = update.add_series {
                 for file_episode in add_serie {
                     if !all_series.contains(&file_episode) {
-                        let r = conn.execute("INSERT INTO media_serie_mapping (media_ref, serie_ref, season, episode) VALUES (? ,? , ?, ?) ", params![id, file_episode.id, file_episode.season, file_episode.episode]);
-                        if let Err(error) = r {
-                            log_info(LogServiceType::Source, format!("unable to add serie {:?}: {:?}", file_episode, error));
+                        let mut current_episode = file_episode.episode.clone();
+                        loop {
+                            let r = conn.execute("INSERT INTO media_serie_mapping (media_ref, serie_ref, season, episode) VALUES (? ,? , ?, ?) ", params![id, file_episode.id, file_episode.season, current_episode]);
+                            if let Err(error) = r {
+                                log_info(LogServiceType::Source, format!("unable to add serie {:?}: {:?}", file_episode, error));
+                            }
+                            if let (Some(current), Some(to)) = (current_episode, file_episode.episode_to) {
+                                if current < to {
+                                    current_episode = Some(current + 1);
+                                } else {
+                                    break;
+                                }
+                            } else {
+                                break;
+                            }
                         }
                     }
                 }

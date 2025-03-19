@@ -71,6 +71,13 @@ pub struct Movie {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub progress: Option<u64>,
 
+    #[serde(default)]
+    pub posterv: u64,
+    #[serde(default)]
+    pub backgroundv: u64,
+    #[serde(default)]
+    pub cardv: u64
+
 }
 
 
@@ -121,10 +128,17 @@ impl MovieForUpdate {
 }
 
 
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")] 
+pub struct MovieWithAction {
+    pub action: ElementAction,
+    pub movie: Movie
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")] 
 pub struct MoviesMessage {
     pub library: String,
-    pub action: ElementAction,
-    pub movies: Vec<Movie>
+    pub movies: Vec<MovieWithAction>
 }

@@ -1,7 +1,8 @@
+use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, ImageType};
 use rusqlite::{params, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, Row, ToSql};
 
 use super::{Result, SqliteLibraryStore};
-use crate::{domain::{movie::{Movie, MovieForUpdate, MovieStatus}, MediasIds}, model::{movies::MovieQuery, store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType}, to_pipe_separated_optional}, Error}, tools::{array_tools::replace_add_remove_from_array, clock::now}};
+use crate::{domain::{movie::{Movie, MovieForUpdate, MovieStatus}}, model::{movies::MovieQuery, store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType}, to_pipe_separated_optional}, Error}, tools::{array_tools::replace_add_remove_from_array, clock::now}};
 
 impl FromSql for MovieStatus {
     fn column_result(value: ValueRef) -> FromSqlResult<Self> {
@@ -55,6 +56,10 @@ impl SqliteLibraryStore {
             modified: row.get(22)?,
             added: row.get(23)?,
 
+            posterv: row.get(24)?,
+            backgroundv: row.get(25)?,
+            cardv: row.get(26)?,
+
             ..Default::default()
 
         })
@@ -87,7 +92,7 @@ impl SqliteLibraryStore {
             lang, original,
             imdb, slug, tmdb, trakt, otherids, 
             imdb_rating, imdb_votes, trakt_rating, trakt_votes, trailer,
-            modified, added FROM movies {}{}", where_query.format(), where_query.format_order()))?;
+            modified, added, posterv, backgroundv, cardv FROM movies {}{}", where_query.format(), where_query.format_order()))?;
             let rows = query.query_map(
             where_query.values(), Self::row_to_movie,
             )?;
@@ -105,7 +110,7 @@ impl SqliteLibraryStore {
             lang, original,
             imdb, slug, tmdb, trakt, otherids, 
             imdb_rating, imdb_votes, trakt_rating, trakt_votes, trailer,
-            modified, added FROM movies WHERE id = ?")?;
+            modified, added, posterv, backgroundv, cardv FROM movies WHERE id = ?")?;
             let row = query.query_row(
             [credential_id],Self::row_to_movie).optional()?;
             Ok(row)
@@ -113,7 +118,7 @@ impl SqliteLibraryStore {
         Ok(row)
     }
 
-    pub async fn get_movie_by_external_id(&self, ids: MediasIds) -> Result<Option<Movie>> {
+    pub async fn get_movie_by_external_id(&self, ids: RsIds) -> Result<Option<Movie>> {
         
         //println!("{}, {}, {}, {}, {}",i.imdb.unwrap_or("zz".to_string()), i.slug.unwrap_or("zz".to_string()), i.tmdb.unwrap_or(0), i.trakt.unwrap_or(0), i.tvdb.unwrap_or(0));
         let row = self.connection.call( move |conn| { 
@@ -123,7 +128,7 @@ impl SqliteLibraryStore {
             lang, original,
             imdb, slug, tmdb, trakt, otherids, 
             imdb_rating, imdb_votes, trakt_rating, trakt_votes, trailer,
-            modified, added FROM movies 
+            modified, added, posterv, backgroundv, cardv FROM movies 
             WHERE 
             imdb = ? or slug = ? or tmdb = ? or trakt = ?")?;
             let row = query.query_row(
@@ -171,6 +176,25 @@ impl SqliteLibraryStore {
             Ok(())
         }).await?;
 
+        Ok(())
+    }
+
+    pub async fn update_movie_image(&self, movie_id: String, kind: ImageType) -> Result<()> {
+
+        self.connection.call( move |conn| { 
+            match kind {
+                ImageType::Poster => conn.execute("update movies set posterv = ifnull(posterv, 0) + 1 WHERE id = ?", params![movie_id])?,
+                ImageType::Background => conn.execute("update movies set backgroundv = ifnull(backgroundv, 0) + 1 WHERE id = ?", params![movie_id])?,
+                ImageType::Still => 0,
+                ImageType::Card => conn.execute("update movies set cardv = ifnull(cardv, 0) + 1 WHERE id = ?", params![movie_id])?,
+                ImageType::ClearLogo => 0,
+                ImageType::ClearArt => 0,
+                ImageType::Custom(_) => 0,
+            };
+
+            
+            Ok(())
+        }).await?;
         Ok(())
     }
 

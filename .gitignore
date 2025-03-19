@@ -24,3 +24,5 @@ redseat-rust.exe
 .DS_Store
 yt-dlp
 .redseat/**.*
+ffmpeg.exe
+ffprobe.exe

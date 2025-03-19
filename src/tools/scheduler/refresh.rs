@@ -71,7 +71,7 @@ impl RsSchedulerTask for RefreshTask {
                         if serie.status != Some(SerieStatus::Ended) && serie.status != Some(SerieStatus::Canceled) {
                             let episodes = mc.refresh_episodes(&library.id, &serie.id, &connected_user).await;
                             if let Err(error) = episodes {
-                                log_error(crate::tools::log::LogServiceType::Scheduler, format!("Error refreshing serie {}: {:#}", serie.name, error));
+                                log_error(crate::tools::log::LogServiceType::Scheduler, format!("Error refreshing serie episodes {}: {:#}", serie.name, error));
                             } else if let Ok(episodes) = episodes {
                                 log_info(crate::tools::log::LogServiceType::Scheduler, format!("Refreshed serie {} espisodes ({})", serie.name, episodes.len()));
                             }

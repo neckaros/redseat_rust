@@ -1,10 +1,11 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use rs_plugin_common_interfaces::domain::rs_ids::RsIds;
 use serde::{Serialize, Deserialize};
 use chrono::{DateTime, Utc};
 use strum_macros::{Display, EnumString};
 
-use crate::domain::{serie::{Serie, SerieStatus}, MediasIds};
+use crate::domain::serie::{Serie, SerieStatus};
 
 #[derive(Debug, Serialize, Deserialize, EnumString, Display, Default)]
 #[serde(rename_all = "lowercase")]
@@ -75,8 +76,8 @@ pub struct TraktIds {
     pub tvrage: Option<u64>,
 }
 
-impl From<MediasIds> for TraktIds {
-    fn from(value: MediasIds) -> Self {
+impl From<RsIds> for TraktIds {
+    fn from(value: RsIds) -> Self {
         TraktIds { trakt: value.trakt, slug: value.slug, tvdb: value.tvdb, imdb: value.imdb, tmdb: value.tmdb, tvrage: value.tvrage }
     }
 }
@@ -151,14 +152,5 @@ impl From<TraktFullShow> for Serie {
 pub struct TraktShowSearchElement {
     pub score: f64,
     pub show: TraktFullShow
-}
-
-
-impl MediasIds {
-    pub fn as_id_for_trakt(&self) -> Option<String> {
-        if let Some(trakt) = self.trakt {
-            Some(trakt.to_string())
-        } else { self.imdb.as_ref().map(|imdb| imdb.to_string()) }
-    }
 }
 

@@ -8,7 +8,7 @@ use axum::{
 };
 use axum_server::tls_rustls::RustlsConfig;
 
-use domain::{ffmpeg, MediasIds};
+use domain::ffmpeg;
 use error::RsError;
 use http::{StatusCode, Uri};
 use hyper::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, REFERRER_POLICY, REFERER};
@@ -74,13 +74,6 @@ async fn main() ->  Result<()> {
         log_info(tools::log::LogServiceType::Register, "Will use ImageMagick for image conversions".to_string());
     }
 
-    /*tokio::spawn(async move {
-        //let tmdb = TmdbContext::new("4a01db3a73eed5cf17e9c7c27fd9d008".to_string()).await.unwrap();
-        //tmdb.serie_image(MediasIds::from_tmdb(236235)).await.unwrap();
-        //trakt.get_serie(&MediasIds { imdb: Some("tt0944947".to_string()), ..Default::default()}).await;
-        //trakt.all_episodes(&MediasIds { imdb: Some("tt0944947".to_string()), ..Default::default()}).await;
-
-    });*/
 
     let register_infos = register().await?;
     let app = app();

@@ -1,6 +1,6 @@
 use std::{cmp::Ordering, str::FromStr};
 
-use rs_plugin_common_interfaces::{MediaType, RsRequest};
+use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, MediaType, RsRequest};
 use rusqlite::{
     types::{FromSql, FromSqlError, FromSqlResult, ValueRef},
     ToSql,
@@ -8,7 +8,7 @@ use rusqlite::{
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
 
-use crate::{domain::{library::{LibraryLimits, LibraryRole, LibraryType}, view_progress::{ViewProgress, ViewProgressForAdd}, watched::{Watched, WatchedForAdd}, MediasIds}, error::RsResult, tools::auth::{ClaimsLocal, ClaimsLocalType}};
+use crate::{domain::{library::{LibraryLimits, LibraryRole, LibraryType}, view_progress::{ViewProgress, ViewProgressForAdd}, watched::{Watched, WatchedForAdd}}, error::RsResult, tools::auth::{ClaimsLocal, ClaimsLocalType}};
 
 use super::{error::{Error, Result}, libraries::ServerLibraryForRead, medias::RsSort, store::sql::{users::WatchedQuery, SqlOrder}, ModelController};
 
@@ -58,6 +58,8 @@ impl ConnectedUser {
     pub fn user_id(&self) -> Result<String> {
         if let ConnectedUser::Server(user) = &self {
             Ok(user.id.clone())
+        } else if let ConnectedUser::ServerAdmin = &self {
+            Ok("admin".to_string())
         } else if let ConnectedUser::Guest(user) = &self {
             Ok(user.id.clone())
         } else {
@@ -384,7 +386,7 @@ pub struct HistoryQuery {
     #[serde(default)]
     pub types: Vec<MediaType>,
 
-    pub id: Option<MediasIds>,
+    pub id: Option<RsIds>,
     
     pub page_key: Option<u64>,
 }
@@ -401,54 +403,77 @@ pub struct ViewProgressQuery {
 
 
 impl ModelController {
-    pub async fn get_watched(&self, query: HistoryQuery, user: &ConnectedUser) -> RsResult<Vec<Watched>> {
+    pub async fn get_watched(&self, query: HistoryQuery, user: &ConnectedUser, library_id: Option<String>) -> RsResult<Vec<Watched>> {
         user.check_role(&UserRole::Read)?;
-        if let ConnectedUser::Server(user) = user {
-            Ok(self.store.get_watched(query, user.id.clone()).await?)
+        if matches!(user, ConnectedUser::ServerAdmin) {
+            return Ok(vec![])
+        }
+        let user_id = user.user_id()?;
+        let watcheds = self.store.get_watched( query, user_id, vec![]).await?;
+        Ok(watcheds)       
+    }
+
+    pub async fn add_watched(&self, watched: WatchedForAdd, user: &ConnectedUser, library_id: Option<String>) -> RsResult<()> {
+        user.check_role(&UserRole::Read)?;
+
+        let user_id = user.user_id()?;
+        if let Some(library_id) = library_id {
+            let all_ids = self.get_library_progress_merged_users(&library_id, user_id).await?;
+            for id in all_ids {
+                self.store.add_watched(watched.clone(), id).await?;
+            }
         } else {
-            Ok(vec![])
-        }
-        
-    }
-
-    pub async fn add_watched(&self, watched: WatchedForAdd, user: &ConnectedUser) -> RsResult<()> {
-        user.check_role(&UserRole::Read)?;
-        if let ConnectedUser::Server(user) = user {
-            self.store.add_watched(watched, user.id.clone()).await?
-        }
-        ;
-        Ok(())
-    }
-
-    pub async fn add_view_progress(&self, progress: ViewProgressForAdd, user: &ConnectedUser) -> RsResult<()> {
-        user.check_role(&UserRole::Read)?;
-        if let ConnectedUser::Server(user) = user {
-           self.store.add_view_progress(progress, user.id.clone()).await?;
+            self.store.add_watched(watched.clone(), user_id).await?;
         }
         Ok(())
     }
 
-    pub async fn get_view_progress(&self, ids: MediasIds, user: &ConnectedUser) -> RsResult<Option<ViewProgress>> {
+    pub async fn add_view_progress(&self, progress: ViewProgressForAdd, user: &ConnectedUser, library_id: Option<String>) -> RsResult<()> {
         user.check_role(&UserRole::Read)?;
-        let progress = match user {
-            ConnectedUser::Server(user) => self.store.get_view_progess( ids, user.id.clone()).await?,
-            _ => None
-        };
+
+        let user_id = user.user_id()?;
+        if let Some(library_id) = library_id {
+            let all_ids = self.get_library_progress_merged_users(&library_id, user_id).await?;
+            for id in all_ids {
+                self.store.add_view_progress(progress.clone(), id).await?;
+            }
+        } else {
+            self.store.add_view_progress(progress.clone(), user_id).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn get_view_progress(&self, ids: RsIds, user: &ConnectedUser, library_id: Option<String>) -> RsResult<Option<ViewProgress>> {
+        if matches!(user, ConnectedUser::ServerAdmin) {
+            return Ok(None)
+        }
+
+
+        user.check_role(&UserRole::Read)?;
+        let user_id = user.user_id()?;
+        let progress = self.store.get_view_progess( ids, user_id.clone()).await?;
         Ok(progress)
     }
 
-    pub async fn get_all_view_progress(&self, query: HistoryQuery, user: &ConnectedUser) -> RsResult<Vec<ViewProgress>> {
+    pub async fn get_all_view_progress(&self, query: HistoryQuery, user: &ConnectedUser, library_id: Option<String>) -> RsResult<Vec<ViewProgress>> {
+        if matches!(user, ConnectedUser::ServerAdmin) {
+            return Ok(vec![])
+        }
+
+
         user.check_role(&UserRole::Read)?;
-        let progress = match user {
-            ConnectedUser::Server(user) => self.store.get_all_view_progress( query, user.id.clone()).await?,
-            _ => vec![]
-        };
-        Ok(progress)
+        let user_id = user.user_id()?;
+        let progresses = self.store.get_all_view_progress(query, user_id).await?;
+        Ok(progresses)
     }
 
     pub async fn get_view_progress_by_id(&self, id: String, user: &ConnectedUser) -> RsResult<Option<ViewProgress>> {
+        if matches!(user, ConnectedUser::ServerAdmin) {
+            return Ok(None)
+        }
+
         user.check_role(&UserRole::Read)?;
-        let media_id = MediasIds::try_from(id)?;
+        let media_id = RsIds::try_from(id)?;
         let progress = match user {
             ConnectedUser::Server(user) => self.store.get_view_progess( media_id, user.id.clone()).await?,
             _ => None

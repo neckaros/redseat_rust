@@ -69,7 +69,7 @@ impl ModelController {
 
 	pub async fn get_medias_progresses(&self, library_id: &str, query: MediaProgressesQuery, requesting_user: &ConnectedUser) -> RsResult<Vec<RsMediaProgress>> {
         let original_user_id = requesting_user.user_id()?;
-        let mut user_id = self.get_library_mapped_user(library_id, requesting_user).await?;
+        let mut user_id = self.get_library_mapped_user(library_id, original_user_id.clone()).await?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         let mut progresses = store.get_medias_progresses(query, user_id.clone()).await?;
         if user_id != original_user_id {
@@ -89,7 +89,7 @@ impl ModelController {
 	}
 
     pub async fn set_media_progress(&self, library_id: &str, media_ref: String, progress: u64, requesting_user: &ConnectedUser) -> RsResult<RsMediaProgress> {
-        let mut user_id = self.get_library_mapped_user(library_id, requesting_user).await?;
+        let mut user_id = self.get_library_mapped_user(library_id, requesting_user.user_id()?).await?;
         let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
         store.set_media_progress(media_ref.clone(), user_id, progress).await?;
         let progress = self.get_media_progress(library_id, media_ref, requesting_user).await?;

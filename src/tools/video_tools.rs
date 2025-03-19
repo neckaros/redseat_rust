@@ -1,8 +1,10 @@
+use std::fmt::Alignment;
 use std::io::{BufRead, Read};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::{path::Path, process::Stdio};
 use std::{default, str};
+use nanoid::nanoid;
 use regex::Regex;
 use rs_plugin_common_interfaces::{RsVideoCodec, RsVideoFormat};
 use serde::{Deserialize, Serialize};
@@ -15,11 +17,13 @@ use tokio::{io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader}, process
 use tokio_util::io::ReaderStream;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::LinesStream;
-use tokio::fs::File;
+use tokio::fs::{remove_file, File};
 use crate::domain::progress;
 use crate::error::{RsError, RsResult};
 use crate::{domain::ffmpeg::FfprobeResult, Error};
 use crate::{server::get_server_temp_file_path, tools};
+
+use tools::text_tools::{Printable, ToHms};
 
 use super::log::{log_error, LogServiceType};
 
@@ -66,7 +70,20 @@ pub enum VideoOverlayPosition {
     #[default]
     TopRight,
     BottomLeft,
-    BottomRight
+    BottomRight,
+    BottomCenter,
+    TopCenter,
+    Center
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, strum_macros::Display,EnumString, Default)]
+#[serde(rename_all = "camelCase")] 
+#[strum(serialize_all = "camelCase")]
+pub enum VideoAlignment {
+    #[default]
+    Center,
+    Left,
+    Right,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, strum_macros::Display,EnumString,)]
@@ -84,8 +101,24 @@ impl VideoOverlayPosition {
             VideoOverlayPosition::TopRight => format!("(main_w-w):min(main_h,main_w)*{}", margin),
             VideoOverlayPosition::BottomLeft => format!("main_w*{}:(main_h-h)", margin),
             VideoOverlayPosition::BottomRight => format!("(main_w-w):(main_h-h)"),
+            VideoOverlayPosition::BottomCenter => format!("main_w*{}:(main_h-h)", margin),//TODO
+            VideoOverlayPosition::TopCenter => format!("main_w*{}:main_h*{}",margin, margin), //TODO
+            VideoOverlayPosition::Center => format!("main_w*{}:main_h*{}",margin, margin), //TODO
         }
     }
+    pub fn as_ass_alignment(&self) -> String {
+        match self {
+            VideoOverlayPosition::TopLeft => String::from("7"),
+            VideoOverlayPosition::TopCenter => String::from("8"),
+            VideoOverlayPosition::TopRight => String::from("9"),
+            VideoOverlayPosition::Center => String::from("5"),
+            VideoOverlayPosition::BottomLeft => String::from("1"),
+            VideoOverlayPosition::BottomCenter => String::from("2"),
+            VideoOverlayPosition::BottomRight => String::from("3"),
+        }
+    }
+
+
 }
 
 
@@ -98,6 +131,7 @@ pub struct VideoConvertInterval {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+
 pub struct VideoOverlay {
     #[serde(rename = "type")]
     pub kind: VideoOverlayType,
@@ -105,7 +139,28 @@ pub struct VideoOverlay {
     #[serde(default)]
     pub position: VideoOverlayPosition,
     pub margin: Option<f64>,
-    pub ratio: u16,
+    pub ratio: f32,
+    pub opacity: f32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")] 
+pub struct VideoTextOverlay {
+    pub text: String,
+    pub font_color: Option<String>,
+    pub font: Option<String>,
+    #[serde(default)]
+    pub position: VideoOverlayPosition,
+    pub margin_vertical: Option<i32>,
+    pub margin_horizontal: Option<i32>,
+    pub margin_right: Option<i32>,
+    pub margin_bottom: Option<i32>,
+    pub font_size: i32,
+    pub opacity: Option<f32>,
+    pub shadow_color: Option<String>,
+    pub shado_opacity: Option<f32>,
+    pub start: Option<u32>,
+    pub end: Option<u32>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -123,7 +178,9 @@ pub struct VideoConvertRequest {
     pub crop_width: Option<u16>,
     pub crop_height: Option<u16>,
     pub aspect_ratio: Option<String>,
+    pub aspect_ratio_alignment: Option<VideoAlignment>,
     pub overlay: Option<VideoOverlay>,
+    pub texts: Option<Vec<VideoTextOverlay>>,
     #[serde(default)]
     pub intervals: Vec<VideoConvertInterval>,
 }
@@ -131,6 +188,7 @@ pub struct VideoConvertRequest {
 
 #[derive(Debug)]
 pub struct VideoCommandBuilder {
+    path: String,
     cmd: Command,
     inputs: Vec<String>,
     current_input: u16,
@@ -142,13 +200,25 @@ pub struct VideoCommandBuilder {
     current_effect_input: String,
     current_effect_count: u16,
     format: Option<RsVideoFormat>,
-    progress: Option<Sender<f64>>
+    progress: Option<Sender<f64>>,
+    cuda_support: bool,
+    probe: Option<FfprobeResult>,
+    cleanup_files: Vec<String>
 }
 
 impl VideoCommandBuilder {
-    pub fn new() -> Self {
+    pub async fn new(path: String) -> Self {
         let cmd = Command::new("./ffmpeg");
+        let supported_hw = video_hardware().await.unwrap_or_default();
+        println!("supported transcoding hw: {:?}", supported_hw);
+
+        let cuda_support = if supported_hw.contains(&"cuda".to_string()) {
+            true
+        } else {
+            false
+        };
         Self {
+            path,
             cmd,
             inputs: Vec::new(),
             current_input: 0,
@@ -160,7 +230,10 @@ impl VideoCommandBuilder {
             current_effect_input: "0".to_string(),
             current_effect_count: 0,
             format: None,
-            progress: None
+            progress: None,
+            cuda_support,
+            probe: None,
+            cleanup_files: vec![]
         }
     }
 
@@ -356,6 +429,16 @@ impl VideoCommandBuilder {
         self.progress = Some(sender);
     }
 
+    pub async fn get_probe_result(&mut self) -> Result<FfprobeResult, Error> {
+        if let Some(probe) = &self.probe {
+            Ok(probe.clone())
+        } else {
+            let probe = probe_video(&self.path).await?;
+            self.probe = Some(probe.clone());
+            Ok(probe)
+
+        }
+    }
     pub fn add_input<S: Into<String>>(&mut self, path: S) -> &mut Self{
         self.inputs.push(path.into());
         self.current_input += 1;
@@ -374,14 +457,15 @@ impl VideoCommandBuilder {
     pub fn add_video_effect<S: Into<String>>(&mut self, value: S) -> &mut Self{
         let line: String = value.into();
 
-        let line = if self.current_effect_count > 0 {
+
+        self.current_effect_count += 1;
+        let line = if line.contains("#input#") { line.replace("#input#", &self.current_effect_input) } else { format!("[{}]{}", self.current_effect_input, line) };
+        let line = if self.current_effect_count > 1 {
             format!("[{}];{}", self.current_effect_input, line)
         } else {
             line
         };
 
-        self.current_effect_count += 1;
-        let line = if line.contains("#input#") { line.replace("#input#", &self.current_effect_input) } else { format!("[{}]{}", self.current_effect_input, line) };
         self.current_effect_input = format!("rs{}", self.current_effect_count);
         self.video_effects.push(line);
         self
@@ -396,7 +480,7 @@ impl VideoCommandBuilder {
             self.set_crop(width, height);
         }
         if let Some(aspect_ratio) = request.aspect_ratio {
-            self.set_aspect_ratio(aspect_ratio)?;
+            self.set_aspect_ratio(aspect_ratio, request.aspect_ratio_alignment.unwrap_or(VideoAlignment::Center))?;
         }
         if let Some(framerate) = request.framerate {
             self.set_framerate(framerate);
@@ -409,6 +493,9 @@ impl VideoCommandBuilder {
         
         if let Some(overlay) = request.overlay {
             self.add_overlay(overlay);
+        }
+        if let Some(overlays) = request.texts {
+            self.add_text_overlay(overlays).await?;
         }
         self.format = Some(request.format);
         self.set_video_codec(request.codec, request.crf).await;
@@ -453,10 +540,8 @@ impl VideoCommandBuilder {
         match codec {
             Some(RsVideoCodec::H265) => {
                 self.add_out_option("-c:v");
-                
-                let supported_hw = video_hardware().await.unwrap_or_default();
-                println!("supported transcoding hw: {:?}", supported_hw);
-                if supported_hw.contains(&"cuda".to_string()) {
+
+                if self.cuda_support {
 
                     let cq = crf.unwrap_or(28);
                     println!("cuda");
@@ -548,33 +633,6 @@ impl VideoCommandBuilder {
                     //for mac support 
                     self.add_out_option("-tag:v");
                     self.add_out_option( "hvc1");
-
-                                        /*self.add_out_option("-preset");
-                    self.add_out_option( "slow");
-
-                    self.add_out_option("-rc");
-                    self.add_out_option( "vbr");
-
-                    self.add_out_option("-cq");
-                    self.add_out_option( cq.to_string());
-
-                    self.add_out_option("-qmin");
-                    self.add_out_option(cq.to_string());
-
-                    self.add_out_option("-qmax");
-                    self.add_out_option( (cq + 3).to_string());
-                    
-                    self.add_out_option("-b:v");
-                    self.add_out_option( "6M");
-
-                    self.add_out_option("-bufsize");
-                    self.add_out_option( "15M");*/
-
-                  //-maxrate:v "$MAXRATE" 
-                    /*self.add_out_option("-rc:v");
-                    self.add_out_option("vbr");
-                    self.add_out_option("-cq:v");
-                    self.add_out_option(crf.unwrap_or(28).to_string());*/
                   
                 } else {
                     self.add_out_option("libx265");
@@ -595,7 +653,7 @@ impl VideoCommandBuilder {
             Some(RsVideoCodec::H264) => {
                 let supported_hw = video_hardware().await.unwrap_or_default();
                 self.add_out_option("-c:v");
-                if supported_hw.contains(&"cuda".to_string()) {
+                if self.cuda_support {
                     println!("cuda");
                     self.add_out_option("h264_nvenc");
                     self.add_out_option("-preset:v");
@@ -627,9 +685,25 @@ impl VideoCommandBuilder {
             },
             Some(RsVideoCodec::AV1) => {
                 self.add_out_option("-c:v");
-                self.add_out_option("libaom-av1");
+                self.add_out_option("libsvtav1");
+
+                self.add_out_option("-preset");
+                self.add_out_option("5");
+
+                self.add_out_option("-crf");
+                self.add_out_option(crf.unwrap_or(32).to_string());
+
+                self.add_out_option("-g");
+                self.add_out_option("240");
+
+                self.add_out_option("-pix_fmt");
+                self.add_out_option("yuv420p10le");
+
+                self.add_out_option("-svtav1-params");
+                self.add_out_option("tune=0:film-grain=8");
+
                 if self.format.is_none() {
-                    self.format = Some(RsVideoFormat::WebM);
+                    self.format = Some(RsVideoFormat::Mp4);
                 }
             },
             Some(RsVideoCodec::Custom(custom)) => {
@@ -645,7 +719,7 @@ impl VideoCommandBuilder {
         self
     }
 
-    pub fn set_aspect_ratio(&mut self, aspect_ratio: String) -> RsResult<&mut Self> {
+    pub fn set_aspect_ratio(&mut self, aspect_ratio: String, alignment: VideoAlignment) -> RsResult<&mut Self> {
         let mut splitted = aspect_ratio.split('/');
         let num = splitted.next().ok_or(Error::Error(format!("Unable to parse ratio {}", aspect_ratio)))?;
         let denum = splitted.next().ok_or(Error::Error(format!("Unable to parse ratio {}", aspect_ratio)))?;
@@ -654,7 +728,19 @@ impl VideoCommandBuilder {
         if num == denum {
             self.add_video_effect("[#input#]crop='min(iw, ih)':'min(iw, ih)'".to_string());
         } else {
-            self.add_video_effect(format!("[#input#]crop='if(gte(iw, ih),ih*({num}/{denum}),iw):if(gte(iw, ih),ih,iw*({denum}/{num}))'"));
+            let crop_expr = match alignment {
+                VideoAlignment::Center => format!(
+                    "[#input#]crop='if(gte(iw,ih),ih*({num}/{denum}),iw):if(gte(iw, ih),ih,iw*({denum}/{num}))'"
+                ),
+                VideoAlignment::Left => format!(
+                    "[#input#]crop='if(gte(iw,ih),ih*({num}/{denum}),iw):if(gte(iw,ih),ih,iw*({denum}/{num})):0:0'"
+                ),
+                VideoAlignment::Right => format!(
+                    "[#input#]crop='if(gte(iw,ih),ih*({num}/{denum}),iw):if(gte(iw,ih),ih,iw*({denum}/{num})):if(gte(iw,ih),iw - ih*({num}/{denum}),0):0'"
+                ),
+            };
+            println!("align {:?}, crop: {}", alignment, crop_expr);
+            self.add_video_effect(crop_expr);
         }
         Ok(self)
     }
@@ -666,9 +752,91 @@ impl VideoCommandBuilder {
 
     pub fn add_overlay(&mut self, overlay: VideoOverlay) -> &mut Self {
         self.add_input(overlay.path);
-        self.add_video_effect(format!("[{}][#input#]scale2ref=h=ow/mdar:w='max(ih,iw)/{}'[#A logo][bird];[#A logo]format=argb,colorchannelmixer=aa=0.2[#B logo transparent];[bird][#B logo transparent]overlay='{}'", self.current_input, overlay.ratio, overlay.position.as_filter(overlay.margin.unwrap_or(0.02))));
+        self.add_video_effect(format!("[#input#]split=2[rs1a][rs1b];[{}][rs1a]scale='rw*{}':-1[logo];[logo]format=argb,colorchannelmixer=aa={}[logotrsp];[rs1b][logotrsp]overlay='{}'", self.current_input, overlay.ratio, overlay.opacity, overlay.position.as_filter(overlay.margin.unwrap_or(0.02))));
         
         self
+    }
+    fn get_color_with_opacity(color: String, opacity: Option<f32>) -> String {
+        if let Some(opacity) = opacity {
+            format!("{}@{}", color, opacity)
+        } else {
+            color
+        }
+    }
+
+    pub fn rgb_to_bgr(rgb: &str) -> RsResult<String> {
+        if rgb.chars().count() != 6 {
+            return Err(RsError::Error(format!(
+                "RGB Color must be exactly 6 characters long, but found {} characters",
+                rgb.chars().count()
+            )))
+        }
+
+        // Assumes the string is exactly 6 characters long (i.e. RRGGBB)
+        let red = &rgb[0..2];
+        let green = &rgb[2..4];
+        let blue = &rgb[4..6];
+        Ok(format!("{}{}{}", blue, green, red))
+    }
+
+    
+    async fn generate_ass_file(&mut self, overlays: Vec<VideoTextOverlay>) -> RsResult<String> {
+        let probe = self.get_probe_result().await?;
+        let (width, height) = probe.size();
+        let width = width.unwrap_or(1920);
+        let height = height.unwrap_or(1080);
+        let mut formats = vec![];
+        let mut subs = vec![];
+        for overlay in overlays {
+            let start = overlay.start.map(|v| v.to_hms()).unwrap_or("0:00:00".to_string());
+            let end = overlay.end.map(|v| v.to_hms()).unwrap_or("99:59:59".to_string());
+            let id = nanoid!();
+            
+            let opacity = if let Some(opacity) = overlay.opacity { format!("{:02X}", (255.0 * (1.0 - opacity)) as i32) } else { String::from("00") };
+            let shadow_opacity = if let Some(opacity) = overlay.opacity { format!("{:02X}", (255.0 * (1.0 - (opacity * 0.7))) as i32) } else { String::from("00") };
+            let shadow_color = Self::rgb_to_bgr(&overlay.shadow_color.unwrap_or("000000".to_string()))?;
+            let text_color  = Self::rgb_to_bgr(&overlay.font_color.unwrap_or("FFFFFF".to_string()))?;
+            let alignment = overlay.position.as_ass_alignment();
+            formats.push(
+                format!("Style:  {}, Arial, {}, &H{opacity}{text_color}, &H{opacity}{shadow_color}, -1, 0, 0, 0, 100, 100, 0, 0, 1, 1, 0, {alignment}, {}, {}, {}, 1
+                ", id, overlay.font_size, overlay.margin_horizontal.unwrap_or(0), overlay.margin_horizontal.unwrap_or(0), overlay.margin_vertical.unwrap_or(0)));
+            subs.push(
+                format!("
+            Dialogue: 0,{start}.00,{end}.00,{id},,,{}", overlay.text));
+        }
+        Ok(format!("[Script Info]
+            ; Generated by a TypeScript script
+            Title: Generated Subtitles
+            ScriptType: v4.00+
+            WrapStyle: 0
+            PlayResX: {width}
+            PlayResY: {height}
+            ScaledBorderAndShadow: yes
+
+            [V4+ Styles]
+            Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+            ; Set Alignment to 1 for bottom left. Adjust MarginL and MarginV to control exact placement.
+            Style: Default, Arial, 32, &H00FFFFFF, &H00000000, -1, 0, 0, 0, 100, 100, 0, 0, 1, 2, 0, 1, 20, 20, 20, 20, 1
+            {}
+
+            [Events]
+            Format: Layer, Start, End, Style, Name, Effect, Text
+            {}", formats.join(""), subs.join("")))
+
+    }
+    pub async fn add_text_overlay(&mut self, overlays: Vec<VideoTextOverlay>) -> RsResult<&mut Self> {
+        /*self.add_video_effect(format!("drawtext=text='{}':x=10:y=H-th-10:fontfile={}:fontsize={}:fontcolor={}:shadowcolor={}:shadowx=2:shadowy=2", 
+        overlay.text, overlay.font, overlay.font_size, Self::get_color_with_opacity(overlay.font_color, overlay.opacity.clone()), Self::get_color_with_opacity(overlay.shadow_color, overlay.opacity.clone().and_then(|o| Some(o - 0.2)))));*/
+        
+        let ass_content = self.generate_ass_file(overlays).await?;
+        let path = get_server_temp_file_path().await?;
+        tokio::fs::write(&path,ass_content).await?;
+        let path = path.to_str().ok_or(RsError::Error("Unable to get temp path for subtitle file".to_string()))?;
+        let ffpath = path.replace("\\", "/").replace(":", "\\:");
+        self.add_video_effect(format!("subtitles='{}'", ffpath));
+        self.cleanup_files.push(path.to_string());
+
+        Ok(self)
     }
 
     //[${currentInput}][/prefix/]scale2ref=h=ow/mdar:w='max(ih,iw)/6'[#A logo][bird];[#A logo]format=argb,colorchannelmixer=aa=0.2[#B logo transparent];[bird][#B logo transparent]overlay='(main_w-w):min(main_h,main_w)*0.02'
@@ -693,9 +861,20 @@ impl VideoCommandBuilder {
         
     }
 
-    pub async fn run_file(&mut self, uri: &str, to: &str) -> RsResult<()> {
-        let mut frames = get_number_of_frames(uri).await;
-        let duration = get_duration(uri).await.unwrap_or(None);
+    pub async  fn clean(&mut self) -> RsResult<()> {
+        let cleaning = self.cleanup_files.clone();
+        self.cleanup_files.clear();
+        for path in cleaning {
+            remove_file(path).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn run_file(&mut self, to: &str) -> RsResult<()> {
+        let path = self.path.to_string();
+        let probe = self.get_probe_result().await.ok();
+        let mut frames = probe.as_ref().and_then(|p| p.number_of_video_frames());
+        let duration =  probe.and_then(|p: FfprobeResult| p.duration());
 
         println!("{:?} / {:?} / {:?}", duration, frames, self.expected_duration);
         if let (Some(duration), Some(all_frames), Some(expected_duration)) = (duration, frames, self.expected_duration) {
@@ -713,7 +892,7 @@ impl VideoCommandBuilder {
         }
 
         self.cmd.arg("-i")
-                .arg(uri);
+                .arg(&self.path);
 
         for input in &self.inputs {
             self.cmd.arg("-i")
@@ -745,6 +924,9 @@ impl VideoCommandBuilder {
             //.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+
+            println!("Video command: {}", self.cmd.printable());
+
  
              // Run the child command
         let mut child = self.cmd   
@@ -792,6 +974,7 @@ impl VideoCommandBuilder {
             lines.push(line);
        }
         let status = child.wait().await?;
+        self.clean().await?;
         if !status.success() {
             for line in lines {
                 log_error(LogServiceType::Other, line);
@@ -805,12 +988,16 @@ impl VideoCommandBuilder {
 
     
 
-
-    pub async fn run<'a, W>(&mut self, source: &str, format: &str, _writer: &'a mut W) -> Result<(), Error>
+    /// Need refactoring!! do not use
+    pub async fn run<'a, W>(&mut self, format: &str, _writer: &'a mut W) -> Result<(), Error>
     where
         W: AsyncWrite + Unpin + ?Sized,
     {
-        let frames = get_number_of_frames(source).await;
+        let path = self.path.to_string();
+        let probe = self.get_probe_result().await.ok();
+        let mut frames = probe.as_ref().and_then(|p| p.number_of_video_frames());
+
+
         let mut child = self.cmd
         .arg(format!("{}:-", format))
         .stdout(Stdio::piped())

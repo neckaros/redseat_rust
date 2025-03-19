@@ -170,20 +170,27 @@ ON
 
     pub async fn get_episodes_upcoming(&self, query: EpisodeQuery) -> Result<Vec<Episode>> {
         let row = self.connection.call( move |conn| { 
-            let mut stm = conn.prepare("SELECT 
-            ep.serie_ref, ep.season, ep.number, ep.abs, ep.name, ep.overview, ep.airdate, ep.duration, ep.alt, ep.params, ep.imdb, ep.slug, ep.tmdb, ep.trakt, ep.tvdb, ep.otherids, ep.modified, ep.added, ep.imdb_rating, ep.imdb_votes, ep.trakt_rating, ep.trakt_votes,
-            series.name  
-            FROM 
-            episodes as ep
-            LEFT JOIN series ON ep.serie_ref = series.id
-            WHERE 
-            season <> 0 and
-            airdate > round((julianday('now') - 2440587.5)*86400.0 * 1000)
-            ORDER BY airdate ASC
+            let mut stm = conn.prepare(" 
+            SELECT * FROM (
+    SELECT 
+        ep.serie_ref, ep.season, ep.number, ep.abs, ep.name, ep.overview, ep.airdate, ep.duration, 
+        ep.alt, ep.params, ep.imdb, ep.slug, ep.tmdb, ep.trakt, ep.tvdb, ep.otherids, 
+        ep.modified, ep.added, ep.imdb_rating, ep.imdb_votes, ep.trakt_rating, ep.trakt_votes,
+        series.name,
+        ROW_NUMBER() OVER (PARTITION BY ep.serie_ref ORDER BY ep.airdate ASC) as rn
+    FROM 
+        episodes as ep
+    LEFT JOIN series ON ep.serie_ref = series.id
+    WHERE 
+        season <> 0 and
+        airdate > round((julianday('now') - 2440587.5)*86400.0 * 1000)
+) ranked
+WHERE rn = 1
+ORDER BY airdate ASC
             LIMIT ?
             ")?;
             let rows = stm.query_map(
-            &[&query.limit.unwrap_or(10)], Self::row_to_episode,
+            &[&query.limit.unwrap_or(100)], Self::row_to_episode,
             )?;
             let backups:Vec<Episode> = rows.collect::<std::result::Result<Vec<Episode>, rusqlite::Error>>()?; 
             Ok(backups)

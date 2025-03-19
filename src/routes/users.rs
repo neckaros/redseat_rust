@@ -53,14 +53,14 @@ async fn handler_list(State(mc): State<ModelController>, user: ConnectedUser) ->
 }
 
 async fn handler_list_history(State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<HistoryQuery>) -> Result<Json<Value>> {
-	let users = mc.get_watched(query, &user).await?;
+	let users = mc.get_watched(query, &user, None).await?;
 	let body = Json(json!(users));
 
 	Ok(body)
 }
 
 async fn handler_add_history(State(mc): State<ModelController>, user: ConnectedUser, Json(watched): Json<WatchedForAdd>) -> Result<Json<Value>> {
-	mc.add_watched(watched, &user).await?;
+	mc.add_watched(watched, &user, None).await?;
 	let body = Json(json!({"ok": true}));
 
 	Ok(body)
@@ -74,7 +74,7 @@ async fn handler_get_progress(Path(id): Path<String>, State(mc): State<ModelCont
 }
 
 async fn handler_add_progress(State(mc): State<ModelController>, user: ConnectedUser, Json(watched): Json<ViewProgressForAdd>) -> Result<Json<Value>> {
-	mc.add_view_progress(watched, &user).await?;
+	mc.add_view_progress(watched, &user, None).await?;
 	let body = Json(json!({"ok": true}));
 
 	Ok(body)

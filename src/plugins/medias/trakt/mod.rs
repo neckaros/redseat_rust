@@ -1,8 +1,8 @@
 use chrono::{DateTime, FixedOffset};
 use reqwest::{Client, Url};
-use rs_plugin_common_interfaces::lookup::RsLookupMovie;
+use rs_plugin_common_interfaces::{domain::rs_ids::{RsIds, RsIdsError}, lookup::RsLookupMovie};
 use tower::Service;
-use crate::{domain::{episode::Episode, movie::Movie, serie::Serie, MediasIds}, plugins::medias::trakt::{trakt_episode::TraktSeasonWithEpisodes, trakt_show::TraktFullShow}, tools::clock::{Clock, RsNaiveDate}, Error, Result};
+use crate::{domain::{episode::Episode, movie::Movie, serie::Serie}, plugins::medias::trakt::{trakt_episode::TraktSeasonWithEpisodes, trakt_show::TraktFullShow}, tools::clock::{Clock, RsNaiveDate}, Error, Result};
 
 use self::{trakt_episode::TraktFullEpisode, trakt_movie::{TraktFullMovie, TraktMovieSearchElement, TraktRelease, TraktReleaseType, TraktReleases, TraktTrendingMoviesResult}, trakt_show::{TraktShowSearchElement, TraktTrendingShowResult}};
 // Context required for all requests
@@ -52,9 +52,9 @@ impl TraktContext {
         Ok(all_updates)
     }
 
-    pub async fn get_serie(&self, id: &MediasIds) -> crate::Result<Serie> {
+    pub async fn get_serie(&self, id: &RsIds) -> crate::Result<Serie> {
 
-        let id = id.as_id_for_trakt().ok_or(Error::NoMediaIdRequired(Box::new(id.clone())))?;
+        let id = id.as_id_for_trakt().ok_or(RsIdsError::NoMediaIdRequired(Box::new(id.clone())))?;
 
         let url = self.base_url.join(&format!("shows/{}?extended=full", id)).unwrap();
         let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
@@ -83,7 +83,7 @@ impl TraktContext {
         Ok(shows)
     }
 
-    pub async fn all_episodes(&self, id: &MediasIds) -> crate::Result<Vec<Episode>> {
+    pub async fn all_episodes(&self, id: &RsIds) -> crate::Result<Vec<Episode>> {
         let serie_id = id.clone().as_id_for_trakt().ok_or(Error::Error(format!("Unable to request trakt. No imdb or trakt id for: {:?}", id)))?;
         let url = self.base_url.join(&format!("shows/{}/seasons?extended=full,episodes", serie_id)).unwrap();
         let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
@@ -92,14 +92,14 @@ impl TraktContext {
         Ok(episodes)
     }
 
-    pub async fn episode(&self, id: &MediasIds, season: u32, episode: u32) -> crate::Result<Episode> {
+    pub async fn episode(&self, id: &RsIds, season: u32, episode: u32) -> crate::Result<Episode> {
 
         let id = if let Some(imdb) = &id.imdb {
             Ok(imdb.to_string())
         } else if let Some(trakt) = &id.trakt {
             Ok(trakt.to_string())
         } else {
-            Err(Error::NoMediaIdRequired(Box::new(id.clone())))
+            Err(RsIdsError::NoMediaIdRequired(Box::new(id.clone())))
         }?;
         let url = self.base_url.join(&format!("shows/{}/seasons/{}/episodes/{}?extended=full", id, season, episode)).unwrap();
         let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
@@ -131,9 +131,9 @@ impl TraktContext {
         Ok(all_updates)
     }
 
-    pub async fn get_movie_releases(&self, id: &MediasIds) -> crate::Result<Vec<TraktRelease>> {
+    pub async fn get_movie_releases(&self, id: &RsIds) -> crate::Result<Vec<TraktRelease>> {
 
-        let id = id.as_id_for_trakt().ok_or(Error::NoMediaIdRequired(Box::new(id.clone())))?;
+        let id = id.as_id_for_trakt().ok_or(RsIdsError::NoMediaIdRequired(Box::new(id.clone())))?;
 
         let url = self.base_url.join(&format!("movies/{}/releases", id)).unwrap();
 
@@ -142,9 +142,9 @@ impl TraktContext {
         Ok(releases)
     }
 
-    pub async fn get_movie(&self, ids: &MediasIds) -> crate::Result<Movie> {
+    pub async fn get_movie(&self, ids: &RsIds) -> crate::Result<Movie> {
 
-        let id = ids.as_id_for_trakt().ok_or(Error::NoMediaIdRequired(Box::new(ids.clone())))?;
+        let id = ids.as_id_for_trakt().ok_or(RsIdsError::NoMediaIdRequired(Box::new(ids.clone())))?;
 
         let url = self.base_url.join(&format!("movies/{}?extended=full", id)).unwrap();
 
@@ -196,8 +196,8 @@ mod tests {
 
     use super::*;
 
-    fn exemple_movie() -> MediasIds {
-        MediasIds::from_imdb("tt1160419".to_owned())
+    fn exemple_movie() -> RsIds {
+        RsIds::from_imdb("tt1160419".to_owned())
     }
     #[tokio::test]
     async fn trakt_releases() -> RsResult<()> {

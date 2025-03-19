@@ -1,8 +1,9 @@
 
 use reqwest::{Client, RequestBuilder};
+use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, ExternalImage, ImageType};
 use serde::{Deserialize, Serialize};
 
-use crate::{domain::MediasIds, model::series::ExternalSerieImages};
+use crate::model::series::ExternalSerieImages;
 
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -32,6 +33,8 @@ pub struct FanArtMovieResult {
     pub movieposter: Option<Vec<FanArtImage>>,
     pub hdmovielogo: Option<Vec<FanArtImage>>,
     pub movielogo: Option<Vec<FanArtImage>>,
+    pub moviebackground: Option<Vec<FanArtImage>>,
+    
 }
 
 impl From<FanArtSerieResult> for ExternalSerieImages {
@@ -45,10 +48,90 @@ impl From<FanArtSerieResult> for ExternalSerieImages {
         }
     }
 }
+
+
+
+
+impl FanArtImage {
+    fn into_external(self, kind: Option<ImageType>) -> ExternalImage {
+        ExternalImage {
+            kind,
+            url: self.url,
+            aspect_ratio: None,
+            height: None,
+            lang: Some(self.lang),
+            vote_average: None,
+            vote_count: None,
+            width: None,
+        }
+    }
+}
+
+pub trait FanArtToExternals {
+    fn into_externals(self, kind: Option<ImageType>) -> Vec<ExternalImage>;
+}
+
+impl FanArtToExternals for Vec<FanArtImage> {
+    fn into_externals(self, kind: Option<ImageType>) -> Vec<ExternalImage> {
+        self.into_iter().map(|i| i.into_external(kind.clone())).collect()
+    }
+}
+
+impl From<FanArtSerieResult> for Vec<ExternalImage> {
+    fn from(value: FanArtSerieResult) -> Self {
+        let mut images = vec![];
+
+        if let Some(result_images) = value.showbackground {
+            let mut target = result_images.into_externals(Some(ImageType::Background));
+            images.append(&mut target);
+        }
+        if let Some(result_images) = value.hdtvlogo {
+            let mut target = result_images.into_externals(Some(ImageType::ClearLogo));
+            images.append(&mut target);
+        }
+        if let Some(result_images) = value.tvposter {
+            let mut target = result_images.into_externals(Some(ImageType::Poster));
+            images.append(&mut target);
+        }
+        if let Some(result_images) = value.tvthumb {
+            let mut target = result_images.into_externals(Some(ImageType::Card));
+            images.append(&mut target);
+        }
+        
+        images
+    }
+}
+
+
+impl From<FanArtMovieResult> for Vec<ExternalImage> {
+    fn from(value: FanArtMovieResult) -> Self {
+        let mut images = vec![];
+
+        if let Some(result_images) = value.moviebackground {
+            let mut target = result_images.into_externals(Some(ImageType::Background));
+            images.append(&mut target);
+        }
+        if let Some(result_images) = value.movielogo {
+            let mut target = result_images.into_externals(Some(ImageType::ClearLogo));
+            images.append(&mut target);
+        }
+        if let Some(result_images) = value.movieposter {
+            let mut target = result_images.into_externals(Some(ImageType::Poster));
+            images.append(&mut target);
+        }
+        if let Some(result_images) = value.moviethumb {
+            let mut target = result_images.into_externals(Some(ImageType::Card));
+            images.append(&mut target);
+        }
+        
+        images
+    }
+}
+
 impl From<FanArtMovieResult> for ExternalSerieImages {
     fn from(value: FanArtMovieResult) -> Self {
         ExternalSerieImages {
-            backdrop: None,
+            backdrop: value.moviebackground.into_best().map(|i| i.url),
             logo: value.movielogo.into_best().map(|i| i.url),
             poster: value.movieposter.into_best().map(|i| i.url),
             still: None,
@@ -56,6 +139,7 @@ impl From<FanArtMovieResult> for ExternalSerieImages {
         }
     }
 }
+
 
 pub trait ToBest {
     fn into_best(self) -> Option<FanArtImage>;
@@ -80,12 +164,6 @@ pub struct FanArtContext {
     client: Client,
 }
 
-impl MediasIds {
-    fn try_tvdb(self) -> crate::Result<u64> {
-        self.tvdb.ok_or(crate::Error::NoMediaIdRequired(Box::new(self.clone())))
-    }
-}
-
 impl FanArtContext {
     pub fn add_auth(&self, request: RequestBuilder) -> RequestBuilder {
         request.query(&[("api_key", &self.token)])
@@ -106,7 +184,7 @@ impl FanArtContext {
         }
     }
 
-    pub async fn serie_image(&self, ids: MediasIds) -> crate::Result<ExternalSerieImages> {
+    pub async fn serie_image(&self, ids: RsIds) -> crate::Result<ExternalSerieImages> {
         let id = ids.try_tvdb()?;
         let request = self.get_request_builder(&format!("tv/{}", id));
         let response = request.send().await?;
@@ -115,15 +193,33 @@ impl FanArtContext {
         let bests: ExternalSerieImages = images.into();
         Ok(bests)
     }
+    pub async fn serie_images(&self, ids: RsIds) -> crate::Result<Vec<ExternalImage>> {
+        let id = ids.try_tvdb()?;
+        let request = self.get_request_builder(&format!("tv/{}", id));
+        let response = request.send().await?;
+        let images = response.json::<FanArtSerieResult>().await?;
+        
+        let bests: Vec<ExternalImage> = images.into();
+        Ok(bests)
+    }
 
-
-    pub async fn movie_image(&self, ids: MediasIds) -> crate::Result<ExternalSerieImages> {
+    pub async fn movie_image(&self, ids: RsIds) -> crate::Result<ExternalSerieImages> {
         let id = ids.try_tmdb()?;
         let request = self.get_request_builder(&format!("movies/{}", id));
 
         let response = request.send().await?;
         let images = response.json::<FanArtMovieResult>().await?;
         let bests:ExternalSerieImages = images.into();
+        Ok(bests)
+    }
+
+    pub async fn movie_images(&self, ids: RsIds) -> crate::Result<Vec<ExternalImage>> {
+        let id = ids.try_tmdb()?;
+        let request = self.get_request_builder(&format!("movies/{}", id));
+
+        let response = request.send().await?;
+        let images = response.json::<FanArtMovieResult>().await?;
+        let bests: Vec<ExternalImage> = images.into();
         Ok(bests)
     }
 

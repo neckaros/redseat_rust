@@ -21,9 +21,10 @@ pub mod player;
 use std::{collections::{HashMap, VecDeque}, io::Read, path::PathBuf, pin::Pin, sync::Arc, thread::JoinHandle};
 use futures::lock::Mutex;
 use nanoid::nanoid;
+use rs_plugin_common_interfaces::{ImageType, RsRequest};
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
-use crate::{domain::{backup::BackupProcessStatus, library::{LibraryMessage, LibraryRole, ServerLibrary}, media::ConvertProgress, player::{RsPlayer, RsPlayerAvailable}, plugin::PluginWasm, serie::Serie}, error::{RsError, RsResult}, plugins::{list_plugins, medias::{fanart::FanArtContext, imdb::ImdbContext, tmdb::TmdbContext, trakt::TraktContext}, sources::{error::SourcesError, local_provider, local_provider_for_library, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, LocalSource, Source, SourceRead}, PluginManager}, routes::mw_range::RangeDefinition, server::get_server_file_path_array, tools::{clock::SECONDS_IN_HOUR, image_tools::{resize_image_path, ImageSize, ImageSizeIter, ImageType}, log::log_info, scheduler::{self, ip::RefreshIpTask, refresh::RefreshTask, RsScheduler, RsTaskType}, video_tools::VideoConvertRequest}};
+use crate::{domain::{backup::BackupProcessStatus, library::{LibraryMessage, LibraryRole, ServerLibrary}, media::ConvertProgress, player::{RsPlayer, RsPlayerAvailable}, plugin::PluginWasm, serie::Serie}, error::{RsError, RsResult}, plugins::{list_plugins, medias::{fanart::FanArtContext, imdb::ImdbContext, tmdb::TmdbContext, trakt::TraktContext}, sources::{error::SourcesError, local_provider, local_provider_for_library, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, LocalSource, Source, SourceRead}, PluginManager}, routes::mw_range::RangeDefinition, server::get_server_file_path_array, tools::{clock::SECONDS_IN_HOUR, image_tools::{resize_image_path, ImageSize, ImageSizeIter}, log::log_info, scheduler::{self, ip::RefreshIpTask, refresh::RefreshTask, RsScheduler, RsTaskType}, video_tools::VideoConvertRequest}};
 
 use self::{medias::CRYPTO_HEADER_SIZE, store::SqliteStore, users::{ConnectedUser, ServerUser, UserRole}};
 use error::{Result, Error};
@@ -206,19 +207,12 @@ impl  ModelController {
 		self.cache_check_library_notcrypt(library_id).await?;
 
         let m = self.library_source_for_library(&library_id).await?;
-		let mut source_filepath = format!("{}/{}{}.avif", folder, id, ImageType::optional_to_filename_element(&kind));
-		let avif = false;
-		if !m.exists(&source_filepath).await {
-			source_filepath = format!("{}/{}{}.webp", folder, id, ImageType::optional_to_filename_element(&kind));
-		}
+		let mut source_filepath = format!("{}/{}{}{}.avif", folder, id, ImageType::optional_to_filename_element(&kind), ImageSize::optional_to_filename_element(&size));
 		let reader_response = m.get_file(&source_filepath, None).await;
-		/*if let Some(int_size) = size {
+		if let Some(int_size) = size {
 			if let Err(error) = &reader_response {
 				if matches!(error, RsError::Source(SourcesError::NotFound(_))) {
-					let mut original_filepath = format!("{}/{}{}.webp", folder, id, ImageType::optional_to_filename_element(&kind));
-					if !m.exists(&original_filepath).await {
-						original_filepath = format!("{}/{}{}.avif", folder, id, ImageType::optional_to_filename_element(&kind));
-					}
+					let mut original_filepath = format!("{}/{}{}.avif", folder, id, ImageType::optional_to_filename_element(&kind));
 					let exist = m.exists(&original_filepath).await;
 					if exist {
 						log_info(crate::tools::log::LogServiceType::Other, format!("Creating image size: {} {} {} {}", folder, id, ImageType::optional_to_filename_element(&kind), int_size));
@@ -234,7 +228,7 @@ impl  ModelController {
 					
 				}
 			}
-		}*/
+		}
 		let reader = reader_response?;
 		if reader.size().unwrap_or(200) == 0 {
 			return Err(RsError::CorruptedImage)
@@ -260,6 +254,7 @@ impl  ModelController {
         let m = self.library_source_for_library(&library_id).await?;
 
 		let source_filepath = format!("{}/{}{}.avif", folder, id, ImageType::optional_to_filename_element(&kind));
+
 		let (_, writer) = m.get_file_write_stream(&source_filepath).await?;
 		tokio::pin!(reader);
 		tokio::pin!(writer);
@@ -319,6 +314,7 @@ impl  ModelController {
 		});
 	}
 	
+
 
 
 }
