@@ -1,3 +1,4 @@
+use people::Person;
 use rs_plugin_common_interfaces::domain::rs_ids::RsIds;
 use serde::{Deserialize, Serialize};
 
@@ -53,6 +54,12 @@ impl From<Movie> for RsIds {
         RsIds { redseat: Some(value.id), trakt: value.trakt, slug: value.slug, tvdb: None, imdb: value.imdb, tmdb: value.tmdb, tvrage: None, other_ids: None }
     }
 }
+impl From<Person> for RsIds {
+    fn from(value: Person) -> Self {
+        RsIds { redseat: Some(value.id), trakt: value.trakt, slug: value.slug, tvdb: None, imdb: value.imdb, tmdb: value.tmdb, tvrage: None, other_ids: None }
+    }
+}
+
 
 
 

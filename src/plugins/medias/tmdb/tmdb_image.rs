@@ -82,6 +82,8 @@ pub struct TmdbImageResponse {
     pub logos: Option<Vec<TmdbImage>>,
     pub posters: Option<Vec<TmdbImage>>,
     pub stills: Option<Vec<TmdbImage>>,
+    pub profiles: Option<Vec<TmdbImage>>,
+    
 }
 
 impl TmdbImageResponse {
@@ -91,6 +93,7 @@ impl TmdbImageResponse {
             logo: self.logos.and_then(|l| l.into_best(lang)).and_then(|p| Some(p.full_path(&configuration.images.secure_base_url))),
             poster:  self.posters.and_then(|l| l.into_best(lang)).and_then(|p| Some(p.full_path(&configuration.images.secure_base_url))),
             still: self.stills.and_then(|l| l.into_best(lang)).and_then(|p| Some(p.full_path(&configuration.images.secure_base_url))),
+            portraits: self.profiles.and_then(|l| l.into_best(lang)).and_then(|p| Some(p.full_path(&configuration.images.secure_base_url))),
             ..Default::default()
         }
     }
@@ -107,6 +110,10 @@ impl TmdbImageResponse {
             images.append(&mut target);
         }
         for image in self.posters {
+            let mut target = image.into_externals(&configuration.images.secure_base_url, Some(ImageType::Poster));
+            images.append(&mut target);
+        }
+        for image in self.profiles {
             let mut target = image.into_externals(&configuration.images.secure_base_url, Some(ImageType::Poster));
             images.append(&mut target);
         }

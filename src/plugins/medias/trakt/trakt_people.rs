@@ -95,3 +95,39 @@ impl From<TraktPerson> for Person {
         }
     }
 }
+
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TraktActorsResult {
+    pub cast: Vec<TraktCast>,
+    pub crew: String,
+    
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TraktCast {
+    pub character: String,
+    pub characters: Vec<String>,
+    pub person: TraktPerson,   
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TraktCrewList {
+    pub production: String,
+    pub directing: Vec<String>,
+    pub writing: TraktPerson,
+    
+}
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TraktCrew {
+    pub job: String,
+    pub jobs: Vec<String>,
+    pub person: TraktPerson,   
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TraktPeopleSearchElement {
+    pub score: f64,
+    pub person: TraktPerson
+}
+

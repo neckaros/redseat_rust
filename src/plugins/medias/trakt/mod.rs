@@ -2,7 +2,8 @@ use chrono::{DateTime, FixedOffset};
 use reqwest::{Client, Url};
 use rs_plugin_common_interfaces::{domain::rs_ids::{RsIds, RsIdsError}, lookup::RsLookupMovie};
 use tower::Service;
-use crate::{domain::{episode::Episode, movie::Movie, serie::Serie}, plugins::medias::trakt::{trakt_episode::TraktSeasonWithEpisodes, trakt_show::TraktFullShow}, tools::clock::{Clock, RsNaiveDate}, Error, Result};
+use trakt_people::{TraktActorsResult, TraktPeopleSearchElement, TraktPerson};
+use crate::{domain::{episode::Episode, movie::Movie, people::Person, serie::Serie}, plugins::medias::trakt::{trakt_episode::TraktSeasonWithEpisodes, trakt_show::TraktFullShow}, tools::clock::{Clock, RsNaiveDate}, Error, Result};
 
 use self::{trakt_episode::TraktFullEpisode, trakt_movie::{TraktFullMovie, TraktMovieSearchElement, TraktRelease, TraktReleaseType, TraktReleases, TraktTrendingMoviesResult}, trakt_show::{TraktShowSearchElement, TraktTrendingShowResult}};
 // Context required for all requests
@@ -143,6 +144,17 @@ impl TraktContext {
         Ok(releases)
     }
 
+    pub async fn get_movie_actors(&self, id: &RsIds) -> crate::Result<TraktActorsResult> {
+
+        let id = id.as_id_for_trakt().ok_or(RsIdsError::NoMediaIdRequired(Box::new(id.clone())))?;
+
+        let url = self.base_url.join(&format!("movies/{}/people", id)).unwrap();
+
+        let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
+        let releases = r.json::<TraktActorsResult>().await?;
+        Ok(releases)
+    }
+
     pub async fn get_movie(&self, ids: &RsIds) -> crate::Result<Movie> {
 
         let id = ids.as_id_for_trakt().ok_or(RsIdsError::NoMediaIdRequired(Box::new(ids.clone())))?;
@@ -186,11 +198,56 @@ impl TraktContext {
 }
 
 
+impl TraktContext {
+
+    pub async fn people_refreshed(&self, date: DateTime<FixedOffset>) -> crate::Result<Vec<u64>> {
+        let mut all_updates:Vec<u64> = vec![];
+        let mut page = 1;
+        loop {
+            let url = self.base_url.join(&format!("people/updates/id/{}?page={}&limit=100", date.to_utc().fixed_offset().print(), page)).unwrap();
+            let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
+            let nb_pages: u32 = r.headers().get("x-pagination-page-count").ok_or(crate::Error::TraktTooManyUpdates)?.to_str().map_err(|_| crate::Error::TraktTooManyUpdates)?.parse().map_err(|_| crate::Error::TraktTooManyUpdates)?;
+            let mut updates: Vec<u64> = r.json::<Vec<u64>>().await?.into_iter().collect();
+            all_updates.append(&mut updates);
+            if nb_pages > 10 {
+                return Err(crate::Error::TraktTooManyUpdates.into());
+            } else if page < nb_pages {
+                page = page + 1;
+            } else {
+                break;
+            }
+        }
+        Ok(all_updates)
+    }
+
+    pub async fn get_person(&self, ids: &RsIds) -> crate::Result<Person> {
+
+        let id = ids.as_id_for_trakt().ok_or(RsIdsError::NoMediaIdRequired(Box::new(ids.clone())))?;
+
+        let url = self.base_url.join(&format!("people/{}?extended=full", id)).unwrap();
+
+        let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
+        let person = r.json::<TraktPerson>().await?;
+        let mut person: Person = person.into();
+        Ok(person)
+    }
+
+    pub async fn search_person(&self, search: &RsLookupMovie) -> crate::Result<Vec<Person>> {
+
+        let url = self.base_url.join(&format!("search/person?extended=full&query={}", unidecode(&search.name))).unwrap();
+
+        let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
+        let movies: Vec<Person> = r.json::<Vec<TraktPeopleSearchElement>>().await?.into_iter().map(|m| Person::from(m.person)).collect();
+      
+        Ok(movies)
+    }
+}
 
 #[cfg(test)]
 mod tests {
 
     use chrono::{TimeZone, Utc};
+    use rs_plugin_common_interfaces::Gender;
     use tests::trakt_movie::{TraktReleaseType, TraktReleases};
 
     use crate::{error::RsResult, tools::clock::RsNaiveDate};
@@ -208,6 +265,26 @@ mod tests {
         
         println!("{:?}", releases);
         println!("{:?}", releases.earliest_for(TraktReleaseType::Digital).and_then(|d| d.utc().ok()));
+        Ok(())
+    }
+
+
+    #[tokio::test]
+    async fn trakt_search_person() -> RsResult<()> {
+        let trakt = TraktContext::new("455f81b3409a8dd140a941e9250ff22b2ed92d68003491c3976363fe752a9024".to_owned());
+
+        let search_result = trakt.search_person(&RsLookupMovie { name: "jessica alba".to_string(), ids: None }).await?;
+        
+        println!("{:?}", search_result.first());
+        let person_serach = search_result.into_iter().next().unwrap();
+        assert_eq!(person_serach.gender, Some(Gender::Female));
+        assert_eq!(person_serach.imdb, Some("nm0004695".to_string()));
+        let id = RsIds { trakt: person_serach.trakt, ..Default::default() };
+        let queried = trakt.get_person(&id).await?;
+
+
+        assert_eq!(person_serach.imdb, queried.imdb);
+
         Ok(())
     }
 }

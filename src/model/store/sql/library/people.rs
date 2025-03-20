@@ -1,5 +1,6 @@
 
 
+use rs_plugin_common_interfaces::domain::rs_ids::RsIds;
 use rusqlite::{params, types::FromSqlError, OptionalExtension, Row};
 
 
@@ -97,6 +98,21 @@ else 0 end) as score", q, q, q, q, q, q);
         Ok(row)
     }
 
+    pub async fn get_person_by_external_id(&self, ids: RsIds) -> Result<Option<Person>> {
+        
+        //println!("{}, {}, {}, {}, {}",i.imdb.unwrap_or("zz".to_string()), i.slug.unwrap_or("zz".to_string()), i.tmdb.unwrap_or(0), i.trakt.unwrap_or(0), i.tvdb.unwrap_or(0));
+        let row = self.connection.call( move |conn| { 
+            let mut query = conn.prepare(&format!("SELECT  
+            {}
+            FROM people 
+            WHERE 
+            imdb = ? or slug = ? or tmdb = ? or trakt = ?", Self::PEOPLE_FIELDS))?;
+            let row = query.query_row(
+            params![ids.imdb.unwrap_or("zz".to_string()), ids.slug.unwrap_or("zz".to_string()), ids.tmdb.unwrap_or(0), ids.trakt.unwrap_or(0)],Self::row_to_person).optional()?;
+            Ok(row)
+        }).await?;
+        Ok(row)
+    }
 
 
     pub async fn update_person(&self, person_id: &str, update: PersonForUpdate) -> Result<()> {

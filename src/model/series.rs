@@ -99,6 +99,7 @@ pub struct ExternalSerieImages {
     pub poster: Option<String>,
     pub still: Option<String>,
     pub card: Option<String>,
+    pub portraits: Option<String>,
 }
 
 

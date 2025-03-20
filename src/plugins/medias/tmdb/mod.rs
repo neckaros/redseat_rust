@@ -109,4 +109,50 @@ impl TmdbContext {
         let bests = images.into_externals(&self.configuration);
         Ok(bests)
     }
+
+    pub async fn person_image(&self, ids: RsIds, lang: &Option<String>) -> crate::Result<ExternalSerieImages> {
+        let id = ids.try_tmdb()?;
+        let request = self.get_request_builder(&format!("person/{}/images", id));
+
+        let response = request.send().await?;
+        let images = response.json::<TmdbImageResponse>().await?;
+        let bests = images.into_external(&self.configuration, lang);
+        Ok(bests)
+    }
+
+    pub async fn person_images(&self, ids: RsIds) -> crate::Result<Vec<ExternalImage>> {
+        let id = ids.try_tmdb()?;
+        let request = self.get_request_builder(&format!("person/{}/images", id));
+
+        let response = request.send().await?;
+        let images = response.json::<TmdbImageResponse>().await?;
+        let bests = images.into_externals(&self.configuration);
+        Ok(bests)
+    }
+}
+
+
+
+#[cfg(test)]
+mod tests {
+
+    use chrono::{TimeZone, Utc};
+    use rs_plugin_common_interfaces::Gender;
+
+    use crate::{error::RsResult, tools::clock::RsNaiveDate};
+
+    use super::*;
+
+    fn exemple_movie() -> RsIds {
+        RsIds::from_imdb("tt1160419".to_owned())
+    }
+    #[tokio::test]
+    async fn trakt_releases() -> RsResult<()> {
+        let tmdb = TmdbContext::new("4a01db3a73eed5cf17e9c7c27fd9d008".to_string()).await?;
+        let images = tmdb.person_images(RsIds { tmdb: Some(56731), ..Default::default()}).await?;
+
+        println!("images {:?}", images);
+        Ok(())
+
+    }
 }

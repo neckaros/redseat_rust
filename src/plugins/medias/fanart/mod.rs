@@ -45,6 +45,7 @@ impl From<FanArtSerieResult> for ExternalSerieImages {
             poster: value.tvposter.into_best().map(|i| i.url),
             still: None,
             card: value.tvthumb.into_best().map(|i| i.url),
+            ..Default::default()
         }
     }
 }
@@ -136,6 +137,7 @@ impl From<FanArtMovieResult> for ExternalSerieImages {
             poster: value.movieposter.into_best().map(|i| i.url),
             still: None,
             card: value.moviethumb.into_best().map(|i| i.url),
+            ..Default::default()
         }
     }
 }

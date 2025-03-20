@@ -1,14 +1,17 @@
 
 
 
+use async_recursion::async_recursion;
+use futures::TryStreamExt;
 use nanoid::nanoid;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use strum_macros::EnumString;
-use tokio::{fs::File, io::{AsyncRead, BufReader}};
+use tokio::{fs::File, io::{AsyncRead, AsyncWriteExt, BufReader}};
 
-use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, url::RsLink, Gender, ImageType};
-use crate::{domain::{deleted::RsDeleted, library::LibraryRole, people::{PeopleMessage, Person, PersonWithAction}, tag::Tag, ElementAction}, error::RsResult, plugins::sources::{AsyncReadPinBox, FileStreamResult}, tools::image_tools::ImageSize};
+use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, url::RsLink, ExternalImage, Gender, ImageType};
+use tokio_util::io::StreamReader;
+use crate::{domain::{deleted::RsDeleted, library::LibraryRole, people::{PeopleMessage, Person, PersonWithAction}, tag::Tag, ElementAction}, error::{RsError, RsResult}, plugins::sources::{AsyncReadPinBox, FileStreamResult, Source}, tools::{image_tools::{resize_image_reader, ImageSize}, log::log_info}};
 
 use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
 
@@ -169,8 +172,57 @@ impl ModelController {
 
 
     
-	pub async fn person_image(&self, library_id: &str, person_id: &str, kind: Option<ImageType>, size: Option<ImageSize>, requesting_user: &ConnectedUser) -> RsResult<FileStreamResult<AsyncReadPinBox>> {
+	pub async fn person_image_old(&self, library_id: &str, person_id: &str, kind: Option<ImageType>, size: Option<ImageSize>, requesting_user: &ConnectedUser) -> RsResult<FileStreamResult<AsyncReadPinBox>> {
         self.library_image(library_id, ".portraits", person_id, kind, size, requesting_user).await
+	}
+
+
+    #[async_recursion]
+	pub async fn person_image(&self, library_id: &str, person_id: &str, kind: Option<ImageType>, size: Option<ImageSize>, requesting_user: &ConnectedUser) -> crate::Result<FileStreamResult<AsyncReadPinBox>> {
+        let kind = kind.unwrap_or(ImageType::Poster);
+        if RsIds::is_id(person_id) {
+            let mut person_ids: RsIds = person_id.to_string().try_into()?;
+            let store: std::sync::Arc<super::store::sql::library::SqliteLibraryStore> = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+            let existing_person = store.get_person_by_external_id(person_ids.clone()).await?;
+            if let Some(existing_person) = existing_person {
+                let image = self.person_image(library_id, &existing_person.id, Some(kind), size, requesting_user).await?;
+                Ok(image)
+            } else {
+
+                let local_provider = self.library_source_for_library(library_id).await?;
+                if person_ids.tmdb.is_none() {
+                    let person = self.trakt.get_person(&person_ids).await?;
+                    person_ids = person.into();
+                }
+                let image_path = format!("cache/person-{}-{}.webp", person_id.replace(':', "-"), kind);
+
+                if !local_provider.exists(&image_path).await {
+                    let images = self.get_person_image_url(&person_ids, &kind, &None).await?.ok_or(crate::Error::NotFound)?;
+                    let (_, mut writer) = local_provider.get_file_write_stream(&image_path).await?;
+                    let image_reader = reqwest::get(images).await?;
+                    let stream = image_reader.bytes_stream();
+                    let body_with_io_error = stream.map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err));
+                    let mut body_reader = StreamReader::new(body_with_io_error);
+                    let resized = resize_image_reader(Box::pin(body_reader), ImageSize::Large.to_size(), image::ImageFormat::Avif, Some(70), false).await?;
+
+                    writer.write_all(&resized).await?;
+                }
+
+                let source = local_provider.get_file(&image_path, None).await?;
+                match source {
+                    crate::plugins::sources::SourceRead::Stream(s) => Ok(s),
+                    crate::plugins::sources::SourceRead::Request(_) => Err(crate::Error::GenericRedseatError),
+                }
+            }
+        } else {
+            if !self.has_library_image(library_id, ".portraits", person_id, Some(kind.clone()), requesting_user).await? {
+                log_info(crate::tools::log::LogServiceType::Source, format!("Updating person image: {}", person_id));
+                self.refresh_person_image(library_id, person_id, &kind, requesting_user).await?;
+            }
+            
+            let image = self.library_image(library_id, ".portraits", person_id, Some(kind), size, requesting_user).await?;
+            Ok(image)
+        }
 	}
 
     pub async fn update_person_image<T: AsyncRead>(&self, library_id: &str, person_id: &str, kind: &Option<ImageType>, reader: T, requesting_user: &ConnectedUser) -> Result<Person> {
@@ -186,5 +238,70 @@ impl ModelController {
         Ok(person)
 	}
 
+
+    /// fetch the plugins to get images for this person
+    pub async fn get_person_images(&self, ids: &RsIds) -> RsResult<Vec<ExternalImage>> {
+        let mut images = self.tmdb.person_images(ids.clone()).await?;
+        Ok(images)
+    }
+    pub async fn download_person_image(&self, ids: &RsIds, kind: &ImageType, lang: &Option<String>) -> crate::Result<AsyncReadPinBox> {
+        let images = self.get_person_image_url(ids, kind, lang).await?.ok_or(crate::Error::NotFound)?;
+        let image_reader = reqwest::get(images).await?;
+        let stream = image_reader.bytes_stream();
+        let body_with_io_error = stream.map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err));
+        let body_reader = StreamReader::new(body_with_io_error);
+        Ok(Box::pin(body_reader))
+    }    
+    pub async fn get_person_image_url(&self, ids: &RsIds, kind: &ImageType, lang: &Option<String>) -> RsResult<Option<String>> {
+        let images = if kind == &ImageType::Poster {
+            None
+        } else { 
+            self.tmdb.person_image(ids.clone(), lang).await?.into_kind(kind.clone())
+        };
+       Ok(images)
+    }
+
+
+    /// download and update image
+    pub async fn refresh_person_image(&self, library_id: &str, person_id: &str, kind: &ImageType, requesting_user: &ConnectedUser) -> RsResult<()> {
+        let person = self.get_person(library_id, person_id.to_string(), requesting_user).await?.ok_or(RsError::NotFoundPerson(person_id.to_string()))?;
+        let ids: RsIds = person.clone().into();
+        let reader = self.download_person_image(&ids, kind, &None).await?;
+        self.update_person_image(library_id, person_id, &Some(kind.clone()), reader, &ConnectedUser::ServerAdmin).await?;
+        Ok(())
+	}
+
+    pub async fn refresh_person(&self, library_id: &str, person_id: &str, requesting_user: &ConnectedUser) -> RsResult<Person> {
+        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        let person = self.get_person(library_id, person_id.to_string(), requesting_user).await?.ok_or(RsError::NotFoundPerson(person_id.to_string()))?;
+        let ids: RsIds = person.clone().into();
+        let new_person = self.trakt.get_person(&ids).await?;
+        let mut updates = PersonForUpdate {..Default::default()};
+
+        if person.name != new_person.name {
+            updates.name = Some(new_person.name);
+        }
+        if person.bio != new_person.bio {
+            updates.bio = new_person.bio;
+        }
+        if person.imdb != new_person.imdb {
+            updates.imdb = new_person.imdb;
+        }
+        if person.tmdb != new_person.tmdb {
+            updates.tmdb = new_person.tmdb;
+        }
+        if person.slug != new_person.slug {
+            updates.slug = new_person.slug;
+        }
+        if person.birthday != new_person.birthday {
+            updates.birthday = new_person.birthday;
+        }
+        if person.death != new_person.death {
+            updates.death = new_person.death;
+        }
+
+        let new_person = self.update_person(library_id, person_id.to_string(), updates, requesting_user).await?;
+        Ok(new_person)        
+	}
     
 }

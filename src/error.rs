@@ -23,7 +23,12 @@ pub enum Error {
 	Error(String),
 	Message(String),
 	LoginFail,
+
+
 	NotFound,
+	NotFoundPerson(String),
+
+
 	
 	NotImplemented(String),
 
