@@ -49,6 +49,7 @@ async fn handler_list(Path(library_id): Path<String>, State(mc): State<ModelCont
 }
 
 async fn handler_trending(State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	println!("FUUUU");
 	let libraries = mc.trending_movies(&user).await?;
 	let body = Json(json!(libraries));
 	Ok(body)

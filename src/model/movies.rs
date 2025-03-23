@@ -195,7 +195,7 @@ impl ModelController {
 
     pub async fn trending_movies(&self, requesting_user: &ConnectedUser )  -> RsResult<Vec<Movie>> {
         let mut movies = self.trakt.trending_movies().await?;
-        
+        println!("GOT trending");
         self.fill_movies_watched(&mut movies, requesting_user, None).await?;
         Ok(movies)
     }
