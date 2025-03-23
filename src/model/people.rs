@@ -179,13 +179,12 @@ impl ModelController {
 
     #[async_recursion]
 	pub async fn person_image(&self, library_id: &str, person_id: &str, kind: Option<ImageType>, size: Option<ImageSize>, requesting_user: &ConnectedUser) -> crate::Result<FileStreamResult<AsyncReadPinBox>> {
-        let kind = kind.unwrap_or(ImageType::Poster);
         if RsIds::is_id(person_id) {
             let mut person_ids: RsIds = person_id.to_string().try_into()?;
             let store: std::sync::Arc<super::store::sql::library::SqliteLibraryStore> = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
             let existing_person = store.get_person_by_external_id(person_ids.clone()).await?;
             if let Some(existing_person) = existing_person {
-                let image = self.person_image(library_id, &existing_person.id, Some(kind), size, requesting_user).await?;
+                let image = self.person_image(library_id, &existing_person.id, kind, size, requesting_user).await?;
                 Ok(image)
             } else {
 
@@ -194,10 +193,10 @@ impl ModelController {
                     let person = self.trakt.get_person(&person_ids).await?;
                     person_ids = person.into();
                 }
-                let image_path = format!("cache/person-{}-{}.webp", person_id.replace(':', "-"), kind);
+                let image_path = format!("cache/person-{}-{}.webp", person_id.replace(':', "-"), kind.as_ref().unwrap_or(&ImageType::Poster));
 
                 if !local_provider.exists(&image_path).await {
-                    let images = self.get_person_image_url(&person_ids, &kind, &None).await?.ok_or(crate::Error::NotFound)?;
+                    let images = self.get_person_image_url(&person_ids, kind.as_ref().unwrap_or(&ImageType::Poster), &None).await?.ok_or(crate::Error::NotFound)?;
                     let (_, mut writer) = local_provider.get_file_write_stream(&image_path).await?;
                     let image_reader = reqwest::get(images).await?;
                     let stream = image_reader.bytes_stream();
@@ -215,12 +214,12 @@ impl ModelController {
                 }
             }
         } else {
-            if !self.has_library_image(library_id, ".portraits", person_id, Some(kind.clone()), requesting_user).await? {
-                log_info(crate::tools::log::LogServiceType::Source, format!("Updating person image: {}", person_id));
+            if !self.has_library_image(library_id, ".portraits", person_id, kind.clone(), requesting_user).await? {
+                log_info(crate::tools::log::LogServiceType::Source, format!("Updating person image: {} {:?}", person_id, kind.clone()));
                 self.refresh_person_image(library_id, person_id, &kind, requesting_user).await?;
             }
             
-            let image = self.library_image(library_id, ".portraits", person_id, Some(kind), size, requesting_user).await?;
+            let image = self.library_image(library_id, ".portraits", person_id, kind, size, requesting_user).await?;
             Ok(image)
         }
 	}
@@ -244,8 +243,8 @@ impl ModelController {
         let mut images = self.tmdb.person_images(ids.clone()).await?;
         Ok(images)
     }
-    pub async fn download_person_image(&self, ids: &RsIds, kind: &ImageType, lang: &Option<String>) -> crate::Result<AsyncReadPinBox> {
-        let images = self.get_person_image_url(ids, kind, lang).await?.ok_or(crate::Error::NotFound)?;
+    pub async fn download_person_image(&self, ids: &RsIds, kind: &Option<ImageType>, lang: &Option<String>) -> crate::Result<AsyncReadPinBox> {
+        let images = self.get_person_image_url(ids, kind.as_ref().unwrap_or(&ImageType::Poster), lang).await?.ok_or(crate::Error::NotFound)?;
         let image_reader = reqwest::get(images).await?;
         let stream = image_reader.bytes_stream();
         let body_with_io_error = stream.map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err));
@@ -263,11 +262,11 @@ impl ModelController {
 
 
     /// download and update image
-    pub async fn refresh_person_image(&self, library_id: &str, person_id: &str, kind: &ImageType, requesting_user: &ConnectedUser) -> RsResult<()> {
+    pub async fn refresh_person_image(&self, library_id: &str, person_id: &str, kind: &Option<ImageType>, requesting_user: &ConnectedUser) -> RsResult<()> {
         let person = self.get_person(library_id, person_id.to_string(), requesting_user).await?.ok_or(RsError::NotFoundPerson(person_id.to_string()))?;
         let ids: RsIds = person.clone().into();
         let reader = self.download_person_image(&ids, kind, &None).await?;
-        self.update_person_image(library_id, person_id, &Some(kind.clone()), reader, &ConnectedUser::ServerAdmin).await?;
+        self.update_person_image(library_id, person_id, &kind.clone(), reader, &ConnectedUser::ServerAdmin).await?;
         Ok(())
 	}
 

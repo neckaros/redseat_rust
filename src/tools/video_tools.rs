@@ -555,7 +555,9 @@ impl VideoCommandBuilder {
             self.add_overlay(overlay);
         }
         if let Some(overlays) = request.texts {
-            self.add_text_overlay(overlays).await?;
+            if overlays.len() > 0 {
+                self.add_text_overlay(overlays).await?;
+            }
         }
         self.format = Some(request.format);
         self.set_video_codec(request.codec, request.crf).await;
