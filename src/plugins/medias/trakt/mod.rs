@@ -1,4 +1,5 @@
 use chrono::{DateTime, FixedOffset};
+use http::{header::USER_AGENT, HeaderMap, HeaderValue};
 use reqwest::{Client, Url};
 use rs_plugin_common_interfaces::{domain::rs_ids::{RsIds, RsIdsError}, lookup::RsLookupMovie};
 use tower::Service;
@@ -24,10 +25,19 @@ pub struct TraktContext {
 impl TraktContext {
     pub fn new(client_id: String) -> Self {
         let base_url = reqwest::Url::parse("https://api.trakt.tv").unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(USER_AGENT, HeaderValue::from_static("redseat/1.0"));
+        //headers.insert("X-Custom-Header", HeaderValue::from_static("custom_value"));
+
+        // Create a client with default headers
+        let client = Client::builder()
+            .default_headers(headers)
+            .build().unwrap();
+            
         TraktContext {
             base_url, //"https://api.trakt.tv".to_string(),
             client_id,
-            client: reqwest::Client::new()
+            client
         }
     }
 }
@@ -191,7 +201,9 @@ impl TraktContext {
     pub async fn trending_movies(&self) -> crate::Result<Vec<Movie>> {
         let url = self.base_url.join("movies/trending?extended=full").unwrap();
         let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
+
         let shows: Vec<Movie> = r.json::<Vec<TraktTrendingMoviesResult>>().await?.into_iter().map(|s| s.movie).map(Movie::from).collect();
+        println!("got trending");
         Ok(shows)
     }
 
