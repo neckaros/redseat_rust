@@ -126,7 +126,6 @@ impl PluginManager {
                         request: request.clone(),
                         credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
                     };
-                    //println!("request {}", serde_json::to_string(&req).unwrap());
                     
                     //println!("call plugin request {:?}: {}", plugin.path, request.url);
                     let res = plugin_m.call_get_error_code::<Json<RsRequestPluginRequest>, Json<RsRequest>>("process", Json(req));
@@ -188,8 +187,8 @@ impl PluginManager {
                             request: request.clone(),
                             credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
                         };
-                        //println!("request {}", serde_json::to_string(&req).unwrap());
-                        println!("call plugin request permanent");
+                        println!("call plugin request permanent  {:?}", plugin.infos.name);
+                        println!("{:?}", req);
                         let res = plugin_m.call_get_error_code::<Json<RsRequestPluginRequest>, Json<RsRequest>>("request_permanent", Json(req));
                         println!("called plugin request permanent");
                         if let Ok(Json(mut res)) = res {
@@ -229,7 +228,6 @@ impl PluginManager {
                         credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
                         params: None,
                     };
-                    //println!("request {}", serde_json::to_string(&wrapped_query).unwrap());
                     let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<RsLookupSourceResult>>("lookup", Json(wrapped_query));
                     if let Ok(Json(res)) = res {
                         println!("ok pl");

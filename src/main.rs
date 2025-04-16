@@ -48,6 +48,11 @@ async fn main() ->  Result<()> {
     log_info(tools::log::LogServiceType::Register, "Starting redseat server".to_string());
     log_info(tools::log::LogServiceType::Register, "Initializing config".to_string());
 
+    extism::set_log_callback(|line| {
+        println!("Extism Log: {}", line);
+    }, "info")?;
+    
+
     let ffmpeg_version = VideoCommandBuilder::version().await?;
     if let Some(ffmpeg_version) = ffmpeg_version {
         log_info(tools::log::LogServiceType::Register, format!("FFMPEG version {:?}", ffmpeg_version));

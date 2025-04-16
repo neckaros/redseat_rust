@@ -196,7 +196,7 @@ impl Media {
         ]
         .iter()
         .max()
-        .unwrap()
+        .unwrap_or(&0)
     }
 
     pub fn bytes_size(&self) -> Option<u64> {
@@ -468,6 +468,7 @@ impl From<MediaDownloadUrl> for RsRequest {
             files: None,
             selected_file: None,
             tags: value.tags_lookup,
+            albums: value.series_lookup,
             people: value.people_lookup,
             ignore_origin_duplicate: value.ignore_origin_duplicate,
             ..Default::default()
@@ -478,7 +479,7 @@ impl From<MediaDownloadUrl> for RsRequest {
 impl From<GroupMediaDownload<MediaDownloadUrl>> for Vec<RsRequest> {
     fn from(value: GroupMediaDownload<MediaDownloadUrl>) -> Self {
         let headers = value.headers_as_tuple();
-        println!("Headers parsed {:?}", headers);
+        //println!("Headers parsed {:?}", headers);
         let mut output = Vec::new();
         for file in value.files {
             output.push(
@@ -495,6 +496,7 @@ impl From<GroupMediaDownload<MediaDownloadUrl>> for Vec<RsRequest> {
                         selected_file: None,
                         referer: value.referer.clone(),
                         tags: file.tags_lookup.or(value.tags_lookup.clone()),
+                        albums: file.series_lookup.or(value.series_lookup.clone()),
                         people: file.people_lookup.or(value.people_lookup.clone()),
                         description: file.description.or(value.title.clone()),
                         ignore_origin_duplicate: file.ignore_origin_duplicate,
@@ -554,6 +556,7 @@ impl From<RsRequest> for MediaForUpdate {
             size: value.size,
             people_lookup: value.people,
             tags_lookup: value.tags,
+            series_lookup: value.albums,
             ..Default::default()
         }
     }

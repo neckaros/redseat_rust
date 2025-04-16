@@ -591,7 +591,6 @@ impl SqliteLibraryStore {
     }
 
     pub async fn update_media(&self, media_id: &str, mut update: MediaForUpdate, user_id: Option<String>) -> Result<()> {
-        println!("update {:?}",update);
         let id = media_id.to_string();
         let existing = self.get_media(media_id, user_id.clone()).await?.ok_or_else( || Error::NotFound)?;
 
@@ -631,6 +630,7 @@ impl SqliteLibraryStore {
         // Find tags with lookup 
         if let Some(lookup_tags) = update.tags_lookup {
             let mut found_tags: Vec<MediaItemReference> = vec![];
+            //println!("lookup tags: {:?}", lookup_tags);
             for lookup_tag in lookup_tags {
                 let found = self.get_tags(TagQuery::new_with_name(&lookup_tag.replace('#', ""))).await?;
                 if let Some(tag) = found.first() {
@@ -640,6 +640,8 @@ impl SqliteLibraryStore {
                     found_tags.push(MediaItemReference { id: tag.id.clone(), conf: Some(100) });
                 }
             }
+            
+            //println!("found tags: {:?}", found_tags);
             if found_tags.len() > 0 {
                 update.add_tags.add_or_set(found_tags);
             }
@@ -669,7 +671,7 @@ impl SqliteLibraryStore {
 
         // Find serie with lookup 
         if let Some(lookup_series) = update.series_lookup {
-            
+            println!("looking for series {:?}", lookup_series);
             let mut found_series: Vec<FileEpisode> = vec![];
             for lookup_serie in lookup_series {
                 let found = self.get_series(SerieQuery { name: Some(lookup_serie), ..Default::default()}).await?;
@@ -678,6 +680,7 @@ impl SqliteLibraryStore {
                     found_series.push(FileEpisode { id: serie.id.to_string(), season: update.season, episode: update.episode, episode_to: None });
                 }
             }
+            println!("Found Series {:?}", found_series);
             if !found_series.is_empty() {
                 update.add_series.add_or_set(found_series);
             }

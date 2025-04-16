@@ -46,27 +46,31 @@ pub async fn list_plugins() -> crate::Result<impl Iterator<Item = PluginWasm>> {
             let manifest = Manifest::new([path.clone()]).with_allowed_host("*");
             let plugin = PluginBuilder::new(manifest)
                 .with_wasi(true)
+                .with_http_response_headers(true)
                 .build();
 
-            if let Ok(mut plugin) = plugin {
-                let infos = plugin.call::<&str, Json<PluginInformation>>("infos", "");
-                if let Ok(Json(res)) = infos {
-                    let filename = path.file_name().unwrap().to_str().unwrap();
-                    log_info(crate::tools::log::LogServiceType::Plugin, format!("Loaded plugin {} ({:?}) -> {:?}", res.name, res.capabilities, path));
-                    let p = PluginWasm {
-                        filename: filename.to_string(),
-                        path,
-                        infos: res,
-                        plugin:Mutex::new(plugin),
-                    };
-                    Some(p)
-                } else {
-                    log_error(crate::tools::log::LogServiceType::Other, format!("Error getting plugin informations: {:?} {:?}", &path, infos.err()));
-                    None
+            match plugin {
+                Ok(mut plugin) => {
+                    let infos = plugin.call::<&str, Json<PluginInformation>>("infos", "");
+                    if let Ok(Json(res)) = infos {
+                                    let filename = path.file_name().unwrap().to_str().unwrap();
+                                    log_info(crate::tools::log::LogServiceType::Plugin, format!("Loaded plugin {} ({:?}) -> {:?}", res.name, res.capabilities, path));
+                                    let p = PluginWasm {
+                                        filename: filename.to_string(),
+                                        path,
+                                        infos: res,
+                                        plugin:Mutex::new(plugin),
+                                    };
+                                    Some(p)
+                                } else {
+                                    log_error(crate::tools::log::LogServiceType::Other, format!("Error getting plugin informations: {:?} {:?}", &path, infos.err()));
+                                    None
+                                }
                 }
-            } else {
-                log_error(crate::tools::log::LogServiceType::Other, format!("Error loading plugin: {:?}", &path));
-                None
+                Err(err) => {
+                            log_error(crate::tools::log::LogServiceType::Other, format!("Error loading plugin: {:?} {:?}", &path, err));
+                            None
+                        }
             }
                 
         }))
@@ -144,6 +148,7 @@ impl PluginManager {
         let manifest = Manifest::new([folder.clone()]).with_allowed_host("*");
         let mut plugin = PluginBuilder::new(manifest)
             .with_wasi(true)
+            .with_http_response_headers(true)
             .build()?;
     
         let Json(infos) = plugin.call::<&str, Json<PluginInformation>>("infos", "")?;

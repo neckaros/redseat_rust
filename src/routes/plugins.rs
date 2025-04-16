@@ -6,7 +6,7 @@ use rs_plugin_common_interfaces::{request::RsRequest, url::RsLink, CredentialTyp
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio_util::io::StreamReader;
-
+use nanoid::nanoid;
 
 
 pub fn routes(mc: ModelController) -> Router {
@@ -142,7 +142,7 @@ struct ConvertParams {
 async fn handler_convert(State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ConvertParams>, mut multipart: Multipart) -> Result<Vec<u8>> {
 	let mut info:MediaForUpdate = MediaForUpdate::default();
 	while let Some(field) = multipart.next_field().await.unwrap() {
-        let name = field.name().unwrap().to_string();
+        let name = field.name().unwrap_or(&nanoid!()).to_string();
 		if name == "info" {
 			let text = &field.text().await?;
 			info = serde_json::from_str(&text)?;

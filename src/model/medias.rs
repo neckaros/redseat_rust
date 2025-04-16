@@ -12,6 +12,7 @@ use mime::{Mime, APPLICATION_OCTET_STREAM};
 use mime_guess::get_mime_extensions_str;
 use nanoid::nanoid;
 use query_external_ip::SourceError;
+use regex::Regex;
 use rs_plugin_common_interfaces::{request::{RsRequest, RsRequestStatus}, url::{RsLink, RsLinkType}, PluginType, RsCookie};
 use rusqlite::{types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, ToSql};
 use serde::{Deserialize, Serialize};
@@ -840,7 +841,19 @@ impl ModelController {
                 if let Some(reader_name) = reader.name {
                     infos.name = Some(reader_name);
                 }
-                let mut filename =infos.name.clone().unwrap_or(nanoid!());
+                let mut filename = if let Some(name) = &infos.name {
+                    name.clone()
+                } else if let Some(desc) = &infos.description {
+                    // Check if description ends with a file extension pattern (e.g., .xxx)
+                    let re = Regex::new(r"\.\w{2,4}$").unwrap();
+                    if re.is_match(desc.trim()) {
+                        desc.clone()
+                    } else {
+                        nanoid!()
+                    }
+                } else {
+                    nanoid!()
+                };
                 if infos.mimetype.is_none() {
                     infos.mimetype = reader.mime;
                 }
@@ -1356,7 +1369,7 @@ impl ModelController {
             let archive = std::fs::File::open(local_path)?;
             let buffreader = std::io::BufReader::new(archive);
 
-            let mut archive = zip::ZipArchive::new(buffreader).unwrap();
+            let mut archive = zip::ZipArchive::new(buffreader)?;
 
             update.pages = Some(archive.len());
 

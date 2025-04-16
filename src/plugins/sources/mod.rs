@@ -3,6 +3,7 @@ use async_recursion::async_recursion;
 use axum::{async_trait, body::Body, extract::Request, response::IntoResponse};
 use bytes::Bytes;
 use futures::{future::BoxFuture, Future, Stream, StreamExt, TryStreamExt};
+use http::HeaderValue;
 use hyper::{header, HeaderMap};
 use mime::{Mime, APPLICATION_OCTET_STREAM};
 use nanoid::nanoid;
@@ -386,7 +387,9 @@ impl SourceRead {
                     RsRequestStatus::FinalPublic => {
                         println!("final public");
                         let mut headers = axum::http::HeaderMap::new();
-                        headers.append(axum::http::header::LOCATION, request.url.parse().unwrap());
+                        if let Ok(url) = HeaderValue::from_str(&request.url) {
+                            headers.append(axum::http::header::LOCATION, url);
+                        }
                         let status = axum::http::StatusCode::TEMPORARY_REDIRECT;
                         let body = Body::empty();
                         Ok((status, headers, body).into_response())
