@@ -380,6 +380,9 @@ impl SqliteLibraryStore {
 
         
         where_query.add_oder(OrderBuilder::new(sort.to_owned(), query.order));
+        if sort == "rating" {
+            where_query.add_oder(OrderBuilder::new("m.added".to_owned(), SqlOrder::DESC));  
+        }
 
 
         let tag_filter = query.tags_confidence.map(|conf| format!(" and (IFNULL(confidence, 100) >= {conf})"));
@@ -628,7 +631,17 @@ impl SqliteLibraryStore {
             }
         }
         // Find tags with lookup 
-        if let Some(lookup_tags) = update.tags_lookup {
+        if let Some(mut lookup_tags) = update.tags_lookup.clone() {
+            if let Some(people) = &update.people_lookup {
+                for person in people {
+                    let person = if person.contains("@") {
+                        person.to_string()
+                    } else {
+                        format!("@{}", person)
+                    };
+                    lookup_tags.push(person);
+                }
+            }
             let mut found_tags: Vec<MediaItemReference> = vec![];
             //println!("lookup tags: {:?}", lookup_tags);
             for lookup_tag in lookup_tags {

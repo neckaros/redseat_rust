@@ -409,7 +409,7 @@ pub async fn get_ipv6() -> Result<String> {
             return Ok(ip);
         }
     }
-    Err(Error::Error("Unable to get IPV4".to_string()))
+    Err(Error::Error("Unable to get IPV6".to_string()))
 }
 
 
