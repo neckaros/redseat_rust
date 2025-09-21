@@ -50,7 +50,12 @@ RUN cd /tmp && \
 
 # Server build stage
 FROM rust:1.90 AS builder
-RUN apt-get update && apt-get install -y nasm && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y \
+    cmake \
+    pkg-config \
+    build-essential \
+    nasm \
+  && rm -rf /var/lib/apt/lists/*
 WORKDIR /usr/src/redseat-daemon
 COPY . .
 RUN cargo install --path .
