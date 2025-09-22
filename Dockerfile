@@ -24,30 +24,6 @@ RUN apt-get update && apt-get install -y \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
-# Download and compile ImageMagick 7
-RUN cd /tmp && \
-    wget https://imagemagick.org/archive/ImageMagick.tar.gz && \
-    tar xvzf ImageMagick.tar.gz && \
-    cd ImageMagick-* && \
-    ./configure \
-        --with-heic=yes \
-        --with-webp=yes \
-        --enable-shared \
-        --disable-static \
-        --with-modules \
-        --enable-hdri \
-        --with-jpeg \
-        --with-png \
-        --with-tiff \
-        --with-raw=yes \
-        --without-perl \
-        --prefix=/usr/local && \
-    make -j$(nproc) && \
-    make install && \
-    ldconfig
-
-
-
 # Server build stage
 FROM rust:1.90 AS builder
 RUN apt-get update && apt-get install -y \
@@ -58,7 +34,7 @@ RUN apt-get update && apt-get install -y \
   && rm -rf /var/lib/apt/lists/*
 WORKDIR /usr/src/redseat-daemon
 COPY . .
-RUN cargo install --path .
+RUN cargo build --release
 
 
 # Run stage
