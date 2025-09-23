@@ -75,7 +75,7 @@ RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
 RUN apt-get -y purge software-properties-common
 
 WORKDIR /app
-COPY --from=builder /usr/local/cargo/bin/redseat-rust /app/redseat-rust
-COPY --from=builder /usr/local/cargo/bin/redseat-daemon /app/redseat-daemon
+COPY --from=builder /usr/src/redseat-daemon/target/release/redseat-rust /app/redseat-rust
+COPY --from=builder /usr/src/redseat-daemon/target/release/redseat-daemon /app/redseat-daemon
 EXPOSE 8080
 CMD ["./redseat-daemon", "--docker"]
