@@ -40,7 +40,7 @@ https://www.redseat.cloud/install
 Display advanced properties. Verify public ip and port you exposed from your docker image
 exemple docker file with traefik domain (replace subdomain.domain.com with your domain name):
 
-'''dockerfile
+```yaml
 services:
   redseat:
     image: neckaros/redseat-rust:latest
@@ -65,7 +65,7 @@ networks:
     external: true
 volumes:
   redseat_config:
-'''
+```
 
 ## Configs
 

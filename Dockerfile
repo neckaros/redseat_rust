@@ -53,7 +53,7 @@ RUN apt-get update && apt-get install -y \
     libwebp7 \
     libjpeg62 \
     libaom3 \
-    libdav1d6 \
+    libdav1d7 \
     libx265-199 \
     libpng16-16t64 \
     libtiff6 \
