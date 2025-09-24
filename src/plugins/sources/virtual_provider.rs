@@ -9,7 +9,7 @@ use query_external_ip::SourceError;
 use rs_plugin_common_interfaces::request::RsRequest;
 use tokio::{fs::File, io::{AsyncRead, AsyncWrite, BufReader, BufWriter}};
 
-use crate::{domain::{backup::Backup, library::ServerLibrary, media::MediaForUpdate}, error::RsResult, model::ModelController, plugins::PluginManager, routes::mw_range::RangeDefinition, server::get_server_file_path_array};
+use crate::{domain::{backup::Backup, library::ServerLibrary, media::MediaForUpdate}, error::RsResult, model::ModelController, plugins::{sources::local_provider_for_library, PluginManager}, routes::mw_range::RangeDefinition, server::get_server_file_path_array};
 
 use super::{error::{SourcesError, SourcesResult}, AsyncReadPinBox, AsyncSeekableWrite, BoxedStringFuture, FileStreamResult, Source, SourceRead};
 
@@ -32,6 +32,10 @@ impl Source for VirtualProvider {
         Err(crate::Error::NotImplemented("Virtual providers can't be used for backup".to_string()))
     }
     async fn init(&self) -> SourcesResult<()> {
+        
+        let source = local_provider_for_library(&self.library).await.map_err(|_| SourcesError::Other("Unable to get local provider source during init of virtual library".to_string()))?;
+        source.init().await?;
+       
         Ok(())
     }
     async fn exists(&self, _source: &str) -> bool {

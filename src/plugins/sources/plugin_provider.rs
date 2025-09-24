@@ -61,17 +61,7 @@ impl Source for PluginProvider {
     async fn init(&self) -> SourcesResult<()> {
         let local = local_provider(&self.id, "PluginProvider", &Some(self.root.clone())).await.map_err(|_| SourcesError::Other("Unable to init library".to_string()))?; 
 
-        let path_lib = local.get_full_path(".redseat");
-        create_dir_all(path_lib).await?;
-
-        let path_lib = local.get_full_path(".redseat/.thumbs");
-        create_dir_all(path_lib).await?;
-        let path_lib = local.get_full_path(".redseat/.portraits");
-        create_dir_all(path_lib).await?;
-        let path_lib = local.get_full_path(".redseat/.cache");
-        create_dir_all(path_lib).await?;
-        let path_lib = local.get_full_path(".redseat/.series");
-        create_dir_all(path_lib).await?;
+       local.init().await?;
         Ok(())
 
     }
