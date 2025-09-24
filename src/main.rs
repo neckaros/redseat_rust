@@ -100,7 +100,8 @@ async fn main() ->  Result<()> {
 
     } else {
         log_info(tools::log::LogServiceType::Register, format!("Starting HTTP server only has no certificate found"));
-        let listener = TcpListener::bind(format!("0.0.0.0:{}", local_port)).await.unwrap();
+        let addr = SocketAddr::from(([0, 0, 0, 0], local_port));
+        let listener = TcpListener::bind(addr).await.unwrap();
         log_info(LogServiceType::Register, format!("->> LISTENING on {:?}\n", listener.local_addr()));
         
         axum::serve(listener, app.await?)
