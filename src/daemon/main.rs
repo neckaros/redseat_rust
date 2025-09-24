@@ -45,19 +45,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-async fn download() -> Result<(), Box<dyn Error>> {
-    /*logln!("Downloading latest version...");
-    let dld_path = "https://github.com/neckaros/redseat_rust/releases/download/main/redseat-rust";
-    let response = reqwest::get(dld_path).await?;
-    let mut file = File::create("./redseat-rust")?;
-    let mut perms = fs::metadata("./redseat-rust")?.permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions("./redseat-rust", perms)?;
-    let mut content =  Cursor::new(response.bytes().await?);
-    copy(&mut content, &mut file)?;
-*/
-    Ok(())
-}
 
 fn run() -> Result<ExitStatus, Box<dyn Error>> {
     let args: Vec<String> = env::args().skip(1).collect();

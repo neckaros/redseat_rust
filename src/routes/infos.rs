@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::{model::{users::{ConnectedUser, ServerUser, UserRole}, ModelController}, server::{check_unregistered, get_config, get_install_url, get_own_url, get_server_file_path, get_server_id, get_web_url, update_config, PublicServerInfos}, tools::{image_tools::image_magick::Red, log::{log_info, LogServiceType}}, Result};
+use crate::{model::{users::{ConnectedUser, ServerUser, UserRole}, ModelController}, server::{check_unregistered, get_config, get_install_url, get_server_file_path, get_server_id, get_web_url, update_config, PublicServerInfos}, tools::{image_tools::image_magick::Red, log::{log_info, LogServiceType}}, Result};
 use axum::{extract::{Query, State}, response::Redirect, routing::{get, post}, Json, Router};
 use query_external_ip::Consensus;
 use serde::{Deserialize, Serialize};

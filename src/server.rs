@@ -7,8 +7,7 @@ use serde::{Deserialize, Serialize};
 use nanoid::nanoid;
 use clap::Parser;
 use tracing_subscriber::fmt::format;
-use crate::{error::{Error, RsResult}, model::{users::ConnectedUser, ModelController}, tools::{image_tools::has_image_magick, log::{log_error, log_info, LogServiceType}}, RegisterInfo, Result};
-
+use crate::{error::{Error, RsResult}, model::{users::ConnectedUser, ModelController}, plugins::url, tools::{image_tools::has_image_magick, log::{log_error, log_info, LogServiceType}}, RegisterInfo, Result};
 
 static CONFIG: OnceLock<Mutex<ServerConfig>> = OnceLock::new();
 
@@ -18,11 +17,16 @@ const ENV_HOME: &str = "REDSEAT_HOME";
 const ENV_PORT: &str = "REDSEAT_PORT";
 const ENV_EXP_PORT: &str = "REDSEAT_EXP_PORT";
 const ENV_DIR: &str = "REDSEAT_DIR";
+const ENV_DOMAIN: &str = "REDSEAT_DOMAIN";
+const ENV_NOCERT: &str = "REDSEAT_NOCERT";
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ServerConfig {
     pub id: Option<String>,
     #[serde(default = "default_home")]
     pub redseat_home: String,
+    pub domain: Option<String>,
+    #[serde(default = "default_false")]
+    pub noCert: bool,
     pub port: Option<u16>,
     pub exp_port: Option<u16>,
     pub local: Option<String>,
@@ -45,7 +49,15 @@ struct Args {
     // Use image magick if installed for images conversion
     #[arg(short = 'm', long)]
     imagesUseIm: bool,
+
+    // Don't use certificate creation (if your domain already has ssl via proxy)
+    #[arg(short = 'c', long)]
+    noCert: Option<bool>,
     
+    /// set domain name (ex redseat.myserver.com)
+    #[arg(short = 'u', long)]
+    domain: Option<String>,
+
     // Server local folder
     #[arg(short, long)]
     dir: Option<String>,
@@ -202,6 +214,20 @@ pub async fn get_config_with_overrides() -> Result<ServerConfig> {
     if let Some(id) = get_config_override_serverid() {
         config.id = Some(id);
     }
+
+    if let Some(domain) = args.domain.or_else(|| env::var(ENV_DOMAIN).ok()) {
+        config.domain = Some(domain);
+    }
+    if let Some(noCert) = args.noCert.or_else(|| {
+        if let Ok(val) = env::var(ENV_NOCERT) {
+            val.parse::<bool>().ok()
+        } else {
+            None
+        }
+    }) {
+        config.noCert = noCert;
+    }
+
     if args.imagesUseIm {
         if has_image_magick() {
             config.imagesUseIm = true;
@@ -249,24 +275,6 @@ pub async fn update_config(config: ServerConfig) -> Result<()> {
     return Ok(())
 }
 
-pub async fn get_install_local_url() -> Result<String> {
-	Ok(format!("https://127.0.0.1:{}/infos/install", get_server_port().await))
-}
-
-
-pub async fn get_own_url() -> Result<String> {
-	let config = get_config().await;
-
-	let mut params = vec![];
-	if let Some(port) = config.port {
-		params.push(format!("port={}", port));
-	}
-	if let Some(local) = config.local {
-		params.push(format!("local={}", local));
-	}
-	
-	Ok(format!("https://{}/install?{}", config.redseat_home, params.join("&")))
-}
 
 pub async fn get_web_url() -> Result<String> {
 	let config = get_config().await;
@@ -286,6 +294,13 @@ pub async fn get_install_url() -> Result<String> {
 	}
 	if let Some(local) = config.local {
 		params.push(format!("local={}", local));
+	}
+	if let Some(domain) = config.domain {
+		params.push(format!("domain={}", domain));
+	}
+    
+	if config.noCert {
+		params.push(format!("noCert={}", config.noCert.to_string()));
 	}
    
 	
@@ -368,6 +383,7 @@ pub async fn get_server_file_string(name: &str) -> Result<Option<String>> {
 pub struct ServerIpInfo {
     pub ipv4: Option<String>,
     pub ipv6: Option<String>,
+    pub domain: Option<String>,
 }
 
 pub async fn get_ipv4() -> Result<String> {
@@ -413,26 +429,32 @@ pub async fn get_ipv6() -> Result<String> {
 }
 
 
-pub async fn update_ip() -> Result<Option<String>> {
+pub async fn update_ip() -> Result<ServerIpInfo> {
     log_info(LogServiceType::Register, "Checking public IPs".to_string());
     let config = get_config().await;
+    let request  = if let Some(domain) = &config.domain {
+        log_info(LogServiceType::Register, format!("Using providezd domain: {}", domain));
+        ServerIpInfo {
+            ipv4: None,
+            ipv6: None,
+            domain: Some(domain.to_string()),
+        }
+    } else {
+        let ipv4 = get_ipv4().await?;
+        let request = ServerIpInfo {
+            ipv4: Some(ipv4.clone()),
+            ipv6: None,
+            domain: None,
+
+        };
+        request
+    };
     let id = config.id.ok_or(crate::Error::ServerNoServerId)?;
     let token = config.token.ok_or(crate::Error::ServerNotYetRegistered)?;
 
-    let ipv4 = get_ipv4().await?;
-    //let ipv6 = get_ipv6().await?;
-
-    
-
-    log_info(LogServiceType::Register, format!("Updating ip: {}", ipv4));
-
-
     let client = reqwest::Client::new();
         
-    let request = ServerIpInfo {
-        ipv4: Some(ipv4.clone()),
-        ipv6: None,
-    };
+
 
     log_info(LogServiceType::Register, format!("Calling: https://{}/servers/{}/register", config.redseat_home, id));
     log_info(LogServiceType::Register, format!("With content: {:?}", request));
@@ -446,6 +468,6 @@ pub async fn update_ip() -> Result<Option<String>> {
 
 
     
-    Ok(Some(ipv4))
+    Ok(request)
 
 }

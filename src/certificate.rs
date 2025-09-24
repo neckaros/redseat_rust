@@ -29,6 +29,9 @@ pub async fn dns_certify() -> Result<(PathBuf, PathBuf)> {
 
 
     log_info(LogServiceType::Register, "Getting https certificate".to_string());
+    if (config.domain.is_some()) {
+        return Err(crate::Error::Error("Domain set, skipping certificate generation as we don't manage domain certs for now".to_string()));
+    }
     const ACCOUNT_FILENAME: &str = "letsencrypt_account.json";
     const PUBLIC_FILENAME: &str = "cert_chain.pem";
     const PRIVATE_FILENAME: &str = "cert_private.pem";

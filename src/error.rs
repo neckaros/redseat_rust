@@ -98,6 +98,8 @@ pub enum Error {
 	ServerMalformatedConfigFile,
 	ServerUnableToAccessServerLocalFolder,
 	ServerFileNotFound,
+	
+	ServerInvalidUrl,
 
 	GenericRedseatError,
 	

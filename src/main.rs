@@ -22,7 +22,7 @@ use tokio::net::TcpListener;
 use tools::{auth::{sign_local, Claims}, image_tools::has_image_magick, log::{log_error, LogServiceType}, prediction, video_tools::VideoCommandBuilder};
 use tower::ServiceBuilder;
 use tower_http::{cors::{Any, CorsLayer}, trace::TraceLayer};
-use crate::{server::{get_config, update_ip}, tools::{auth::{get_or_init_keys, verify_local, ClaimsLocal}, image_tools::resize_image_path, log::log_info}};
+use crate::{server::{get_config, update_ip, ServerIpInfo}, tools::{auth::{get_or_init_keys, verify_local, ClaimsLocal}, image_tools::resize_image_path, log::log_info}};
 use socketioxide::{extract::{SocketRef, TryData}, SocketIo};
 pub use self::error::{Result, Error};
 
@@ -99,6 +99,7 @@ async fn main() ->  Result<()> {
         
 
     } else {
+        log_info(tools::log::LogServiceType::Register, format!("Starting HTTP server only has no certificate found"));
         let listener = TcpListener::bind(format!("0.0.0.0:{}", local_port)).await.unwrap();
         log_info(LogServiceType::Register, format!("->> LISTENING on {:?}\n", listener.local_addr()));
         
@@ -189,7 +190,7 @@ async fn fallback(uri: Uri) -> (StatusCode, &'static str) {
 }
 struct RegisterInfo {
     cert_paths: Option<(PathBuf, PathBuf)>,
-    ips: Option<String>
+    ips: Option<ServerIpInfo>
 }
 
 async fn register() -> Result<RegisterInfo>{
@@ -204,16 +205,21 @@ async fn register() -> Result<RegisterInfo>{
     
     if let (Some(id), Some(_)) = (config.id, config.token) {
         let ips = update_ip().await?;
-        register_info.ips = ips;
+        register_info.ips = Some(ips);
+        if (config.noCert) {
+            log_info(tools::log::LogServiceType::Register, "No Certificate option activated we will only expose http".to_string());
+        } else {
+            log_info(tools::log::LogServiceType::Register, "Public domain certificate check".to_string());
+            let certs = certificate::dns_certify().await?;
+            register_info.cert_paths = Some(certs.clone());
 
-        log_info(tools::log::LogServiceType::Register, "Public domain certificate check".to_string());
-        let certs = certificate::dns_certify().await?;
-        register_info.cert_paths = Some(certs.clone());
+            let public_config = PublicServerInfos::get(&certs.0, &id).await?;
+            log_info(LogServiceType::Register, format!("Exposed public url: {}:{}", id, public_config.port));
+        }
 
         
 
-        let public_config = PublicServerInfos::get(&certs.0, &id).await?;
-        log_info(LogServiceType::Register, format!("Exposed public url: {}:{}", id, public_config.port));
+
     } 
 
     Ok(register_info)
