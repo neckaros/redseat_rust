@@ -37,7 +37,10 @@ if you cannot see docker log simply open a webpage to:
 
 https://www.redseat.cloud/install
 
-Display advanced properties. Verify public ip and port you exposed from your docker image
+Display advanced properties:
+* If using a domain set the domain here
+* Otherwise verify public ip is the ip of the server and port you exposed from your docker image
+
 exemple docker file with traefik domain (replace subdomain.domain.com with your domain name):
 
 ```yaml

@@ -38,29 +38,24 @@ RUN cargo build --release
 
 
 # Run stage
-FROM ubuntu:24.04
+FROM debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y software-properties-common
-
-RUN add-apt-repository ppa:ubuntuhandbook1/libheif
-
-# Install only required runtime libraries
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libjpeg62-turbo \
     libde265-0 \
     libheif1 \
-    libwebp7 \
-    libjpeg62 \
     libaom3 \
-    libdav1d7 \
+    libdav1d6 \
     libx265-199 \
-    libpng16-16t64 \
+    libwebp7 \
+    libpng16-16 \
     libtiff6 \
-    libzip4t64 \
+    libzip4 \
     libltdl7 \
     libgomp1 \
-    webp \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy ImageMagick files from builder
