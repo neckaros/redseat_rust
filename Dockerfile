@@ -22,12 +22,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libde265-0 \
     libheif1 \
     libaom3 \
-    libdav1d6 \
-    libx265-199 \
+    libdav1d7 \
+    libx265-215 \
     libwebp7 \
-    libpng16-16 \
+    libpng16-16t64 \
     libtiff6 \
-    libzip4 \
+    libzip5 \
     libltdl7 \
     libgomp1 \
     ffmpeg \
