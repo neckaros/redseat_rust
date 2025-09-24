@@ -1,5 +1,5 @@
 # Server build stage
-FROM rust:1.90 AS builder
+FROM rust:1.90-trixie AS builder
 RUN apt-get update && apt-get install -y \
     cmake \
     pkg-config \
@@ -12,7 +12,7 @@ RUN cargo build --release
 
 
 # Run stage
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
