@@ -358,7 +358,7 @@ impl ModelController {
                     let serie = self.trakt.get_serie(&serie_ids).await?;
                     serie_ids = serie.into();
                 }
-                let image_path = format!("cache/serie-{}-{}.webp", serie_id.replace(':', "-"), kind);
+                let image_path = format!("cache/serie-{}-{}.avif", serie_id.replace(':', "-"), kind);
 
                 if !local_provider.exists(&image_path).await {
                     let images = self.get_serie_image_url(&serie_ids, &kind, &None).await?.ok_or(crate::Error::NotFound)?;

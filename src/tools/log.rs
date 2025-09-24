@@ -2,6 +2,7 @@ use chrono::Local;
 
 pub enum LogServiceType {
     Register,
+    LibraryCreation,
     Database,
     Scoket,
     Plugin,
@@ -13,6 +14,7 @@ impl LogServiceType {
     fn as_str(&self) -> &'static str {
         match self {
             LogServiceType::Register => "REGISTER",
+            LogServiceType::LibraryCreation => "LIRARY_CREATION",
             LogServiceType::Database => "DATABASE",
             LogServiceType::Scoket => "SOCKET",
             LogServiceType::Plugin => "PLUGIN",

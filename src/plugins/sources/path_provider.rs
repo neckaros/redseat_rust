@@ -10,7 +10,7 @@ use query_external_ip::SourceError;
 use sha256::try_async_digest;
 use tokio::{fs::{create_dir_all, remove_file, File}, io::{copy, AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter}};
 
-use crate::{domain::{backup::Backup, library::ServerLibrary, media::MediaForUpdate}, error::{RsError, RsResult}, model::ModelController, routes::mw_range::RangeDefinition, tools::{file_tools::get_mime_from_filename, image_tools::resize_image_reader, log::{log_error, log_info}}};
+use crate::{domain::{backup::Backup, library::ServerLibrary, media::MediaForUpdate}, error::{RsError, RsResult}, model::ModelController, routes::mw_range::RangeDefinition, tools::{file_tools::get_mime_from_filename, image_tools::resize_image_reader, log::{log_error, log_info, LogServiceType}}};
 
 use super::{error::{SourcesError, SourcesResult}, AsyncReadPinBox, AsyncSeekableWrite, BoxedStringFuture, FileStreamResult, RangeResponse, Source, SourceRead};
 
@@ -136,16 +136,24 @@ impl Source for PathProvider {
     }
 
     async fn init(&self) -> SourcesResult<()> {
+        
+        log_info(LogServiceType::LibraryCreation, format!("init libary {}", self.root.to_string_lossy()));
         let path_lib = self.get_full_path(".redseat");
+        
+        log_info(LogServiceType::LibraryCreation, format!("init libary {} - creating dir {}", self.root.to_string_lossy(), path_lib.to_string_lossy()));
         create_dir_all(path_lib).await?;
 
         let path_lib = self.get_full_path(".redseat/.thumbs");
+        log_info(LogServiceType::LibraryCreation, format!("init libary {} - creating dir {}", self.root.to_string_lossy(), path_lib.to_string_lossy()));
         create_dir_all(path_lib).await?;
         let path_lib = self.get_full_path(".redseat/.portraits");
+        log_info(LogServiceType::LibraryCreation, format!("init libary {} - creating dir {}", self.root.to_string_lossy(), path_lib.to_string_lossy()));
         create_dir_all(path_lib).await?;
         let path_lib = self.get_full_path(".redseat/.cache");
+        log_info(LogServiceType::LibraryCreation, format!("init libary {} - creating dir {}", self.root.to_string_lossy(), path_lib.to_string_lossy()));
         create_dir_all(path_lib).await?;
         let path_lib = self.get_full_path(".redseat/.series");
+        log_info(LogServiceType::LibraryCreation, format!("init libary {} - creating dir {}", self.root.to_string_lossy(), path_lib.to_string_lossy()));
         create_dir_all(path_lib).await?;
         Ok(())
     }

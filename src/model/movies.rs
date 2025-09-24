@@ -353,7 +353,7 @@ impl ModelController {
                     let movie = self.trakt.get_movie(&movie_ids).await?;
                     movie_ids = movie.into();
                 }
-                let image_path = format!("cache/movie-{}-{}.webp", movie_id.replace(':', "-"), kind);
+                let image_path = format!("cache/movie-{}-{}.avif", movie_id.replace(':', "-"), kind);
 
                 if !local_provider.exists(&image_path).await {
                     let images = self.get_movie_image_url(&movie_ids, &kind, &None).await?.ok_or(crate::Error::NotFound)?;

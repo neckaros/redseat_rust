@@ -193,7 +193,7 @@ impl ModelController {
                     let person = self.trakt.get_person(&person_ids).await?;
                     person_ids = person.into();
                 }
-                let image_path = format!("cache/person-{}-{}.webp", person_id.replace(':', "-"), kind.as_ref().unwrap_or(&ImageType::Poster));
+                let image_path = format!("cache/person-{}-{}.avif", person_id.replace(':', "-"), kind.as_ref().unwrap_or(&ImageType::Poster));
 
                 if !local_provider.exists(&image_path).await {
                     let images = self.get_person_image_url(&person_ids, kind.as_ref().unwrap_or(&ImageType::Poster), &None).await?.ok_or(crate::Error::NotFound)?;

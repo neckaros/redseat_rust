@@ -5,7 +5,7 @@ use rs_plugin_common_interfaces::RsRequest;
 use serde::{Deserialize, Serialize};
 use tokio::{fs::{create_dir_all, read_dir}, io::AsyncReadExt};
 
-use crate::{domain::{library::{LibraryLimits, LibraryMessage, LibraryRole, LibraryType, ServerLibrary, ServerLibrarySettings, UserMapping}, ElementAction}, error::RsResult, plugins::sources::{path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source, SourceRead}, tools::auth::{sign_local, ClaimsLocal, ClaimsLocalType}};
+use crate::{domain::{library::{LibraryLimits, LibraryMessage, LibraryRole, LibraryType, ServerLibrary, ServerLibrarySettings, UserMapping}, ElementAction}, error::RsResult, plugins::sources::{path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source, SourceRead}, tools::{auth::{sign_local, ClaimsLocal, ClaimsLocalType}, log::{log_info, LogServiceType}}};
 
 use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
 
@@ -337,12 +337,12 @@ impl ModelController {
         let library = self.store.get_library(&library_id).await?;
 
         
-
+        
 
         if let Some(library) = library { 
+            log_info(LogServiceType::LibraryCreation, format!("Will do first init of library {}", library.name));
             self.cache_update_library(library.clone()).await;
 
-            
             let source = self.source_for_library(&library.id).await.map_err(|e| Error::ServiceError("Unable to get library source after init".to_string(), Some(e.to_string())))?;
             let inited = source.init().await;
             if let Err(err) = inited {

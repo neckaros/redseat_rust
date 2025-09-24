@@ -266,7 +266,7 @@ impl ModelController {
                     let serie = self.trakt.get_serie(&serie_ids).await?;
                     serie_ids = serie.into();
                 }
-                let image_path = format!("cache/serie-{}-episode-{}x{}.webp", serie_id.replace(':', "-"), season, episode);
+                let image_path = format!("cache/serie-{}-episode-{}x{}.avif", serie_id.replace(':', "-"), season, episode);
 
                 if !local_provider.exists(&image_path).await {
                     let images = self.tmdb.episode_image(serie_ids, season, episode, &None).await?.into_kind(ImageType::Still).ok_or(crate::Error::NotFound)?;
