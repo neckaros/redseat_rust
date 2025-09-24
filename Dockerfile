@@ -51,7 +51,10 @@ RUN apt-get update && apt-get install -y \
     libde265-0 \
     libheif1 \
     libwebp7 \
-    libjpeg8 \
+    libjpeg62-turbo \
+    libaom3 \
+    libdav1d7 \
+    libx265-199 \
     libpng16-16t64 \
     libtiff6 \
     libzip4t64 \
