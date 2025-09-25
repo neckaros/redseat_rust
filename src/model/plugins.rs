@@ -8,10 +8,10 @@ use rs_plugin_common_interfaces::{lookup::{RsLookupQuery, RsLookupSourceResult},
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::mpsc::Sender;
+use tokio::{fs::File, io::{copy, BufWriter}, sync::mpsc::Sender};
 
 
-use crate::{domain::{backup::Backup, plugin::{Plugin, PluginForAdd, PluginForInsert, PluginForInstall, PluginForUpdate, PluginWasm, PluginWithCredential}, progress::{RsProgress, RsProgressCallback}}, error::RsResult, plugins::sources::{error::SourcesError, SourceRead}, tools::video_tools::ytdl::YydlContext};
+use crate::{domain::{backup::Backup, library::LibraryRole, plugin::{Plugin, PluginForAdd, PluginForInsert, PluginForInstall, PluginForUpdate, PluginWasm, PluginWithCredential}, progress::{RsProgress, RsProgressCallback}}, error::RsResult, plugins::{get_plugin_fodler, sources::{error::SourcesError, AsyncReadPinBox, SourceRead}}, tools::video_tools::ytdl::YydlContext};
 
 use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
 
@@ -212,4 +212,27 @@ impl ModelController {
         
         self.plugin_manager.exchange_token(plugin, request).await
     }
+
+
+
+    pub async fn upload_plugin(&self, reader: AsyncReadPinBox, requesting_user: &ConnectedUser) -> RsResult<()> {
+
+        requesting_user.check_role(&UserRole::Admin)?;
+
+        
+        let mut path = get_plugin_fodler().await?;
+
+        let name = format!("plugin_{}.wasm", nanoid!());
+        path.push(name);        
+
+        let mut file = BufWriter::new(File::create(&path).await?);
+        
+		tokio::pin!(reader);
+		tokio::pin!(file);
+		copy(&mut reader, &mut file).await?;
+
+
+        Ok(())
+
+	}
 }

@@ -53,15 +53,19 @@ pub async fn list_plugins() -> crate::Result<impl Iterator<Item = PluginWasm>> {
                 Ok(mut plugin) => {
                     let infos = plugin.call::<&str, Json<PluginInformation>>("infos", "");
                     if let Ok(Json(res)) = infos {
-                                    let filename = path.file_name().unwrap().to_str().unwrap();
-                                    log_info(crate::tools::log::LogServiceType::Plugin, format!("Loaded plugin {} ({:?}) -> {:?}", res.name, res.capabilities, path));
-                                    let p = PluginWasm {
-                                        filename: filename.to_string(),
-                                        path,
-                                        infos: res,
-                                        plugin:Mutex::new(plugin),
-                                    };
-                                    Some(p)
+                                    if let Some(filename) = path.file_name() {
+                                        log_info(crate::tools::log::LogServiceType::Plugin, format!("Loaded plugin {} ({:?}) -> {:?}", res.name, res.capabilities, path));
+                                        let p = PluginWasm {
+                                            filename: filename.to_str().unwrap().to_string(),
+                                            path,
+                                            infos: res,
+                                            plugin:Mutex::new(plugin),
+                                        };
+                                        Some(p)
+                                    } else {
+                                        log_error(crate::tools::log::LogServiceType::Other, format!("Error getting plugin informations: {:?}", &path));
+                                        None
+                                    }
                                 } else {
                                     log_error(crate::tools::log::LogServiceType::Other, format!("Error getting plugin informations: {:?} {:?}", &path, infos.err()));
                                     None
@@ -154,7 +158,7 @@ impl PluginManager {
         let Json(infos) = plugin.call::<&str, Json<PluginInformation>>("infos", "")?;
        
         let filename = folder.file_name().unwrap().to_str().unwrap();
-        log_info(crate::tools::log::LogServiceType::Plugin, format!("Loaded plugin {} ({:?}) -> {:?}", infos.name, infos.capabilities, folder));
+        log_info(crate::tools::log::LogServiceType::Plugin, format!("Loaded wasm plugin {} ({:?}) -> {:?}", infos.name, infos.capabilities, folder));
         let p = PluginWasm {
             filename: filename.to_string(),
             path: folder,
