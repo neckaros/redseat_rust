@@ -209,6 +209,7 @@ impl  ModelController {
         let m = self.library_source_for_library(&library_id).await?;
 		let mut source_filepath = format!("{}/{}{}{}.avif", folder, id, ImageType::optional_to_filename_element(&kind), ImageSize::optional_to_filename_element(&size));
 		let reader_response = m.get_file(&source_filepath, None).await;
+		
 		if let Some(int_size) = size {
 			if let Err(error) = &reader_response {
 				if matches!(error, RsError::Source(SourcesError::NotFound(_))) {
@@ -231,6 +232,7 @@ impl  ModelController {
 		}
 		let reader = reader_response?;
 		if reader.size().unwrap_or(200) == 0 {
+			m.remove(&source_filepath).await?;
 			return Err(RsError::CorruptedImage)
 		}
 		if let SourceRead::Stream(reader) = reader {
