@@ -32,14 +32,14 @@ impl ModelController {
 
     pub async fn send_play_request(&self, request: RsPlayerPlayRequest, user: &ConnectedUser) -> RsResult<()> {
         let players = self.list_players(user).await?;
-		let player = players.into_iter().find(|p| p.socket.id.to_string() == request.id).ok_or(crate::Error::NotFound)?;
+		let player = players.into_iter().find(|p| p.socket.id.to_string() == request.id).ok_or(crate::Error::NotFound("Unable to get player".to_string()))?;
         player.socket.emit("player-request", request).map_err(|_| crate::Error::Error("Unable to send play request".to_string()))?;
         Ok(())
 	}
 
     pub async fn send_play_action(&self, request: RsPlayerActionRequest, user: &ConnectedUser) -> RsResult<()> {
         let players = self.list_players(user).await?;
-		let player = players.into_iter().find(|p| p.socket.id.to_string() == request.id).ok_or(crate::Error::NotFound)?;
+		let player = players.into_iter().find(|p| p.socket.id.to_string() == request.id).ok_or(crate::Error::NotFound("Unable to get player".to_string()))?;
         player.socket.emit("player-action", request.action).map_err(|_| crate::Error::Error("Unable to send play request".to_string()))?;
         Ok(())
 	}

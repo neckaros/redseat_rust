@@ -9,7 +9,7 @@ use serde_json::Value;
 use x509_parser::nom::branch::alt;
 
 
-use crate::{domain::{deleted::RsDeleted, library::LibraryRole, tag::{self, Tag, TagMessage, TagWithAction}, ElementAction}, error::RsResult, tools::prediction::PredictionTag};
+use crate::{domain::{deleted::RsDeleted, library::LibraryRole, tag::{self, Tag, TagMessage, TagWithAction}, ElementAction}, error::RsResult, plugins::sources::error::SourcesError, tools::prediction::PredictionTag};
 
 use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
 
@@ -113,14 +113,14 @@ pub struct TagForUpdate {
 
 impl ModelController {
 
-	pub async fn get_tags(&self, library_id: &str, query: TagQuery, requesting_user: &ConnectedUser) -> Result<Vec<Tag>> {
+	pub async fn get_tags(&self, library_id: &str, query: TagQuery, requesting_user: &ConnectedUser) -> RsResult<Vec<Tag>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let store = self.store.get_library_store(library_id)?;
 		let tags = store.get_tags(query).await?;
 		Ok(tags)
 	}
 
-    pub async fn get_ai_tag(&self, library_id: &str, tag: PredictionTag, requesting_user: &ConnectedUser) -> Result<Tag> {
+    pub async fn get_ai_tag(&self, library_id: &str, tag: PredictionTag, requesting_user: &ConnectedUser) -> RsResult<Tag> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         let existing_tag = self.get_tag_by_names(&library_id, vec![tag.id], &requesting_user).await?;
         if let Some(existing_tag) = existing_tag {
@@ -131,16 +131,16 @@ impl ModelController {
 		Ok(tag)
 	}
 
-    pub async fn add_imported_tag(&self, library_id: &str, name: &str, requesting_user: &ConnectedUser) -> Result<Tag> {
+    pub async fn add_imported_tag(&self, library_id: &str, name: &str, requesting_user: &ConnectedUser) -> RsResult<Tag> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         let tag = self.get_or_create_path(library_id, vec!["imported", name], TagForUpdate { generated: Some(true), ..Default::default()}, &requesting_user).await?;
 
 		Ok(tag)
 	}
 
-    pub async fn get_tag_by_names(&self, library_id: &str, names: Vec<String>, requesting_user: &ConnectedUser) -> Result<Option<Tag>> {
+    pub async fn get_tag_by_names(&self, library_id: &str, names: Vec<String>, requesting_user: &ConnectedUser) -> RsResult<Option<Tag>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let store = self.store.get_library_store(library_id)?;
         for name in names {
             let tag = store.get_tags(TagQuery::new_with_name(&name)).await?.into_iter().nth(0);
             if let Some(tag) = tag {
@@ -151,14 +151,14 @@ impl ModelController {
 		Ok(None)
 	}
 
-    pub async fn get_tag_by_name(&self, library_id: &str, name: &str, requesting_user: &ConnectedUser) -> Result<Option<Tag>> {
+    pub async fn get_tag_by_name(&self, library_id: &str, name: &str, requesting_user: &ConnectedUser) -> RsResult<Option<Tag>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let store = self.store.get_library_store(library_id)?;
 		let tag = store.get_tags(TagQuery::new_with_name(name)).await?.into_iter().nth(0);
 		Ok(tag)
 	}
 
-    pub async fn get_or_create_path(&self, library_id: &str, mut path: Vec<&str>, template: TagForUpdate, requesting_user: &ConnectedUser) -> Result<Tag> {
+    pub async fn get_or_create_path(&self, library_id: &str, mut path: Vec<&str>, template: TagForUpdate, requesting_user: &ConnectedUser) -> RsResult<Tag> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let path_string = path.join("/");
         let tag_by_path = self.get_tags(&library_id, TagQuery::new_with_path(path_string), &requesting_user).await?.into_iter().nth(0);
@@ -209,36 +209,33 @@ impl ModelController {
         output
     }
 
-    pub async fn get_tag(&self, library_id: &str, tag_id: String, requesting_user: &ConnectedUser) -> Result<Option<Tag>> {
+    pub async fn get_tag(&self, library_id: &str, tag_id: String, requesting_user: &ConnectedUser) -> RsResult<Option<Tag>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let store = self.store.get_library_store(library_id)?;
 		let tag = store.get_tag(&tag_id).await?;
 		Ok(tag)
 	}
 
-    pub async fn update_tag(&self, library_id: &str, tag_id: String, update: TagForUpdate, requesting_user: &ConnectedUser) -> Result<Tag> {
+    pub async fn update_tag(&self, library_id: &str, tag_id: String, update: TagForUpdate, requesting_user: &ConnectedUser) -> RsResult<Tag> {
         requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let store = self.store.get_library_store(library_id)?;
 		store.update_tag(&tag_id, update.clone()).await?;
-        let tag = store.get_tag(&tag_id).await?;
-        if let Some(tag) = tag { 
-            let mut all_updated = vec![tag.clone()];
-            if update.name.is_some() || update.params.is_some() {
-                let mut updated = self.get_tags(library_id, TagQuery::new_with_path(format!("{}%",tag.childs_path())), requesting_user).await?;
-                all_updated.append(&mut updated);
-            }
-            self.send_tags(TagMessage { library: library_id.to_string(), tags: all_updated.iter().map(|t| TagWithAction { action: ElementAction::Updated, tag: t.clone()}).collect()});
-            Ok(tag)
-        } else {
-            Err(Error::NotFound)
+        let tag = store.get_tag(&tag_id).await?.ok_or(SourcesError::UnableToFindTag(library_id.to_string(), tag_id.to_string(), "update_tag".to_string()))?;
+
+        let mut all_updated = vec![tag.clone()];
+        if update.name.is_some() || update.params.is_some() {
+            let mut updated = self.get_tags(library_id, TagQuery::new_with_path(format!("{}%",tag.childs_path())), requesting_user).await?;
+            all_updated.append(&mut updated);
         }
+        self.send_tags(TagMessage { library: library_id.to_string(), tags: all_updated.iter().map(|t| TagWithAction { action: ElementAction::Updated, tag: t.clone()}).collect()});
+        Ok(tag)
 	}
 
     pub async fn merge_tag(&self, library_id: &str, old_id: String, into: String, requesting_user: &ConnectedUser) -> RsResult<Tag> {
         requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
 		let old_tag = self.get_tag(library_id, old_id.to_owned(), requesting_user).await?.ok_or(Error::TagNotFound(old_id.to_owned()))?;
 		let new_tag = self.get_tag(library_id, into.to_owned(), requesting_user).await?.ok_or(Error::TagNotFound(into.to_owned()))?;
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let store = self.store.get_library_store(library_id)?;
         if old_tag.name.to_lowercase() != new_tag.name.to_lowercase() {
             store.update_tag(&into, TagForUpdate { add_alts: Some(vec![old_tag.name.to_owned()]), ..Default::default()}).await?
         }
@@ -268,9 +265,9 @@ impl ModelController {
 	}
 
 
-    pub async fn add_tag(&self, library_id: &str, new_tag: TagForAdd, requesting_user: &ConnectedUser) -> Result<Tag> {
+    pub async fn add_tag(&self, library_id: &str, new_tag: TagForAdd, requesting_user: &ConnectedUser) -> RsResult<Tag> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let store = self.store.get_library_store(library_id)?;
         let backup = TagForInsert {
             id: nanoid!(),
             name: new_tag.name,
@@ -282,7 +279,7 @@ impl ModelController {
             generated: new_tag.generated,
         };
 		store.add_tag(backup.clone()).await?;
-        let new_tag = self.get_tag(library_id, backup.id, requesting_user).await?.ok_or(Error::NotFound)?;
+        let new_tag = self.get_tag(library_id, backup.id.clone(), requesting_user).await?.ok_or(SourcesError::UnableToFindTag(library_id.to_string(), backup.id, "add_tag".to_string()))?;
         self.send_tags(TagMessage { library: library_id.to_string(), tags: vec![TagWithAction { tag: new_tag.clone(), action: ElementAction::Added}] });
 		Ok(new_tag)
 	}
@@ -290,18 +287,16 @@ impl ModelController {
 
     pub async fn remove_tag(&self, library_id: &str, tag_id: &str, requesting_user: &ConnectedUser) -> RsResult<Tag> {
         requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
-        let existing = store.get_tag(tag_id).await?;
-        if let Some(existing) = existing { 
-            let mut children = self.get_tags(library_id, TagQuery::new_with_path(existing.childs_path()), requesting_user).await?;
-            children.push(existing.clone());
-            store.remove_tag(tag_id.to_string()).await?;
-            self.add_deleted(library_id, RsDeleted::serie(tag_id.to_owned()), requesting_user).await?;
-            self.send_tags(TagMessage { library: library_id.to_string(), tags: children.iter().map(|t| TagWithAction { action: ElementAction::Deleted, tag: t.clone()}).collect()});
-            Ok(existing)
-        } else {
-            Err(Error::NotFound.into())
-        }
+        let store = self.store.get_library_store(library_id)?;
+        let existing = store.get_tag(tag_id).await?.ok_or(SourcesError::UnableToFindTag(library_id.to_string(), tag_id.to_string(), "remove_tag".to_string()))?;
+
+        let mut children = self.get_tags(library_id, TagQuery::new_with_path(existing.childs_path()), requesting_user).await?;
+        children.push(existing.clone());
+        store.remove_tag(tag_id.to_string()).await?;
+        self.add_deleted(library_id, RsDeleted::serie(tag_id.to_owned()), requesting_user).await?;
+        self.send_tags(TagMessage { library: library_id.to_string(), tags: children.iter().map(|t| TagWithAction { action: ElementAction::Deleted, tag: t.clone()}).collect()});
+        Ok(existing)
+        
 	}
     
 }

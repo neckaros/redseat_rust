@@ -5,7 +5,7 @@ use std::sync::{Arc, RwLock};
 use tokio_rusqlite::Connection;
 
 
-use crate::error::RsResult;
+use crate::error::{RsError, RsResult};
 use crate::model::store::sql::migrate_database;
 use crate::server::get_server_file_path_array;
 use crate::tools::log::{log_info, LogServiceType};
@@ -50,7 +50,11 @@ impl SqliteStore {
 		Ok(new)
 	}
 
-    pub fn get_library_store(&self, library_id: &str) -> Option<Arc<SqliteLibraryStore>> {
+    pub fn get_library_store(&self, library_id: &str) -> RsResult<Arc<SqliteLibraryStore>> {
+        let value = self.libraries_stores.read().map_err(|e| Error::LibraryStoreNotFoundFor(library_id.to_string(), "update_serie_image".to_string()))?;
+        value.get(library_id).cloned().ok_or(Error::LibraryStoreNotFoundFor(library_id.to_string(), "update_serie_image".to_string()).into())
+    }
+    pub fn get_library_store_optional(&self, library_id: &str) -> Option<Arc<SqliteLibraryStore>> {
         let value = self.libraries_stores.read().ok()?;
         value.get(library_id).cloned()
     }

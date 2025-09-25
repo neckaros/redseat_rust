@@ -53,7 +53,7 @@ async fn handler_id(Path(library_id): Path<String>, State(mc): State<ModelContro
 		let body = Json(json!(library));
 		Ok(body)
 	} else {
-		Err(Error::NotFound)
+		Err(Error::NotFound(format!("Unable to find library: {}", library_id)))
 	}
 }
 

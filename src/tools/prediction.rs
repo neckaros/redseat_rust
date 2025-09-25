@@ -149,7 +149,7 @@ pub fn predict_net_sync(path: PathBuf, bgr: bool, normalize: bool, buffer_image:
 
     let binding = outputs[output_info.name.clone()].try_extract_tensor::<f32>()?;
     let output = binding.view();
-    let a = output.axis_iter(Axis(0)).next().ok_or(crate::Error::NotFound)?;
+    let a = output.axis_iter(Axis(0)).next().ok_or(crate::Error::NotFound("axis not found".to_string()))?;
     //println!("{:?}", a);
         let row: Vec<_> = a.iter().copied().enumerate().filter(|(_i, p)| p > &(0.3_f32)).filter_map(|(index, proba)| {
             //println!("{:?}", index);
@@ -195,7 +195,7 @@ pub fn predict_wd(path: PathBuf, buffer_image: Vec<u8>) -> Result<Vec<Prediction
 
     let binding = outputs["predictions_sigmoid"].try_extract_tensor::<f32>()?;
     let output = binding.view();
-    let a = output.axis_iter(Axis(0)).next().ok_or(crate::Error::NotFound)?;
+    let a = output.axis_iter(Axis(0)).next().ok_or(crate::Error::NotFound("axis not found for precition".to_string()))?;
 
         let row: Vec<_> = a.iter().copied().enumerate().filter(|(_i, p)| p > &0.3_f32).filter_map(|(index, proba)| {
             let element: Option<&PredictionTag> = tags.get(index);

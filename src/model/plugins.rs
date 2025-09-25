@@ -11,7 +11,7 @@ use serde_json::Value;
 use tokio::sync::mpsc::Sender;
 
 
-use crate::{domain::{backup::Backup, plugin::{Plugin, PluginForAdd, PluginForInsert, PluginForInstall, PluginForUpdate, PluginWasm, PluginWithCredential}, progress::{RsProgress, RsProgressCallback}}, error::RsResult, plugins::sources::SourceRead, tools::video_tools::ytdl::YydlContext};
+use crate::{domain::{backup::Backup, plugin::{Plugin, PluginForAdd, PluginForInsert, PluginForInstall, PluginForUpdate, PluginWasm, PluginWithCredential}, progress::{RsProgress, RsProgressCallback}}, error::RsResult, plugins::sources::{error::SourcesError, SourceRead}, tools::video_tools::ytdl::YydlContext};
 
 use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
 
@@ -67,7 +67,7 @@ impl ModelController {
 
     pub async fn get_plugin(&self, plugin_id: String, requesting_user: &ConnectedUser) -> RsResult<Plugin> {
         requesting_user.check_role(&UserRole::Admin)?;
-		let credential = self.store.get_plugin(&plugin_id).await?.ok_or(Error::NotFound)?;
+		let credential = self.store.get_plugin(&plugin_id).await?.ok_or(SourcesError::UnableToFindPlugin(plugin_id.to_string(), "get_plugin".to_string()))?;
 		Ok(credential)
 	}
 
@@ -90,18 +90,15 @@ impl ModelController {
     pub async fn update_plugin(&self, plugin_id: &str, update: PluginForUpdate, requesting_user: &ConnectedUser) -> Result<Plugin> {
         requesting_user.check_role(&UserRole::Admin)?;
 		self.store.update_plugin(plugin_id, update).await?;
-        let plugin = self.store.get_plugin(plugin_id).await?;
-        if let Some(plugin) = plugin { 
-            Ok(plugin)
-        } else {
-            Err(Error::NotFound)
-        }
+        let plugin = self.store.get_plugin(plugin_id).await?.ok_or(SourcesError::UnableToFindPlugin(plugin_id.to_string(), "update_plugin".to_string()))?;
+
+        Ok(plugin)
 	}
 
     pub async fn install_plugin(&self, plugin: PluginForInstall, requesting_user: &ConnectedUser) -> RsResult<Plugin> {
         requesting_user.check_role(&UserRole::Admin)?;
         let plugins = self.plugin_manager.plugins.read().await;
-        let plugin = plugins.iter().find(|p| p.filename == plugin.path).ok_or(Error::NotFound)?;
+        let plugin = plugins.iter().find(|p| p.filename == plugin.path).ok_or(SourcesError::UnableToFindPlugin(plugin.path.to_string(), "install_plugin".to_string()))?;
   
         let plugin_for_add:PluginForAdd  = plugin.into();
         
@@ -128,13 +125,10 @@ impl ModelController {
 
     pub async fn remove_plugin(&self, plugin_id: &str, requesting_user: &ConnectedUser) -> RsResult<Plugin> {
         requesting_user.check_role(&UserRole::Admin)?;
-        let credential = self.store.get_plugin(&plugin_id).await?;
-        if let Some(credential) = credential { 
-            self.store.remove_plugin(plugin_id.to_string()).await?;
-            Ok(credential)
-        } else {
-            Err(Error::NotFound.into())
-        }
+        let plugin = self.store.get_plugin(&plugin_id).await?.ok_or(SourcesError::UnableToFindPlugin(plugin_id.to_string(), "get_plugin".to_string()))?;
+
+        self.store.remove_plugin(plugin_id.to_string()).await?;
+        Ok(plugin)
 	}
 
 
@@ -157,7 +151,7 @@ impl ModelController {
         }
         let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::UrlParser), ..Default::default() }).await?;
 
-        Ok(self.plugin_manager.expand(link, plugins).await.ok_or(Error::NotFound)?)
+        Ok(self.plugin_manager.expand(link.clone(), plugins).await.ok_or(Error::NotFound(format!("Unable to expand link {:?}", link)))?)
 	}
 
 
@@ -191,7 +185,7 @@ impl ModelController {
             requesting_user.check_role(&UserRole::Admin)?;
         }
         let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::Request), ..Default::default() }).await?;
-        self.plugin_manager.request_permanent(request, plugins, progress).await?.ok_or(crate::Error::NotFound)
+        self.plugin_manager.request_permanent(request, plugins, progress).await?.ok_or(crate::Error::NotFound("Unable to get permanent link".to_string()))
         
     }
 
@@ -214,7 +208,7 @@ impl ModelController {
         requesting_user.check_role(&UserRole::Admin)?;
         
 
-        let plugin = self.store.get_plugin(plugin_id).await?.ok_or(Error::NotFound)?;
+        let plugin = self.store.get_plugin(plugin_id).await?.ok_or(SourcesError::UnableToFindPlugin(plugin_id.to_string(), "get_plugin".to_string()))?;
         
         self.plugin_manager.exchange_token(plugin, request).await
     }

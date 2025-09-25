@@ -1,6 +1,6 @@
 use rusqlite::{params, OptionalExtension, Row, ToSql};
 
-use crate::{domain::episode::{self, Episode, EpisodeWithShow}, model::{episodes::{EpisodeForUpdate, EpisodeQuery}, store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_pipe_separated_optional}}, tools::array_tools::replace_add_remove_from_array};
+use crate::{domain::episode::{self, Episode, EpisodeWithShow}, model::{episodes::{EpisodeForUpdate, EpisodeQuery}, store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_pipe_separated_optional}}, plugins::sources::error::SourcesError, tools::array_tools::replace_add_remove_from_array};
 use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
 
@@ -233,7 +233,7 @@ ORDER BY airdate ASC
 
     pub async fn update_episode(&self, serie_id: &str, season: u32, number: u32, update: EpisodeForUpdate) -> Result<()> {
         let id = serie_id.to_string();
-        let existing = self.get_episode(serie_id, season, number).await?.ok_or_else( || Error::NotFound)?;
+        let existing = self.get_episode(serie_id, season, number).await?.ok_or_else( || SourcesError::UnableToFindEpisodes(format!("{} {} {}", serie_id, season, number), "update_episode".to_string()))?;
         self.connection.call( move |conn| { 
             let mut where_query = QueryBuilder::new();
             

@@ -4,7 +4,7 @@ use rs_plugin_common_interfaces::domain::rs_ids::RsIds;
 use rusqlite::{params, types::FromSqlError, OptionalExtension, Row};
 
 
-use crate::{domain::people::Person, model::{people::{PeopleQuery, PersonForInsert, PersonForUpdate}, store::{from_pipe_separated_optional, sql::{deserialize_from_row, OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType}, to_pipe_separated_optional}}, tools::{array_tools::replace_add_remove_from_array, serialization::optional_serde_to_string}};
+use crate::{domain::people::Person, model::{people::{PeopleQuery, PersonForInsert, PersonForUpdate}, store::{from_pipe_separated_optional, sql::{deserialize_from_row, OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType}, to_pipe_separated_optional}}, plugins::sources::error::SourcesError, tools::{array_tools::replace_add_remove_from_array, serialization::optional_serde_to_string}};
 use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
 
@@ -118,7 +118,7 @@ else 0 end) as score", q, q, q, q, q, q);
     pub async fn update_person(&self, person_id: &str, update: PersonForUpdate) -> Result<()> {
         let id = person_id.to_string();
 
-        let existing = self.get_person(&person_id).await?.ok_or_else( || Error::NotFound)?;
+        let existing = self.get_person(&person_id).await?.ok_or_else( || SourcesError::UnableToFindPerson("store".to_string() ,person_id.to_string(), "update_person".to_string()))?;
 
 
         self.connection.call( move |conn| { 

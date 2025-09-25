@@ -6,6 +6,7 @@ use std::{collections::HashMap, io::{self, Read}, num, pin::Pin};
 use async_recursion::async_recursion;
 use futures::TryStreamExt;
 use nanoid::nanoid;
+use query_external_ip::SourceError;
 use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, ImageType, MediaType};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -13,7 +14,7 @@ use tokio::{fs::File, io::{AsyncRead, AsyncWriteExt, BufReader}};
 use tokio_util::io::StreamReader;
 
 
-use crate::{domain::{deleted::RsDeleted, episode::{self, Episode, EpisodeWithAction, EpisodeWithShow, EpisodesMessage}, library::LibraryRole, people::{PeopleMessage, Person}, serie::{self, Serie, SeriesMessage}, ElementAction}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{AsyncReadPinBox, FileStreamResult, Source}}, tools::{array_tools::Dedup, clock::now, image_tools::{resize_image_reader, ImageSize}, log::log_info}};
+use crate::{domain::{deleted::RsDeleted, episode::{self, Episode, EpisodeWithAction, EpisodeWithShow, EpisodesMessage}, library::LibraryRole, people::{PeopleMessage, Person}, serie::{self, Serie, SeriesMessage}, ElementAction}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{error::SourcesError, AsyncReadPinBox, FileStreamResult, Source}}, tools::{array_tools::Dedup, clock::now, image_tools::{resize_image_reader, ImageSize}, log::log_info}};
 
 use super::{error::{Error, Result}, medias::{RsSort, RsSortOrder}, store::sql::SqlOrder, users::{ConnectedUser, HistoryQuery}, ModelController};
 
@@ -100,7 +101,7 @@ impl ModelController {
             return self.get_episodes_by_id(library_id, serie_id.to_owned(), query, requesting_user).await;
         }
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let store = self.store.get_library_store_optional(library_id).ok_or(Error::LibraryStoreNotFoundFor(library_id.to_string(), "get_episodes".to_string()))?;
         let mut episodes = store.get_episodes(query).await?;
 
         self.fill_episodes_watched_imdb(&mut episodes, requesting_user, Some(library_id.to_string())).await?;
@@ -109,16 +110,16 @@ impl ModelController {
 
     pub async fn get_episodes_by_id(&self, library_id: &str, serie_id: String, mut query: EpisodeQuery, requesting_user: &ConnectedUser) -> RsResult<Vec<Episode>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let store = self.store.get_library_store_optional(library_id).ok_or(Error::LibraryStoreNotFoundFor(library_id.to_string(), "get_episodes_by_id".to_string()))?;
         let mut episodes = if RsIds::is_id(&serie_id) {
-            let id: RsIds = serie_id.try_into().map_err(|_| Error::NotFound)?;
+            let id: RsIds = serie_id.clone().try_into().map_err(|_| Error::UnableToConvertToRsIds(serie_id.clone().to_string(), "get_episodes_by_id".to_string()))?;
             let serie = store.get_serie_by_external_id(id.clone()).await?;
 
             if let Some(serie) = serie {
                 query.serie_ref = Some(serie.id);
                 store.get_episodes(query).await?
             } else {
-                self.trakt.all_episodes(&id).await.map_err(|_| Error::NotFound)?
+                self.trakt.all_episodes(&id).await.map_err(|_| SourcesError::NotFound(Some(format!("get_episodes_by_id - Unable to find episodes on trakt for {:?}", id))))?
                 
             }
         } else {
@@ -167,7 +168,7 @@ impl ModelController {
 
     pub async fn get_episodes_upcoming(&self, library_id: &str, query: EpisodeQuery, requesting_user: &ConnectedUser) -> RsResult<Vec<Episode>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let store = self.store.get_library_store_optional(library_id).ok_or(Error::LibraryStoreNotFoundFor(library_id.clone().to_string(), "get_episodes_upcoming".to_string()))?;
 		let mut episodes = store.get_episodes_upcoming(query).await?;
         self.fill_episodes_watched_imdb(&mut episodes, requesting_user, Some(library_id.to_string())).await?;
 		Ok(episodes)
@@ -175,7 +176,7 @@ impl ModelController {
 
     pub async fn get_episodes_ondeck(&self, library_id: &str, query: EpisodeQuery, requesting_user: &ConnectedUser) -> RsResult<Vec<Episode>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let store = self.store.get_library_store_optional(library_id).ok_or(Error::LibraryStoreNotFoundFor(library_id.clone().to_string(), "get_episodes_ondeck".to_string()))?;
 		let mut episodes = store.get_episodes_aired(query).await?;
         self.fill_episodes_watched_imdb(&mut episodes, requesting_user, Some(library_id.to_string())).await?;
 		let mut episodes = episodes.into_iter().filter(|e| e.watched.is_none()).collect::<Vec<_>>().dedup_key(|e| e.serie.clone());
@@ -185,15 +186,15 @@ impl ModelController {
 
     pub async fn get_episode(&self, library_id: &str, serie_id: String, season: u32, number: u32, requesting_user: &ConnectedUser) -> RsResult<Episode> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
-		let mut episode = store.get_episode(&serie_id, season, number).await?.ok_or(Error::NotFound)?;
+        let store = self.store.get_library_store_optional(library_id).ok_or(Error::LibraryStoreNotFoundFor(serie_id.clone().to_string(), "get_episode".to_string()))?;
+		let mut episode = store.get_episode(&serie_id, season, number).await?.ok_or(SourcesError::UnableToFindEpisodes(format!("{} {} {}", serie_id, season, number), "get_episode".to_string()))?;
         self.fill_episode_watched_imdb(&mut episode, requesting_user, Some(library_id.to_string())).await?;
 		Ok(episode)
 	}
 
     pub async fn update_episode(&self, library_id: &str, serie_id: String, season: u32, number: u32, update: EpisodeForUpdate, requesting_user: &ConnectedUser) -> RsResult<Episode> {
         requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let store = self.store.get_library_store_optional(library_id).ok_or(Error::LibraryStoreNotFoundFor(library_id.clone().to_string(), "update_episode".to_string()))?;
 		store.update_episode(&serie_id, season, number, update).await?;
         let episode = self.get_episode(library_id, serie_id, season, number, requesting_user).await?;
         self.send_episode(EpisodesMessage { library: library_id.to_string(), episodes: vec![EpisodeWithAction {action: ElementAction::Updated, episode: episode.clone()}] });
@@ -213,7 +214,7 @@ impl ModelController {
 
     pub async fn add_episode(&self, library_id: &str, new_serie: Episode, requesting_user: &ConnectedUser) -> RsResult<Episode> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let store = self.store.get_library_store_optional(library_id).ok_or(Error::LibraryStoreNotFoundFor(library_id.clone().to_string(), "add_episode".to_string()))?;
 		store.add_episode(new_serie.clone()).await?;
         let new_episode = self.get_episode(library_id, new_serie.serie, new_serie.season, new_serie.number, requesting_user).await?;
         self.send_episode(EpisodesMessage { library: library_id.to_string(), episodes: vec![EpisodeWithAction {action: ElementAction::Added, episode: new_episode.clone()}] });
@@ -223,7 +224,7 @@ impl ModelController {
 
     pub async fn remove_episode(&self, library_id: &str, serie_id: &str, season: u32, number: u32, requesting_user: &ConnectedUser) -> RsResult<Episode> {
         requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let store = self.store.get_library_store_optional(library_id).ok_or(Error::LibraryStoreNotFoundFor(library_id.clone().to_string(), "remove_episode".to_string()))?;
         let existing = store.get_episode(serie_id, season, number).await?;
         if let Some(existing) = existing { 
             store.remove_episode(serie_id.to_string(), season, number).await?;
@@ -231,14 +232,14 @@ impl ModelController {
             self.send_episode(EpisodesMessage { library: library_id.to_string(), episodes: vec![EpisodeWithAction {action: ElementAction::Deleted, episode: existing.clone()}] });
             Ok(existing)
         } else {
-            Err(Error::NotFound.into())
+            Err(SourcesError::UnableToFindEpisodes(format!("library: {} Episode: {}x{}x{}", library_id, serie_id, season, number), "remove_episode".to_string()).into())
         }
 	}
 
     pub async fn refresh_episodes(&self, library_id: &str, serie_id: &str, requesting_user: &ConnectedUser) -> RsResult<Vec<Episode>> {
         let ids = self.get_serie_ids(library_id, serie_id, requesting_user).await?;
         let all_episodes: Vec<Episode> = self.trakt.all_episodes(&ids).await?.into_iter().map(|mut e| {e.serie = serie_id.to_owned(); e}).collect();
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let store = self.store.get_library_store_optional(library_id).ok_or(Error::LibraryStoreNotFoundFor(library_id.clone().to_string(), "refresh_episodes".to_string()))?;
         store.remove_all_serie_episodes(serie_id.to_string()).await?;
         let mut new_episodes: Vec<Episode> = vec![];
         for episode in all_episodes {
@@ -254,7 +255,7 @@ impl ModelController {
         if RsIds::is_id(serie_id) {
             let mut serie_ids: RsIds = serie_id.to_string().try_into()?;
 
-            let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+            let store = self.store.get_library_store_optional(library_id).ok_or(Error::LibraryStoreNotFoundFor(library_id.clone().to_string(), "episode_image".to_string()))?;
             let existing_serie = store.get_serie_by_external_id(serie_ids.clone()).await?;
             if let Some(existing_serie) = existing_serie {
                 self.episode_image(library_id, &existing_serie.id, season,  episode, size, requesting_user).await
@@ -269,7 +270,7 @@ impl ModelController {
                 let image_path = format!("cache/serie-{}-episode-{}x{}.avif", serie_id.replace(':', "-"), season, episode);
 
                 if !local_provider.exists(&image_path).await {
-                    let images = self.tmdb.episode_image(serie_ids, season, episode, &None).await?.into_kind(ImageType::Still).ok_or(crate::Error::NotFound)?;
+                    let images = self.tmdb.episode_image(serie_ids, season, episode, &None).await?.into_kind(ImageType::Still).ok_or(crate::Error::ImageRemoteNotFound("tmdb".to_string(), format!("episode: {} {} {}", serie_id, season, episode ) , "episode_image".to_string()))?;
                     let (_, mut writer) = local_provider.get_file_write_stream(&image_path).await?;
                     let image_reader = reqwest::get(images).await?;
                     let stream = image_reader.bytes_stream();
@@ -318,7 +319,7 @@ impl ModelController {
         Ok(())
     }
     pub async fn download_episode_image(&self, serie_ids: &RsIds, episodes_ids: &RsIds, season: &u32, episode: &u32, lang: &Option<String>) -> crate::Result<AsyncReadPinBox> {
-        let images = self.tmdb.episode_image(serie_ids.clone(), season, episode, lang).await?.into_kind(ImageType::Still).ok_or(crate::Error::NotFound)?;
+        let images = self.tmdb.episode_image(serie_ids.clone(), season, episode, lang).await?.into_kind(ImageType::Still).ok_or(crate::Error::ImageRemoteKindNotAvailable(ImageType::Still, format!("{:?} {} {}", serie_ids, season, episode), "download_episode_image".to_string()))?;
         let image_reader = reqwest::get(images).await?;
         let stream = image_reader.bytes_stream();
         let body_with_io_error = stream.map_err(|err| io::Error::new(io::ErrorKind::Other, err));

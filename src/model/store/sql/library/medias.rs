@@ -6,7 +6,7 @@ use rusqlite::{params, params_from_iter, types::{FromSql, FromSqlError, FromSqlR
 use serde::{Deserialize, Serialize};
 use stream_map_any::StreamMapAnyVariant;
 
-use crate::{domain::{library::LibraryLimits, media::{self, FileEpisode, FileType, Media, MediaForInsert, MediaForUpdate, MediaItemReference, RsGpsPosition}}, error::RsResult, model::{medias::{MediaQuery, MediaSource, RsSort}, people::PeopleQuery, series::SerieQuery, store::{from_comma_separated_optional, from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType}, to_comma_separated_optional, to_pipe_separated_optional}, tags::{TagForInsert, TagForUpdate, TagQuery}}, tools::{array_tools::AddOrSetArray, file_tools::{file_type_from_mime, get_mime_from_filename}, log::{log_info, LogServiceType}, text_tools::{extract_people, extract_tags}}};
+use crate::{domain::{library::LibraryLimits, media::{self, FileEpisode, FileType, Media, MediaForInsert, MediaForUpdate, MediaItemReference, RsGpsPosition}}, error::RsResult, model::{medias::{MediaQuery, MediaSource, RsSort}, people::PeopleQuery, series::SerieQuery, store::{from_comma_separated_optional, from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType}, to_comma_separated_optional, to_pipe_separated_optional}, tags::{TagForInsert, TagForUpdate, TagQuery}}, plugins::sources::error::SourcesError, tools::{array_tools::AddOrSetArray, file_tools::{file_type_from_mime, get_mime_from_filename}, log::{log_info, LogServiceType}, text_tools::{extract_people, extract_tags}}};
 use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -595,7 +595,7 @@ impl SqliteLibraryStore {
 
     pub async fn update_media(&self, media_id: &str, mut update: MediaForUpdate, user_id: Option<String>) -> Result<()> {
         let id = media_id.to_string();
-        let existing = self.get_media(media_id, user_id.clone()).await?.ok_or_else( || Error::NotFound)?;
+        let existing = self.get_media(media_id, user_id.clone()).await?.ok_or_else( || SourcesError::UnableToFindMedia("store".to_string() ,media_id.to_string(), "update_media".to_string()))?;
 
 
         if let Some(rename) = &update.name {

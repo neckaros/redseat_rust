@@ -14,7 +14,7 @@ use tokio::{fs::File, io::{AsyncRead, AsyncWriteExt, BufReader}};
 use tokio_util::io::StreamReader;
 
 
-use crate::{domain::{deleted::RsDeleted, library::LibraryRole, movie::{Movie, MovieForUpdate, MovieWithAction, MoviesMessage}, people::{PeopleMessage, Person}, ElementAction, MediaElement}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source}}, server::get_server_folder_path_array, tools::{image_tools::{convert_image_reader, resize_image_reader, ImageSize}, log::log_info}};
+use crate::{domain::{deleted::RsDeleted, library::LibraryRole, movie::{Movie, MovieForUpdate, MovieWithAction, MoviesMessage}, people::{PeopleMessage, Person}, ElementAction, MediaElement}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{error::SourcesError, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source}}, server::get_server_folder_path_array, tools::{image_tools::{convert_image_reader, resize_image_reader, ImageSize}, log::log_info}};
 
 use super::{error::{Error, Result}, store::sql::SqlOrder, users::{ConnectedUser, HistoryQuery}, ModelController};
 
@@ -99,7 +99,7 @@ impl ModelController {
 
 	pub async fn get_movies(&self, library_id: &str, query: MovieQuery, requesting_user: &ConnectedUser) -> RsResult<Vec<Movie>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let store = self.store.get_library_store(library_id)?;
         let watched_query = query.watched;
 		let mut movies = store.get_movies(query).await?;
 
@@ -112,21 +112,21 @@ impl ModelController {
 
     pub async fn get_movie(&self, library_id: &str, movie_id: String, requesting_user: &ConnectedUser) -> RsResult<Movie> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let store = self.store.get_library_store(library_id)?;
 
         if RsIds::is_id(&movie_id) {
-            let id: RsIds = movie_id.try_into().map_err(|_| Error::NotFound)?;
+            let id: RsIds = movie_id.try_into()?;
             let movie = store.get_movie_by_external_id(id.clone()).await?;
             if let Some(mut movie) = movie {
                 self.fill_movie_watched(&mut movie, requesting_user, Some(library_id.to_string())).await?;
                 Ok(movie)
             } else {
-                let mut trakt_movie = self.trakt.get_movie(&id).await.map_err(|_| Error::NotFound)?;
+                let mut trakt_movie = self.trakt.get_movie(&id).await?;
                 self.fill_movie_watched(&mut trakt_movie, requesting_user, Some(library_id.to_string())).await?;
                 Ok(trakt_movie)
             }
         } else {
-            let mut movie = store.get_movie(&movie_id).await?.ok_or(Error::NotFound)?;
+            let mut movie = store.get_movie(&movie_id).await?.ok_or(SourcesError::UnableToFindMovie(library_id.to_string(), movie_id.to_string(), "get_movie".to_string()))?;
             self.fill_movie_watched(&mut movie, requesting_user, Some(library_id.to_string())).await?;
             Ok(movie)
         }
@@ -181,8 +181,8 @@ impl ModelController {
     
     pub async fn get_movie_by_external_id(&self, library_id: &str, ids: RsIds, requesting_user: &ConnectedUser) -> RsResult<Movie> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
-        let movie = store.get_movie_by_external_id(ids).await?.ok_or(Error::NotFound)?;
+        let store = self.store.get_library_store(library_id)?;
+        let movie = store.get_movie_by_external_id(ids.clone()).await?.ok_or(SourcesError::UnableToFindMovie(library_id.to_string(), format!("External: {:?}", ids), "get_movie_by_external_id".to_string()))?;
         Ok(movie)
     }
 
@@ -209,9 +209,9 @@ impl ModelController {
             return Err(Error::InvalidIdForAction("udpate".to_string(), movie_id).into())
         }
         if update.has_update() {
-            let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+            let store = self.store.get_library_store(library_id)?;
             store.update_movie(&movie_id, update).await?;
-            let person = store.get_movie(&movie_id).await?.ok_or(Error::NotFound)?;
+            let person = store.get_movie(&movie_id).await?.ok_or(SourcesError::UnableToFindMovie(library_id.to_string(), movie_id.to_string(), "update_movie".to_string()))?;
             self.send_movie(MoviesMessage { library: library_id.to_string(), movies: vec![MovieWithAction {action: ElementAction::Updated, movie: person.clone()}] });
             Ok(person)
         } else {
@@ -253,7 +253,7 @@ impl ModelController {
         if let Ok(existing) = existing {
             return Err(Error::Duplicate(existing.id.to_owned(), MediaElement::Movie(existing)).into())
         }
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let store = self.store.get_library_store(library_id)?;
         let id = nanoid!();
         new_movie.id = id.clone();
 		store.add_movie(new_movie).await?;
@@ -268,16 +268,14 @@ impl ModelController {
         if RsIds::is_id(movie_id) {
             return Err(Error::InvalidIdForAction("remove".to_string(), movie_id.to_string()).into())
         }
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
-        let existing = store.get_movie(movie_id).await?;
-        if let Some(existing) = existing { 
-            store.remove_movie(movie_id.to_string()).await?;
-            self.add_deleted(library_id, RsDeleted::movie(movie_id.to_owned()), requesting_user).await?;
-            self.send_movie(MoviesMessage { library: library_id.to_string(), movies: vec![MovieWithAction {action: ElementAction::Deleted, movie: existing.clone()}] });
-            Ok(existing)
-        } else {
-            Err(Error::NotFound.into())
-        }
+        let store = self.store.get_library_store(library_id)?;
+        let existing = store.get_movie(movie_id).await?.ok_or(SourcesError::UnableToFindMovie(library_id.to_string(), movie_id.to_string(), "update_movie".to_string()))?;
+        
+        store.remove_movie(movie_id.to_string()).await?;
+        self.add_deleted(library_id, RsDeleted::movie(movie_id.to_owned()), requesting_user).await?;
+        self.send_movie(MoviesMessage { library: library_id.to_string(), movies: vec![MovieWithAction {action: ElementAction::Deleted, movie: existing.clone()}] });
+        Ok(existing)
+
 	}
 
 
@@ -341,7 +339,7 @@ impl ModelController {
         let kind = kind.unwrap_or(ImageType::Poster);
         if RsIds::is_id(movie_id) {
             let mut movie_ids: RsIds = movie_id.to_string().try_into()?;
-            let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+            let store = self.store.get_library_store(library_id)?;
             let existing_movie = store.get_movie_by_external_id(movie_ids.clone()).await?;
             if let Some(existing_movie) = existing_movie {
                 let image = self.movie_image(library_id, &existing_movie.id, Some(kind), size, requesting_user).await?;
@@ -356,7 +354,7 @@ impl ModelController {
                 let image_path = format!("cache/movie-{}-{}.avif", movie_id.replace(':', "-"), kind);
 
                 if !local_provider.exists(&image_path).await {
-                    let images = self.get_movie_image_url(&movie_ids, &kind, &None).await?.ok_or(crate::Error::NotFound)?;
+                    let images = self.get_movie_image_url(&movie_ids, &kind, &None).await?.ok_or(crate::Error::NotFound(format!("Unable to get movie image url: {:?}",movie_ids)))?;
                     let (_, mut writer) = local_provider.get_file_write_stream(&image_path).await?;
                     let image_reader = reqwest::get(images).await?;
                     let stream = image_reader.bytes_stream();
@@ -419,7 +417,7 @@ impl ModelController {
 
 
     pub async fn download_movie_image(&self, ids: &RsIds, kind: &ImageType, lang: &Option<String>) -> crate::Result<AsyncReadPinBox> {
-        let images = self.get_movie_image_url(ids, kind, lang).await?.ok_or(crate::Error::NotFound)?;
+        let images = self.get_movie_image_url(ids, kind, lang).await?.ok_or(crate::Error::NotFound(format!("Unable to download movie image url: {:?} kind: {:?}",ids, kind)))?;
         let image_reader = reqwest::get(images).await?;
         let stream = image_reader.bytes_stream();
         let body_with_io_error = stream.map_err(|err| io::Error::new(io::ErrorKind::Other, err));
@@ -439,7 +437,7 @@ impl ModelController {
         
         self.update_library_image(library_id, ".movies", movie_id, &Some(kind.clone()), converted_reader, requesting_user).await?;
         
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let store = self.store.get_library_store(library_id)?;
 		store.update_movie_image(movie_id.to_string(), kind.clone()).await;
 
         let movie = self.get_movie(library_id, movie_id.to_owned(), requesting_user).await?;

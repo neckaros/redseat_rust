@@ -138,13 +138,13 @@ async fn handler_delete(Path((library_id, movie_id)): Path<(String, String)>, St
 
 async fn handler_progress_get(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
 	let movie = mc.get_movie(&library_id, movie_id, &user).await?;
-	let progress = mc.get_view_progress(movie.into(), &user, Some(library_id.to_string())).await?.ok_or(Error::NotFound)?;
+	let progress = mc.get_view_progress(movie.into(), &user, Some(library_id.to_string())).await?.ok_or(Error::NotFound("unable to get movie progress".to_string()))?;
 	Ok(Json(json!(progress)))
 }
 
 async fn handler_progress_set(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(progress): Json<ViewProgressLigh>) -> Result<()> {
 	let movie = mc.get_movie(&library_id, movie_id, &user).await?;
-	let id = RsIds::from(movie).into_best_external().ok_or(Error::NotFound)?;
+	let id = RsIds::from(movie).into_best_external().ok_or(Error::NotFound("unable to get best external id for movie progress".to_string()))?;
 	let progress = ViewProgressForAdd { kind: MediaType::Movie, id, progress: progress.progress, parent: None };
 	mc.add_view_progress(progress, &user, Some(library_id)).await?;
 
@@ -157,13 +157,13 @@ async fn handler_watched_get(Path((library_id, movie_id)): Path<(String, String)
 		id: Some(movie.into()),
 		..Default::default()
 	};
-	let progress = mc.get_watched(query, &user, Some(library_id)).await?.into_iter().next().ok_or(Error::NotFound)?;
+	let progress = mc.get_watched(query, &user, Some(library_id)).await?.into_iter().next().ok_or(Error::NotFound("Unable to get watched movies".to_string()))?;
 	Ok(Json(json!(progress)))
 }
 
 async fn handler_watched_set(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(watched): Json<WatchedLight>) -> Result<()> {
 	let movie = mc.get_movie(&library_id, movie_id, &user).await?;
-	let id = RsIds::from(movie).into_best_external().ok_or(Error::NotFound)?;
+	let id = RsIds::from(movie).into_best_external().ok_or(Error::NotFound("Unable to get best external id for movie".to_string()))?;
 	let watched = WatchedForAdd { kind: MediaType::Movie, id, date: watched.date };
 	mc.add_watched(watched, &user, Some(library_id)).await?;
 
@@ -197,10 +197,10 @@ async fn handler_image(Path((library_id, movie_id)): Path<(String, String)>, Sta
 			
 			Ok((headers, body).into_response())
 		} else {
-			Err(Error::NotFound)
+			Err(Error::NotFound(format!("Unable to find movie image with defaulting: {} {}", library_id, movie_id)))
 		}
 	} else {
-		Err(RsError::NotFound)
+		Err(Error::NotFound(format!("Unable to find movie image without defaulting: {} {}", library_id, movie_id)))
 	}
 
 	

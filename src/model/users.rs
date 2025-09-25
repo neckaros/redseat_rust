@@ -500,7 +500,7 @@ impl ModelController {
             },
             _ => Err(Error::UserGetNotAuth { user: user.clone(), requested_user: "Connected".to_string() }),
         }?;
-        let invitation = self.store.get_library_invitation(code.clone()).await?.ok_or(Error::NotFound)?;
+        let invitation = self.store.get_library_invitation(code.clone()).await?.ok_or(Error::NotFound(format!("Library invitation not found: {}", code)))?;
         let library_id = invitation.library.clone();
         self.store.add_library_rights(invitation.library, connected_user.id, invitation.roles, invitation.limits).await?;
 

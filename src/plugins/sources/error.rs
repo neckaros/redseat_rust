@@ -3,7 +3,7 @@ use hyper::StatusCode;
 use serde::Serialize;
 use serde_with::{serde_as, DisplayFromStr};
 
-use crate::{error::ClientError, tools::image_tools::ImageError};
+use crate::{error::ClientError, model::medias::MediaSource, tools::image_tools::ImageError};
 
 pub type SourcesResult<T> = core::result::Result<T, SourcesError>;
 
@@ -15,6 +15,21 @@ pub enum SourcesError {
     Error,
 	Other(String),
 	NotFound(Option<String>),
+
+	
+	UnableToFindLibrary(String, String),
+	UnableToFindUser(String, String, String),
+	UnableToFindUploadKey(String, String, String),
+	UnableToFindPlugin(String, String),
+	UnableToFindBackup(String, String),
+	UnableToFindCredentials(String, String, String),
+	UnableToFindMedia(String, String, String),
+	UnableToFindSource(String, String, String, String),
+	UnableToFindSerie(String, String, String),
+	UnableToFindEpisodes(String, String),
+	UnableToFindPerson(String, String, String),
+	UnableToFindMovie(String, String, String),
+	UnableToFindTag(String, String, String),
 	
 	#[from]
 	Io(#[serde_as(as = "DisplayFromStr")] std::io::Error),

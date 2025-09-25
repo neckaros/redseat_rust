@@ -192,12 +192,12 @@ impl  ModelController {
 	
 
 	pub async fn source_for_library(&self, library_id: &str) -> RsResult<Box<dyn Source>> {
-		let library = self.store.get_library(library_id).await?.ok_or_else(|| Error::NotFound)?;
+		let library = self.store.get_library(library_id).await?.ok_or_else(|| Error::LibraryNotFoundFor(library_id.to_string(), "source_for_library".to_string()))?;
 		let source = self.plugin_manager.source_for_library(library, self.clone()).await?;
 		Ok(source)
 	}
 	pub async fn library_source_for_library(&self, library_id: &str) -> Result<PathProvider> {
-		let library = self.store.get_library(library_id).await?.ok_or_else(|| Error::NotFound)?;
+		let library = self.store.get_library(library_id).await?.ok_or_else(|| Error::LibraryNotFoundFor(library_id.to_string(), "library_source_for_library".to_string()))?;
 
 		local_provider_for_library(&library).await.map_err(|_| crate::model::Error::Other("Unable to get local provider".to_string()))
 	}
@@ -222,7 +222,7 @@ impl  ModelController {
 						if let SourceRead::Stream(reader) = reader {
 							return Ok(reader);
 						} else {
-							return Err(Error::NotFound.into())
+							return Err(SourcesError::NotFound(Some(format!("library_image - File Not Found - {}", source_filepath))).into())
 						}
 					}
 					
@@ -236,7 +236,7 @@ impl  ModelController {
 		if let SourceRead::Stream(reader) = reader {
 			return Ok(reader);
 		} else {
-			return Err(Error::NotFound.into())
+			return Err(crate::Error::ImageNotFound(format!("id:{} kind:{:?}", id, kind), "library_image".to_string()))
 		}
 	}
 	pub async fn has_library_image(&self, library_id: &str, folder: &str, id: &str, kind: Option<ImageType>, requesting_user: &ConnectedUser) -> Result<bool> {

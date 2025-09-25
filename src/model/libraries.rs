@@ -5,7 +5,7 @@ use rs_plugin_common_interfaces::RsRequest;
 use serde::{Deserialize, Serialize};
 use tokio::{fs::{create_dir_all, read_dir}, io::AsyncReadExt};
 
-use crate::{domain::{library::{LibraryLimits, LibraryMessage, LibraryRole, LibraryType, ServerLibrary, ServerLibrarySettings, UserMapping}, ElementAction}, error::RsResult, plugins::sources::{path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source, SourceRead}, tools::{auth::{sign_local, ClaimsLocal, ClaimsLocalType}, log::{log_info, LogServiceType}}};
+use crate::{domain::{library::{LibraryLimits, LibraryMessage, LibraryRole, LibraryType, ServerLibrary, ServerLibrarySettings, UserMapping}, ElementAction}, error::RsResult, plugins::sources::{error::SourcesError, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source, SourceRead}, tools::{auth::{sign_local, ClaimsLocal, ClaimsLocalType}, log::{log_info, LogServiceType}}};
 
 use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
 
@@ -237,7 +237,7 @@ impl ModelController {
 	}
 
     pub async fn get_library_mapped_users(&self, library_id: &str) -> Result<Vec<UserMapping>> {
-        let library = self.get_library(library_id, &ConnectedUser::ServerAdmin).await?.ok_or(Error::NotFound)?;
+        let library = self.get_library(library_id, &ConnectedUser::ServerAdmin).await?.ok_or(SourcesError::UnableToFindLibrary(library_id.to_string(), "get_library_mapped_users".to_string()))?;
         
         return Ok(library.settings.and_then(|s| s.map_progress).unwrap_or_default())
 
@@ -247,7 +247,7 @@ impl ModelController {
     /// Exemple if user A is mapped to B then passing user A will return B  
     pub async fn get_library_progress_user_mappings(&self, library_id: &str, user_id: String) -> Result<Vec<String>> {
         let mut mappings = vec![];
-        let library = self.get_internal_library(library_id).await?.ok_or(Error::NotFound)?;
+        let library = self.get_internal_library(library_id).await?.ok_or(SourcesError::UnableToFindLibrary(library_id.to_string(), "get_library_progress_user_mappings".to_string()))?;
         if let Some(mapping) = library.settings.map_progress {
             let filtered = mapping.into_iter().filter(|m| m.from == user_id);
             for mapping in filtered {
@@ -261,7 +261,7 @@ impl ModelController {
     /// Exemple if user A is mapped to B then passing user B will return A  
     pub async fn get_library_progress_user_mapped(&self, library_id: &str, user_id: String) -> Result<Vec<String>> {
         let mut mappings = vec![];
-        let library = self.get_internal_library(library_id).await?.ok_or(Error::NotFound)?;
+        let library = self.get_internal_library(library_id).await?.ok_or(SourcesError::UnableToFindLibrary(library_id.to_string(), "get_library_mapped_users".to_string()))?;
         if let Some(mapping) = library.settings.map_progress {
             let filtered = mapping.into_iter().filter(|m| m.to == user_id);
             for mapping in filtered {
@@ -275,7 +275,7 @@ impl ModelController {
     /// plux all users mapped to those users
     pub async fn get_library_progress_merged_users(&self, library_id: &str, user_id: String) -> Result<HashSet<String>> {
         let mut mappings = HashSet::new();
-        let library = self.get_internal_library(library_id).await?.ok_or(Error::NotFound)?;
+        let library = self.get_internal_library(library_id).await?.ok_or(SourcesError::UnableToFindLibrary(library_id.to_string(), "get_library_mapped_users".to_string()))?;
         if let Some(mapping) = library.settings.map_progress {
             let filtered = mapping.iter().filter(|m| m.to == user_id || m.from == user_id);
             for mapped in filtered {
@@ -292,7 +292,7 @@ impl ModelController {
 	}
 
     pub async fn get_library_mapped_user(&self, library_id: &str, mut user_id: String) -> Result<String> {
-        let library = self.get_internal_library(library_id).await?.ok_or(Error::NotFound)?;
+        let library = self.get_internal_library(library_id).await?.ok_or(SourcesError::UnableToFindLibrary(library_id.to_string(), "get_library_mapped_users".to_string()))?;
         if let Some(mapping) = library.settings.map_progress {
             if let Some(mapping) = mapping.into_iter().find(|m| m.from == user_id) {
                 user_id = mapping.to;
@@ -357,23 +357,20 @@ impl ModelController {
         }
 	}
     
-	pub async fn remove_library(&self, library_id: &str, requesting_user: &ConnectedUser) -> Result<ServerLibraryForRead> {
+	pub async fn remove_library(&self, library_id: &str, requesting_user: &ConnectedUser) -> RsResult<ServerLibraryForRead> {
         requesting_user.check_library_role(&library_id, LibraryRole::Admin)?;
-        let library = self.store.get_library(&library_id).await?;
-        if let Some(library) = library { 
-            self.cache_remove_library(&library.id).await;
-            self.store.remove_library(library_id.to_string()).await?;
-            self.send_library(LibraryMessage { action: crate::domain::ElementAction::Deleted, library: library.clone() });
-            Ok(ServerLibraryForRead::from(library))
-        } else {
-            Err(Error::NotFound)
-        }
+        let library = self.store.get_library(&library_id).await?.ok_or(SourcesError::UnableToFindLibrary(library_id.to_string(), "get_library_mapped_users".to_string()))?;
+
+        self.cache_remove_library(&library.id).await;
+        self.store.remove_library(library_id.to_string()).await?;
+        self.send_library(LibraryMessage { action: crate::domain::ElementAction::Deleted, library: library.clone() });
+        Ok(ServerLibraryForRead::from(library))
 	}
 
     pub async fn clean_library(&self, library_id: &str, requesting_user: &ConnectedUser) -> crate::error::Result<Vec<(String, u64)>> {
         requesting_user.check_library_role(&library_id, LibraryRole::Admin)?;
         let m = self.source_for_library(library_id).await?; 
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let store = self.store.get_library_store(library_id)?;
         let sources = store.get_all_sources().await?;
         println!("sources count: {}", sources.len());
         let cleaned = m.clean(sources).await?;

@@ -1,7 +1,7 @@
 use nanoid::nanoid;
 use rusqlite::{params, OptionalExtension, Row};
 
-use crate::{domain::tag::Tag, model::{store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_pipe_separated_optional}, tags::{TagForAdd, TagForInsert, TagForUpdate, TagQuery}}, tools::array_tools::replace_add_remove_from_array};
+use crate::{domain::tag::Tag, model::{store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_pipe_separated_optional}, tags::{TagForAdd, TagForInsert, TagForUpdate, TagQuery}}, plugins::sources::error::SourcesError, tools::array_tools::replace_add_remove_from_array};
 use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
 
@@ -75,7 +75,7 @@ impl SqliteLibraryStore {
 
     pub async fn update_tag(&self, tag_id: &str, update: TagForUpdate) -> Result<()> {
         let id = tag_id.to_string();
-        let existing_tag = self.get_tag(&tag_id).await?.ok_or_else(|| Error::NotFound)?;
+        let existing_tag = self.get_tag(&tag_id).await?.ok_or_else(|| SourcesError::UnableToFindTag("store".to_string() ,tag_id.to_string(), "update_serie".to_string()))?;
         self.connection.call( move |conn| { 
             let tx = conn.transaction()?;
             let mut where_query = QueryBuilder::new();

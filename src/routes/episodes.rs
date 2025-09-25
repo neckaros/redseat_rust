@@ -1,7 +1,7 @@
 
 use std::io::Cursor;
 
-use crate::{domain::{episode::{self, Episode}, media::{FileEpisode, Media, MediaForUpdate}, progress, view_progress::{ViewProgressForAdd, ViewProgressLigh}, watched::{WatchedForAdd, WatchedLight}}, error::RsError, model::{episodes::{EpisodeForUpdate, EpisodeQuery}, medias::MediaQuery, users::{ConnectedUser, HistoryQuery}, ModelController}, Error, Result};
+use crate::{domain::{episode::{self, Episode}, media::{FileEpisode, Media, MediaForUpdate}, progress, view_progress::{ViewProgressForAdd, ViewProgressLigh}, watched::{WatchedForAdd, WatchedLight}}, error::RsError, model::{episodes::{EpisodeForUpdate, EpisodeQuery}, medias::MediaQuery, users::{ConnectedUser, HistoryQuery}, ModelController}, plugins::sources::error::SourcesError, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
 use futures::TryStreamExt;
 use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, lookup::{RsLookupEpisode, RsLookupQuery}, request::RsRequest, ImageType, MediaType};
@@ -50,7 +50,7 @@ async fn handler_refresh(Path((library_id, serie_id)): Path<(String, String)>, S
 }
 
 async fn handler_lookup_season(Path((library_id, serie_id, season)): Path<(String, String, u32)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
-	let serie = mc.get_serie(&library_id, serie_id,  &user).await?.ok_or(Error::NotFound)?;
+	let serie = mc.get_serie(&library_id.clone(), serie_id.clone(),  &user).await?.ok_or(SourcesError::UnableToFindSerie(library_id.to_string(), serie_id.to_string(), "handler_lookup_season".to_string()))?;
 	let name = serie.name.clone();
 	let ids: RsIds = serie.into();
 	let query_episode = RsLookupEpisode {
@@ -100,7 +100,7 @@ async fn handler_delete(Path((library_id, serie_id, season, number)): Path<(Stri
 
 async fn handler_lookup(Path((library_id, serie_id, season, number)): Path<(String, String, u32, u32)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
 	let episode = mc.get_episode(&library_id, serie_id.clone(), season, number, &user).await?;
-	let serie = mc.get_serie(&library_id, serie_id,  &user).await?.ok_or(Error::NotFound)?;
+	let serie = mc.get_serie(&library_id, serie_id.clone(),  &user).await?.ok_or(SourcesError::UnableToFindSerie(library_id.to_string(), serie_id.to_string(), "handler_lookup".to_string()))?;
 	let name = serie.name.clone();
 	let ids: RsIds = serie.into();
 	let query_episode = RsLookupEpisode {
@@ -149,15 +149,15 @@ async fn handler_post(Path((library_id, serie_id)): Path<(String, String)>, Stat
 
 async fn handler_progress_get(Path((library_id, serie_id, season, number)): Path<(String, String, u32, u32)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
 	let episode = mc.get_episode(&library_id, serie_id, season, number, &user).await?;
-	let progress = mc.get_view_progress(episode.into(), &user, Some(library_id.to_string())).await?.ok_or(Error::NotFound)?;
+	let progress = mc.get_view_progress(episode.into(), &user, Some(library_id.to_string())).await?.ok_or(Error::NotFound(format!("Unable to get best view progress for handler_progress_get")))?;
 	Ok(Json(json!(progress)))
 }
 
 async fn handler_progress_set(Path((library_id, serie_id, season, number)): Path<(String, String, u32, u32)>, State(mc): State<ModelController>, user: ConnectedUser, Json(progress): Json<ViewProgressLigh>) -> Result<()> {
 	let episode = mc.get_episode(&library_id, serie_id.clone(), season, number, &user).await?;
-	let serie = mc.get_serie(&library_id, serie_id, &user).await?.ok_or(Error::NotFound)?;
-	let id = RsIds::from(episode).into_best_external().ok_or(Error::NotFound)?;
-	let serie_id = RsIds::from(serie).into_best_external().ok_or(Error::NotFound)?;
+	let serie = mc.get_serie(&library_id, serie_id.clone(), &user).await?.ok_or(SourcesError::UnableToFindSerie(library_id.to_string(), serie_id.to_string(), "handler_lookup_season".to_string()))?;
+	let id = RsIds::from(episode).into_best_external().ok_or(Error::NotFound(format!("Unable to get best external for handler_progress_set")))?;
+	let serie_id = RsIds::from(serie).into_best_external().ok_or(Error::NotFound(format!("Unable to get best external for handler_progress_set serie")))?;
 	let progress = ViewProgressForAdd { kind: MediaType::Episode, id, progress: progress.progress, parent: Some(serie_id) };
 	mc.add_view_progress(progress, &user, Some(library_id)).await?;
 
@@ -170,13 +170,13 @@ async fn handler_watched_get(Path((library_id, serie_id, season, number)): Path<
 		id: Some(episode.into()),
 		..Default::default()
 	};
-	let progress = mc.get_watched(query, &user, Some(library_id)).await?.into_iter().next().ok_or(Error::NotFound)?;
+	let progress = mc.get_watched(query, &user, Some(library_id)).await?.into_iter().next().ok_or(Error::NotFound(format!("Unable to get best watched")))?;
 	Ok(Json(json!(progress)))
 }
 
 async fn handler_watched_set(Path((library_id, serie_id, season, number)): Path<(String, String, u32, u32)>, State(mc): State<ModelController>, user: ConnectedUser, Json(watched): Json<WatchedLight>) -> Result<()> {
 	let episode = mc.get_episode(&library_id, serie_id.clone(), season, number, &user).await?;
-	let id = RsIds::from(episode).into_best_external_or_local().ok_or(Error::NotFound)?;
+	let id = RsIds::from(episode).into_best_external_or_local().ok_or(Error::NotFound(format!("Unable to get best external for handler_watched_set")))?;
 	let watched = WatchedForAdd { kind: MediaType::Episode, id, date: watched.date };
 	mc.add_watched(watched, &user, Some(library_id)).await?;
 
@@ -206,8 +206,10 @@ async fn handler_image(Path((library_id, serie_id, season, number)): Path<(Strin
 			let body = Body::from_stream(stream);
 			Ok((headers, body).into_response())
 		}
+	} else if let Err(err) = reader_response {
+		Err(Error::NotFound(format!("Unable to find episode image with defaulting: {} {} {:?}", library_id, serie_id, err)))
 	} else {
-		Err(RsError::NotFound)
+		Err(Error::NotFound(format!("Unable to find episode image with defaulting: {} {}", library_id, serie_id)))
 	}
 	
 	

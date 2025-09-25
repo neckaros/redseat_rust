@@ -22,7 +22,7 @@ pub struct DeletedQuery {
 impl ModelController {
 	pub async fn get_deleted(&self, library_id: &str, query: DeletedQuery, requesting_user: &ConnectedUser) -> RsResult<Vec<RsDeleted>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let store = self.store.get_library_store(library_id)?;
         let deleted = store.get_deleted(query).await?;
 
 		Ok(deleted)
@@ -30,7 +30,7 @@ impl ModelController {
 
     pub async fn add_deleted(&self, library_id: &str, deleted: RsDeleted, requesting_user: &ConnectedUser) -> RsResult<()> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let store = self.store.get_library_store(library_id)?;
         store.add_deleted(deleted).await?;
 
 		Ok(())

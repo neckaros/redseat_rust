@@ -225,7 +225,7 @@ pub async fn resize_image_path(path: &PathBuf, to: &PathBuf, size: u32) -> Image
     builder.auto_orient();
     builder.set_quality(80);
     builder.set_size(&format!("{}x{}^", size, size));
-    let data = builder.run("webp",&mut source).await?;
+    let data = builder.run("avif",&mut source).await?;
     file.write_all(&data).await?;
     Ok(())
 }
@@ -353,7 +353,7 @@ pub async fn resize_image_reader_im(mut reader: AsyncReadPinBox, size: u32) -> I
     builder.auto_orient();
     builder.set_quality(80);
     builder.set_size(&format!("{}x{}^", size, size));
-    let data = builder.run("webp",&mut reader).await?;
+    let data = builder.run("avif",&mut reader).await?;
     Ok(data)
 }
 

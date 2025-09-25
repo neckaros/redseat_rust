@@ -11,7 +11,7 @@ use tokio::{fs::File, io::{AsyncRead, AsyncWriteExt, BufReader}};
 
 use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, url::RsLink, ExternalImage, Gender, ImageType};
 use tokio_util::io::StreamReader;
-use crate::{domain::{deleted::RsDeleted, library::LibraryRole, people::{PeopleMessage, Person, PersonWithAction}, tag::Tag, ElementAction}, error::{RsError, RsResult}, plugins::sources::{AsyncReadPinBox, FileStreamResult, Source}, tools::{image_tools::{resize_image_reader, ImageSize}, log::log_info}};
+use crate::{domain::{deleted::RsDeleted, library::LibraryRole, people::{PeopleMessage, Person, PersonWithAction}, tag::Tag, ElementAction}, error::{RsError, RsResult}, plugins::sources::{error::SourcesError, AsyncReadPinBox, FileStreamResult, Source}, tools::{image_tools::{resize_image_reader, ImageSize}, log::log_info}};
 
 use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
 
@@ -104,29 +104,28 @@ impl ModelController {
 
 	pub async fn get_people(&self, library_id: &str, query: PeopleQuery, requesting_user: &ConnectedUser) -> Result<Vec<Person>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let store = self.store.get_library_store_optional(library_id).ok_or(Error::LibraryStoreNotFoundFor(library_id.to_string(), "get_people".to_string()))?;
 		let people = store.get_people(query).await?;
 		Ok(people)
 	}
 
     pub async fn get_person(&self, library_id: &str, tag_id: String, requesting_user: &ConnectedUser) -> Result<Option<Person>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let store = self.store.get_library_store_optional(library_id).ok_or(Error::LibraryStoreNotFoundFor(library_id.to_string(), "get_person".to_string()))?;
 		let tag = store.get_person(&tag_id).await?;
 		Ok(tag)
 	}
 
     pub async fn update_person(&self, library_id: &str, tag_id: String, mut update: PersonForUpdate, requesting_user: &ConnectedUser) -> RsResult<Person> {
         requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let store = self.store.get_library_store_optional(library_id).ok_or(Error::LibraryStoreNotFoundFor(library_id.to_string(), "update_person".to_string()))?;
         if let Some(origin) = &update.add_social_url {
             let mut new_socials = update.add_socials.unwrap_or_default();
             new_socials.push(self.exec_parse(Some(library_id.to_owned()), origin.to_owned(), requesting_user).await?);
             update.add_socials = Some(new_socials);
         }
-        println!("socialts {:?}", update);
 		store.update_person(&tag_id, update).await?;
-        let person = store.get_person(&tag_id).await?.ok_or(Error::NotFound)?;
+        let person = store.get_person(&tag_id).await?.ok_or(SourcesError::UnableToFindPerson(library_id.to_string(), tag_id.to_string(), "update_person".to_string()))?;
         self.send_people(PeopleMessage { library: library_id.to_string(), people: vec![PersonWithAction { person: person.clone(), action: ElementAction::Updated}] });
         Ok(person)
 	}
@@ -144,13 +143,13 @@ impl ModelController {
 
     pub async fn add_pesron(&self, library_id: &str, new_person: PersonForAdd, requesting_user: &ConnectedUser) -> Result<Person> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let store = self.store.get_library_store_optional(library_id).ok_or(Error::LibraryStoreNotFoundFor(library_id.to_string(), "add_pesron".to_string()))?;
         let backup = PersonForInsert {
             id: nanoid!(),
             person: new_person
         };
 		store.add_person(backup.clone()).await?;
-        let new_person = self.get_person(library_id, backup.id, requesting_user).await?.ok_or(Error::NotFound)?;
+        let new_person = self.get_person(library_id, backup.id.clone(), requesting_user).await?.ok_or(SourcesError::UnableToFindPerson(library_id.to_string(), backup.id, "add_pesron".to_string()))?;
         self.send_people(PeopleMessage { library: library_id.to_string(), people: vec![PersonWithAction { person: new_person.clone(), action: ElementAction::Added}] });
 		Ok(new_person)
 	}
@@ -158,16 +157,13 @@ impl ModelController {
 
     pub async fn remove_person(&self, library_id: &str, tag_id: &str, requesting_user: &ConnectedUser) -> RsResult<Person> {
         requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
-        let existing = store.get_person(tag_id).await?;
-        if let Some(existing) = existing { 
-            store.remove_person(tag_id.to_string()).await?;
-            self.add_deleted(library_id, RsDeleted::person(tag_id.to_owned()), requesting_user).await?;
-            self.send_people(PeopleMessage { library: library_id.to_string(), people: vec![PersonWithAction { person: existing.clone(), action: ElementAction::Deleted}] });
-            Ok(existing)
-        } else {
-            Err(Error::NotFound.into())
-        }
+        let store = self.store.get_library_store_optional(library_id).ok_or(Error::LibraryStoreNotFoundFor(library_id.to_string(), "remove_person".to_string()))?;
+        let existing = store.get_person(tag_id).await?.ok_or(SourcesError::UnableToFindPerson(library_id.to_string(), tag_id.to_string(), "remove_person".to_string()))?;
+        
+        store.remove_person(tag_id.to_string()).await?;
+        self.add_deleted(library_id, RsDeleted::person(tag_id.to_owned()), requesting_user).await?;
+        self.send_people(PeopleMessage { library: library_id.to_string(), people: vec![PersonWithAction { person: existing.clone(), action: ElementAction::Deleted}] });
+        Ok(existing)
 	}
 
 
@@ -181,7 +177,7 @@ impl ModelController {
 	pub async fn person_image(&self, library_id: &str, person_id: &str, kind: Option<ImageType>, size: Option<ImageSize>, requesting_user: &ConnectedUser) -> crate::Result<FileStreamResult<AsyncReadPinBox>> {
         if RsIds::is_id(person_id) {
             let mut person_ids: RsIds = person_id.to_string().try_into()?;
-            let store: std::sync::Arc<super::store::sql::library::SqliteLibraryStore> = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+            let store: std::sync::Arc<super::store::sql::library::SqliteLibraryStore> = self.store.get_library_store_optional(library_id).ok_or(SourcesError::UnableToFindPerson(library_id.to_string(), person_id.to_string(), "person_image".to_string()))?;
             let existing_person = store.get_person_by_external_id(person_ids.clone()).await?;
             if let Some(existing_person) = existing_person {
                 let image = self.person_image(library_id, &existing_person.id, kind, size, requesting_user).await?;
@@ -196,7 +192,7 @@ impl ModelController {
                 let image_path = format!("cache/person-{}-{}.avif", person_id.replace(':', "-"), kind.as_ref().unwrap_or(&ImageType::Poster));
 
                 if !local_provider.exists(&image_path).await {
-                    let images = self.get_person_image_url(&person_ids, kind.as_ref().unwrap_or(&ImageType::Poster), &None).await?.ok_or(crate::Error::NotFound)?;
+                    let images = self.get_person_image_url(&person_ids, kind.as_ref().unwrap_or(&ImageType::Poster), &None).await?.ok_or(crate::Error::NotFound(format!("Unable to get person image url: {:?} kind {:?}",person_ids, kind)))?;
                     let (_, mut writer) = local_provider.get_file_write_stream(&image_path).await?;
                     let image_reader = reqwest::get(images).await?;
                     let stream = image_reader.bytes_stream();
@@ -224,13 +220,13 @@ impl ModelController {
         }
 	}
 
-    pub async fn update_person_image<T: AsyncRead>(&self, library_id: &str, person_id: &str, kind: &Option<ImageType>, reader: T, requesting_user: &ConnectedUser) -> Result<Person> {
+    pub async fn update_person_image<T: AsyncRead>(&self, library_id: &str, person_id: &str, kind: &Option<ImageType>, reader: T, requesting_user: &ConnectedUser) -> RsResult<Person> {
         if RsIds::is_id(&person_id) {
-            return Err(Error::InvalidIdForAction("udpate person image".to_string(), person_id.to_string()))
+            return Err(Error::InvalidIdForAction("udpate person image".to_string(), person_id.to_string()).into())
         }
         self.update_library_image(library_id, ".portraits", person_id, kind, reader, requesting_user).await?;
         
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let store = self.store.get_library_store(library_id)?;
         store.update_person_portrait(person_id.to_string()).await?;
         let person = self.get_person(library_id, person_id.to_owned(), requesting_user).await?.ok_or(Error::PersonNotFound(person_id.to_owned()))?;
         self.send_people(PeopleMessage { library: library_id.to_string(), people: vec![PersonWithAction { person: person.clone(), action: ElementAction::Updated}] });
@@ -244,7 +240,7 @@ impl ModelController {
         Ok(images)
     }
     pub async fn download_person_image(&self, ids: &RsIds, kind: &Option<ImageType>, lang: &Option<String>) -> crate::Result<AsyncReadPinBox> {
-        let images = self.get_person_image_url(ids, kind.as_ref().unwrap_or(&ImageType::Poster), lang).await?.ok_or(crate::Error::NotFound)?;
+        let images = self.get_person_image_url(ids, kind.as_ref().unwrap_or(&ImageType::Poster), lang).await?.ok_or(crate::Error::NotFound(format!("Unable to get person image url: {:?} kind {:?}",ids, kind)))?;
         let image_reader = reqwest::get(images).await?;
         let stream = image_reader.bytes_stream();
         let body_with_io_error = stream.map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err));

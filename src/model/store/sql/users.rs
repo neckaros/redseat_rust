@@ -2,7 +2,7 @@ use rs_plugin_common_interfaces::domain::rs_ids::RsIds;
 use rusqlite::{params, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, Row, ToSql};
 use serde::{Deserialize, Serialize};
 
-use crate::{domain::{library::LibraryLimits, view_progress::{ViewProgress, ViewProgressForAdd}, watched::{Watched, WatchedForAdd}}, model::{store::{from_comma_separated, sql::library, SqliteStore}, users::{HistoryQuery, ServerUser, ServerUserForUpdate, ServerUserLibrariesRights, ServerUserLibrariesRightsWithUser, ServerUserPreferences, UploadKey, UserRole, ViewProgressQuery}}};
+use crate::{domain::{library::LibraryLimits, view_progress::{ViewProgress, ViewProgressForAdd}, watched::{Watched, WatchedForAdd}}, model::{store::{from_comma_separated, sql::library, SqliteStore}, users::{HistoryQuery, ServerUser, ServerUserForUpdate, ServerUserLibrariesRights, ServerUserLibrariesRightsWithUser, ServerUserPreferences, UploadKey, UserRole, ViewProgressQuery}}, plugins::sources::error::SourcesError};
 
 use super::{super::Error, deserialize_from_row, OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType};
 use super::Result;
@@ -205,6 +205,7 @@ impl SqliteStore {
 impl SqliteStore {
     
     pub async fn get_upload_key(&self, key: String) -> Result<UploadKey> {
+        let keyc = key.clone();
         let row = self.server_store.call( move |conn| { 
             let mut query = conn.prepare("SELECT id, library_ref, expiry, tags  FROM uploadkeys where id = ?")?;
 
@@ -214,7 +215,7 @@ impl SqliteStore {
             let backups:Vec<UploadKey> = rows.collect::<std::result::Result<Vec<UploadKey>, rusqlite::Error>>()?; 
             Ok(backups)
         }).await?;
-        let uploadkey = row.first().ok_or(Error::NotFound)?;
+        let uploadkey = row.first().ok_or(SourcesError::UnableToFindUploadKey("store".to_string() ,keyc, "get_upload_key".to_string()))?;
         Ok(uploadkey.clone())
     }
 

@@ -1,7 +1,7 @@
 use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, ImageType};
 use rusqlite::{params, OptionalExtension, Row};
 
-use crate::{domain::{serie::Serie}, model::{series::{SerieForUpdate, SerieQuery}, store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType}, to_pipe_separated_optional}}, tools::{array_tools::replace_add_remove_from_array}};
+use crate::{domain::serie::Serie, model::{series::{SerieForUpdate, SerieQuery}, store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType}, to_pipe_separated_optional}}, plugins::sources::error::SourcesError, tools::array_tools::replace_add_remove_from_array};
 use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
 
@@ -99,7 +99,7 @@ impl SqliteLibraryStore {
 
     pub async fn update_serie(&self, serie_id: &str, update: SerieForUpdate) -> Result<()> {
         let id = serie_id.to_string();
-        let existing = self.get_serie(serie_id).await?.ok_or_else( || Error::NotFound)?;
+        let existing = self.get_serie(serie_id).await?.ok_or_else( || SourcesError::UnableToFindSerie("store".to_string() ,serie_id.to_string(), "update_serie".to_string()))?;
         self.connection.call( move |conn| { 
             let mut where_query = QueryBuilder::new();
 

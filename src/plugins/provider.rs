@@ -29,7 +29,7 @@ impl PluginManager {
                     Err((error, code)) =>  {
                         if code != 404 {
                             log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request fet file {:?} : {} {:?}", path, code, error));
-                            Err(Error::NotFound)
+                            Err(Error::NotFound("Unable to get provider file".to_string()))
                         } else {
                             Err(Error::Error(format!("Provider plugin error: {}", code)))
                         }
@@ -59,7 +59,7 @@ impl PluginManager {
                     Err((error, code)) =>  {
                         if code != 404 {
                             log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request upload file: {} {:?}", code, error));
-                            Err(Error::NotFound)
+                            Err(Error::NotFound("Unable to get provider file request".to_string()))
                         } else {
                             Err(Error::Error(format!("Provider plugin error: {}", code)))
                         }
@@ -88,7 +88,7 @@ impl PluginManager {
                     Err((error, code)) =>  {
                         if code != 404 {
                             log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request upload file: {} {:?}", code, error));
-                            Err(Error::NotFound)
+                            Err(Error::NotFound("Unable to get provider file upload parse response".to_string()))
                         } else {
                             Err(Error::Error(format!("Provider plugin error: {}", code)))
                         }
@@ -117,7 +117,7 @@ impl PluginManager {
                     Err((error, code)) =>  {
                         if code != 404 {
                             log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request get gile: {} {:?}", code, error));
-                            Err(Error::NotFound)
+                            Err(Error::NotFound("Unable to get provider file remove".to_string()))
                         } else {
                             Err(Error::Error(format!("Provider plugin error: {}", code)))
                         }
@@ -147,7 +147,7 @@ impl PluginManager {
                     Err((error, code)) =>  {
                         if code != 404 {
                             log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request get gile: {} {:?}", code, error));
-                            Err(Error::NotFound)
+                            Err(Error::NotFound("Unable to get provider file info".to_string()))
                         } else {
                             Err(Error::Error(format!("Provider plugin error: {}", code)))
                         }

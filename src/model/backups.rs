@@ -14,7 +14,7 @@ use sha256::try_async_digest;
 use tokio::{fs::File, io::{copy, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader}, sync::mpsc};
 
 
-use crate::{domain::{backup::{self, Backup, BackupError, BackupFile, BackupFileProgress, BackupMessage, BackupProcessStatus, BackupStatus, BackupWithStatus}, library::LibraryRole, media::{self, Media, MediaForUpdate, DEFAULT_MIME}, progress::{RsProgress, RsProgressType}}, error::{RsError, RsResult}, plugins::sources::{async_reader_progress::ProgressReader, AsyncReadPinBox, FileStreamResult, SourceRead}, routes::mw_range::RangeDefinition, tools::{clock::now, encryption::{ceil_to_multiple_of_16, derive_key, estimated_encrypted_size, random_iv, AesTokioDecryptStream, AesTokioEncryptStream}, log::{log_error, log_info}}};
+use crate::{domain::{backup::{self, Backup, BackupError, BackupFile, BackupFileProgress, BackupMessage, BackupProcessStatus, BackupStatus, BackupWithStatus}, library::LibraryRole, media::{self, Media, MediaForUpdate, DEFAULT_MIME}, progress::{RsProgress, RsProgressType}}, error::{RsError, RsResult}, plugins::sources::{async_reader_progress::ProgressReader, error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}, routes::mw_range::RangeDefinition, tools::{clock::now, encryption::{ceil_to_multiple_of_16, derive_key, estimated_encrypted_size, random_iv, AesTokioDecryptStream, AesTokioEncryptStream}, log::{log_error, log_info}}};
 
 use super::{error::{Error, Result}, medias::{MediaFileQuery, MediaQuery, MediaSource}, store::sql::backups::BackupInfos, users::{ConnectedUser, UserRole}, ModelController};
 
@@ -163,7 +163,7 @@ impl ModelController {
     pub async fn update_backup(&self, backup_id: &str, update: BackupForUpdate, requesting_user: &ConnectedUser) -> Result<Backup> {
         requesting_user.check_role(&UserRole::Admin)?;
 		self.store.update_backup(backup_id, update).await?;
-        let backup = self.store.get_backup(backup_id).await?.ok_or(Error::NotFound)?;
+        let backup = self.store.get_backup(backup_id).await?.ok_or(SourcesError::UnableToFindBackup(backup_id.to_string(), "update_backup".to_string()))?;
 
         let backup_with_status = BackupWithStatus { backup: backup.clone(), status: None};
         let message = BackupMessage { action: crate::domain::ElementAction::Updated, backup: backup_with_status };
@@ -196,13 +196,10 @@ impl ModelController {
 
     pub async fn remove_backup(&self, backup_id: &str, requesting_user: &ConnectedUser) -> Result<Backup> {
         requesting_user.check_role(&UserRole::Admin)?;
-        let credential = self.store.get_backup(&backup_id).await?;
-        if let Some(credential) = credential { 
-            self.store.remove_backup(backup_id.to_string()).await?;
-            Ok(credential)
-        } else {
-            Err(Error::NotFound)
-        }
+        let credential = self.store.get_backup(&backup_id).await?.ok_or(SourcesError::UnableToFindBackup(backup_id.to_string(), "remove_backup".to_string()))?;
+     
+        self.store.remove_backup(backup_id.to_string()).await?;
+        Ok(credential)
 	}
 
 
@@ -510,7 +507,7 @@ impl ModelController {
     pub async fn upload_backup_media(&self, backup_id: &str, library_id: &str, media_id: &str, id: Option<String>, requesting_user: &ConnectedUser) -> RsResult<BackupFile> {
         
         let id = id.unwrap_or(nanoid!());
-        let media_info = self.get_media(&library_id, media_id.to_string(), requesting_user).await?.ok_or(RsError::NotFound)?;
+        let media_info = self.get_media(&library_id, media_id.to_string(), requesting_user).await?.ok_or(SourcesError::UnableToFindMedia(library_id.to_string(), media_id.to_string(), "upload_backup_media".to_string()))?;
         let mut source_read = self.library_file(&library_id, media_id, None, MediaFileQuery { raw: true, ..Default::default()}, requesting_user).await?;
 
         let backup_file = self.upload_backup(source_read, media_id.to_string(), backup_id.to_string(), media_info.md5.clone().unwrap_or("none".to_string()), media_info.max_date(),Some(library_id.to_string()), Some(media_info), Some(id)).await?;

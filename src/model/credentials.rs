@@ -6,7 +6,7 @@ use rs_plugin_common_interfaces::CredentialType;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::domain::credential::Credential;
+use crate::{domain::credential::Credential, plugins::sources::error::SourcesError};
 
 use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
 
@@ -85,23 +85,17 @@ impl ModelController {
     pub async fn update_credential(&self, credential_id: &str, update: CredentialForUpdate, requesting_user: &ConnectedUser) -> Result<Credential> {
         requesting_user.check_role(&UserRole::Admin)?;
 		self.store.update_credentials(credential_id, update).await?;
-        let credential = self.store.get_credential(credential_id).await?;
-        if let Some(credential) = credential { 
-            Ok(credential)
-        } else {
-            Err(Error::NotFound)
-        }
+        let credential = self.store.get_credential(credential_id).await?.ok_or(SourcesError::UnableToFindCredentials("nolib".to_string() ,credential_id.to_string(), "update_credential".to_string()))?;
+
+        Ok(credential)
 	}
 
     pub async fn remove_credential(&self, credential_id: &str, requesting_user: &ConnectedUser) -> Result<Credential> {
         requesting_user.check_role(&UserRole::Admin)?;
-        let credential = self.store.get_credential(&credential_id).await?;
-        if let Some(credential) = credential { 
-            self.store.remove_credential(credential_id.to_string()).await?;
-            Ok(credential)
-        } else {
-            Err(Error::NotFound)
-        }
+        let credential = self.store.get_credential(&credential_id).await?.ok_or(SourcesError::UnableToFindCredentials("nolib".to_string() ,credential_id.to_string(), "update_credential".to_string()))?;
+
+        self.store.remove_credential(credential_id.to_string()).await?;
+        Ok(credential)
 	}
 }
 

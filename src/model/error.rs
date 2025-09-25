@@ -18,8 +18,11 @@ pub enum Error {
 
 	//media
 	InvalidIdForAction(String, String),
+	UnableToConvertToRsIds(String, String),
 	NoSourceForMedia,
 	UnsupportedTypeForThumb,
+
+
 	
 	Duplicate(String, MediaElement),
 	DuplicateMedia(Media),
@@ -30,11 +33,13 @@ pub enum Error {
 
 	ServiceError(String, Option<String>),
 
-	NotFound,
+	NotFound(String),
 	LibraryStoreNotFound,
 	UserNotFound(String),
 	TagNotFound(String),
 	LibraryNotFound(String),
+	LibraryNotFoundFor(String,String),
+	LibraryStoreNotFoundFor(String,String),
 	MediaNotFound(String),
 	PersonNotFound(String),
 
@@ -112,7 +117,7 @@ impl Error {
 	pub fn client_status_and_error(&self) -> (StatusCode, ClientError) {
 		#[allow(unreachable_patterns)]
 		match self {
-			Error::NotFound => (StatusCode::NOT_FOUND, ClientError::NOT_FOUND),
+			Error::NotFound(_) => (StatusCode::NOT_FOUND, ClientError::NOT_FOUND),
 			Error::FileNotFound(_) => (StatusCode::NOT_FOUND, ClientError::NOT_FOUND),
 			Error::MediaNotFound(_) => (StatusCode::NOT_FOUND, ClientError::NOT_FOUND),
 			Error::LibraryNotFound(_) => (StatusCode::NOT_FOUND, ClientError::NOT_FOUND),

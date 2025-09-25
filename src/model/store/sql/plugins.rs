@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use crate::{domain::plugin::{Plugin, PluginForInsert, PluginForUpdate, PluginSettings}, model::{error::Error, plugins::PluginQuery, store::{from_comma_separated, to_comma_separated, to_comma_separated_optional, SqliteStore}}, tools::array_tools::replace_add_remove_from_array};
+use crate::{domain::plugin::{Plugin, PluginForInsert, PluginForUpdate, PluginSettings}, model::{error::Error, plugins::PluginQuery, store::{from_comma_separated, to_comma_separated, to_comma_separated_optional, SqliteStore}}, plugins::sources::error::SourcesError, tools::array_tools::replace_add_remove_from_array};
 
 use super::{QueryBuilder, QueryWhereType, Result};
 use rusqlite::{params, params_from_iter, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, Row, ToSql};
@@ -122,7 +122,7 @@ impl SqliteStore {
     
     pub async fn update_plugin(&self, plugin_id: &str, update: PluginForUpdate) -> Result<()> {
         let plugin_id = plugin_id.to_string();
-        let existing = self.get_plugin(&plugin_id).await?.ok_or_else( || Error::NotFound)?;
+        let existing = self.get_plugin(&plugin_id).await?.ok_or_else( || SourcesError::UnableToFindPlugin(plugin_id.to_string(), "update_media".to_string()))?;
         self.server_store.call( move |conn| { 
             let mut where_query = QueryBuilder::new();
             

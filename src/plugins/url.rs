@@ -158,7 +158,7 @@ impl PluginManager {
                 let recursed = self.request(processed, false, plugins, _progress).await?;
                 return Ok(recursed);
             } else if processed.status == RsRequestStatus::Unprocessed {
-                return Err(Error::NotFound);
+                return Err(Error::NotFound("Unable to process request".to_string()));
             } else {
                 return Ok(SourceRead::Request(processed));
             }

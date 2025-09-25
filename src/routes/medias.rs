@@ -1,7 +1,7 @@
 
 use std::{io::Cursor, path::PathBuf, str::FromStr};
 
-use crate::{domain::{media::{self, GroupMediaDownload, MediaDownloadUrl, MediaForUpdate, MediaItemReference, MediaWithAction, MediasMessage}, ElementAction}, error::RsError, model::{self, medias::{MediaFileQuery, MediaQuery}, series::{SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, plugins::sources::SourceRead, tools::{log::{log_error, log_info}, prediction::predict_net, video_tools::VideoConvertRequest}, Error, Result};
+use crate::{domain::{media::{self, GroupMediaDownload, MediaDownloadUrl, MediaForUpdate, MediaItemReference, MediaWithAction, MediasMessage}, ElementAction}, error::RsError, model::{self, medias::{MediaFileQuery, MediaQuery}, series::{SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, plugins::sources::{error::SourcesError, SourceRead}, tools::{log::{log_error, log_info}, prediction::predict_net, video_tools::VideoConvertRequest}, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
 use futures::TryStreamExt;
 use hyper::{header::ACCEPT_RANGES, StatusCode};
@@ -119,7 +119,7 @@ struct MediasTransfertRequest {
 async fn handler_transfert(Path((library_id, destination)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(query): Json<MediasTransfertRequest>) -> Result<Json<Value>> {
 	let mut new_medias = vec![];
 	for id in query.ids {
-		let existing = mc.get_media(&library_id, id.clone(), &user).await?.ok_or(Error::NotFound)?;
+		let existing = mc.get_media(&library_id, id.clone(), &user).await?.ok_or(SourcesError::UnableToFindMedia(library_id.to_string(), id.to_string(), "handler_transfert".to_string()))?;
 		let reader = mc.library_file(&library_id, &id, None, MediaFileQuery { raw: true, ..Default::default() }, &user).await?.into_reader(Some(&library_id), None, None, Some((mc.clone(), &user)), None).await?;
 		let media = mc.add_library_file(&destination, &existing.name, Some(existing.clone().into()), reader.stream, &user).await?;
 		new_medias.push(media)

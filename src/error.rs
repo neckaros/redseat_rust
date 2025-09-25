@@ -2,7 +2,7 @@ use std::{sync::{Arc, PoisonError}, time::SystemTimeError};
 
 use axum::{extract::multipart, http::StatusCode, response::{IntoResponse, Response}, Json};
 use ndarray::ShapeError;
-use rs_plugin_common_interfaces::CredentialType;
+use rs_plugin_common_interfaces::{CredentialType, ImageType};
 use serde::{Deserialize, Serialize};
 use derive_more::From;
 use serde_json::json;
@@ -25,7 +25,7 @@ pub enum Error {
 	LoginFail,
 
 
-	NotFound,
+	NotFound(String),
 	NotFoundPerson(String),
 
 
@@ -102,6 +102,11 @@ pub enum Error {
 	ServerInvalidUrl,
 
 	GenericRedseatError,
+
+	//Images
+	ImageNotFound(String, String),
+	ImageRemoteNotFound(String,String, String),
+	ImageRemoteKindNotAvailable(ImageType,String, String),
 	
 	
 	// -- Externals
@@ -240,7 +245,7 @@ impl Error {
 	pub fn client_status_and_error(&self) -> (StatusCode, ClientError) {
 		#[allow(unreachable_patterns)]
 		match self {
-			Self::NotFound => (StatusCode::NOT_FOUND, ClientError::NOT_FOUND),
+			Self::NotFound(_) => (StatusCode::NOT_FOUND, ClientError::NOT_FOUND),
 
 			Self::UnavailableForCryptedLibraries => (StatusCode::UNPROCESSABLE_ENTITY, ClientError::NOT_FOR_CRYPTED_LIBRARY),
 			
@@ -313,7 +318,7 @@ pub struct DuplicateClientError {
 impl Error {
 	pub fn from_code(code: i32) -> Error {
 		if code != 404 {
-			Error::NotFound
+			Error::NotFound("Unable to find".to_string())
 		} else if code != 401 {
 			Error::AuthFailExpiredToken
 		} else if code != 403 {

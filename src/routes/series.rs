@@ -1,7 +1,7 @@
 
 use std::io::Cursor;
 
-use crate::{domain::{serie::Serie}, error::RsError, model::{episodes::EpisodeQuery, series::{SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, Error, Result};
+use crate::{domain::serie::Serie, error::RsError, model::{episodes::EpisodeQuery, series::{SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, plugins::sources::error::SourcesError, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post, put}, Json, Router};
 use futures::TryStreamExt;
 use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, lookup::RsLookupMovie, ExternalImage, ImageType};
@@ -128,16 +128,18 @@ async fn handler_image(Path((library_id, serie_id)): Path<(String, String)>, Sta
 			let body = Body::from_stream(stream);
 			
 			Ok((headers, body).into_response())
+		} else if let Err(err) = reader_response {
+			Err(Error::NotFound(format!("Unable to find serie image with defaulting: {} {} {:?}", library_id, serie_id, err)))
 		} else {
-			Err(Error::NotFound)
+			Err(Error::NotFound(format!("Unable to find serie image with defaulting: {} {}", library_id, serie_id)))
 		}
 	} else {
-		Err(RsError::NotFound)
+		Err(RsError::NotFound("Unable to find serie image and no defaulting allowed".to_string()))
 	}
 }
 
 async fn handler_image_search(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ImageRequestOptions>) -> Result<Json<Value>> {
-	let serie = mc.get_serie(&library_id, serie_id, &user).await?.ok_or(RsError::NotFound)?;
+	let serie = mc.get_serie(&library_id, serie_id.clone(), &user).await?.ok_or(SourcesError::UnableToFindSerie(library_id, serie_id, "handler_image_search".to_string()))?;
 	let ids: RsIds = serie.into();
 	let result = mc.get_serie_images(&ids).await?;
 

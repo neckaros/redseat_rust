@@ -14,7 +14,7 @@ use tokio::{fs::File, io::{AsyncRead, AsyncWriteExt, BufReader}};
 use tokio_util::io::StreamReader;
 
 
-use crate::{domain::{deleted::RsDeleted, library::LibraryRole, people::{PeopleMessage, Person}, serie::{Serie, SerieStatus, SerieWithAction, SeriesMessage}, ElementAction, MediaElement}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source}}, server::get_server_folder_path_array, tools::{image_tools::{convert_image_reader, resize_image_reader, ImageSize}, log::log_info}};
+use crate::{domain::{deleted::RsDeleted, library::LibraryRole, people::{PeopleMessage, Person}, serie::{Serie, SerieStatus, SerieWithAction, SeriesMessage}, ElementAction, MediaElement}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{error::SourcesError, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source}}, server::get_server_folder_path_array, tools::{image_tools::{convert_image_reader, resize_image_reader, ImageSize}, log::log_info}};
 
 use super::{episodes::{EpisodeForUpdate, EpisodeQuery}, error::{Error, Result}, medias::{MediaQuery, RsSort}, store::sql::SqlOrder, users::ConnectedUser, ModelController};
 
@@ -134,24 +134,24 @@ impl Serie {
 
 impl ModelController {
 
-	pub async fn get_series(&self, library_id: &str, query: SerieQuery, requesting_user: &ConnectedUser) -> Result<Vec<Serie>> {
+	pub async fn get_series(&self, library_id: &str, query: SerieQuery, requesting_user: &ConnectedUser) -> RsResult<Vec<Serie>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let store = self.store.get_library_store(library_id)?;
 		let people = store.get_series(query).await?;
 		Ok(people)
 	}
 
-    pub async fn get_serie(&self, library_id: &str, serie_id: String, requesting_user: &ConnectedUser) -> Result<Option<Serie>> {
+    pub async fn get_serie(&self, library_id: &str, serie_id: String, requesting_user: &ConnectedUser) -> RsResult<Option<Serie>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let store = self.store.get_library_store(library_id)?;
 
         if RsIds::is_id(&serie_id) {
-            let id: RsIds = serie_id.try_into().map_err(|_| Error::NotFound)?;
+            let id: RsIds = serie_id.clone().try_into().map_err(|_| SourcesError::UnableToFindSerie(library_id.to_string(), format!("{:?}", serie_id), "get_serie".to_string()))?;
             let serie = store.get_serie_by_external_id(id.clone()).await?;
             if let Some(serie) = serie {
                 Ok(Some(serie))
             } else {
-                let mut trakt_show = self.trakt.get_serie(&id).await.map_err(|_| Error::NotFound)?;
+                let mut trakt_show = self.trakt.get_serie(&id).await.map_err(|_| SourcesError::UnableToFindSerie(library_id.to_string(), format!("{:?}", id), "get_serie".to_string()))?;
                 trakt_show.fill_imdb_ratings(&self.imdb).await;
                 Ok(Some(trakt_show))
             }
@@ -163,14 +163,14 @@ impl ModelController {
 
     pub async fn get_serie_by_external_id(&self, library_id: &str, ids: RsIds, requesting_user: &ConnectedUser) -> RsResult<Option<Serie>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let store = self.store.get_library_store(library_id)?;
         let serie = store.get_serie_by_external_id(ids).await?;
         Ok(serie)
     }
 
 
     pub async fn get_serie_ids(&self, library_id: &str, serie_id: &str, requesting_user: &ConnectedUser) -> RsResult<RsIds> {
-        let serie = self.get_serie(library_id, serie_id.to_string(), requesting_user).await?.ok_or(Error::NotFound)?;
+        let serie = self.get_serie(library_id, serie_id.to_string(), requesting_user).await?.ok_or(Error::LibraryStoreNotFoundFor(library_id.to_string(), "get_serie_ids".to_string()))?;
         let ids: RsIds = serie.into();
         Ok(ids)
     }
@@ -187,19 +187,19 @@ impl ModelController {
 
 
 
-    pub async fn update_serie(&self, library_id: &str, serie_id: String, update: SerieForUpdate, requesting_user: &ConnectedUser) -> Result<Serie> {
+    pub async fn update_serie(&self, library_id: &str, serie_id: String, update: SerieForUpdate, requesting_user: &ConnectedUser) -> RsResult<Serie> {
         requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
         if RsIds::is_id(&serie_id) {
-            return Err(Error::InvalidIdForAction("udpate".to_string(), serie_id))
+            return Err(Error::InvalidIdForAction("udpate".to_string(), serie_id).into())
         }
         if update.has_update() {
-            let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+            let store = self.store.get_library_store(library_id)?;
             store.update_serie(&serie_id, update).await?;
-            let serie = store.get_serie(&serie_id).await?.ok_or(Error::NotFound)?;
+            let serie = store.get_serie(&serie_id).await?.ok_or(SourcesError::UnableToFindSerie(library_id.to_string(), serie_id, "get_serie".to_string()))?;
             self.send_serie(SeriesMessage { library: library_id.to_string(), series: vec![SerieWithAction { action: ElementAction::Updated, serie: serie.clone() }] });
             Ok(serie)
         } else {
-            let serie = self.get_serie(library_id, serie_id, requesting_user).await?.ok_or(Error::NotFound)?;
+            let serie = self.get_serie(library_id, serie_id.clone(), requesting_user).await?.ok_or(SourcesError::UnableToFindSerie(library_id.to_string(), serie_id, "get_serie".to_string()))?;
             Ok(serie)
         }  
 	}
@@ -222,11 +222,11 @@ impl ModelController {
         if let Some(existing) = existing {
             return Err(Error::Duplicate(existing.id.to_owned(), MediaElement::Serie(existing)).into())
         }
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let store = self.store.get_library_store(library_id)?;
         let id = nanoid!();
         new_serie.id = id.clone();
 		store.add_serie(new_serie).await?;
-        let inserted_serie = self.get_serie(library_id, id, requesting_user).await?.ok_or(Error::NotFound)?;
+        let inserted_serie = self.get_serie(library_id, id.clone(), requesting_user).await?.ok_or(SourcesError::UnableToFindSerie(library_id.to_string(), id, "add_serie".to_string()))?;
         self.send_serie(SeriesMessage { library: library_id.to_string(), series: vec![SerieWithAction { action: ElementAction::Added, serie: inserted_serie.clone() }] });
         
         let mc = self.clone();
@@ -246,30 +246,28 @@ impl ModelController {
         if RsIds::is_id(serie_id) {
             return Err(Error::InvalidIdForAction("remove".to_string(), serie_id.to_string()).into())
         }
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
-        let existing = store.get_serie(serie_id).await?;
-        if let Some(existing) = existing { 
-            if delete_medias {
-                let medias = self.get_medias(library_id, MediaQuery { series: vec![existing.id.clone()], ..Default::default() }, requesting_user).await?;
-                for media in medias {
-                    self.remove_media(library_id, &media.id, requesting_user).await?;
-                }
+        let store = self.store.get_library_store(library_id)?;
+        let existing = store.get_serie(serie_id).await?.ok_or(SourcesError::UnableToFindSerie(library_id.to_string(), serie_id.to_string(), "remove_serie".to_string()))?;
+       
+        if delete_medias {
+            let medias = self.get_medias(library_id, MediaQuery { series: vec![existing.id.clone()], ..Default::default() }, requesting_user).await?;
+            for media in medias {
+                self.remove_media(library_id, &media.id, requesting_user).await?;
             }
-
-
-            store.remove_serie(serie_id.to_string()).await?;
-            self.add_deleted(library_id, RsDeleted::serie(serie_id.to_owned()), requesting_user).await?;
-            self.send_serie(SeriesMessage { library: library_id.to_string(), series: vec![SerieWithAction { action: ElementAction::Deleted, serie: existing.clone() }] });
-            Ok(existing)
-        } else {
-            Err(Error::NotFound.into())
         }
+
+
+        store.remove_serie(serie_id.to_string()).await?;
+        self.add_deleted(library_id, RsDeleted::serie(serie_id.to_owned()), requesting_user).await?;
+        self.send_serie(SeriesMessage { library: library_id.to_string(), series: vec![SerieWithAction { action: ElementAction::Deleted, serie: existing.clone() }] });
+        Ok(existing)
+
 	}
 
     pub async fn refresh_serie(&self, library_id: &str, serie_id: &str, requesting_user: &ConnectedUser) -> RsResult<Serie> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         let ids = self.get_serie_ids(library_id, serie_id, requesting_user).await?;
-        let serie = self.get_serie(library_id, serie_id.to_string(), requesting_user).await?.ok_or(Error::NotFound)?;
+        let serie = self.get_serie(library_id, serie_id.to_string(), requesting_user).await?.ok_or(SourcesError::UnableToFindSerie(library_id.to_string(), serie_id.to_string(), "remove_serie".to_string()))?;
         let new_serie = self.trakt.get_serie(&ids).await?;
         let mut updates = SerieForUpdate {..Default::default()};
 
@@ -345,7 +343,7 @@ impl ModelController {
         if RsIds::is_id(serie_id) {
             let mut serie_ids: RsIds = serie_id.to_string().try_into()?;
 
-            let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+            let store = self.store.get_library_store(library_id)?;
             let existing_serie = store.get_serie_by_external_id(serie_ids.clone()).await?;
             if let Some(existing_serie) = existing_serie {
                 let image = self.serie_image(library_id,  &existing_serie.id, Some(kind), size, requesting_user).await?;
@@ -361,7 +359,7 @@ impl ModelController {
                 let image_path = format!("cache/serie-{}-{}.avif", serie_id.replace(':', "-"), kind);
 
                 if !local_provider.exists(&image_path).await {
-                    let images = self.get_serie_image_url(&serie_ids, &kind, &None).await?.ok_or(crate::Error::NotFound)?;
+                    let images = self.get_serie_image_url(&serie_ids, &kind, &None).await?.ok_or(crate::Error::NotFound(format!("Unable to get series image url: {:?} kind {:?}",serie_ids, kind)))?;
                     let (_, mut writer) = local_provider.get_file_write_stream(&image_path).await?;
                     let image_reader = reqwest::get(images).await?;
                     let stream = image_reader.bytes_stream();
@@ -391,7 +389,7 @@ impl ModelController {
 
     /// download and update image
     pub async fn refresh_serie_image(&self, library_id: &str, serie_id: &str, kind: &ImageType, requesting_user: &ConnectedUser) -> RsResult<()> {
-        let serie = self.get_serie(library_id, serie_id.to_string(), requesting_user).await?.ok_or(Error::NotFound)?;
+        let serie = self.get_serie(library_id, serie_id.to_string(), requesting_user).await?.ok_or(SourcesError::UnableToFindSerie(library_id.to_string(), serie_id.to_string(), "refresh_serie_image".to_string()))?;
         let ids: RsIds = serie.into();
         let reader = self.download_serie_image(&ids, kind, &None).await?;
         self.update_serie_image(library_id, serie_id, kind, reader, &ConnectedUser::ServerAdmin).await?;
@@ -422,7 +420,7 @@ impl ModelController {
 
 
     pub async fn download_serie_image(&self, ids: &RsIds, kind: &ImageType, lang: &Option<String>) -> crate::Result<AsyncReadPinBox> {
-        let images = self.get_serie_image_url(ids, kind, lang).await?.ok_or(crate::Error::NotFound)?;
+        let images = self.get_serie_image_url(ids, kind, lang).await?.ok_or(crate::Error::NotFound(format!("Unable to get series image url: {:?} kind {:?}",ids, kind)))?;
         let image_reader = reqwest::get(images).await?;
         let stream = image_reader.bytes_stream();
         let body_with_io_error = stream.map_err(|err| io::Error::new(io::ErrorKind::Other, err));
@@ -441,10 +439,10 @@ impl ModelController {
         
         self.update_library_image(library_id, ".series", serie_id, &Some(kind.clone()), converted_reader, requesting_user).await?;
         
-        let store = self.store.get_library_store(library_id).ok_or(Error::NotFound)?;
+        let store = self.store.get_library_store(library_id)?;
 		store.update_serie_image(serie_id.to_string(), kind.clone()).await;
 
-        let serie = self.get_serie(library_id, serie_id.to_owned(), requesting_user).await?.ok_or(Error::NotFound)?;
+        let serie = self.get_serie(library_id, serie_id.to_owned(), requesting_user).await?.ok_or(SourcesError::UnableToFindSerie(library_id.to_string(), serie_id.to_string(), "update_serie_image".to_string()))?;
         self.send_serie(SeriesMessage { library: library_id.to_string(), series: vec![SerieWithAction { serie, action: ElementAction::Updated}] });
         Ok(())
 	}
