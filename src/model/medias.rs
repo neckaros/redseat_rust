@@ -437,7 +437,7 @@ impl ModelController {
 
 		let converted = resize_image_reader(reader, 512, image::ImageFormat::Avif, Some(50), false).await?;
         let reader = Cursor::new(converted);
-        self.update_library_image(library_id, ".thumbs", media_id, &None, reader, requesting_user).await?;
+        self.update_library_image(library_id, ".thumbs", media_id, &None, &None, reader, requesting_user).await?;
         let store = self.store.get_library_store(library_id)?;
         store.update_media_thumb(media_id.to_owned()).await?;
         let media = self.get_media(library_id, media_id.to_owned(), requesting_user).await?.ok_or(SourcesError::UnableToFindMedia(library_id.to_string(), media_id.to_string(), "update_media_image".to_string()))?;
@@ -1034,7 +1034,7 @@ impl ModelController {
             },
             _ => Err(crate::model::error::Error::UnsupportedTypeForThumb),
         }?;
-        self.update_library_image(&library_id, ".thumbs", &media_id, &None, thumb.as_slice(), requesting_user).await?;
+        self.update_library_image(&library_id, ".thumbs", &media_id, &None, &None, thumb.as_slice(), requesting_user).await?;
 
         Ok(())
     }
@@ -1399,7 +1399,7 @@ impl ModelController {
 			}
             store.remove_media(media_id.to_string()).await?;
         }
-        self.remove_library_image(library_id, ".thumbs", media_id, &None, requesting_user).await?;
+        self.remove_library_image(library_id, ".thumbs", media_id, &None, &None, requesting_user).await?;
 
 
         Ok(())

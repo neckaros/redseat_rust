@@ -435,7 +435,7 @@ impl ModelController {
         let converted = convert_image_reader(reader, image::ImageFormat::Avif, Some(60), false).await?;
         let converted_reader = Cursor::new(converted);
         
-        self.update_library_image(library_id, ".movies", movie_id, &Some(kind.clone()), converted_reader, requesting_user).await?;
+        self.update_library_image(library_id, ".movies", movie_id, &Some(kind.clone()), &None, converted_reader, requesting_user).await?;
         
         let store = self.store.get_library_store(library_id)?;
 		store.update_movie_image(movie_id.to_string(), kind.clone()).await;

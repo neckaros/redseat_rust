@@ -224,7 +224,7 @@ impl ModelController {
         if RsIds::is_id(&person_id) {
             return Err(Error::InvalidIdForAction("udpate person image".to_string(), person_id.to_string()).into())
         }
-        self.update_library_image(library_id, ".portraits", person_id, kind, reader, requesting_user).await?;
+        self.update_library_image(library_id, ".portraits", person_id, kind, &None, reader, requesting_user).await?;
         
         let store = self.store.get_library_store(library_id)?;
         store.update_person_portrait(person_id.to_string()).await?;

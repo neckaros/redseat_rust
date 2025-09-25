@@ -22,7 +22,7 @@ use tokio::net::TcpListener;
 use tools::{auth::{sign_local, Claims}, image_tools::has_image_magick, log::{log_error, LogServiceType}, prediction, video_tools::VideoCommandBuilder};
 use tower::ServiceBuilder;
 use tower_http::{cors::{Any, CorsLayer}, trace::TraceLayer};
-use crate::{server::{get_config, update_ip, ServerIpInfo}, tools::{auth::{get_or_init_keys, verify_local, ClaimsLocal}, image_tools::resize_image_path, log::log_info}};
+use crate::{server::{get_config, update_ip, ServerIpInfo}, tools::{auth::{get_or_init_keys, verify_local, ClaimsLocal}, log::log_info}};
 use socketioxide::{extract::{SocketRef, TryData}, SocketIo};
 pub use self::error::{Result, Error};
 

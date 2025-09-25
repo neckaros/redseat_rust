@@ -216,24 +216,6 @@ impl ImageCommandBuilder {
     }
 }
 
-pub async fn resize_image_path(path: &PathBuf, to: &PathBuf, size: u32) -> ImageResult<()> {
-
-    let mut source = tokio::fs::File::open(&path).await?;
-
-    if let Some(parent) = to.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-    
-    let mut file = tokio::fs::File::create(to).await?;
-
-    let mut builder = ImageCommandBuilder::new();
-    builder.auto_orient();
-    builder.set_quality(80);
-    builder.set_size(&format!("{}x{}^", size, size));
-    let data = builder.run("avif",&mut source).await?;
-    file.write_all(&data).await?;
-    Ok(())
-}
 
 
 fn is_heic(data: &[u8]) -> bool {
@@ -640,7 +622,7 @@ mod tests {
         if target.exists() {
             fs::remove_file(&target).expect("failed to remove existing result file");
         }
-        resize_image_path(&source, &target, 7680).await.unwrap()
+        //resize_image_path(&source, &target, 7680).await.unwrap()
         //convert_to_pipe("C:/Users/arnau/Downloads/IMG_5020.mov", None).await;
     }
 

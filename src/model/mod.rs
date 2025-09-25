@@ -24,7 +24,7 @@ use nanoid::nanoid;
 use rs_plugin_common_interfaces::{ImageType, RsRequest};
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
-use crate::{domain::{backup::BackupProcessStatus, library::{LibraryMessage, LibraryRole, ServerLibrary}, media::ConvertProgress, player::{RsPlayer, RsPlayerAvailable}, plugin::PluginWasm, serie::Serie}, error::{RsError, RsResult}, plugins::{list_plugins, medias::{fanart::FanArtContext, imdb::ImdbContext, tmdb::TmdbContext, trakt::TraktContext}, sources::{error::SourcesError, local_provider, local_provider_for_library, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, LocalSource, Source, SourceRead}, PluginManager}, routes::mw_range::RangeDefinition, server::get_server_file_path_array, tools::{clock::SECONDS_IN_HOUR, image_tools::{resize_image_path, ImageSize, ImageSizeIter}, log::log_info, scheduler::{self, ip::RefreshIpTask, refresh::RefreshTask, RsScheduler, RsTaskType}, video_tools::VideoConvertRequest}};
+use crate::{domain::{backup::BackupProcessStatus, library::{LibraryMessage, LibraryRole, ServerLibrary}, media::ConvertProgress, player::RsPlayerAvailable}, error::{RsError, RsResult}, plugins::{medias::{fanart::FanArtContext, imdb::ImdbContext, tmdb::TmdbContext, trakt::TraktContext}, sources::{error::SourcesError, local_provider_for_library, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source, SourceRead}, PluginManager}, tools::{clock::SECONDS_IN_HOUR, image_tools::{resize_image_reader, ImageSize}, log::log_info, scheduler::{self, ip::RefreshIpTask, refresh::RefreshTask, RsScheduler, RsTaskType}, video_tools::VideoConvertRequest}};
 
 use self::{medias::CRYPTO_HEADER_SIZE, store::SqliteStore, users::{ConnectedUser, ServerUser, UserRole}};
 use error::{Result, Error};
@@ -210,14 +210,20 @@ impl  ModelController {
 		let mut source_filepath = format!("{}/{}{}{}.avif", folder, id, ImageType::optional_to_filename_element(&kind), ImageSize::optional_to_filename_element(&size));
 		let reader_response = m.get_file(&source_filepath, None).await;
 		
-		if let Some(int_size) = size {
+		if let Some(int_size) = size.clone() {
 			if let Err(error) = &reader_response {
 				if matches!(error, RsError::Source(SourcesError::NotFound(_))) {
 					let mut original_filepath = format!("{}/{}{}.avif", folder, id, ImageType::optional_to_filename_element(&kind));
 					let exist = m.exists(&original_filepath).await;
 					if exist {
-						log_info(crate::tools::log::LogServiceType::Other, format!("Creating image size: {} {} {} {}. Original: {} to:{:?}", folder, id, ImageType::optional_to_filename_element(&kind), int_size, original_filepath, m.get_full_path(&source_filepath)));
-						resize_image_path(&m.get_full_path(&original_filepath),  &m.get_full_path(&source_filepath), int_size.to_size()).await?;
+						log_info(crate::tools::log::LogServiceType::Other, format!("Creating image size: {} {} {} {}. Original: {:?} to:{:?}", folder, id, ImageType::optional_to_filename_element(&kind), int_size, &m.get_full_path(&original_filepath), m.get_full_path(&source_filepath)));
+						
+						let reader = m.get_file(&original_filepath, None).await?;
+						let mut reader = reader.into_reader(Some(library_id), None, None, Some((self.clone(), &requesting_user)), None).await?;
+						let image = resize_image_reader(reader.stream, 512, image::ImageFormat::Avif, Some(50), false).await?;
+						self.update_library_image(&library_id, folder, id, &kind, &size, image.as_slice(), requesting_user).await?;
+						
+						log_info(crate::tools::log::LogServiceType::Other, format!("image size created: {} {} {} {}", folder, id, ImageType::optional_to_filename_element(&kind), int_size));
 						let reader = m.get_file(&source_filepath, None).await?;
 
 						if let SourceRead::Stream(reader) = reader {
@@ -249,13 +255,13 @@ impl  ModelController {
         let exist = m.exists(&source_filepath).await;
 		Ok(exist)
 	}
-	pub async fn update_library_image<T: AsyncRead>(&self, library_id: &str, folder: &str, id: &str, kind: &Option<ImageType>, reader: T, requesting_user: &ConnectedUser) -> Result<()> {
+	pub async fn update_library_image<T: AsyncRead>(&self, library_id: &str, folder: &str, id: &str, kind: &Option<ImageType>, size: &Option<ImageSize>, reader: T, requesting_user: &ConnectedUser) -> Result<()> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
-		self.remove_library_image(library_id, folder, id, kind, requesting_user).await?;
+		self.remove_library_image(library_id, folder, id, kind, size, requesting_user).await?;
 
         let m = self.library_source_for_library(&library_id).await?;
 
-		let source_filepath = format!("{}/{}{}.avif", folder, id, ImageType::optional_to_filename_element(&kind));
+		let source_filepath = format!("{}/{}{}{}.avif", folder, id, ImageType::optional_to_filename_element(&kind), ImageSize::optional_to_filename_element(&size));
 
 		let (_, writer) = m.get_file_write_stream(&source_filepath).await?;
 		tokio::pin!(reader);
@@ -265,22 +271,25 @@ impl  ModelController {
         Ok(())
 	}
 
-	pub async fn remove_library_image(&self, library_id: &str, folder: &str, id: &str, kind: &Option<ImageType>, requesting_user: &ConnectedUser) -> Result<()> {
+	pub async fn remove_library_image(&self, library_id: &str, folder: &str, id: &str, kind: &Option<ImageType>, size: &Option<ImageSize>, requesting_user: &ConnectedUser) -> Result<()> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
 
         let m = self.library_source_for_library(&library_id).await?;
 
-		let source_filepath = format!("{}/{}{}.avif", folder, id, ImageType::optional_to_filename_element(&kind));
+		let source_filepath = format!("{}/{}{}{}.avif", folder, id, ImageType::optional_to_filename_element(&kind), ImageSize::optional_to_filename_element(&size));
 			let r = m.remove(&source_filepath).await;
 			if r.is_ok() {
 				log_info(crate::tools::log::LogServiceType::Other, format!("Deleted image {}", source_filepath));
 			}
 
-		for size in ImageSize::iter() {
-			let source_filepath = format!("{}/{}{}{}.avif", folder, id, ImageType::optional_to_filename_element(&kind), size.to_filename_element());
-			let r = m.remove(&source_filepath).await;
-			if r.is_ok() {
-				log_info(crate::tools::log::LogServiceType::Other, format!("Deleted image {}", source_filepath));
+		if size.is_none() {
+			//remove all sizes
+			for size in ImageSize::iter() {
+				let source_filepath = format!("{}/{}{}{}.avif", folder, id, ImageType::optional_to_filename_element(&kind), size.to_filename_element());
+				let r = m.remove(&source_filepath).await;
+				if r.is_ok() {
+					log_info(crate::tools::log::LogServiceType::Other, format!("Deleted image {}", source_filepath));
+				}
 			}
 		}
         Ok(())
