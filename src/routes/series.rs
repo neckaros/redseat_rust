@@ -134,7 +134,11 @@ async fn handler_image(Path((library_id, serie_id)): Path<(String, String)>, Sta
 			Err(Error::NotFound(format!("Unable to find serie image with defaulting: {} {}", library_id, serie_id)))
 		}
 	} else {
-		Err(RsError::NotFound("Unable to find serie image and no defaulting allowed".to_string()))
+		if let Err(err) = reader_response {
+			Err(Error::NotFound(format!("Unable to find serie image without defaulting: {} {} {:?}", library_id, serie_id, err)))
+		} else {
+			Err(Error::NotFound(format!("Unable to find serie image without defaulting: {} {}", library_id, serie_id)))
+		}
 	}
 }
 

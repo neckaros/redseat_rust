@@ -216,7 +216,7 @@ impl  ModelController {
 					let mut original_filepath = format!("{}/{}{}.avif", folder, id, ImageType::optional_to_filename_element(&kind));
 					let exist = m.exists(&original_filepath).await;
 					if exist {
-						log_info(crate::tools::log::LogServiceType::Other, format!("Creating image size: {} {} {} {}", folder, id, ImageType::optional_to_filename_element(&kind), int_size));
+						log_info(crate::tools::log::LogServiceType::Other, format!("Creating image size: {} {} {} {}. Original: {} to:{:?}", folder, id, ImageType::optional_to_filename_element(&kind), int_size, original_filepath, m.get_full_path(&source_filepath)));
 						resize_image_path(&m.get_full_path(&original_filepath),  &m.get_full_path(&source_filepath), int_size.to_size()).await?;
 						let reader = m.get_file(&source_filepath, None).await?;
 
