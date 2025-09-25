@@ -219,6 +219,11 @@ impl ImageCommandBuilder {
 pub async fn resize_image_path(path: &PathBuf, to: &PathBuf, size: u32) -> ImageResult<()> {
 
     let mut source = tokio::fs::File::open(&path).await?;
+
+    if let Some(parent) = to.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    
     let mut file = tokio::fs::File::create(to).await?;
 
     let mut builder = ImageCommandBuilder::new();
