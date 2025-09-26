@@ -3,9 +3,9 @@ use std::{cmp::Ordering, collections::HashSet, str::FromStr};
 use nanoid::nanoid;
 use rs_plugin_common_interfaces::RsRequest;
 use serde::{Deserialize, Serialize};
-use tokio::{fs::{create_dir_all, read_dir}, io::AsyncReadExt};
+use tokio::{fs::{create_dir_all, read_dir, File}, io::{AsyncReadExt, AsyncWriteExt}};
 
-use crate::{domain::{library::{LibraryLimits, LibraryMessage, LibraryRole, LibraryType, ServerLibrary, ServerLibrarySettings, UserMapping}, ElementAction}, error::RsResult, plugins::sources::{error::SourcesError, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source, SourceRead}, tools::{auth::{sign_local, ClaimsLocal, ClaimsLocalType}, log::{log_info, LogServiceType}}};
+use crate::{domain::{library::{LibraryLimits, LibraryMessage, LibraryRole, LibraryType, ServerLibrary, ServerLibrarySettings, UserMapping}, ElementAction}, error::RsResult, plugins::sources::{error::SourcesError, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source, SourceRead}, server::get_server_file_path_array, tools::{auth::{sign_local, ClaimsLocal, ClaimsLocalType}, log::{log_info, LogServiceType}}};
 
 use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
 
@@ -314,7 +314,7 @@ impl ModelController {
         }
 	}
 
-	pub async fn add_library(&self, library_for_add: ServerLibraryForAdd, requesting_user: &ConnectedUser) -> Result<Option<super::libraries::ServerLibraryForRead>> {
+	pub async fn add_library(&self, library_for_add: ServerLibraryForAdd, importData: Option<Vec<u8>>, requesting_user: &ConnectedUser) -> RsResult<Option<super::libraries::ServerLibraryForRead>> {
         
         requesting_user.check_role(&UserRole::Admin)?;
 		let library_id = nanoid!();
@@ -334,27 +334,38 @@ impl ModelController {
         self.store.add_library(library).await?;
         let user_id = requesting_user.user_id()?;
         self.store.add_library_rights(library_id.clone(), user_id, vec![LibraryRole::Admin], LibraryLimits::default()).await?;
-        let library = self.store.get_library(&library_id).await?;
+        let library = self.store.get_library(&library_id).await?.ok_or(crate::Error::Error(format!("unable to load librarary from database after creation")))?;
 
-        
-        
-
-        if let Some(library) = library { 
-            log_info(LogServiceType::LibraryCreation, format!("Will do first init of library {}", library.name));
-            self.cache_update_library(library.clone()).await;
-
-            let source = self.source_for_library(&library.id).await.map_err(|e| Error::ServiceError("Unable to get library source after init".to_string(), Some(e.to_string())))?;
-            let inited = source.init().await;
-            if let Err(err) = inited {
-                return Err(Error::ServiceError("Unable to init library source".to_string(), Some(err.to_string())));
-            }
-
-            self.store.add_library_to_store(&library_id).await.map_err(|e| Error::ServiceError("Unable to add library to store".to_string(), Some(e.to_string())))?;
-            self.send_library(LibraryMessage { action: crate::domain::ElementAction::Added, library: library.clone() });
-            Ok(Some(ServerLibraryForRead::from(library)))
-        } else {
-            Ok(None)
+        if let Some(importData) = importData {
+            let server_db_path = get_server_file_path_array(vec![&"dbs", &format!("db-{}.db", &library.id)]).await.map_err(|_| Error::CannotOpenDatabase)?;  
+            // Create and write to the file asynchronously
+            let mut file = File::create(&server_db_path)
+                .await
+                .map_err(|_| crate::Error::Error(format!("Failed to create database file")))?;
+            file.write_all(&importData)
+                .await
+                .map_err(|_| crate::Error::Error(format!("Failed to write database file")))?;
+            file.flush()
+                .await
+                .map_err(|_| crate::Error::Error(format!("Failed to flush database file")))?;
         }
+        
+        
+
+        
+        log_info(LogServiceType::LibraryCreation, format!("Will do first init of library {}", library.name));
+        self.cache_update_library(library.clone()).await;
+
+        let source = self.source_for_library(&library.id).await.map_err(|e| Error::ServiceError("Unable to get library source after init".to_string(), Some(e.to_string())))?;
+        let inited = source.init().await;
+        if let Err(err) = inited {
+            return Err(Error::ServiceError("Unable to init library source".to_string(), Some(err.to_string())).into());
+        }
+
+        self.store.add_library_to_store(&library_id).await.map_err(|e| Error::ServiceError("Unable to add library to store".to_string(), Some(e.to_string())))?;
+        self.send_library(LibraryMessage { action: crate::domain::ElementAction::Added, library: library.clone() });
+        Ok(Some(ServerLibraryForRead::from(library)))
+
 	}
     
 	pub async fn remove_library(&self, library_id: &str, requesting_user: &ConnectedUser) -> RsResult<ServerLibraryForRead> {

@@ -243,6 +243,19 @@ impl SqliteStore {
         })
     }
 
+    pub async fn get_all_watched(&self) -> Result<Vec<Watched>> {
+        let row = self.server_store.call( move |conn| { 
+            
+            let mut query = conn.prepare(&format!("SELECT type, id, user_ref, date, modified  FROM Watched"))?;
+
+            let rows = query.query_map(
+            params![], Self::row_to_watched,
+            )?;
+            let backups:Vec<Watched> = rows.collect::<std::result::Result<Vec<Watched>, rusqlite::Error>>()?; 
+            Ok(backups)
+        }).await?;
+        Ok(row)
+    }
 
     pub async fn get_watched(&self, query: HistoryQuery, user_id: String, other_users: Vec<String>) -> Result<Vec<Watched>> {
         let row = self.server_store.call( move |conn| { 

@@ -1,4 +1,4 @@
-use crate::{domain::{view_progress::ViewProgressForAdd, watched::{Watched, WatchedForAdd}}, model::{users::{ConnectedUser, InvitationRedeemer, HistoryQuery, ViewProgressQuery}, ModelController}, Result};
+use crate::{domain::{view_progress::ViewProgressForAdd, watched::{Watched, WatchedForAdd}}, model::{users::{ConnectedUser, HistoryQuery, InvitationRedeemer, UserRole, ViewProgressQuery}, ModelController}, Result};
 use axum::{extract::{Path, State}, middleware, routing::{get, post}, Json, Router};
 use axum_extra::extract::Query;
 use serde_json::{json, Value};
@@ -19,6 +19,8 @@ pub fn routes(mc: ModelController) -> Router {
 	Router::new()
 		.route("/me", get(handler_me))
 		.route("/:id", get(handler_id))
+		.route("/admin/history", get(handler_list_history_all))
+		.route("/admin/history/import", post(handler_add_all_history))
 		.route("/me/history", get(handler_list_history))
 		.route("/me/history", post(handler_add_history))
 		.route("/me/history/progress/:id", get(handler_get_progress))
@@ -55,6 +57,23 @@ async fn handler_list(State(mc): State<ModelController>, user: ConnectedUser) ->
 async fn handler_list_history(State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<HistoryQuery>) -> Result<Json<Value>> {
 	let users = mc.get_watched(query, &user, None).await?;
 	let body = Json(json!(users));
+
+	Ok(body)
+}
+
+async fn handler_list_history_all(State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	let users = mc.get_all_watched(&user).await?;
+	let body = Json(json!(users));
+
+	Ok(body)
+}
+
+async fn handler_add_all_history(State(mc): State<ModelController>, user: ConnectedUser, Json(watcheds): Json<Vec<WatchedForAdd>>) -> Result<Json<Value>> {
+	user.check_role(&UserRole::Admin)?;
+	for watched in watcheds {
+		mc.add_watched(watched, &user, None).await?;
+	}
+	let body = Json(json!({"ok": true}));
 
 	Ok(body)
 }

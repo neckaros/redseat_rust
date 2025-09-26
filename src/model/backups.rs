@@ -1,7 +1,7 @@
 
 
 
-use std::path::PathBuf;
+use std::{io::Cursor, path::PathBuf};
 
 use axum::{body::Body, response::{IntoResponse, Response}};
 use futures::{future::ok, TryFutureExt};
@@ -11,10 +11,12 @@ use nanoid::nanoid;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha256::try_async_digest;
-use tokio::{fs::File, io::{copy, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader}, sync::mpsc};
+use tokio::{fs::{self, File}, io::{copy, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader}, sync::mpsc};
+use tokio_stream::StreamExt;
+use tokio_util::io::{ReaderStream, StreamReader};
 
 
-use crate::{domain::{backup::{self, Backup, BackupError, BackupFile, BackupFileProgress, BackupMessage, BackupProcessStatus, BackupStatus, BackupWithStatus}, library::LibraryRole, media::{self, Media, MediaForUpdate, DEFAULT_MIME}, progress::{RsProgress, RsProgressType}}, error::{RsError, RsResult}, plugins::sources::{async_reader_progress::ProgressReader, error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}, routes::mw_range::RangeDefinition, tools::{clock::now, encryption::{ceil_to_multiple_of_16, derive_key, estimated_encrypted_size, random_iv, AesTokioDecryptStream, AesTokioEncryptStream}, log::{log_error, log_info}}};
+use crate::{domain::{backup::{self, Backup, BackupError, BackupFile, BackupFileProgress, BackupMessage, BackupProcessStatus, BackupStatus, BackupWithStatus}, library::{LibraryRole, ServerLibrary}, media::{self, Media, MediaForUpdate, DEFAULT_MIME}, progress::{RsProgress, RsProgressType}}, error::{RsError, RsResult}, model::libraries::ServerLibraryForAdd, plugins::sources::{async_reader_progress::ProgressReader, error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}, routes::mw_range::RangeDefinition, tools::{clock::now, encryption::{ceil_to_multiple_of_16, derive_key, estimated_encrypted_size, random_iv, AesTokioDecryptStream, AesTokioEncryptStream}, log::{log_error, log_info}}};
 
 use super::{error::{Error, Result}, medias::{MediaFileQuery, MediaQuery, MediaSource}, store::sql::backups::BackupInfos, users::{ConnectedUser, UserRole}, ModelController};
 
@@ -518,9 +520,9 @@ impl ModelController {
 		
 	}
 
-    pub async fn upload_backup_path(&self, backup_info: Backup, file_id: &str, path: PathBuf, name: String) -> RsResult<BackupFile> {
+    pub async fn upload_backup_path(&self, backup_info: Backup, file_id: &str, path: PathBuf, name: String, library: Option<ServerLibrary>) -> RsResult<BackupFile> {
         let sourcehash = try_async_digest(&path).await?;
-
+        let id = nanoid!();
         let existing_db_bakcups = self.get_backup_media_backup_files(&backup_info.id, file_id, &ConnectedUser::ServerAdmin).await?;
 
         let exist = existing_db_bakcups.into_iter().find(|b| b.sourcehash == sourcehash);
@@ -529,18 +531,44 @@ impl ModelController {
             log_info(crate::tools::log::LogServiceType::Scheduler, format!("Backup {} identical already uploaded. Ignoring", file_id));
             Ok(exist)
         } else {
-
-            let file = File::open(path).await?;
-            
+            let file = File::open(path.clone()).await?;
+                
             let metadata = file.metadata().await?;
+            let mut file_size = metadata.len();
 
-            let mut reader = BufReader::new(file);
+            let file_content = fs::read(path).await?;
 
-            let async_reader: AsyncReadPinBox = Box::pin(reader);
+            let reader = if let Some(library) = library {
+            
+
+                let library_add = ServerLibraryForAdd { name: library.name, source: library.source, root: library.root, settings: library.settings, kind: library.kind, crypt: library.crypt, credentials: library.credentials, plugin: library.plugin  };
+                // Create prefix
+                let json_str = serde_json::to_string(&library_add)?;
+                let json_bytes = json_str.as_bytes();
+                let size = json_bytes.len() as i32;
+                let size_bytes = size.to_le_bytes();
+
+    
+                // Combine everything into a single buffer
+                let mut combined_data = Vec::new();
+                combined_data.extend_from_slice(&size_bytes);
+                combined_data.extend_from_slice(json_bytes);
+                combined_data.extend_from_slice(&file_content);
+                
+                file_size += 4 + json_bytes.len() as u64;
+                
+                combined_data
+
+            } else {
+                file_content
+            };
+
+            println!("Backup {} prepared", file_id);
+             let async_reader: AsyncReadPinBox = Box::pin(Cursor::new(reader));
 
             let file_stream = FileStreamResult {
                 stream: async_reader,
-                size: Some(metadata.len()),
+                size: Some(file_size),
                 accept_range: false,
                 range: None,
                 mime: Some(DEFAULT_MIME.to_string()),
@@ -548,9 +576,11 @@ impl ModelController {
                 cleanup: None,
             };
             let source_read = SourceRead::Stream(file_stream);
-            let backup_file = self.upload_backup(source_read, file_id.to_string(), backup_info.id.clone(), sourcehash, now().timestamp_millis(), backup_info.library.clone(), None, None).await?;
+            println!("Backup {} uploading", file_id);
+            let backup_file = self.upload_backup(source_read, file_id.to_string(), backup_info.id.clone(), sourcehash, now().timestamp_millis(), backup_info.library.clone(), None, Some(id)).await?;
+            println!("Backup {} uploaded", file_id);
             let backup_file = self.add_backup_file(backup_file, &ConnectedUser::ServerAdmin).await?;
-            
+            println!("upload path");
             Ok(backup_file)
         }
 		

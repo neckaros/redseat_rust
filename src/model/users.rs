@@ -413,6 +413,13 @@ impl ModelController {
         Ok(watcheds)       
     }
 
+        pub async fn get_all_watched(&self, user: &ConnectedUser) -> RsResult<Vec<Watched>> {
+        user.check_role(&UserRole::Admin)?;
+     
+        let watcheds = self.store.get_all_watched().await?;
+        Ok(watcheds)       
+    }
+
     pub async fn add_watched(&self, watched: WatchedForAdd, user: &ConnectedUser, library_id: Option<String>) -> RsResult<()> {
         user.check_role(&UserRole::Read)?;
 
