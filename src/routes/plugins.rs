@@ -1,7 +1,7 @@
 
 use std::io::Cursor;
 
-use crate::{domain::{media::{MediaForUpdate, DEFAULT_MIME}, plugin::{PluginForAdd, PluginForInstall, PluginForUpdate}}, error::RsError, model::{credentials::CredentialForAdd, plugins::PluginQuery, users::ConnectedUser}, tools::{array_tools::value_to_hashmap, convert::{convert_from_to, ConvertFileSource}}, ModelController, Result};
+use crate::{domain::{media::{MediaForUpdate, DEFAULT_MIME}, plugin::{PluginForAdd, PluginForInstall, PluginForUpdate, PluginRepoAdd}}, error::RsError, model::{credentials::CredentialForAdd, plugins::PluginQuery, users::ConnectedUser}, tools::{array_tools::value_to_hashmap, convert::{convert_from_to, ConvertFileSource}, http_tools::download_latest_wasm}, ModelController, Result};
 use axum::{extract::{Multipart, Path, Query, State}, routing::{delete, get, patch, post}, Json, Router};
 use futures::TryStreamExt;
 use rs_plugin_common_interfaces::{request::RsRequest, url::RsLink, CredentialType, PluginType};
@@ -15,6 +15,7 @@ pub fn routes(mc: ModelController) -> Router {
 	Router::new()
 		.route("/", get(handler_list))
 		.route("/upload", post(handler_upload_plugin))
+		.route("/upload/repo", post(handler_upload_repo_plugin))
 		.route("/install", post(handler_install))
 
 		.route("/reload", get(handler_reload_plugins))
@@ -27,9 +28,11 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/", post(handler_post))
 		.route("/:id", get(handler_get))
 		.route("/:id/reload", get(handler_reload))
+		.route("/:id/reporefresh", get(handler_refresh_repo))
 		.route("/:id/oauthtoken", post(handler_exchange_token))
 		.route("/:id", patch(handler_patch))
 		.route("/:id", delete(handler_delete))
+		.route("/:id/file", delete(handler_delete_file))
 		.with_state(mc)
         
 }
@@ -71,13 +74,20 @@ async fn handler_upload_plugin(State(mc): State<ModelController>, user: Connecte
     Ok(Json(json!({"data": "ok"})))
 }
 
+async fn handler_upload_repo_plugin(State(mc): State<ModelController>, user: ConnectedUser, Json(plugin): Json<PluginRepoAdd>) -> Result<Json<Value>> {
+	
+
+	let path = mc.upload_repo_plugin(&plugin.url, &user).await?;
+    Ok(Json(json!({"path": path})))
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct ExpandQuery {
 	pub url: String,
 }
 
 async fn handler_reload_plugins(State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
-	let library = mc.reload_plugins(&user).await?;
+	mc.reload_plugins(&user).await?;
 	let body = Json(json!({
 		"status": "OK"
 	}));
@@ -125,6 +135,14 @@ async fn handler_reload(Path(plugin_id): Path<String>, State(mc): State<ModelCon
 	Ok(body)
 }
 
+async fn handler_refresh_repo(Path(plugin_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	let update_path = mc.refresh_repo_plugin(&plugin_id, &user).await?;
+	let body = Json(json!(json!({
+		"path": update_path
+	})));
+	Ok(body)
+}
+
 async fn handler_exchange_token(Path(plugin_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Json(payload): Json<Value>) -> Result<()> {
 	let params = value_to_hashmap(payload)?;
 	let name = params.get("name").cloned().unwrap_or("Credential".to_string());
@@ -152,6 +170,12 @@ async fn handler_patch(Path(plugin_id): Path<String>, State(mc): State<ModelCont
 
 async fn handler_delete(Path(plugin_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
 	let library = mc.remove_plugin(&plugin_id, &user).await?;
+	let body = Json(json!(library));
+	Ok(body)
+}
+
+async fn handler_delete_file(Path(plugin_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	let library = mc.remove_plugin_wasm(&plugin_id, &user).await?;
 	let body = Json(json!(library));
 	Ok(body)
 }

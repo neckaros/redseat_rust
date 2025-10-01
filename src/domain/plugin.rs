@@ -28,6 +28,8 @@ pub struct Plugin {
 	pub name: String,
     pub description: String,
 	pub path: String,
+    pub repo: Option<String>,
+    pub repov: Option<String>,
     pub capabilities: Vec<PluginType>,
     pub settings: PluginSettings,
     pub libraries: Vec<String>,
@@ -47,6 +49,8 @@ impl From<&PluginWasm> for Plugin {
             id: value.filename.clone(),
             name: value.infos.name.clone(),
             path: value.path.to_str().unwrap_or("/").to_owned(),
+            repo: value.infos.repo.clone(),
+            repov: None,
             capabilities: value.infos.capabilities.clone(),
             settings: PluginSettings {..Default::default()},
             libraries: vec![],
@@ -65,6 +69,8 @@ impl From<&PluginWasm> for PluginForAdd {
         Self {
             name: value.infos.name.clone(),
             path: value.filename.to_owned(),
+            repo: value.infos.repo.clone(),
+            repov: None,
             credential_type: value.infos.credential_kind.to_owned(),
             description: value.infos.description.to_owned(),
             version: value.infos.version.to_owned(),
@@ -97,10 +103,17 @@ pub struct PluginForInstall {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PluginRepoAdd {
+	pub url: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")] 
 pub struct PluginForAdd {
 	pub name: String,
 	pub path: String,
+	pub repo: Option<String>,
+	pub repov: Option<String>,
     pub version: u16,
     pub description: String,
     pub credential_type: Option<CredentialType>,
@@ -123,6 +136,8 @@ pub struct PluginForUpdate{
 	pub version: Option<u16>,
 	pub description: Option<String>,
 	pub path: Option<String>,
+	pub repo: Option<String>,
+	pub repov: Option<String>,
     pub capabilities: Option<Vec<PluginType>>,
     pub settings: Option<PluginSettings>,
     

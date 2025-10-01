@@ -8,10 +8,10 @@ use rs_plugin_common_interfaces::{lookup::{RsLookupQuery, RsLookupSourceResult},
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::{fs::File, io::{copy, BufWriter}, sync::mpsc::Sender};
+use tokio::{fs::{self, File}, io::{copy, BufWriter}, sync::mpsc::Sender};
 
 
-use crate::{domain::{backup::Backup, library::LibraryRole, plugin::{Plugin, PluginForAdd, PluginForInsert, PluginForInstall, PluginForUpdate, PluginWasm, PluginWithCredential}, progress::{RsProgress, RsProgressCallback}}, error::RsResult, plugins::{get_plugin_fodler, sources::{error::SourcesError, AsyncReadPinBox, SourceRead}}, tools::video_tools::ytdl::YydlContext};
+use crate::{domain::{backup::Backup, library::LibraryRole, plugin::{Plugin, PluginForAdd, PluginForInsert, PluginForInstall, PluginForUpdate, PluginWasm, PluginWithCredential}, progress::{RsProgress, RsProgressCallback}}, error::{RsError, RsResult}, plugins::{get_plugin_fodler, sources::{error::SourcesError, AsyncReadPinBox, SourceRead}, url}, tools::{http_tools::download_latest_wasm, video_tools::ytdl::YydlContext}};
 
 use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
 
@@ -128,7 +128,18 @@ impl ModelController {
         let plugin = self.store.get_plugin(&plugin_id).await?.ok_or(SourcesError::UnableToFindPlugin(plugin_id.to_string(), "get_plugin".to_string()))?;
 
         self.store.remove_plugin(plugin_id.to_string()).await?;
+        self.reload_plugins(&requesting_user).await?;
         Ok(plugin)
+	}
+
+    pub async fn remove_plugin_wasm(&self, plugin_id: &str, requesting_user: &ConnectedUser) -> RsResult<()> {
+        requesting_user.check_role(&UserRole::Admin)?;
+        self.remove_plugin(plugin_id, requesting_user).await;
+        let mut path = get_plugin_fodler().await?;
+        path.push(plugin_id);   
+        fs::remove_file(path).await?;
+        self.reload_plugins(&requesting_user).await?;
+        Ok(())
 	}
 
 
@@ -213,6 +224,42 @@ impl ModelController {
         self.plugin_manager.exchange_token(plugin, request).await
     }
 
+
+    pub async fn refresh_repo_plugin(&self, plugin_id: &str, requesting_user: &ConnectedUser) -> RsResult<String> {
+
+        requesting_user.check_role(&UserRole::Admin)?;
+
+        let plugin = self.store.get_plugin(plugin_id).await?.ok_or(SourcesError::UnableToFindPlugin(plugin_id.to_string(), "get_plugin".to_string()))?;
+        
+        let url = plugin.repo.ok_or(RsError::Error("Plugin does not have a repo".to_string()))?;
+        let name = plugin.path.clone();
+
+        let mut path = get_plugin_fodler().await?;
+
+        download_latest_wasm(&url, path.to_str().ok_or(RsError::Error("Unable to get plugin folder path".to_string()))?, Some(&name)).await?;
+
+        self.reload_plugins(&requesting_user).await?;
+        path.push(name);
+        Ok(path.to_string_lossy().to_string())
+
+	}
+
+    pub async fn upload_repo_plugin(&self, url: &str, requesting_user: &ConnectedUser) -> RsResult<String> {
+
+        requesting_user.check_role(&UserRole::Admin)?;
+
+        
+        let mut path = get_plugin_fodler().await?;
+
+        let name = format!("plugin_{}.wasm", nanoid!());    
+
+        download_latest_wasm(url, path.to_str().ok_or(RsError::Error("Unable to get plugin folder path".to_string()))?, Some(&name)).await?;
+
+        self.reload_plugins(&requesting_user).await?;
+        path.push(name);
+        Ok(path.to_string_lossy().to_string())
+
+	}
 
 
     pub async fn upload_plugin(&self, reader: AsyncReadPinBox, requesting_user: &ConnectedUser) -> RsResult<()> {

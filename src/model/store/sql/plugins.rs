@@ -48,6 +48,8 @@ impl SqliteStore {
             credential_type:  row.get(7)?,
             description:  row.get(8)?,
             version:  row.get(9)?,
+            repo:  row.get(10)?,
+            repov:  row.get(11)?,
             installed: true,
             ..Default::default()
         })
@@ -56,7 +58,7 @@ impl SqliteStore {
         let plugin_id = plugin_id.to_string();
             let row = self.server_store.call( move |conn| { 
                 let row = conn.query_row(
-                "SELECT id, name, path, kind, settings, libraries, credential, credtype, desc, version FROM plugins WHERE id = ?1",
+                "SELECT id, name, path, kind, settings, libraries, credential, credtype, desc, version, repo, repov FROM plugins WHERE id = ?1",
                 [&plugin_id],
                 Self::row_to_plugin,
                 ).optional()?;
@@ -77,7 +79,7 @@ impl SqliteStore {
                 where_query.add_where(super::QueryWhereType::SeparatedContain("libraries", ",".to_string(), q));
             }
 
-            let mut query = conn.prepare(&format!("SELECT id, name, path, kind, settings, libraries, credential, credtype, desc, version FROM plugins 
+            let mut query = conn.prepare(&format!("SELECT id, name, path, kind, settings, libraries, credential, credtype, desc, version, repo, repov FROM plugins 
             {}", where_query.format()))?;
             //println!("query {:?}", query.expanded_sql());
             let rows = query.query_map(
@@ -101,8 +103,8 @@ impl SqliteStore {
     pub async fn add_plugin(&self, plugin: PluginForInsert) -> Result<()> {
         self.server_store.call( move |conn| { 
 
-            conn.execute("INSERT INTO plugins (id, name, path, kind, settings, libraries, credential, credtype, desc, version)
-            VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?)", params![
+            conn.execute("INSERT INTO plugins (id, name, path, kind, settings, libraries, credential, credtype, desc, version, repo, repov)
+            VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, ? ,?)", params![
                 plugin.id,
                 plugin.plugin.name,
                 plugin.plugin.path,
@@ -112,7 +114,9 @@ impl SqliteStore {
                 plugin.plugin.credential,
                 plugin.plugin.credential_type,
                 plugin.plugin.description,
-                plugin.plugin.version
+                plugin.plugin.version,
+                plugin.plugin.repo,
+                plugin.plugin.repov,
             ])?;
             
             Ok(())
@@ -134,6 +138,8 @@ impl SqliteStore {
             where_query.add_update(&update.credential_type, "credtype");
             where_query.add_update(&update.settings, "settings");
             where_query.add_update(&update.credential, "credential");
+            where_query.add_update(&update.repo, "repo");
+            where_query.add_update(&update.repov, "repov");
             
             let capa = to_comma_separated_optional(update.capabilities);
             where_query.add_update(&capa, "kind");

@@ -399,12 +399,16 @@ pub async fn get_ipv4() -> Result<String> {
         }
     }
     let ip = client.get("https://api.ipify.org/").send().await;
-    if let Ok(ip) = ip {
-        if let Ok(ip) = ip.text().await {
-            return Ok(ip);
+    match ip {
+        Ok(ip) => {
+            match ip.text().await {
+                Ok(ip) => return Ok(ip),
+                _ => Err(Error::Error("Unable to get IPV4 no text found".to_string())),
+            }
         }
+        Err(e) => Err(Error::Error(format!("Unable to get IPV4: {:?}", e))),
     }
-    Err(Error::Error("Unable to get IPV4".to_string()))
+    
 }
 
 pub async fn get_ipv6() -> Result<String> {

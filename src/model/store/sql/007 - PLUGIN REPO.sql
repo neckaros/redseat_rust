@@ -1,0 +1,2 @@
+ALTER TABLE plugins ADD COLUMN repo TEXT;
+ALTER TABLE plugins ADD COLUMN repov TEXT;

@@ -777,6 +777,10 @@ impl VideoCommandBuilder {
                 self.add_out_option("-c:v");
                 self.add_out_option("copy");
             }
+            _ => {
+                self.add_out_option("-c:v");
+                self.add_out_option("copy");
+            }
         }
         self
     }

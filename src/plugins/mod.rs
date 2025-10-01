@@ -136,6 +136,7 @@ impl PluginManager {
 
     pub async fn reload(&self) -> Result<()> {
         let mut plugins: Vec<PluginWasm> = list_plugins().await?.collect();
+        log_info(LogServiceType::Plugin, format!("Reloaded {} plugins", plugins.len()));
         self.plugins.write().await.clear();
         self.plugins.write().await.append(&mut plugins);
         Ok(())
