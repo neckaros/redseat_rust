@@ -198,9 +198,8 @@ impl PluginManager {
                             if res.filename.is_none() {
                                 res.filename = filename_from_path(&res.url);
                             }
-                            if res.permanent {
-                                return Ok(Some(res));
-                            }
+                            return Ok(Some(res));
+                            
                             
                         } else if let Err((error, code)) = res {
                             if code != 404 {
