@@ -300,6 +300,20 @@ impl ModelController {
         }
         return Ok(user_id)
 	}
+    /// If library_id is None, return user_id unchanged
+    /// If library_id is Some, return mapped user if any, else user_id unchanged
+    pub async fn get_optional_library_mapped_user(&self, library_id: Option<&str>, mut user_id: String) -> Result<String> {
+        if let Some(library_id) = library_id {
+            let library = self.get_internal_library(library_id).await?.ok_or(SourcesError::UnableToFindLibrary(library_id.to_string(), "get_library_mapped_users".to_string()))?;
+            if let Some(mapping) = library.settings.map_progress {
+                if let Some(mapping) = mapping.into_iter().find(|m| m.from == user_id) {
+                    user_id = mapping.to;
+                }
+            }
+            return Ok(user_id)
+        }
+        Ok(user_id)
+	}
  
 	pub async fn update_library(&self, library_id: &str, update: ServerLibraryForUpdate, requesting_user: &ConnectedUser) -> Result<Option<super::libraries::ServerLibraryForRead>> {
         requesting_user.check_library_role(&library_id, LibraryRole::Admin)?;

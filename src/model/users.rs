@@ -409,11 +409,12 @@ impl ModelController {
             return Ok(vec![])
         }
         let user_id = user.user_id()?;
-        let watcheds = self.store.get_watched( query, user_id, vec![]).await?;
+        let progress_user = self.get_optional_library_mapped_user(library_id.as_deref(), user.user_id()?).await.ok().unwrap_or(user_id);
+        let watcheds = self.store.get_watched( query, progress_user, vec![]).await?;
         Ok(watcheds)       
     }
 
-        pub async fn get_all_watched(&self, user: &ConnectedUser) -> RsResult<Vec<Watched>> {
+    pub async fn get_all_watched(&self, user: &ConnectedUser) -> RsResult<Vec<Watched>> {
         user.check_role(&UserRole::Admin)?;
      
         let watcheds = self.store.get_all_watched().await?;
@@ -458,8 +459,15 @@ impl ModelController {
 
         user.check_role(&UserRole::Read)?;
         let user_id = user.user_id()?;
-        let progress = self.store.get_view_progess( ids, user_id.clone()).await?;
+        let progress_user = self.get_optional_library_mapped_user(library_id.as_deref(), user.user_id()?).await.ok().unwrap_or(user_id);
+        let progress = self.store.get_view_progess( ids, progress_user).await?;
         Ok(progress)
+    }
+
+    
+    pub async fn get_view_progress_by_id(&self, id: String, user: &ConnectedUser) -> RsResult<Option<ViewProgress>> {
+        let media_id = RsIds::try_from(id)?;
+        self.get_view_progress(media_id, user, None).await
     }
 
     pub async fn get_all_view_progress(&self, query: HistoryQuery, user: &ConnectedUser, library_id: Option<String>) -> RsResult<Vec<ViewProgress>> {
@@ -470,23 +478,11 @@ impl ModelController {
 
         user.check_role(&UserRole::Read)?;
         let user_id = user.user_id()?;
-        let progresses = self.store.get_all_view_progress(query, user_id).await?;
+        let progress_user = self.get_optional_library_mapped_user(library_id.as_deref(), user.user_id()?).await.ok().unwrap_or(user_id);
+        let progresses = self.store.get_all_view_progress(query, progress_user).await?;
         Ok(progresses)
     }
 
-    pub async fn get_view_progress_by_id(&self, id: String, user: &ConnectedUser) -> RsResult<Option<ViewProgress>> {
-        if matches!(user, ConnectedUser::ServerAdmin) {
-            return Ok(None)
-        }
-
-        user.check_role(&UserRole::Read)?;
-        let media_id = RsIds::try_from(id)?;
-        let progress = match user {
-            ConnectedUser::Server(user) => self.store.get_view_progess( media_id, user.id.clone()).await?,
-            _ => None
-        };
-        Ok(progress)
-    }
 
     pub async fn get_upload_key(&self, key: String) -> RsResult<UploadKey> {
         Ok(self.store.get_upload_key(key).await?)
