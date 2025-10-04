@@ -114,13 +114,21 @@ serial_test = "*"
 linker = "x86_64-unknown-linux-gnu-gcc"
 
 
+
 [package.metadata.vcpkg]
 git = "https://github.com/microsoft/vcpkg"
 rev = "master"
-dependencies = [
-  "libheif:x64-windows-static-md",   # HEIF/AVIF API
-  "libde265:x64-windows-static-md",  # HEIC/HEVC decoder
-  "aom:x64-windows-static-md",       # AV1 codec
-  "dav1d:x64-windows-static-md",     # AV1 decoder
-  "x265:x64-windows-static-md",      # HEVC encoder (optional)
-]
+# Default list can be empty; targets below install the right set per-OS. [web:250]
+
+[package.metadata.vcpkg.target]
+# Windows (x86_64) — static libs + dynamic CRT (/MD) [web:117][web:250]
+x86_64-pc-windows-msvc = {  triplet = "x64-windows-static-md", dependencies = ["libheif", "libde265", "aom", "dav1d", "x265"] }
+
+# Windows (ARM64) — same model as above [web:117][web:250]
+aarch64-pc-windows-msvc = {  triplet = "arm64-windows-static-md",  dependencies = ["libheif", "libde265", "aom", "dav1d", "x265"] }
+
+# macOS (Intel) — osx triplet; Rust links static third‑party by default on macOS [web:117][web:221]
+x86_64-apple-darwin = {  triplet = "x64-osx",  dependencies = ["libheif", "libde265", "aom", "dav1d", "x265"]}
+
+# macOS (Apple Silicon) — arm64 osx triplet [web:221][web:250]
+aarch64-apple-darwin = {  triplet = "arm64-osx",  dependencies = ["libheif", "libde265", "aom", "dav1d", "x265"]}
