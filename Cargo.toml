@@ -90,7 +90,7 @@ pbkdf2 = "0.12.2"
 sha1 = "0.10.6"
 hex = "0.4.3"
 rs_torrent_magnet = "0.3.0"
-libheif-sys = { version = "4", features = ["embedded-libheif", "latest"] }
+libheif-sys = { version = "4.0", features = ["v1_19"] }
 quickraw = { version = "0.1.6", features = ["rayon"] }
 jxl-oxide = { version = "0.11.1", features = ["image"] }
 sevenz-rust = "0.6.1"

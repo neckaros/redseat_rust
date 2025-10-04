@@ -4,6 +4,7 @@ RUN apt-get update && apt-get install -y \
     cmake \
     pkg-config \
     build-essential \
+    libheif-dev \
     nasm \
   && rm -rf /var/lib/apt/lists/*
 WORKDIR /usr/src/redseat-daemon
@@ -18,9 +19,12 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
-    libjpeg62-turbo \
-    libde265-0 \
+    # Core libheif runtime from trixie
     libheif1 \
+    # Decoding plugin(s) for HEIC/HEVC
+    libheif-plugin-libde265 \
+    libde265-0 \
+    libjpeg62-turbo \
     libaom3 \
     libdav1d7 \
     libx265-215 \
