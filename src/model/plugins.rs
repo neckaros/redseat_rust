@@ -11,7 +11,7 @@ use serde_json::Value;
 use tokio::{fs::{self, File}, io::{copy, BufWriter}, sync::mpsc::Sender};
 
 
-use crate::{domain::{backup::Backup, library::LibraryRole, plugin::{Plugin, PluginForAdd, PluginForInsert, PluginForInstall, PluginForUpdate, PluginWasm, PluginWithCredential}, progress::{RsProgress, RsProgressCallback}}, error::{RsError, RsResult}, plugins::{get_plugin_fodler, sources::{error::SourcesError, AsyncReadPinBox, SourceRead}, url}, tools::{http_tools::download_latest_wasm, video_tools::ytdl::YydlContext}};
+use crate::{domain::{backup::Backup, library::LibraryRole, plugin::{Plugin, PluginForAdd, PluginForInsert, PluginForInstall, PluginForUpdate, PluginWasm, PluginWithCredential}, progress::{RsProgress, RsProgressCallback}}, error::{RsError, RsResult}, plugins::{get_plugin_fodler, sources::{error::SourcesError, AsyncReadPinBox, SourceRead}, url}, tools::{file_tools::extract_zip, http_tools::download_latest_wasm, video_tools::ytdl::YydlContext}};
 
 use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
 
@@ -262,21 +262,25 @@ impl ModelController {
 	}
 
 
-    pub async fn upload_plugin(&self, reader: AsyncReadPinBox, requesting_user: &ConnectedUser) -> RsResult<()> {
+    pub async fn upload_plugin(&self, reader: &mut (dyn tokio::io::AsyncRead + Unpin + Send), filename: &str, requesting_user: &ConnectedUser) -> RsResult<()> {
 
         requesting_user.check_role(&UserRole::Admin)?;
 
         
         let mut path = get_plugin_fodler().await?;
+        if filename.ends_with(".wasm") {
+            let name = format!("plugin_{}.wasm", nanoid!());
+            path.push(name);        
 
-        let name = format!("plugin_{}.wasm", nanoid!());
-        path.push(name);        
+            let mut file = BufWriter::new(File::create(&path).await?);
+            tokio::io::copy(reader, &mut file).await?;
+        } else if filename.ends_with(".zip") {
+            path.push(nanoid!());
+            tokio::fs::create_dir_all(&path).await?;
 
-        let mut file = BufWriter::new(File::create(&path).await?);
-        
-		tokio::pin!(reader);
-		tokio::pin!(file);
-		copy(&mut reader, &mut file).await?;
+            // Extract using reusable function
+            extract_zip(reader, &path).await?;
+        }
 
 
         Ok(())

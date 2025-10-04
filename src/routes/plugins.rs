@@ -4,6 +4,7 @@ use std::io::Cursor;
 use crate::{domain::{media::{MediaForUpdate, DEFAULT_MIME}, plugin::{PluginForAdd, PluginForInstall, PluginForUpdate, PluginRepoAdd}}, error::RsError, model::{credentials::CredentialForAdd, plugins::PluginQuery, users::ConnectedUser}, tools::{array_tools::value_to_hashmap, convert::{convert_from_to, ConvertFileSource}, http_tools::download_latest_wasm}, ModelController, Result};
 use axum::{extract::{Multipart, Path, Query, State}, routing::{delete, get, patch, post}, Json, Router};
 use futures::TryStreamExt;
+use futures::pin_mut;
 use rs_plugin_common_interfaces::{request::RsRequest, url::RsLink, CredentialType, PluginType};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -53,22 +54,16 @@ async fn handler_upload_plugin(State(mc): State<ModelController>, user: Connecte
 , mut multipart: Multipart) -> Result<Json<Value>> {
 	while let Some(field) = multipart.next_field().await.unwrap() {
         //let name = field.name().unwrap().to_string();
-		//let filename = field.file_name().unwrap().to_string();
+		let filename = field.file_name().unwrap().to_string();
 		//let mime: String = field.content_type().unwrap().to_string();
         //let data = field.bytes().await.unwrap();
 
-		let mut reader = StreamReader::new(field.map_err(|multipart_error| {
+		let stream = field.map_err(|multipart_error| {
 			std::io::Error::new(std::io::ErrorKind::Other, multipart_error)
-		}));
-
-		
-		// Read all bytes from the field into a buffer
-		let mut data = Vec::new();
-		tokio::io::copy(&mut reader, &mut data).await?;
-		let reader = Box::pin(Cursor::new(data));
-		
-        //println!("Length of `{}` {}  {} is {} bytes", name, filename, mime, data.len());
-			mc.upload_plugin( reader, &user).await?;
+		});
+		let mut reader = StreamReader::new(stream);
+		pin_mut!(reader);
+		mc.upload_plugin(&mut reader, &filename, &user).await?;
     }
 	
     Ok(Json(json!({"data": "ok"})))
