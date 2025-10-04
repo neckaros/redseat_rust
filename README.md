@@ -80,7 +80,21 @@ volumes:
 
 
 
-# Setup Dev Environment
+# Setup dev env
+
+## Windows
+
+one-time
+```bash
+cargo install cargo-vcpkg
+```
+fetch vcpkg and build declared ports
+```bash
+cargo vcpkg build
+```
+
+
+# Setup Dev Environment old
 Windows: vcpkg install libheif:x64-windows-static-md
 You must have YT-DLP and FFMPEG installed (setup in your PATH)
 Env variagles:

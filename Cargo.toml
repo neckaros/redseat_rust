@@ -112,3 +112,15 @@ serial_test = "*"
 # TARGET_CC=x86_64-unknown-linux-gnu cargo build --release --target x86_64-unknown-linux-gnu
 [target.x86_64-unknown-linux-gnu]
 linker = "x86_64-unknown-linux-gnu-gcc"
+
+
+[package.metadata.vcpkg]
+git = "https://github.com/microsoft/vcpkg"
+rev = "master"
+dependencies = [
+  "libheif:x64-windows-static-md",   # HEIF/AVIF API
+  "libde265:x64-windows-static-md",  # HEIC/HEVC decoder
+  "aom:x64-windows-static-md",       # AV1 codec
+  "dav1d:x64-windows-static-md",     # AV1 decoder
+  "x265:x64-windows-static-md",      # HEVC encoder (optional)
+]
