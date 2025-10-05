@@ -439,9 +439,9 @@ impl VideoCommandBuilder {
         tokio::fs::remove_file(Path::new("ffprobe")).await;
 
         #[cfg(target_arch = "x86_64")]
-        const WINDOWS_URL: &str = "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz";
+        const WINDOWS_URL: &str = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.0-latest-linux64-gpl-8.0.tar.xz";
         #[cfg(target_arch = "aarch64")]
-        const WINDOWS_URL: &str = "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz";
+        const WINDOWS_URL: &str = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.0-latest-linuxarm64-gpl-8.0.tar.xz";
 
         let path = get_server_temp_file_path().await?;
         let mut file = tokio::fs::File::create(&path).await?;
@@ -785,6 +785,9 @@ impl VideoCommandBuilder {
                 self.add_out_option("tune=0:film-grain=8");
 
                 if self.format.is_none() {
+
+                    self.add_out_option("-movflags");
+                    self.add_out_option("faststart");
                     self.format = Some(RsVideoFormat::Mp4);
                 }
             },
@@ -997,7 +1000,7 @@ impl VideoCommandBuilder {
 
 
         if let Some(format) = &self.format {
-            self.cmd.arg("-format")
+            self.cmd.arg("-f")
                     .arg(format.to_string());
         }
             
