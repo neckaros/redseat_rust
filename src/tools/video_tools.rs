@@ -704,7 +704,7 @@ impl VideoCommandBuilder {
                     self.add_out_option("libx265");
 
                     self.add_out_option("-preset:v");
-                    self.add_out_option("slow");
+                    self.add_out_option("fast");
 
                     self.add_out_option("-crf:v");
                     self.add_out_option(cq.to_string());
@@ -770,7 +770,7 @@ impl VideoCommandBuilder {
                 self.add_out_option("libsvtav1");
 
                 self.add_out_option("-preset");
-                self.add_out_option("5");
+                self.add_out_option("10");
 
                 self.add_out_option("-crf");
                 self.add_out_option(crf.unwrap_or(32).to_string());
