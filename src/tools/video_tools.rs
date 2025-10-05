@@ -458,9 +458,9 @@ impl VideoCommandBuilder {
         let root_folder = tokio::fs::read_dir(&extract_path).await?.next_entry().await?.ok_or::<RsError>("Unable to decompress".into())?;
         let mut bin_folder = root_folder.path();
         bin_folder.push("bin");
-        let mut path_ffmpeg = bin_folder.path();
+        let mut path_ffmpeg = bin_folder.clone();
         path_ffmpeg.push("ffmpeg");
-        let mut path_ffprobe = bin_folder.path();
+        let mut path_ffprobe = bin_folder.clone();
         path_ffprobe.push("ffprobe");
         println!("full path: {:?}", path_ffmpeg);
 
@@ -485,7 +485,7 @@ impl VideoCommandBuilder {
         std::fs::set_permissions(&ffprobe_target, perms)?;
 
         tokio::fs::remove_file(path).await;
-        tokio::fs::remove_dir_all(root_folder).await;
+        tokio::fs::remove_dir_all(root_folder.path()).await;
 
         Ok(())
     }
