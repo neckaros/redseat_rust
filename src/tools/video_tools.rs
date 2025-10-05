@@ -697,30 +697,32 @@ impl VideoCommandBuilder {
                     self.add_out_option( "hvc1");
                   
                 } else {
+                    let cq = crf.unwrap_or(26);
+
                     self.add_out_option("libx265");
                     self.add_out_option("-c:v");
-self.add_out_option("libx265");
+                    self.add_out_option("libx265");
 
-self.add_out_option("-preset:v");
-self.add_out_option("fast");
+                    self.add_out_option("-preset:v");
+                    self.add_out_option("slow");
 
-self.add_out_option("-crf:v");
-self.add_out_option("26");
+                    self.add_out_option("-crf:v");
+                    self.add_out_option(cq.to_string());
 
-self.add_out_option("-pix_fmt");
-self.add_out_option("yuv420p10le");
+                    self.add_out_option("-pix_fmt");
+                    self.add_out_option("yuv420p10le");
 
-self.add_out_option("-profile:v");
-self.add_out_option("main10");
+                    self.add_out_option("-profile:v");
+                    self.add_out_option("main10");
 
-self.add_out_option("-x265-params");
-self.add_out_option("asm=avx2:rc-lookahead=20:aq-mode=2:aq-strength=1.0:bframes=6:ref=4:keyint=250:min-keyint=25:scenecut=40");
+                    self.add_out_option("-x265-params");
+                    self.add_out_option("asm=avx2:rc-lookahead=20:aq-mode=2:aq-strength=1.0:bframes=6:ref=4:keyint=250:min-keyint=25:scenecut=40");
 
-self.add_out_option("-tag:v");
-self.add_out_option("hvc1");
+                    self.add_out_option("-tag:v");
+                    self.add_out_option("hvc1");
 
-self.add_out_option("-movflags");
-self.add_out_option("+faststart");
+                    self.add_out_option("-movflags");
+                    self.add_out_option("+faststart");
 
                 }
                 if self.format.is_none() {
