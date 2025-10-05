@@ -456,6 +456,7 @@ impl VideoCommandBuilder {
         tokio::fs::create_dir(&extract_path);
         tools::compression::unpack_tar_xz(&path, PathBuf::from(&extract_path)).await?;
         let root_folder = tokio::fs::read_dir(&extract_path).await?.next_entry().await?.ok_or::<RsError>("Unable to decompress".into())?;
+        root_folder.push("bin");
         let mut path_ffmpeg = root_folder.path();
         path_ffmpeg.push("ffmpeg");
         let mut path_ffprobe = root_folder.path();
