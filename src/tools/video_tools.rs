@@ -2,6 +2,7 @@ use std::fmt::Alignment;
 use std::io::{BufRead, Read};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use std::{path::Path, process::Stdio};
 use std::{default, str};
 use nanoid::nanoid;
@@ -13,6 +14,7 @@ use strum_macros::EnumString;
 use time::Instant;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::{OnceCell, RwLock};
+use tokio::time::timeout;
 use tokio::{io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader}, process::Command};
 use tokio_util::io::ReaderStream;
 use tokio_stream::StreamExt;
@@ -208,16 +210,51 @@ pub struct VideoCommandBuilder {
 }
 
 impl VideoCommandBuilder {
+
+    async fn cuda_runtime_available<P: AsRef<Path>>(ffmpeg_path: P) -> bool {
+        // 1) Confirm NVENC encoders are present in this ffmpeg build
+        let encoders_ok = match Command::new(ffmpeg_path.as_ref())
+            .args(["-hide_banner", "-encoders"])
+            .output()
+            .await
+        {
+            Ok(out) => {
+                let txt = String::from_utf8_lossy(&out.stdout);
+                txt.contains("hevc_nvenc") || txt.contains("h264_nvenc")
+            }
+            Err(_) => false,
+        };
+        if !encoders_ok {
+            return false; // ffmpeg not compiled with NVENC
+        }
+        println!("nvenc encoders found");
+        // 2) Try to actually initialize CUDA and encode a single null frame
+        //    This fails fast if libcuda.so.1 or /dev/nvidia* are missing
+        let probe = timeout(
+            Duration::from_secs(5),
+            Command::new(ffmpeg_path.as_ref()).args([
+                "-v", "error",
+                "-init_hw_device", "cuda=cuda:0",
+                "-f", "lavfi", "-i", "testsrc2=size=256x256:rate=1",
+                "-t", "0.1", "-c:v", "h264_nvenc",
+                "-f", "null", "-"
+            ]).output()
+        ).await;
+        println!("probe {:?}", probe);
+        match probe {
+            Ok(Ok(out)) => out.status.success(), // CUDA usable
+            _ => false, // timeout or exec error => no usable CUDA
+        }
+    }
+
+
     pub async fn new(path: String) -> Self {
-        let cmd = Command::new(VideoCommandBuilder::get_ffmpeg_path());
+        let ffmpeg = VideoCommandBuilder::get_ffmpeg_path();
+        let cuda_support = Self::cuda_runtime_available(&ffmpeg).await;
+        let cmd = Command::new(ffmpeg);
         let supported_hw = video_hardware().await.unwrap_or_default();
         println!("supported transcoding hw: {:?}", supported_hw);
 
-        let cuda_support = if supported_hw.contains(&"cuda".to_string()) {
-            true
-        } else {
-            false
-        };
         Self {
             path,
             cmd,
@@ -296,7 +333,11 @@ impl VideoCommandBuilder {
         let _lock = FFPROBE_LOCK.write().await;
         tokio::fs::remove_file(Path::new("ffmpeg.exe")).await;
         tokio::fs::remove_file(Path::new("ffprobe.exe")).await;
-        const WINDOWS_URL: &str = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-full.7z";
+        
+        #[cfg(target_arch = "x86_64")]
+        const WINDOWS_URL: &str = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.0-latest-win64-gpl-8.0.zip";
+        #[cfg(target_arch = "aarch64")]
+        const WINDOWS_URL: &str = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.0-latest-winarm64-gpl-8.0.zip";
 
         let path = get_server_temp_file_path().await?;
         let mut file = tokio::fs::File::create(&path).await?;
@@ -308,18 +349,25 @@ impl VideoCommandBuilder {
         while let Some(chunk) = response.chunk().await? {
             file_buff.write_all(&chunk).await?;
         }
+        file_buff.flush().await?;
 
         let extract_path = get_server_temp_file_path().await?;
         tokio::fs::create_dir(&extract_path);
-        tools::compression::unpack_7z(path.clone(), extract_path.clone()).await?;
+        tools::compression::unpack_zip(path.clone(), PathBuf::from(&extract_path)).await?;
         let root_folder = tokio::fs::read_dir(&extract_path).await?.next_entry().await?.ok_or::<RsError>("Unable to decompress".into())?;
-        let mut path_ffmpeg = root_folder.path();
-        path_ffmpeg.push("bin");
+        let mut bin_folder = root_folder.path();
+        bin_folder.push("bin");
+        let mut path_ffmpeg = bin_folder.clone();
         path_ffmpeg.push("ffmpeg.exe");
-        let mut path_ffprobe = root_folder.path();
-        path_ffprobe.push("bin");
+        let mut path_ffprobe = bin_folder.clone();
         path_ffprobe.push("ffprobe.exe");
         println!("full path: {:?}", path_ffmpeg);
+
+        
+        let mut ffmpeg_target = VideoCommandBuilder::get_ffmpeg_path();
+        let mut ffprobe_target = VideoCommandBuilder::get_ffprobe_path();
+        tokio::fs::copy(&path_ffmpeg, &ffmpeg_target).await?;
+        tokio::fs::copy(&path_ffprobe, &ffprobe_target).await?;
 
         
         let mut ffmpeg_target = VideoCommandBuilder::get_ffmpeg_path();

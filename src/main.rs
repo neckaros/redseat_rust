@@ -59,7 +59,13 @@ async fn main() ->  Result<()> {
     } else {
         log_info(tools::log::LogServiceType::Register, "No FFMPEG found, downloading latest version in background. Video operations won't be available in the meantime".to_string());
         tokio::spawn(async {
-            VideoCommandBuilder::download().await?;
+            let downloading = VideoCommandBuilder::download().await;
+
+            if let Err(e) = downloading {
+                log_error(tools::log::LogServiceType::Register, format!("We were not able to download FFMPEG: {}", e));
+                return Ok::<(), RsError>(());
+            }
+
             let ffmpeg_version = VideoCommandBuilder::version().await?;
             if let Some(ffmpeg_version) = ffmpeg_version {
                 log_info(tools::log::LogServiceType::Register, format!("FFMPEG version {:?}", ffmpeg_version));
