@@ -15,6 +15,8 @@ use crate::{domain::{backup::Backup, library::LibraryRole, plugin::{Plugin, Plug
 
 use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
 
+pub mod video_convert_plugin;
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct PluginQuery {
     pub kind: Option<PluginType>,
@@ -55,7 +57,7 @@ impl ModelController {
 		Ok(plugins)
 	}
 
-    async fn get_plugins_with_credential(&self, query: PluginQuery) -> Result<impl Iterator<Item = PluginWithCredential>> {
+    pub async fn get_plugins_with_credential(&self, query: PluginQuery) -> Result<impl Iterator<Item = PluginWithCredential>> {
 		let plugins = self.store.get_plugins(query).await?.into_iter();
 		let credentials = self.store.get_credentials().await?;
         let iter = plugins.map(move |p| {
@@ -69,6 +71,14 @@ impl ModelController {
         requesting_user.check_role(&UserRole::Admin)?;
 		let credential = self.store.get_plugin(&plugin_id).await?.ok_or(SourcesError::UnableToFindPlugin(plugin_id.to_string(), "get_plugin".to_string()))?;
 		Ok(credential)
+	}
+    
+    pub async fn get_plugin_with_credential(&self, id: &str) -> Result<PluginWithCredential> {
+		let plugin = self.store.get_plugin(id).await?.ok_or(SourcesError::UnableToFindPlugin(id.to_string(), "get_plugin_with_credential".to_string()))?;
+		let credentials = self.store.get_credentials().await?;
+      
+        let credential = credentials.iter().find(|c| Some(&c.id) == plugin.credential.as_ref()).cloned();
+        Ok(PluginWithCredential { plugin: plugin, credential })
 	}
 
     pub async fn reload_plugins(&self, requesting_user: &ConnectedUser) -> RsResult<()> {

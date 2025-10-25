@@ -1,7 +1,7 @@
 
 use crate::{domain::plugin::{PluginForAdd, PluginForInstall, PluginForUpdate}, model::{plugins::PluginQuery, users::ConnectedUser}, ModelController, Result};
 use axum::{extract::{Path, Query, State}, response::Response, routing::{delete, get, patch, post}, Json, Router};
-use rs_plugin_common_interfaces::{request::RsRequest, url::RsLink, PluginType};
+use rs_plugin_common_interfaces::{request::RsRequest, url::RsLink, video::RsVideoCapabilities, PluginType};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -22,6 +22,10 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/requests/url/stream", get(handler_request_url_stream))
 		.route("/requests/url/sharetoken", get(handler_request_url_sharetoken))
 
+		
+		.route("/videoconvert", get(handler_list_video_convert))
+		.route("/videoconvert/:plugin_id/capabilities", get(handler_video_convert_caps))
+
 		.with_state(mc)
         
 }
@@ -32,6 +36,7 @@ pub fn routes(mc: ModelController) -> Router {
 struct ExpandQuery {
 	pub url: String,
 }
+
 
 
 async fn handler_parse(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ExpandQuery>) -> Result<Json<Value>> {
@@ -48,6 +53,9 @@ async fn handler_expand(Path(library_id): Path<String>, State(mc): State<ModelCo
 	let body = Json(json!(wasm));
 	Ok(body)
 }
+
+
+
 
 
 async fn handler_request_url(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ExpandQuery>) -> Result<Json<Value>> {
@@ -93,5 +101,42 @@ async fn handler_request_process_stream(Path(library_id): Path<String>, range: O
 async fn handler_request_permanent(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Json(request): Json<RsRequest>) -> Result<Json<Value>> {
 	let request = mc.exec_permanent(request, Some(library_id), None, &user).await?;
 	let body = Json(json!(request));
+	Ok(body)
+}
+
+
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct VideoConvertPlugin {
+	pub id: String,
+	pub name: String,
+	pub credential: Option<String>,
+	pub capabilities: Option<RsVideoCapabilities>,
+}
+async fn handler_list_video_convert(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	user.check_role(&crate::model::users::UserRole::Read)?;
+	let wasm = mc.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::VideoConvert), library: Some(library_id), ..Default::default() }).await?;
+	let plugins = wasm.into_iter().map(|p| VideoConvertPlugin {
+		id: p.plugin.id,
+		name: p.plugin.name,
+		credential: p.credential.map(|c| c.name),
+		capabilities: None,
+	}).collect::<Vec<VideoConvertPlugin>>();
+	let body = Json(json!(plugins));
+	Ok(body)
+}
+async fn handler_video_convert_caps(Path((library_id, plugin_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	user.check_role(&crate::model::users::UserRole::Read)?;
+	let wasm = mc.get_plugin_with_credential(&plugin_id).await?;
+	let caps = mc.plugin_manager.get_convert_capabilities(wasm).await?;
+	let body = Json(json!(caps));
+	Ok(body)
+}
+
+async fn handler_video_convert_status(Path((library_id, plugin_id, encode_id)): Path<(String, String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	user.check_role(&crate::model::users::UserRole::Read)?;
+	let wasm = mc.get_plugin_with_credential(&plugin_id).await?;
+	let status = mc.plugin_manager.convert_status(wasm, &encode_id).await?;
+	let body = Json(json!(status));
 	Ok(body)
 }

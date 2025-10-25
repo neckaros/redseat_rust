@@ -1,13 +1,13 @@
 use std::str::FromStr;
 
 use nanoid::nanoid;
-use rs_plugin_common_interfaces::{request::{RsCookie, RsRequest, RsRequestStatus}, url::RsLink};
+use rs_plugin_common_interfaces::{request::{RsCookie, RsRequest, RsRequestStatus}, url::RsLink, video::VideoConvertRequest};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use strum_macros::EnumString;
 
 
-use crate::{plugins::sources::SourceRead, tools::video_tools::VideoConvertRequest};
+use crate::plugins::sources::SourceRead;
 
 use super::{progress::RsProgress, ElementAction};
 

@@ -1,11 +1,11 @@
 
 use std::{io::Cursor, path::PathBuf, str::FromStr};
 
-use crate::{domain::{media::{self, GroupMediaDownload, MediaDownloadUrl, MediaForUpdate, MediaItemReference, MediaWithAction, MediasMessage}, ElementAction}, error::RsError, model::{self, medias::{MediaFileQuery, MediaQuery}, series::{SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, plugins::sources::{error::SourcesError, SourceRead}, tools::{log::{log_error, log_info}, prediction::predict_net, video_tools::VideoConvertRequest}, Error, Result};
+use crate::{domain::{media::{self, GroupMediaDownload, MediaDownloadUrl, MediaForUpdate, MediaItemReference, MediaWithAction, MediasMessage}, ElementAction}, error::RsError, model::{self, medias::{MediaFileQuery, MediaQuery}, series::{SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, plugins::sources::{error::SourcesError, SourceRead}, tools::{log::{log_error, log_info}, prediction::predict_net}, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
 use futures::TryStreamExt;
 use hyper::{header::ACCEPT_RANGES, StatusCode};
-use rs_plugin_common_interfaces::request::RsRequest;
+use rs_plugin_common_interfaces::{request::RsRequest, video::VideoConvertRequest};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -33,6 +33,7 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/:id/sharetoken", get(handler_sharetoken))
 		.route("/:id/predict", get(handler_predict))
 		.route("/:id/convert", post(handler_convert))
+		.route("/:id/convert/plugin/:plugin_id", post(handler_convert_plugin))
 		.route("/:id", get(handler_get_file))
 		.route("/:id/backup/last", get(handler_get_last_backup))
 
@@ -185,12 +186,18 @@ async fn handler_predict(Path((library_id, media_id)): Path<(String, String)>, S
 
 async fn handler_convert(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(query): Json<VideoConvertRequest>) -> Result<Json<Value>> {
 
-	mc.convert(&library_id, &media_id, query.clone(), &user).await?;
+	mc.convert(&library_id, &media_id, query.clone(), None, &user).await?;
 
 	Ok(Json(json!(query)))
 	
 }
+async fn handler_convert_plugin(Path((library_id, media_id, plugin_id)): Path<(String, String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(query): Json<VideoConvertRequest>) -> Result<Json<Value>> {
 
+	mc.convert(&library_id, &media_id, query.clone(), Some(plugin_id), &user).await?;
+
+	Ok(Json(json!(query)))
+	
+}
 async fn handler_get_file(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, range: Option<RangeDefinition>, Query(query): Query<MediaFileQuery>) -> Result<Response> {
 	let reader = mc.library_file(&library_id, &media_id, range.clone(), query, &user).await?;
 	reader.into_response(&library_id, range, None, Some((mc.clone(), &user))).await

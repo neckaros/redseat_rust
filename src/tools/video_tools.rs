@@ -7,6 +7,7 @@ use std::{path::Path, process::Stdio};
 use std::{default, str};
 use nanoid::nanoid;
 use regex::Regex;
+use rs_plugin_common_interfaces::video::{VideoAlignment, VideoConvertInterval, VideoConvertRequest, VideoOverlay, VideoTextOverlay};
 use rs_plugin_common_interfaces::{RsVideoCodec, RsVideoFormat};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -65,128 +66,6 @@ impl core::fmt::Display for VideoError {
 impl std::error::Error for VideoError {}
 
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, strum_macros::Display,EnumString, Default)]
-#[serde(rename_all = "camelCase")] 
-#[strum(serialize_all = "camelCase")]
-pub enum VideoOverlayPosition {
-	TopLeft,
-    #[default]
-    TopRight,
-    BottomLeft,
-    BottomRight,
-    BottomCenter,
-    TopCenter,
-    Center
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, strum_macros::Display,EnumString, Default)]
-#[serde(rename_all = "camelCase")] 
-#[strum(serialize_all = "camelCase")]
-pub enum VideoAlignment {
-    #[default]
-    Center,
-    Left,
-    Right,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, strum_macros::Display,EnumString,)]
-#[serde(rename_all = "camelCase")] 
-#[strum(serialize_all = "camelCase")]
-pub enum VideoOverlayType {
-	Watermark,
-    File,
-}
-
-impl VideoOverlayPosition {
-    pub fn as_filter(&self, margin: f64) -> String {
-        match self {
-            VideoOverlayPosition::TopLeft => format!("main_w*{}:main_h*{}",margin, margin),
-            VideoOverlayPosition::TopRight => format!("(main_w-w):min(main_h,main_w)*{}", margin),
-            VideoOverlayPosition::BottomLeft => format!("main_w*{}:(main_h-h)", margin),
-            VideoOverlayPosition::BottomRight => format!("(main_w-w):(main_h-h)"),
-            VideoOverlayPosition::BottomCenter => format!("main_w*{}:(main_h-h)", margin),//TODO
-            VideoOverlayPosition::TopCenter => format!("main_w*{}:main_h*{}",margin, margin), //TODO
-            VideoOverlayPosition::Center => format!("main_w*{}:main_h*{}",margin, margin), //TODO
-        }
-    }
-    pub fn as_ass_alignment(&self) -> String {
-        match self {
-            VideoOverlayPosition::TopLeft => String::from("7"),
-            VideoOverlayPosition::TopCenter => String::from("8"),
-            VideoOverlayPosition::TopRight => String::from("9"),
-            VideoOverlayPosition::Center => String::from("5"),
-            VideoOverlayPosition::BottomLeft => String::from("1"),
-            VideoOverlayPosition::BottomCenter => String::from("2"),
-            VideoOverlayPosition::BottomRight => String::from("3"),
-        }
-    }
-
-
-}
-
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct VideoConvertInterval {
-    start: f64,
-    duration: Option<f64>,
-    /// will default to current input
-    input: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-
-pub struct VideoOverlay {
-    #[serde(rename = "type")]
-    pub kind: VideoOverlayType,
-    pub path: String,
-    #[serde(default)]
-    pub position: VideoOverlayPosition,
-    pub margin: Option<f64>,
-    pub ratio: f32,
-    pub opacity: f32,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")] 
-pub struct VideoTextOverlay {
-    pub text: String,
-    pub font_color: Option<String>,
-    pub font: Option<String>,
-    #[serde(default)]
-    pub position: VideoOverlayPosition,
-    pub margin_vertical: Option<i32>,
-    pub margin_horizontal: Option<i32>,
-    pub margin_right: Option<i32>,
-    pub margin_bottom: Option<i32>,
-    pub font_size: i32,
-    pub opacity: Option<f32>,
-    pub shadow_color: Option<String>,
-    pub shado_opacity: Option<f32>,
-    pub start: Option<u32>,
-    pub end: Option<u32>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")] 
-pub struct VideoConvertRequest {
-    pub id: String,
-    pub format: RsVideoFormat,
-    pub codec: Option<RsVideoCodec>,
-    pub crf: Option<u16>,
-    #[serde(default)]
-    pub no_audio: bool,
-    pub width: Option<String>,
-    pub height: Option<String>,
-    pub framerate: Option<u16>,
-    pub crop_width: Option<u16>,
-    pub crop_height: Option<u16>,
-    pub aspect_ratio: Option<String>,
-    pub aspect_ratio_alignment: Option<VideoAlignment>,
-    pub overlay: Option<VideoOverlay>,
-    pub texts: Option<Vec<VideoTextOverlay>>,
-    #[serde(default)]
-    pub intervals: Vec<VideoConvertInterval>,
-}
 
 
 #[derive(Debug)]

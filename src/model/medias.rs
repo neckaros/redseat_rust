@@ -13,16 +13,16 @@ use mime_guess::get_mime_extensions_str;
 use nanoid::nanoid;
 use query_external_ip::SourceError;
 use regex::Regex;
-use rs_plugin_common_interfaces::{request::{RsRequest, RsRequestStatus}, url::{RsLink, RsLinkType}, PluginType, RsCookie};
+use rs_plugin_common_interfaces::{request::{RsRequest, RsRequestStatus}, url::{RsLink, RsLinkType}, video::{RsVideoTranscodeJob, RsVideoTranscodeJobPluginRequest, RsVideoTranscodeStatus, VideoConvertRequest, VideoOverlayType}, PluginType, RsCookie};
 use rusqlite::{types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, ToSql};
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
-use tokio::{fs::File, io::{copy, AsyncRead, AsyncReadExt, AsyncWriteExt}, sync::mpsc};
+use tokio::{fs::File, io::{copy, AsyncRead, AsyncReadExt, AsyncWriteExt}, sync::mpsc, time::sleep, time::Duration};
 use tokio_stream::StreamExt;
 use tokio_util::{compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt}, io::{ReaderStream, StreamReader, SyncIoBridge}};
 use zip::ZipWriter;
 
-use crate::{domain::{deleted::RsDeleted, library::LibraryType, media::{self, ConvertMessage, ConvertProgress, RsGpsPosition, DEFAULT_MIME}, plugin, MediaElement}, error::RsError, model::store::sql::SqlOrder, plugins::sources::{path_provider::PathProvider, Source}, routes::infos, tools::{file_tools::{filename_from_path, remove_extension}, image_tools::{convert_image_reader, image_infos, IMAGES_MIME_FULL_BROWSER_SUPPORT}, recognition, video_tools::{VideoCommandBuilder, VideoConvertRequest, VideoOverlayPosition}}};
+use crate::{domain::{deleted::RsDeleted, library::LibraryType, media::{self, ConvertMessage, ConvertProgress, RsGpsPosition, DEFAULT_MIME}, plugin, MediaElement}, error::RsError, model::store::sql::SqlOrder, plugins::sources::{path_provider::PathProvider, Source}, routes::infos, tools::{file_tools::{filename_from_path, remove_extension}, image_tools::{convert_image_reader, image_infos, IMAGES_MIME_FULL_BROWSER_SUPPORT}, recognition, video_tools::{VideoCommandBuilder}}};
 
 use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaItemReference, MediaWithAction, MediasMessage, ProgressMessage}, progress::{RsProgress, RsProgressType}, ElementAction}, error::RsResult, plugins::{get_plugin_fodler, sources::{async_reader_progress::ProgressReader, error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{self, resize_image_reader, ImageSize}, log::{log_error, log_info, LogServiceType}, prediction::{predict_net, preload_model, PredictionTagResult}, video_tools::{self, probe_video, VideoTime}}};
 
@@ -1050,7 +1050,7 @@ impl ModelController {
         let uri = if let Some(local_path) = local_path {
             local_path.to_str().unwrap().to_string()
         } else {
-            ModelController::get_temporary_local_read_url(library_id, media_id).await?
+            ModelController::get_temporary_local_read_url(library_id, media_id, None).await?
         };
         let thumb = video_tools::thumb_video(&uri, time).await?;
         let mut cursor = std::io::Cursor::new(thumb);
@@ -1058,8 +1058,8 @@ impl ModelController {
         Ok(thumb)
     }
 
-    pub async  fn get_temporary_local_read_url(library_id: &str, media_id: &str) -> Result<String> {
-        let exp = ClaimsLocal::generate_seconds(240);
+    pub async  fn get_temporary_local_read_url(library_id: &str, media_id: &str, delay: Option<u64>) -> Result<String> {
+        let exp = ClaimsLocal::generate_seconds(delay.unwrap_or(240));
         let claims = ClaimsLocal {
             cr: "service::get_video_thumb".to_string(),
             kind: crate::tools::auth::ClaimsLocalType::File(library_id.to_string(), media_id.to_string()),
@@ -1127,19 +1127,123 @@ impl ModelController {
         }
     }
 
-    pub async fn convert(&self, library_id: &str, media_id: &str, request: VideoConvertRequest, requesting_user: &ConnectedUser) -> crate::Result<()> {
+
+    pub async fn convert(&self, library_id: &str, media_id: &str, request: VideoConvertRequest, plugin_id: Option<String>, requesting_user: &ConnectedUser) -> crate::Result<()> {
         requesting_user.check_file_role(library_id, media_id, LibraryRole::Write)?;
         let store = self.store.get_library_store(library_id)?;
         let media = store.get_media(media_id, requesting_user.user_id().ok()).await?.ok_or(SourcesError::UnableToFindMedia(library_id.to_string(), media_id.to_string(), "convert".to_string()))?;
 
 
         let filename = format!("{}.{}", remove_extension(&media.name), request.format);
-        let queue_element = VideoConvertQueueElement::new(library_id.to_string(), media_id.to_string(), filename, requesting_user.clone(), request);
+        let queue_element = VideoConvertQueueElement::new(library_id.to_string(), plugin_id.clone(), media_id.to_string(), filename.clone(), requesting_user.clone(), request.clone());
         let message = ConvertMessage {
             library: library_id.to_string(),
             progress: queue_element.status.clone(),
         };
         self.send_convert_progress(message);
+
+
+        // If plugin convert is requested
+        if let Some(plugin_id) = &plugin_id {
+            let status = self.convert_submit_media(library_id, media_id, request.clone(), &plugin_id).await?;
+            let job_id = status.id.clone();
+            
+            // Clone what you need for the background task
+            let plugin_id_owned = plugin_id.clone();
+            let mc_progress = self.clone(); // or however you get your progress sender
+            let request_clone = request.clone();
+            let lib_progress = library_id.to_string(); // adjust based on your actual type
+            let name_progress = filename.clone();
+            let media_progress: MediaForUpdate = media.into();
+            // Spawn background task
+            tokio::spawn(async move {
+    let mut poll_interval = Duration::from_secs(2);
+    
+    loop {
+        sleep(poll_interval).await;
+        
+        match mc_progress.convert_status(&job_id, &plugin_id_owned).await {
+                        Ok(current_status) => {
+                            let is_terminal = matches!(
+                                current_status.status,
+                                RsVideoTranscodeStatus::Completed 
+                                | RsVideoTranscodeStatus::Failed 
+                                | RsVideoTranscodeStatus::Canceled
+                            );
+                            
+                            let done = is_terminal;
+                            let percent = current_status.progress;
+                            
+                            let message = ConvertMessage {
+                                library: lib_progress.clone(),
+                                progress: ConvertProgress {
+                                    percent: percent.into(),
+                                    converted_id: if done { Some(job_id.clone()) } else { None },
+                                    filename: name_progress.clone(),
+                                    done,
+                                    id: request_clone.id.clone(),
+                                    request: Some(request_clone.clone()),
+                                    estimated_remaining_seconds: None,
+                                },
+                            };
+                            mc_progress.send_convert_progress(message);
+                            
+                            if matches!(current_status.status, RsVideoTranscodeStatus::Completed) {
+                                // Handle all errors here instead of using ?
+                                match mc_progress.convert_link(&job_id, &plugin_id_owned).await {
+                                    Ok(link) => {
+                                        let source = SourceRead::Request(link);
+                                        
+                                        match source.into_reader(
+                                            Some(&lib_progress), 
+                                            None, 
+                                            None, 
+                                            Some((mc_progress.clone(), &ConnectedUser::ServerAdmin)), 
+                                            None
+                                        ).await {
+                                            Ok(reader) => {
+                                                // Note: Can't use self here, need to use mc_progress
+                                                match mc_progress.add_library_file(
+                                                    &lib_progress, 
+                                                    &name_progress, 
+                                                    Some(media_progress.clone()), 
+                                                    reader.stream, 
+                                                    &ConnectedUser::ServerAdmin  // Or pass requesting_user as owned
+                                                ).await {
+                                                    Ok(media) => {
+                                                        // Success - maybe send final progress update
+                                                        tracing::info!("Successfully added media: {:?}", media);
+                                                    }
+                                                    Err(e) => {
+                                                        tracing::error!("Failed to add library file: {:?}", e);
+                                                        // Send error progress update
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                tracing::error!("Failed to create reader: {:?}", e);
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("Failed to get convert link: {:?}", e);
+                                    }
+                                }
+                            }
+                            
+                            if is_terminal {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("Error polling status: {:?}", e);
+                            break;
+                        }
+                    }
+                }
+            });
+            return Ok(());
+        }
 
         let converting = self.convert_current.read().await;
         let mut queue = self.convert_queue.write().await;
@@ -1233,11 +1337,11 @@ impl ModelController {
 
         if let Some(overlay) = &mut element.request.overlay {
             match overlay.kind {
-                video_tools::VideoOverlayType::Watermark => {
+                VideoOverlayType::Watermark => {
                     let name = if overlay.path.is_empty() { ".watermark.png".to_owned() } else { format!(".watermark.{}.png", &overlay.path)};
                     overlay.path = local.get_full_path(&name).to_str().ok_or(Error::ServiceError("Convert".to_owned(), Some("Invalid watermark path".to_owned())))?.to_string();
                 },
-                video_tools::VideoOverlayType::File => todo!(),
+                VideoOverlayType::File => todo!(),
             }
   
         }
@@ -1301,7 +1405,7 @@ impl ModelController {
         let uri = if let Some(local_path) = local_path {
             local_path.to_str().unwrap().to_string()
         } else {
-            ModelController::get_temporary_local_read_url(library_id, media_id).await?
+            ModelController::get_temporary_local_read_url(library_id, media_id, Some(240)).await?
         };
 
         let videos_infos = probe_video(&uri).await?;
