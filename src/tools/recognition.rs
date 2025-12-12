@@ -239,21 +239,163 @@ impl FaceRecognitionService {
         let outputs = self.detection_session.run(ort::inputs![name => input_tensor_value]?)?;
         let bbox_tensor = &outputs[0];
         let conf_tensor = &outputs[1];
-        let bbox_array: ndarray::ArrayD<f32> = bbox_tensor.try_extract_tensor()?.to_owned();
-        let conf_array: ndarray::ArrayD<f32> = conf_tensor.try_extract_tensor()?.to_owned();
-        let softmax = softmax_last_dim(&conf_array);
-        let num_detections = bbox_array.shape()[1];
+        let bbox_array_raw: ndarray::ArrayD<f32> = bbox_tensor.try_extract_tensor()?.to_owned();
+        let conf_array_raw: ndarray::ArrayD<f32> = conf_tensor.try_extract_tensor()?.to_owned();
+        
+        // Extract shape information before moving arrays
+        let bbox_shape_vec: Vec<usize> = bbox_array_raw.shape().to_vec();
+        let conf_shape_vec: Vec<usize> = conf_array_raw.shape().to_vec();
+        
+        // Log shapes for debugging
+        log_info(LogServiceType::Other, format!(
+            "ONNX output shapes - bbox: {:?}, conf: {:?}",
+            bbox_shape_vec, conf_shape_vec
+        ));
+        
+        // Handle different output formats for bbox
+        let (bbox_array, num_detections) = if bbox_shape_vec.len() == 2 && bbox_shape_vec[1] == 1 {
+            // Format: [N*4, 1] - flattened bbox
+            let total_elements = bbox_shape_vec[0];
+            if total_elements % 4 != 0 {
+                return Err(RsError::Error(format!(
+                    "Invalid bbox array size: {} (not divisible by 4)",
+                    total_elements
+                )));
+            }
+            let n = total_elements / 4;
+            let reshaped = bbox_array_raw.into_shape((n, 4))
+                .map_err(|e| RsError::Error(format!("Failed to reshape bbox: {}", e)))?;
+            log_info(LogServiceType::Other, format!(
+                "Reshaped bbox from {:?} to {:?}",
+                bbox_shape_vec, reshaped.shape()
+            ));
+            (reshaped.into_dyn(), n)
+        } else if bbox_shape_vec.len() == 3 && bbox_shape_vec[0] == 1 && bbox_shape_vec[1] == 4 && bbox_shape_vec[2] > 100 {
+            // Format: [1, 4, N] - permute to [1, N, 4]
+            let axes: Vec<usize> = vec![0, 2, 1];
+            let permuted = bbox_array_raw.permuted_axes(axes);
+            log_info(LogServiceType::Other, format!(
+                "Permuted bbox array from {:?} to {:?}",
+                bbox_shape_vec, permuted.shape()
+            ));
+            (permuted, bbox_shape_vec[2])
+        } else if bbox_shape_vec.len() == 3 && bbox_shape_vec[0] == 1 {
+            // Format: [1, N, 4] - already correct
+            (bbox_array_raw, bbox_shape_vec[1])
+        } else {
+            // Unknown format, try to use as-is
+            log_info(LogServiceType::Other, format!(
+                "Warning: Unknown bbox shape {:?}, using as-is",
+                bbox_shape_vec
+            ));
+            let n = if bbox_shape_vec.len() >= 2 { bbox_shape_vec[1] } else { bbox_shape_vec[0] };
+            (bbox_array_raw, n)
+        };
+        
+        let (conf_array, has_two_classes) = if conf_shape_vec.len() == 2 && conf_shape_vec[1] == 1 {
+            // Format: [N, 1] - single confidence per anchor
+            log_info(LogServiceType::Other, format!(
+                "Using direct confidence scores from shape {:?}",
+                conf_shape_vec
+            ));
+            (conf_array_raw, false)
+        } else if conf_shape_vec.len() == 3 && conf_shape_vec[0] == 1 && conf_shape_vec[1] == 2 && conf_shape_vec[2] > 100 {
+            // Format: [1, 2, N] - permute to [1, N, 2]
+            let axes: Vec<usize> = vec![0, 2, 1];
+            let permuted = conf_array_raw.permuted_axes(axes);
+            log_info(LogServiceType::Other, format!(
+                "Permuted conf array from {:?} to {:?}",
+                conf_shape_vec, permuted.shape()
+            ));
+            (permuted, true)
+        } else if conf_shape_vec.len() == 3 && conf_shape_vec[0] == 1 {
+            // Format: [1, N, 2] - already correct
+            (conf_array_raw, true)
+        } else {
+            // Unknown format, try to use as-is
+            log_info(LogServiceType::Other, format!(
+                "Warning: Unknown conf shape {:?}, using as-is",
+                conf_shape_vec
+            ));
+            (conf_array_raw, conf_shape_vec.len() >= 2 && conf_shape_vec[1] == 2)
+        };
+        
+        // Apply softmax only if we have two classes
+        let conf_scores = if has_two_classes {
+            softmax_last_dim(&conf_array)
+        } else {
+            // Use confidence directly (already in correct format)
+            conf_array
+        };
         let mut detections = Vec::new();
         let anchors = prior_box(&cfg, (final_h as f32, final_w as f32));
+        
+        // Safety: Ensure we don't exceed anchors array bounds
+        let safe_num_detections = num_detections.min(anchors.len());
+        if num_detections > anchors.len() {
+            log_info(LogServiceType::Other, format!(
+                "Warning: num_detections ({}) exceeds anchors.len() ({}), limiting to {}",
+                num_detections, anchors.len(), safe_num_detections
+            ));
+        }
     
-        for i in 0..num_detections {
-            let bbox_row = bbox_array.index_axis(ndarray::Axis(1), i);
-            let conf_row = softmax.index_axis(ndarray::Axis(1), i);
-            let confidence = conf_row[[0, 1]];
+        for i in 0..safe_num_detections {
+            // Extract bbox row - handle both [1, N, 4] and [N, 4] formats
+            let bbox_row = if bbox_array.shape()[0] == 1 {
+                // Format: [1, N, 4] - index axis 1
+                bbox_array.index_axis(ndarray::Axis(1), i)
+            } else {
+                // Format: [N, 4] - index axis 0
+                bbox_array.index_axis(ndarray::Axis(0), i)
+            };
+            
+            // Extract confidence - handle both softmax [1, N, 2] and direct [N, 1] formats
+            let confidence = if has_two_classes {
+                // Format: [1, N, 2] with softmax - get class 1 probability
+                let conf_row = conf_scores.index_axis(ndarray::Axis(1), i);
+                if conf_row.shape().len() >= 2 && conf_row.shape()[1] >= 2 {
+                    conf_row[[0, 1]]
+                } else {
+                    log_info(LogServiceType::Other, format!(
+                        "Warning: Invalid confidence row shape at index {}: {:?}, skipping",
+                        i, conf_row.shape()
+                    ));
+                    continue;
+                }
+            } else {
+                // Format: [N, 1] or [N] - direct confidence
+                if conf_scores.shape()[0] == 1 {
+                    // [1, N, 1] format
+                    if conf_scores.shape().len() >= 3 {
+                        conf_scores[[0, i, 0]]
+                    } else if conf_scores.shape().len() == 2 {
+                        conf_scores[[0, i]]
+                    } else {
+                        conf_scores[[i]]
+                    }
+                } else {
+                    // [N, 1] or [N] format
+                    if conf_scores.shape().len() == 2 && conf_scores.shape()[1] == 1 {
+                        conf_scores[[i, 0]]
+                    } else {
+                        conf_scores[[i]]
+                    }
+                }
+            };
             
             if confidence < 0.5 { continue; }
             
-            let ext_box = extract_bbox(bbox_row.view())?;
+            let ext_box = match extract_bbox(bbox_row.view()) {
+                Ok(bbox) => bbox,
+                Err(e) => {
+                    log_info(LogServiceType::Other, format!(
+                        "Warning: Failed to extract bbox at index {}: {}, skipping",
+                        i, e
+                    ));
+                    continue;
+                }
+            };
+            
             let mut bbox = decode_retinaface_box(ext_box, anchors[i], cfg.variance, (final_w as f32, final_h as f32), (final_w as f32, final_h as f32), confidence);
             
             bbox.x1 = bbox.x1 / scale;
@@ -283,6 +425,12 @@ impl FaceRecognitionService {
     }
 
     fn extract_106_landmarks(&self, face_crop: &DynamicImage) -> RsResult<Vec<(f32, f32)>> {
+        // Validate input image dimensions
+        let (w, h) = face_crop.dimensions();
+        if w == 0 || h == 0 {
+            return Err(RsError::Error("Face crop has zero dimensions".to_string()));
+        }
+        
         let resized = face_crop.resize_exact(192, 192, FilterType::Triangle);
         let input = preprocess_for_landmark(&resized);
         let tensor = Tensor::from_array(input)?;
@@ -295,19 +443,66 @@ impl FaceRecognitionService {
         // Handle different output formats from 2d106det
         if shape.len() == 3 && shape[1] == 106 && shape[2] == 2 {
             // Shape: (1, 106, 2)
+            // Validate indices before accessing
+            if shape[0] == 0 || shape[1] < 106 || shape[2] < 2 {
+                return Err(RsError::Error(format!(
+                    "Invalid landmark tensor shape: {:?}, expected (>=1, 106, 2)",
+                    shape
+                )));
+            }
             for i in 0..106 { 
                 pts.push((landmarks[[0, i, 0]], landmarks[[0, i, 1]])); 
             }
         } else if shape.len() == 2 && shape[1] >= 212 {
             // Shape: (1, 212) - flattened
+            // Validate we have enough elements
+            if shape[0] == 0 {
+                return Err(RsError::Error("Landmark tensor has zero batch dimension".to_string()));
+            }
+            if shape[1] < 212 {
+                return Err(RsError::Error(format!(
+                    "Landmark tensor has insufficient elements: {} < 212",
+                    shape[1]
+                )));
+            }
             for i in 0..106 { 
-                pts.push((landmarks[[0, i*2]], landmarks[[0, i*2+1]])); 
+                let idx_x = i * 2;
+                let idx_y = i * 2 + 1;
+                if idx_y >= shape[1] {
+                    log_info(LogServiceType::Other, format!(
+                        "Warning: Landmark index {} out of bounds for shape {:?}, skipping remaining",
+                        i, shape
+                    ));
+                    break;
+                }
+                pts.push((landmarks[[0, idx_x]], landmarks[[0, idx_y]])); 
             }
         } else {
+            log_info(LogServiceType::Other, format!(
+                "Error: Unexpected landmark output shape: {:?}. Expected (1, 106, 2) or (1, 212)",
+                shape
+            ));
             return Err(RsError::Error(format!(
                 "Unexpected landmark output shape: {:?}. Expected (1, 106, 2) or (1, 212)", 
                 shape
             )));
+        }
+        
+        // Validate we got the expected number of points
+        if pts.len() != 106 {
+            log_info(LogServiceType::Other, format!(
+                "Warning: Expected 106 landmarks but got {}, padding or truncating",
+                pts.len()
+            ));
+            if pts.len() < 106 {
+                // Pad with default values if we got fewer
+                while pts.len() < 106 {
+                    pts.push((96.0, 96.0)); // Center of 192x192 image
+                }
+            } else {
+                // Truncate if we got more
+                pts.truncate(106);
+            }
         }
         
         // Check if landmarks are normalized to [-1, 1] range (check both x AND y)
@@ -371,6 +566,15 @@ impl FaceRecognitionService {
     }
 
     fn extract_embedding(&self, aligned_face: &DynamicImage) -> RsResult<Vec<f32>> {
+        // Validate input image dimensions
+        let (w, h) = aligned_face.dimensions();
+        if w != 112 || h != 112 {
+            log_info(LogServiceType::Other, format!(
+                "Warning: Aligned face has unexpected dimensions {}x{}, expected 112x112, resizing",
+                w, h
+            ));
+        }
+        
         // CRITICAL: ArcFace normalization
         let input = preprocess_for_arcface(aligned_face);
         let tensor = Tensor::from_array(input)?;
@@ -381,6 +585,18 @@ impl FaceRecognitionService {
 
         let outputs = self.recognition_session.run(ort::inputs![name => tensor]?)?;
         let embedding: ArrayD<f32> = outputs[0].try_extract_tensor()?.to_owned();
+        
+        // Validate embedding shape
+        let embedding_size = embedding.len();
+        if embedding_size == 0 {
+            return Err(RsError::Error("Embedding tensor is empty".to_string()));
+        }
+        if embedding_size != 512 {
+            log_info(LogServiceType::Other, format!(
+                "Warning: Embedding size is {} instead of expected 512",
+                embedding_size
+            ));
+        }
         
         // L2 normalize for cosine similarity
         let embedding_vec: Vec<f32> = embedding.iter().copied().collect();
@@ -527,7 +743,13 @@ fn preprocess_for_landmark(img: &DynamicImage) -> Array4<f32> {
 
 // ArcFace Preprocessing
 fn preprocess_for_arcface(img: &DynamicImage) -> Array4<f32> {
-    let rgb = img.to_rgb8();
+    // Ensure image is 112x112, resize if necessary
+    let rgb = if img.dimensions() != (112, 112) {
+        img.resize_exact(112, 112, FilterType::CatmullRom).to_rgb8()
+    } else {
+        img.to_rgb8()
+    };
+    
     let mut input = Array4::<f32>::zeros((1, 3, 112, 112));
     
     for y in 0..112 {
