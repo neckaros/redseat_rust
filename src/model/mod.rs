@@ -21,7 +21,7 @@ pub mod player;
 use std::{collections::{HashMap, VecDeque}, io::Read, path::PathBuf, pin::Pin, sync::Arc, thread::JoinHandle};
 use futures::lock::Mutex;
 use nanoid::nanoid;
-use rs_plugin_common_interfaces::{video::VideoConvertRequest, ImageType, RsRequest};
+use rs_plugin_common_interfaces::{ImageType, RsRequest, video::{RsVideoTranscodeStatus, VideoConvertRequest}};
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 use crate::{domain::{backup::BackupProcessStatus, library::{LibraryMessage, LibraryRole, ServerLibrary}, media::ConvertProgress, player::RsPlayerAvailable}, error::{RsError, RsResult}, plugins::{medias::{fanart::FanArtContext, imdb::ImdbContext, tmdb::TmdbContext, trakt::TraktContext}, sources::{error::SourcesError, local_provider_for_library, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source, SourceRead}, PluginManager}, tools::{clock::SECONDS_IN_HOUR, image_tools::{resize_image_reader, ImageSize}, log::log_info, scheduler::{self, ip::RefreshIpTask, refresh::RefreshTask, RsScheduler, RsTaskType}}};
@@ -47,7 +47,7 @@ impl VideoConvertQueueElement {
 	pub fn new(library: String, plugin_id: Option<String>, media: String, filename: String, user: ConnectedUser, request: VideoConvertRequest) -> VideoConvertQueueElement {
 		VideoConvertQueueElement {id: request.id.clone(), 
 			plugin_id,
-			status: ConvertProgress { id: request.id.clone(), filename, converted_id: None, done: false, percent: 0f64, estimated_remaining_seconds: None, request: Some(request.clone()) },
+			status: ConvertProgress { id: request.id.clone(), filename, converted_id: None, done: false, percent: 0f64, status: RsVideoTranscodeStatus::Pending, estimated_remaining_seconds: None, request: Some(request.clone()) },
 			request, library, media, user, 
 			 }
 	}

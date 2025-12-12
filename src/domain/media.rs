@@ -1,7 +1,7 @@
 use std::str::FromStr;
 
 use nanoid::nanoid;
-use rs_plugin_common_interfaces::{request::{RsCookie, RsRequest, RsRequestStatus}, url::RsLink, video::VideoConvertRequest};
+use rs_plugin_common_interfaces::{request::{RsCookie, RsRequest, RsRequestStatus}, url::RsLink, video::{RsVideoTranscodeStatus, VideoConvertRequest}};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use strum_macros::EnumString;
@@ -666,6 +666,7 @@ pub struct ConvertProgress {
     pub converted_id: Option<String>,
     pub done: bool,
     pub percent: f64,
+    pub status: RsVideoTranscodeStatus,
     pub estimated_remaining_seconds: Option<u64>,
     pub request: Option<VideoConvertRequest>,
 }

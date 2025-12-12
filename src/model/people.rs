@@ -1,8 +1,9 @@
 
-
+use std::{collections::HashMap, sync::{Arc, Mutex}};
 
 use async_recursion::async_recursion;
 use futures::TryStreamExt;
+use lazy_static::lazy_static;
 use nanoid::nanoid;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -11,7 +12,7 @@ use tokio::{fs::File, io::{AsyncRead, AsyncWriteExt, BufReader}};
 
 use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, url::RsLink, ExternalImage, Gender, ImageType};
 use tokio_util::io::StreamReader;
-use crate::{domain::{deleted::RsDeleted, library::LibraryRole, people::{PeopleMessage, Person, PersonWithAction}, tag::Tag, ElementAction}, error::{RsError, RsResult}, plugins::sources::{error::SourcesError, AsyncReadPinBox, FileStreamResult, Source}, tools::{image_tools::{resize_image_reader, ImageSize}, log::log_info}};
+use crate::{domain::{deleted::RsDeleted, library::LibraryRole, people::{FaceBBox, FaceEmbedding, PeopleMessage, Person, PersonWithAction, UnassignedFace}, tag::Tag, ElementAction}, error::{RsError, RsResult}, model::medias::MediaFileQuery, plugins::sources::{error::SourcesError, AsyncReadPinBox, FileStreamResult, Source}, tools::{image_tools::{resize_image_reader, ImageSize}, log::log_info, recognition::{DetectedFace, FaceRecognitionService}}};
 
 use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
 
@@ -98,9 +99,43 @@ pub struct PersonForUpdate {
     pub bio: Option<String>,
 }
 
+lazy_static! {
+    static ref FACE_RECOGNITION_SERVICE: Mutex<Option<Arc<FaceRecognitionService>>> = Mutex::new(None);
+}
 
+#[derive(Serialize)]
+pub struct DetectedFaceResult {
+    pub face_id: Option<String>,
+    pub confidence: f32,
+    pub bbox: FaceBBox,
+}
+
+#[derive(Serialize)]
+pub struct ClusteringResult {
+    pub clusters_created: usize,
+}
 
 impl ModelController {
+
+    async fn get_face_recognition_service(&self) -> RsResult<Arc<FaceRecognitionService>> {
+        {
+            let guard = FACE_RECOGNITION_SERVICE.lock().unwrap();
+            if let Some(service) = &*guard {
+                return Ok(service.clone());
+            }
+        } 
+    
+        let service = FaceRecognitionService::new_async("models").await?;
+        
+        let mut guard = FACE_RECOGNITION_SERVICE.lock().unwrap();
+        if let Some(existing) = &*guard {
+            return Ok(existing.clone());
+        }
+        
+        let service = Arc::new(service);
+        *guard = Some(service.clone());
+        Ok(service)
+    }
 
 	pub async fn get_people(&self, library_id: &str, query: PeopleQuery, requesting_user: &ConnectedUser) -> Result<Vec<Person>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
@@ -264,7 +299,7 @@ impl ModelController {
         let reader = self.download_person_image(&ids, kind, &None).await?;
         self.update_person_image(library_id, person_id, &kind.clone(), reader, &ConnectedUser::ServerAdmin).await?;
         Ok(())
-	}
+    }
 
     pub async fn refresh_person(&self, library_id: &str, person_id: &str, requesting_user: &ConnectedUser) -> RsResult<Person> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
@@ -297,6 +332,172 @@ impl ModelController {
 
         let new_person = self.update_person(library_id, person_id.to_string(), updates, requesting_user).await?;
         Ok(new_person)        
-	}
+    }
+
+    // FACE RECOGNITION
+
+    pub async fn process_media_faces(
+        &self,
+        library_id: &str,
+        media_id: &str,
+        requesting_user: &ConnectedUser
+    ) -> RsResult<Vec<DetectedFaceResult>> {
+        let store = self.store.get_library_store(library_id)?;
+        
+        // Load image from source
+        let m = self.library_file(library_id, media_id, None, MediaFileQuery::default() , requesting_user).await?;
+        let mut m = m.into_reader(Some(library_id), None, None, Some((self.clone(), &requesting_user)), None).await?;
+        let image = crate::tools::image_tools::reader_to_image(&mut m.stream).await?.image;
+
+        let service = self.get_face_recognition_service().await?;
+        let faces = service.detect_and_extract_faces_async(image).await?;
+        
+        let mut results = Vec::new();
+
+        for face in &faces {
+            // Try matching with 0.7 threshold
+            if let Some((person_id, _sim)) = self.match_face_to_person(library_id, &face.embedding, 0.7).await? {
+                // High confidence → assign directly
+                let face_id = nanoid!();
+                store.add_face_embedding(
+                    face_id.clone(), &person_id, face.embedding.clone(),
+                    Some(media_id.to_string()), Some(FaceBBox {x1: face.bbox.x1, y1: face.bbox.y1, x2: face.bbox.x2, y2: face.bbox.y2}),
+                    face.confidence, Some(face.pose)
+                ).await?;
+                store.update_media_people_mapping(media_id.to_string(), &person_id).await?;
+                results.push(DetectedFaceResult { face_id: Some(face_id), confidence: face.confidence, bbox: FaceBBox {x1: face.bbox.x1, y1: face.bbox.y1, x2: face.bbox.x2, y2: face.bbox.y2} });
+            } else {
+                // No match → stage for clustering
+                let face_id = nanoid!();
+                store.add_unassigned_face(
+                    face_id.clone(), face.embedding.clone(), media_id.to_string(),
+                    FaceBBox {x1: face.bbox.x1, y1: face.bbox.y1, x2: face.bbox.x2, y2: face.bbox.y2},
+                    face.confidence, Some(face.pose)
+                ).await?;
+                results.push(DetectedFaceResult { face_id: Some(face_id), confidence: face.confidence, bbox: FaceBBox {x1: face.bbox.x1, y1: face.bbox.y1, x2: face.bbox.x2, y2: face.bbox.y2} });
+            }
+        }
+        
+        store.mark_media_face_processed(media_id.to_string()).await?;
+        Ok(results)
+    }
+
+    pub async fn cluster_unassigned_faces(&self, library_id: &str) -> RsResult<ClusteringResult> {
+        let store = self.store.get_library_store(library_id)?;
+        let unassigned = store.get_unassigned_faces().await?;
+        
+        if unassigned.len() < 3 {
+            return Ok(ClusteringResult { clusters_created: 0 });
+        }
+        
+        // Chinese Whispers clustering (CPU-bound)
+        let clusters = tokio::task::spawn_blocking(move || {
+            chinese_whispers_clustering(&unassigned, 0.7)
+        }).await.map_err(|e| RsError::Error(format!("Clustering task failed: {}", e)))?;
+        
+        let mut created = 0;
+        for (cluster_id, face_ids) in clusters {
+            if face_ids.len() >= 3 {
+                // Create person
+                let new_person = PersonForAdd {
+                    name: format!("Unknown Person {}", nanoid!(5)),
+                    generated: true,
+                    ..Default::default()
+                };
+                let person = self.add_pesron(library_id, new_person, &ConnectedUser::ServerAdmin).await?;
+                store.promote_cluster_to_person(cluster_id, person.id).await?;
+                created += 1;
+            } else {
+                store.assign_cluster_to_faces(face_ids, cluster_id).await?;
+            }
+        }
+        
+        Ok(ClusteringResult { clusters_created: created })
+    }
+
+    pub async fn get_unassigned_faces(&self, library_id: &str) -> RsResult<Vec<UnassignedFace>> {
+        let store = self.store.get_library_store(library_id)?;
+        let faces = store.get_unassigned_faces().await?;
+        Ok(faces)
+    }
+
+    async fn match_face_to_person(&self, library_id: &str, embedding: &[f32], threshold: f32) -> RsResult<Option<(String, f32)>> {
+        let store = self.store.get_library_store(library_id)?;
+        let all_embeddings = store.get_all_embeddings().await?;
+        
+        let mut best_match: Option<(String, f32)> = None;
+        for (person_id, person_emb) in all_embeddings {
+            let sim = cosine_similarity(embedding, &person_emb);
+            if sim >= threshold {
+                if best_match.is_none() || sim > best_match.as_ref().unwrap().1 {
+                    best_match = Some((person_id, sim));
+                }
+            }
+        }
+        Ok(best_match)
+    }
+}
+
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    // Handle empty or mismatched embeddings
+    if a.is_empty() || b.is_empty() || a.len() != b.len() {
+        return 0.0;
+    }
+    // Assuming L2-normalized embeddings: cosine = dot product
+    a.iter().zip(b).map(|(x, y)| x * y).sum()
+}
+
+fn chinese_whispers_clustering(faces: &[UnassignedFace], threshold: f32) -> HashMap<String, Vec<String>> {
+    let n = faces.len();
+    let mut adj = vec![Vec::new(); n];
     
+    // Build graph
+    for i in 0..n {
+        for j in i+1..n {
+            let sim = cosine_similarity(&faces[i].embedding, &faces[j].embedding);
+            if sim >= threshold {
+                adj[i].push(j);
+                adj[j].push(i);
+            }
+        }
+    }
+
+    // Initialize labels (each node is its own class initially)
+    let mut labels: Vec<usize> = (0..n).collect();
+    
+    // Iterations
+    let iterations = 20;
+    for _ in 0..iterations {
+        let mut changes = 0;
+        let mut indices: Vec<usize> = (0..n).collect();
+        // Shuffle indices? Not strictly necessary for simple impl but good for randomness
+        // indices.shuffle(&mut rand::thread_rng()); 
+
+        for &i in &indices {
+            // Find most frequent label among neighbors
+            let mut label_counts = HashMap::new();
+            for &neighbor in &adj[i] {
+                *label_counts.entry(labels[neighbor]).or_insert(0) += 1;
+            }
+            
+            if let Some((&best_label, _)) = label_counts.iter().max_by_key(|&(_, count)| count) {
+                if labels[i] != best_label {
+                    labels[i] = best_label;
+                    changes += 1;
+                }
+            }
+        }
+        if changes == 0 {
+            break;
+        }
+    }
+
+    // Group by label
+    let mut clusters = HashMap::new();
+    for (i, &label) in labels.iter().enumerate() {
+        let cluster_id = format!("cluster_{}", label);
+        clusters.entry(cluster_id).or_insert_with(Vec::new).push(faces[i].id.clone());
+    }
+    
+    clusters
 }

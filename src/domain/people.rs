@@ -56,3 +56,35 @@ pub struct PersonWithAction {
     pub action: ElementAction,
     pub person: Person
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct FaceBBox {
+    pub x1: f32,
+    pub y1: f32,
+    pub x2: f32,
+    pub y2: f32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")] 
+pub struct UnassignedFace {
+    pub id: String,
+    pub embedding: Vec<f32>,
+    pub media_ref: String,
+    pub bbox: FaceBBox,
+    pub confidence: f32,
+    pub pose: Option<(f32, f32, f32)>,
+    pub cluster_id: Option<String>,
+    pub created: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct FaceEmbedding {
+    pub id: String,
+    pub embedding: Vec<f32>,
+    pub media_ref: Option<String>,
+    pub bbox: Option<FaceBBox>,
+    pub confidence: Option<f32>,
+    pub pose: Option<(f32, f32, f32)>,
+}

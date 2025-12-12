@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use nanoid::nanoid;
 use clap::Parser;
 use tracing_subscriber::fmt::format;
-use crate::{error::{Error, RsResult}, model::{users::ConnectedUser, ModelController}, plugins::url, tools::{image_tools::has_image_magick, log::{log_error, log_info, LogServiceType}}, RegisterInfo, Result};
+use crate::{RegisterInfo, Result, error::{Error, RsError, RsResult}, model::{ModelController, users::ConnectedUser}, plugins::url, tools::{image_tools::has_image_magick, log::{LogServiceType, log_error, log_info}}};
 
 static CONFIG: OnceLock<Mutex<ServerConfig>> = OnceLock::new();
 
@@ -33,6 +33,17 @@ pub struct ServerConfig {
     pub token: Option<String>,
     #[serde(default = "default_false")]
     pub imagesUseIm: bool
+}
+
+impl ServerConfig {
+    pub fn get_server_base_url(&self) -> RsResult<String> {
+        return Ok(format!("https://{}-srv.redseat.cloud:{}", self.id.clone().ok_or(RsError::Error("No id set for this server".to_string()))?, self.get_port().to_string()))
+    }
+
+    pub fn get_port(&self) -> u16 {
+        let config_port = self.port;
+        env::var(ENV_PORT).ok().and_then(|p| p.parse::<u16>().ok()).or_else(|| config_port).unwrap_or(8080)
+    }
 }
 
 #[derive(Parser, Debug)]

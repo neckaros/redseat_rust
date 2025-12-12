@@ -80,7 +80,7 @@ impl ModelController {
     pub async fn convert_submit_media(&self, library_id: &str, media_id: &str, request: VideoConvertRequest, plugin_id: &str) -> RsResult<RsVideoTranscodeJobStatus> {
         
         let plugin_with_credentials= self.get_plugin_with_credential(plugin_id).await?;
-        let temp_url =ModelController::get_temporary_local_read_url(library_id, media_id, Some(21600)).await?;
+        let temp_url =ModelController::get_temporary_read_url(library_id, media_id, Some(21600)).await?;
         let jobrequest = RsVideoTranscodeJobPluginRequest {
             job: RsVideoTranscodeJob {
                 source: RsRequest { url: temp_url, ..Default::default() },
@@ -97,7 +97,7 @@ impl PluginManager {
         if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
             let mut plugin_m = plugin.plugin.lock().unwrap();
             
-            println!("PLUGIN {}", plugin_with_cred.plugin.name);
+            println!("PLUGIN {} - convert submit", plugin_with_cred.plugin.name);
             if plugin.infos.capabilities.contains(&PluginType::VideoConvert) {
                 let res = plugin_m.call_get_error_code::<Json<RsVideoTranscodeJobPluginRequest>, Json<RsVideoTranscodeJobStatus>>("convert", Json(job)).map_err(|x| crate::error::Error::PluginError(x.1, plugin_with_cred.plugin.id))?;
                 return Ok(res.into_inner())  
@@ -124,7 +124,7 @@ impl PluginManager {
         if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
             let mut plugin_m = plugin.plugin.lock().unwrap();
             
-            println!("PLUGIN {}", plugin_with_cred.plugin.name);
+            println!("PLUGIN {} - convert_status", plugin_with_cred.plugin.name);
             let action = RsVideoTranscodeJobPluginAction { job_id: job_id.to_string(), credentials: plugin_with_cred.credential.map(|p| p.into()).unwrap_or_default() };
             if plugin.infos.capabilities.contains(&PluginType::VideoConvert) {
                 let res = plugin_m.call_get_error_code::<Json<RsVideoTranscodeJobPluginAction>, Json<RsVideoTranscodeJobStatus>>("convert_status", Json(action)).map_err(|x| crate::error::Error::PluginError(x.1, plugin_with_cred.plugin.id))?;
@@ -183,13 +183,42 @@ impl PluginManager {
         if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
             let mut plugin_m = plugin.plugin.lock().unwrap();
             
-            println!("PLUGIN {}", plugin_with_cred.plugin.name);
+            println!("PLUGIN {} - convert_link", plugin_with_cred.plugin.name);
             if plugin.infos.capabilities.contains(&PluginType::VideoConvert) {
                 let action = RsVideoTranscodeJobPluginAction { job_id: job_id.to_string(), credentials: plugin_with_cred.credential.map(|p| p.into()).unwrap_or_default() };
                 let res = plugin_m.call_get_error_code::<Json<RsVideoTranscodeJobPluginAction>, Json<RsRequest>>("convert_link", Json(action)).map_err(|x| crate::error::Error::PluginError(x.1, plugin_with_cred.plugin.id))?;
                 return Ok(res.into_inner())  
             } else {
                 return Err(crate::error::RsError::PluginUnsupportedCall(plugin_with_cred.plugin.id, "convert_link".to_string()));
+            }
+        } else {
+            return Err(crate::error::RsError::PluginNotFound(plugin_with_cred.plugin.id));
+        }
+    }
+}
+
+
+/// Submit conversion clean
+impl ModelController {
+    pub async fn convert_clean(&self,job_id: &str, plugin_id: &str) -> RsResult<RsVideoTranscodeJobStatus> {
+        
+        let plugin= self.get_plugin_with_credential(plugin_id).await?;
+        self.plugin_manager.convert_clean(plugin, job_id).await
+        
+    }
+}
+impl PluginManager { 
+    pub async fn convert_clean(&self, plugin_with_cred: PluginWithCredential, job_id: &str) -> RsResult<RsVideoTranscodeJobStatus> {
+        if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
+            let mut plugin_m = plugin.plugin.lock().unwrap();
+            
+            println!("PLUGIN {} - convert_clean", plugin_with_cred.plugin.name);
+            let action = RsVideoTranscodeJobPluginAction { job_id: job_id.to_string(), credentials: plugin_with_cred.credential.map(|p| p.into()).unwrap_or_default() };
+            if plugin.infos.capabilities.contains(&PluginType::VideoConvert) {
+                let res = plugin_m.call_get_error_code::<Json<RsVideoTranscodeJobPluginAction>, Json<RsVideoTranscodeJobStatus>>("convert_clean", Json(action)).map_err(|x| crate::error::Error::PluginError(x.1, plugin_with_cred.plugin.id))?;
+                return Ok(res.into_inner())  
+            } else {
+                return Err(crate::error::RsError::PluginUnsupportedCall(plugin_with_cred.plugin.id, "convert_clean".to_string()));
             }
         } else {
             return Err(crate::error::RsError::PluginNotFound(plugin_with_cred.plugin.id));

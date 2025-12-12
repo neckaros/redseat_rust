@@ -22,9 +22,9 @@ use tokio_stream::StreamExt;
 use tokio_util::{compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt}, io::{ReaderStream, StreamReader, SyncIoBridge}};
 use zip::ZipWriter;
 
-use crate::{domain::{deleted::RsDeleted, library::LibraryType, media::{self, ConvertMessage, ConvertProgress, RsGpsPosition, DEFAULT_MIME}, plugin, MediaElement}, error::RsError, model::store::sql::SqlOrder, plugins::sources::{path_provider::PathProvider, Source}, routes::infos, tools::{file_tools::{filename_from_path, remove_extension}, image_tools::{convert_image_reader, image_infos, IMAGES_MIME_FULL_BROWSER_SUPPORT}, recognition, video_tools::{VideoCommandBuilder}}};
+use crate::{domain::{MediaElement, deleted::RsDeleted, library::LibraryType, media::{self, ConvertMessage, ConvertProgress, DEFAULT_MIME, RsGpsPosition}, plugin}, error::RsError, model::store::sql::SqlOrder, plugins::sources::{Source, path_provider::PathProvider}, routes::infos, server::get_config, tools::{file_tools::{filename_from_path, remove_extension}, image_tools::{IMAGES_MIME_FULL_BROWSER_SUPPORT, convert_image_reader, image_infos}, recognition, video_tools::VideoCommandBuilder}};
 
-use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaItemReference, MediaWithAction, MediasMessage, ProgressMessage}, progress::{RsProgress, RsProgressType}, ElementAction}, error::RsResult, plugins::{get_plugin_fodler, sources::{async_reader_progress::ProgressReader, error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{self, resize_image_reader, ImageSize}, log::{log_error, log_info, LogServiceType}, prediction::{predict_net, preload_model, PredictionTagResult}, video_tools::{self, probe_video, VideoTime}}};
+use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaItemReference, MediaWithAction, MediasMessage, ProgressMessage}, progress::{RsProgress, RsProgressType}, ElementAction}, error::RsResult, plugins::{get_plugin_fodler, sources::{async_reader_progress::ProgressReader, error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{self, resize_image_reader, ImageSize}, log::{log_error, log_warn, log_info, LogServiceType}, prediction::{predict_net, preload_model, PredictionTagResult}, video_tools::{self, probe_video, VideoTime}}};
 
 use super::{error::{Error, Result}, plugins::PluginQuery, store::{self, sql::library::medias::MediaBackup}, users::ConnectedUser, ModelController, VideoConvertQueueElement};
 
@@ -338,11 +338,11 @@ impl ModelController {
         if let Err(error) = result {
             if let crate::Error::Source(SourcesError::NotFound(_)) = &error {
                 self.generate_thumb(library_id, media_id, requesting_user).await?;
-                self.library_image(library_id, ".thumbs", media_id, None, size, requesting_user).await
+                self.library_image(library_id, ".thumbs", media_id, None, None, requesting_user).await
 
             } else if let crate::Error::CorruptedImage = &error {
                 self.generate_thumb(library_id, media_id, requesting_user).await?;
-                self.library_image(library_id, ".thumbs", media_id, None, size, requesting_user).await
+                self.library_image(library_id, ".thumbs", media_id, None, None, requesting_user).await
 
             } else {
                 Err(error)
@@ -419,7 +419,16 @@ impl ModelController {
 
         new_file.kind = FileType::Album;
 
+        infos.name = None;
+        infos.mimetype = None;
+        infos.created = None;
+        infos.pages = Some(pages);
+
+
         let id = nanoid!();
+        
+        log_info(crate::tools::log::LogServiceType::Source, format!("New files {:?}", new_file));
+        log_info(crate::tools::log::LogServiceType::Source, format!("update {:?}", infos));
         store.add_media(MediaForInsert { id: id.clone(), media: new_file }).await?;
         self.update_media(library_id, id.to_owned(), infos, false, requesting_user).await?;
         let r = self.generate_thumb(&library_id, &id, &ConnectedUser::ServerAdmin).await;
@@ -428,6 +437,9 @@ impl ModelController {
         }
 
         let media = store.get_media(&id, requesting_user.user_id().ok()).await?.ok_or(SourcesError::UnableToFindMedia(library_id.to_string(), id.to_string(), "split_media".to_string()))?;
+
+        log_info(crate::tools::log::LogServiceType::Source, format!("splitted {:?}", media));
+        self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media: media.clone(), action: ElementAction::Added}] });
 
         Ok(media)
 	}
@@ -527,15 +539,16 @@ impl ModelController {
         if thumb {
             let _ = self.generate_thumb(library_id, media_id, requesting_user).await;
         }
-        /*println!("parsing");
-        let mut m = self.library_file(library_id, media_id, None, MediaFileQuery::default() , requesting_user).await?.into_reader(Some(library_id), None, None, Some((self.clone(), &requesting_user)), None).await?;
-        let image = image_tools::reader_to_image(&mut m.stream).await?;
-        let r = recognition::pro(image.image);
-        println!("parsed {:?}", r);*/
-
         self.cache_check_library_notcrypt(library_id).await?;
 
         let existing = self.get_media(library_id, media_id.to_owned(), requesting_user).await?.ok_or(SourcesError::UnableToFindMedia(library_id.to_string(), media_id.to_string(), "process_media".to_string()))?;
+
+        if existing.kind == FileType::Photo {
+            let r = self.process_media_faces(library_id, media_id, requesting_user).await;
+            if let Err(e) = r {
+                log_error(LogServiceType::Source, format!("Face detection failed for {}: {:?}", media_id, e));
+            }
+        }
 
         if existing.kind == FileType::Video {
             let r = self.update_video_infos(library_id, media_id, requesting_user, false).await;
@@ -1072,6 +1085,21 @@ impl ModelController {
         Ok(uri)
     }
 
+    pub async  fn get_temporary_read_url(library_id: &str, media_id: &str, delay: Option<u64>) -> RsResult<String> {
+        let config = get_config().await;
+        let exp = ClaimsLocal::generate_seconds(delay.unwrap_or(240));
+        let claims = ClaimsLocal {
+            cr: "service::get_video_thumb".to_string(),
+            kind: crate::tools::auth::ClaimsLocalType::File(library_id.to_string(), media_id.to_string()),
+            exp,
+        };
+    
+        let local_port = get_server_port().await;
+        let token = sign_local(claims).await.map_err(|_| Error::UnableToSignShareToken)?;
+        let uri = format!("{}/libraries/{}/medias/{}?sharetoken={}", config.get_server_base_url()?, library_id, media_id, token);
+        Ok(uri)
+    }
+
 
     pub async  fn get_file_share_token(&self, library_id: &str, media_id: &str, delay_in_seconds: u64, requesting_user: &ConnectedUser) -> Result<String> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
@@ -1164,6 +1192,8 @@ impl ModelController {
         
         match mc_progress.convert_status(&job_id, &plugin_id_owned).await {
                         Ok(current_status) => {
+                            
+                            log_info(crate::tools::log::LogServiceType::Source, format!("Got convert status: {:?}", current_status));
                             let is_terminal = matches!(
                                 current_status.status,
                                 RsVideoTranscodeStatus::Completed 
@@ -1177,10 +1207,11 @@ impl ModelController {
                             let message = ConvertMessage {
                                 library: lib_progress.clone(),
                                 progress: ConvertProgress {
-                                    percent: percent.into(),
+                                    percent: (percent / 100f32).into(),
                                     converted_id: if done { Some(job_id.clone()) } else { None },
                                     filename: name_progress.clone(),
                                     done,
+                                    status: current_status.status.clone(),
                                     id: request_clone.id.clone(),
                                     request: Some(request_clone.clone()),
                                     estimated_remaining_seconds: None,
@@ -1192,40 +1223,91 @@ impl ModelController {
                                 // Handle all errors here instead of using ?
                                 match mc_progress.convert_link(&job_id, &plugin_id_owned).await {
                                     Ok(link) => {
-                                        let source = SourceRead::Request(link);
+                                        log_info(crate::tools::log::LogServiceType::Source, format!("Got convert link result: {:?}", link));
                                         
-                                        match source.into_reader(
-                                            Some(&lib_progress), 
-                                            None, 
-                                            None, 
-                                            Some((mc_progress.clone(), &ConnectedUser::ServerAdmin)), 
-                                            None
-                                        ).await {
-                                            Ok(reader) => {
+                                        
+                                        
+                                        let mut attempts = 0;
+                                        let max_attempts  = 3;
+                                        let media_result = loop {
+                                            let source = SourceRead::Request(link.clone());
+                                            match source.into_reader(
+                                                Some(&lib_progress), 
+                                                None, 
+                                                None, 
+                                                Some((mc_progress.clone(), &ConnectedUser::ServerAdmin)), 
+                                                None
+                                            ).await {
+                                                Ok(reader) => {
+                                                            attempts += 1;
+                                                            
+                                                            match mc_progress.add_library_file(
+                                                                &lib_progress, 
+                                                                &name_progress, 
+                                                                Some(media_progress.clone()), 
+                                                                reader.stream, 
+                                                                &ConnectedUser::ServerAdmin
+                                                            ).await {
+                                                                Ok(media) => break Ok(media),
+                                                                Err(e) if attempts >= max_attempts => {
+                                                                    log_error(crate::tools::log::LogServiceType::Source, 
+                                                                        format!("Failed to add library file after {} attempts: {:?}", max_attempts, e));
+                                                                    tracing::error!("Failed to add library file after {} attempts: {:?}", max_attempts, e);
+                                                                    break Err(e);
+                                                                }
+                                                                Err(e) => {
+                                                                    log_warn(crate::tools::log::LogServiceType::Source, 
+                                                                        format!("Attempt {}/{} failed: {:?}. Retrying...", attempts, max_attempts, e));
+                                                                    tracing::warn!("Attempt {}/{} failed: {:?}. Retrying...", attempts, max_attempts, e);
+                                                                    // Optional: add a delay between retries
+                                                                    // tokio::time::sleep(Duration::from_millis(100 * attempts as u64)).await;
+                                                                }
+                                                            }
+
+
+
+                                                        }
+                                                        Err(e) => {
+                                                            log_error(crate::tools::log::LogServiceType::Source, format!("Failed to create reader: {:?}", e));
+                                                            tracing::error!("Failed to create reader: {:?}", e);
+                                                        }
+
+                                                    }
+                                                };
+    
                                                 // Note: Can't use self here, need to use mc_progress
-                                                match mc_progress.add_library_file(
-                                                    &lib_progress, 
-                                                    &name_progress, 
-                                                    Some(media_progress.clone()), 
-                                                    reader.stream, 
-                                                    &ConnectedUser::ServerAdmin  // Or pass requesting_user as owned
-                                                ).await {
+                                                match media_result {
                                                     Ok(media) => {
+                                                        
+                                                        log_info(crate::tools::log::LogServiceType::Source, format!("Successfully added media: {:?}", media));
+                                                        match mc_progress.convert_clean(&job_id, &plugin_id_owned).await {
+                                                            Ok(status) => {
+                                                                log_info(crate::tools::log::LogServiceType::Source, format!("Successfully cleaned download files: {:?}", status));  
+                                                            }
+                                                            Err(e) => {
+                                                                
+                                                                log_error(crate::tools::log::LogServiceType::Source, format!("Failed to add library file: {:?}", e));
+                                                                tracing::error!("Failed to add library file: {:?}", e);
+                                                                // Send error progress update
+                                                            }
+                                                            
+                                                        }
                                                         // Success - maybe send final progress update
                                                         tracing::info!("Successfully added media: {:?}", media);
                                                     }
                                                     Err(e) => {
+                                                        
+                                                        log_error(crate::tools::log::LogServiceType::Source, format!("Failed to add library file: {:?}", e));
                                                         tracing::error!("Failed to add library file: {:?}", e);
                                                         // Send error progress update
                                                     }
                                                 }
-                                            }
-                                            Err(e) => {
-                                                tracing::error!("Failed to create reader: {:?}", e);
-                                            }
-                                        }
+                                            
+                                        
                                     }
                                     Err(e) => {
+                                        
+                                        log_error(crate::tools::log::LogServiceType::Source, format!("Got convert link error: {:?}", e));
                                         tracing::error!("Failed to get convert link: {:?}", e);
                                     }
                                 }
@@ -1236,6 +1318,7 @@ impl ModelController {
                             }
                         }
                         Err(e) => {
+                            log_error(crate::tools::log::LogServiceType::Source, format!("Got convert status error: {:?}", e));
                             tracing::error!("Error polling status: {:?}", e);
                             break;
                         }
@@ -1321,6 +1404,7 @@ impl ModelController {
                         converted_id: None,
                         filename: name_progress.clone(),
                         done: false,
+                        status: RsVideoTranscodeStatus::Processing,
                         id: request_progress.id.clone(),
                         request: Some(request_progress.clone()),
                         estimated_remaining_seconds: remaining
@@ -1355,6 +1439,7 @@ impl ModelController {
                 converted_id: None,
                 filename: filename.clone(),
                 done: true,
+                status: RsVideoTranscodeStatus::Completed,
                 id: progress_id.clone(),
                 request: Some(element.request.clone()),
                 ..Default::default()
@@ -1382,6 +1467,7 @@ impl ModelController {
                         converted_id: Some(media.id.clone()),
                         filename: filename.clone(),
                         done: true,
+                        status: RsVideoTranscodeStatus::Completed,
                         id: progress_id.clone(),
                         request: Some(element.request.clone()),
                         ..Default::default()
