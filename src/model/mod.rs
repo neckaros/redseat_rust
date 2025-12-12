@@ -24,7 +24,7 @@ use nanoid::nanoid;
 use rs_plugin_common_interfaces::{ImageType, RsRequest, video::{RsVideoTranscodeStatus, VideoConvertRequest}};
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
-use crate::{domain::{backup::BackupProcessStatus, library::{LibraryMessage, LibraryRole, ServerLibrary}, media::ConvertProgress, player::RsPlayerAvailable}, error::{RsError, RsResult}, plugins::{medias::{fanart::FanArtContext, imdb::ImdbContext, tmdb::TmdbContext, trakt::TraktContext}, sources::{error::SourcesError, local_provider_for_library, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source, SourceRead}, PluginManager}, tools::{clock::SECONDS_IN_HOUR, image_tools::{resize_image_reader, ImageSize}, log::log_info, scheduler::{self, ip::RefreshIpTask, refresh::RefreshTask, RsScheduler, RsTaskType}}};
+use crate::{domain::{backup::BackupProcessStatus, library::{LibraryMessage, LibraryRole, ServerLibrary}, media::ConvertProgress, player::RsPlayerAvailable}, error::{RsError, RsResult}, plugins::{medias::{fanart::FanArtContext, imdb::ImdbContext, tmdb::TmdbContext, trakt::TraktContext}, sources::{error::SourcesError, local_provider_for_library, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source, SourceRead}, PluginManager}, tools::{clock::SECONDS_IN_HOUR, image_tools::{resize_image_reader, ImageSize}, log::log_info, scheduler::{self, face_recognition::FaceRecognitionTask, ip::RefreshIpTask, refresh::RefreshTask, RsScheduler, RsTaskType}}};
 
 use self::{medias::CRYPTO_HEADER_SIZE, store::SqliteStore, users::{ConnectedUser, ServerUser, UserRole}};
 use error::{Result, Error};
@@ -114,6 +114,7 @@ impl ModelController {
 		
 		scheduler.add(RsTaskType::Refresh, scheduler::RsSchedulerWhen::Every(SECONDS_IN_HOUR), RefreshTask {specific_library:None} ).await?;
 		scheduler.add(RsTaskType::Ip, scheduler::RsSchedulerWhen::Every(SECONDS_IN_HOUR/2), RefreshIpTask {} ).await?;
+		scheduler.add(RsTaskType::Face, scheduler::RsSchedulerWhen::Every(SECONDS_IN_HOUR * 3), FaceRecognitionTask {specific_library:None} ).await?;
 		//scheduler.add(RsTaskType::Refresh, scheduler::RsSchedulerWhen::At(0), RefreshTask {specific_library:None} ).await?;
 		//scheduler.tick(mc.clone()).await;
 		Ok(mc)

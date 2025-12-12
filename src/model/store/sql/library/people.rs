@@ -462,4 +462,16 @@ else 0 end) as score", q, q, q, q, q, q);
         }).await?;
         Ok(())
     }
+
+    pub async fn get_medias_for_face_processing(&self, limit: usize) -> Result<Vec<String>> {
+        let limit = limit as i64;
+        let res = self.connection.call(move |conn| {
+            let mut stmt = conn.prepare("SELECT id FROM medias WHERE face_processed = 0 AND type = 'photo' LIMIT ?")?;
+            let rows = stmt.query_map(params![limit], |row| {
+                Ok(row.get::<_, String>(0)?)
+            })?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        }).await?;
+        Ok(res)
+    }
 }

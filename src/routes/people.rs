@@ -19,6 +19,7 @@ pub fn routes(mc: ModelController) -> Router {
         .route("/unassigned-faces", get(handler_get_unassigned_faces))
         .route("/batch-detect", post(handler_batch_detect_faces))
         .route("/merge", post(handler_merge_people))
+        .route("/tasks/face-recognition", post(handler_start_face_recognition_task))
         
 		.route("/:id", get(handler_get))
 		.route("/:id", patch(handler_patch))
@@ -170,4 +171,23 @@ async fn handler_merge_people(
 ) -> Result<Json<Value>> {
     // Placeholder
     Ok(Json(json!({"status": "merged"})))
+}
+
+async fn handler_start_face_recognition_task(
+    Path(library_id): Path<String>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser
+) -> Result<Json<Value>> {
+    use crate::tools::scheduler::{face_recognition::FaceRecognitionTask, RsSchedulerWhen, RsTaskType};
+    
+    let task = FaceRecognitionTask {
+        specific_library: Some(library_id.clone())
+    };
+    
+    mc.scheduler.add(RsTaskType::Face, RsSchedulerWhen::At(0), task).await?;
+    
+    Ok(Json(json!({
+        "status": "started",
+        "message": "Face recognition task has been queued to start immediately"
+    })))
 }

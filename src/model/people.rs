@@ -421,6 +421,12 @@ impl ModelController {
         Ok(faces)
     }
 
+    pub async fn get_medias_for_face_processing(&self, library_id: &str, limit: usize) -> RsResult<Vec<String>> {
+        let store = self.store.get_library_store(library_id)?;
+        let media_ids = store.get_medias_for_face_processing(limit).await?;
+        Ok(media_ids)
+    }
+
     async fn match_face_to_person(&self, library_id: &str, embedding: &[f32], threshold: f32) -> RsResult<Option<(String, f32)>> {
         let store = self.store.get_library_store(library_id)?;
         let all_embeddings = store.get_all_embeddings().await?;
