@@ -54,7 +54,7 @@ impl RsSchedulerTask for FaceRecognitionTask {
                 }
                 
                 // Run clustering periodically (after each chunk)
-                match mc.cluster_unassigned_faces(&library.id).await {
+                match mc.cluster_unassigned_faces(&library.id, &connected_user).await {
                     Ok(result) => {
                         if result.clusters_created > 0 {
                             log_info(crate::tools::log::LogServiceType::Scheduler, format!("Created {} clusters from unassigned faces in library {}", result.clusters_created, library.name));

@@ -43,7 +43,7 @@ impl RsScheduler {
         tokio::spawn(async move {
             while !cloned_token.is_cancelled() {
                 cloned_self.tick(mc.clone()).await;
-                tokio::time::sleep(tokio::time::Duration::from_secs(55)).await;
+                tokio::time::sleep(tokio::time::Duration::from_secs(15)).await;
             }
             log_info(super::log::LogServiceType::Scheduler, "Scheduler stopped".into());
             

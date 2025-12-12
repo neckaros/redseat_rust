@@ -287,6 +287,46 @@ else 0 end) as score", q, q, q, q, q, q);
         Ok(res)
     }
 
+    pub async fn get_all_unassigned_faces(&self) -> Result<Vec<UnassignedFace>> {
+        let res = self.connection.call(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, embedding, media_ref, bbox, confidence, pose, cluster_id, created 
+                 FROM unassigned_faces"
+            )?;
+            
+            let rows = stmt.query_map([], |row| {
+                let embedding_blob: Vec<u8> = row.get(1)?;
+                // Safety: Validate blob size is multiple of f32 size
+                let embedding = if embedding_blob.len() % 4 == 0 {
+                    bytemuck::cast_slice::<u8, f32>(&embedding_blob).to_vec()
+                } else {
+                    // Corrupted data - return empty embedding
+                    Vec::new()
+                };
+                
+                let bbox_str: String = row.get(3)?;
+                let bbox: FaceBBox = serde_json::from_str(&bbox_str).unwrap_or_default();
+
+                let pose_str: Option<String> = row.get(5)?;
+                let pose = pose_str.and_then(|s| serde_json::from_str(&s).ok());
+
+                Ok(UnassignedFace {
+                    id: row.get(0)?,
+                    embedding,
+                    media_ref: row.get(2)?,
+                    bbox,
+                    confidence: row.get(4)?,
+                    pose,
+                    cluster_id: row.get(6)?,
+                    created: row.get(7)?,
+                })
+            })?;
+            
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        }).await?;
+        Ok(res)
+    }
+
     pub async fn add_face_embedding(
         &self,
         face_id: String,
@@ -298,7 +338,11 @@ else 0 end) as score", q, q, q, q, q, q);
         pose: Option<(f32, f32, f32)>
     ) -> Result<()> {
         let pid = person_id.to_string();
+        let media_id_clone = media_id.clone();
+        let confidence_int = (confidence * 100.0) as i32;
         self.connection.call(move |conn| {
+            let tx = conn.transaction()?;
+            
             let embedding_blob = bytemuck::cast_slice::<f32, u8>(&embedding).to_vec();
             let bbox_json = if let Some(b) = bbox {
                 Some(serde_json::to_string(&b).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?)
@@ -311,11 +355,22 @@ else 0 end) as score", q, q, q, q, q, q);
                 None
             };
 
-            conn.execute(
+            // Insert into people_faces
+            tx.execute(
                 "INSERT INTO people_faces (id, people_ref, embedding, media_ref, bbox, confidence, pose, created) 
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                params![face_id, pid, embedding_blob, media_id, bbox_json, confidence, pose_json, chrono::Utc::now().timestamp_millis()]
+                params![face_id, pid.clone(), embedding_blob, media_id_clone.clone(), bbox_json, confidence, pose_json, chrono::Utc::now().timestamp_millis()]
             )?;
+            
+            // Also insert into media_people_mapping if media_id is provided
+            if let Some(ref m_id) = media_id_clone {
+                tx.execute(
+                    "INSERT OR IGNORE INTO media_people_mapping (media_ref, people_ref, confidence) VALUES (?, ?, ?)",
+                    params![m_id, pid, confidence_int]
+                )?;
+            }
+            
+            tx.commit()?;
             Ok(())
         }).await?;
         Ok(())
@@ -385,6 +440,45 @@ else 0 end) as score", q, q, q, q, q, q);
         Ok(())
     }
 
+    pub async fn delete_unassigned_face(&self, face_id: &str) -> Result<()> {
+        let fid = face_id.to_string();
+        self.connection.call(move |conn| {
+            conn.execute("DELETE FROM unassigned_faces WHERE id = ?", params![fid])?;
+            Ok(())
+        }).await?;
+        Ok(())
+    }
+
+    pub async fn get_face_by_id(&self, face_id: &str) -> Result<Option<(String, Option<FaceBBox>)>> {
+        let fid = face_id.to_string();
+        let res = self.connection.call(move |conn| {
+            // Try people_faces first
+            let mut stmt = conn.prepare("SELECT media_ref, bbox FROM people_faces WHERE id = ?")?;
+            let result: Option<(String, Option<FaceBBox>)> = stmt.query_row(params![fid.clone()], |row| {
+                let media_ref: Option<String> = row.get(0)?;
+                let bbox_str: Option<String> = row.get(1)?;
+                let bbox = bbox_str.and_then(|s| serde_json::from_str(&s).ok());
+                Ok((media_ref.unwrap_or_default(), bbox))
+            }).optional()?;
+            
+            if result.is_some() {
+                return Ok(result);
+            }
+            
+            // If not found, try unassigned_faces
+            let mut stmt = conn.prepare("SELECT media_ref, bbox FROM unassigned_faces WHERE id = ?")?;
+            let result: Option<(String, Option<FaceBBox>)> = stmt.query_row(params![fid], |row| {
+                let media_ref: String = row.get(0)?;
+                let bbox_str: String = row.get(1)?;
+                let bbox = serde_json::from_str(&bbox_str).ok();
+                Ok((media_ref, bbox))
+            }).optional()?;
+            
+            Ok(result)
+        }).await?;
+        Ok(res)
+    }
+
     pub async fn assign_cluster_to_faces(&self, face_ids: Vec<String>, cluster_id: String) -> Result<()> {
         self.connection.call(move |conn| {
             // SQLite doesn't support array params, so we iterate or use IN clause construction
@@ -394,6 +488,21 @@ else 0 end) as score", q, q, q, q, q, q);
                 let mut stmt = tx.prepare("UPDATE unassigned_faces SET cluster_id = ?, processed = 1 WHERE id = ?")?;
                 for fid in face_ids {
                     stmt.execute(params![cluster_id, fid])?;
+                }
+            }
+            tx.commit()?;
+            Ok(())
+        }).await?;
+        Ok(())
+    }
+
+    pub async fn mark_faces_as_processed(&self, face_ids: Vec<String>) -> Result<()> {
+        self.connection.call(move |conn| {
+            let tx = conn.transaction()?;
+            {
+                let mut stmt = tx.prepare("UPDATE unassigned_faces SET processed = 1 WHERE id = ?")?;
+                for fid in face_ids {
+                    stmt.execute(params![fid])?;
                 }
             }
             tx.commit()?;
@@ -433,11 +542,26 @@ else 0 end) as score", q, q, q, q, q, q);
             {
                 let mut stmt = tx.prepare("INSERT INTO people_faces (id, people_ref, embedding, media_ref, bbox, confidence, pose, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")?;
                 for (id, emb, mref, bbox, conf, pose, created) in &faces {
-                    stmt.execute(params![id, pid, emb, mref, bbox, conf, pose, created])?;
+                    stmt.execute(params![id, pid.clone(), emb, mref, bbox, conf, pose, created])?;
                 }
             }
 
-            // 3. Delete from unassigned_faces
+            // 3. Insert into media_people_mapping for unique media_refs
+            {
+                use std::collections::HashSet;
+                let mut unique_media_refs = HashSet::new();
+                for (_, _, mref, _, _, _, _) in &faces {
+                    unique_media_refs.insert(mref.clone());
+                }
+                
+                let mut stmt = tx.prepare("INSERT OR IGNORE INTO media_people_mapping (media_ref, people_ref, confidence) VALUES (?, ?, ?)")?;
+                for media_ref in unique_media_refs {
+                    // Use default confidence of 100 for cluster promotions
+                    stmt.execute(params![media_ref, pid.clone(), 100])?;
+                }
+            }
+
+            // 4. Delete from unassigned_faces
             tx.execute("DELETE FROM unassigned_faces WHERE cluster_id = ?", params![cluster_id])?;
 
             tx.commit()?;
@@ -452,6 +576,42 @@ else 0 end) as score", q, q, q, q, q, q);
             Ok(())
         }).await?;
         Ok(())
+    }
+
+    pub async fn transfer_faces_between_people(&self, source_person_id: &str, target_person_id: &str) -> Result<usize> {
+        let source_id = source_person_id.to_string();
+        let target_id = target_person_id.to_string();
+        let res = self.connection.call(move |conn| {
+            let tx = conn.transaction()?;
+            
+            // 1. Update people_faces table
+            let faces_affected = tx.execute(
+                "UPDATE people_faces SET people_ref = ? WHERE people_ref = ?",
+                params![target_id.clone(), source_id.clone()]
+            )?;
+            
+            // 2. Handle media_people_mapping:
+            //    - Delete mappings where both source and target exist for the same media (avoid duplicates)
+            //    - Update remaining source mappings to target
+            tx.execute(
+                "DELETE FROM media_people_mapping 
+                 WHERE people_ref = ? 
+                 AND media_ref IN (
+                     SELECT media_ref FROM media_people_mapping WHERE people_ref = ?
+                 )",
+                params![source_id.clone(), target_id.clone()]
+            )?;
+            
+            // Update remaining source mappings to target
+            let mappings_affected = tx.execute(
+                "UPDATE media_people_mapping SET people_ref = ? WHERE people_ref = ?",
+                params![target_id, source_id]
+            )?;
+            
+            tx.commit()?;
+            Ok(faces_affected)
+        }).await?;
+        Ok(res)
     }
 
     pub async fn update_media_people_mapping(&self, media_id: String, person_id: &str) -> Result<()> {

@@ -342,6 +342,7 @@ impl ModelController {
         media_id: &str,
         requesting_user: &ConnectedUser
     ) -> RsResult<Vec<DetectedFaceResult>> {
+        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         let store = self.store.get_library_store(library_id)?;
         
         // Load image from source
@@ -364,7 +365,7 @@ impl ModelController {
                     Some(media_id.to_string()), Some(FaceBBox {x1: face.bbox.x1, y1: face.bbox.y1, x2: face.bbox.x2, y2: face.bbox.y2}),
                     face.confidence, Some(face.pose)
                 ).await?;
-                store.update_media_people_mapping(media_id.to_string(), &person_id).await?;
+                // Note: add_face_embedding now handles media_people_mapping internally
                 results.push(DetectedFaceResult { face_id: Some(face_id), confidence: face.confidence, bbox: FaceBBox {x1: face.bbox.x1, y1: face.bbox.y1, x2: face.bbox.x2, y2: face.bbox.y2} });
             } else {
                 // No match → stage for clustering
@@ -382,7 +383,8 @@ impl ModelController {
         Ok(results)
     }
 
-    pub async fn cluster_unassigned_faces(&self, library_id: &str) -> RsResult<ClusteringResult> {
+    pub async fn cluster_unassigned_faces(&self, library_id: &str, requesting_user: &ConnectedUser) -> RsResult<ClusteringResult> {
+        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         let store = self.store.get_library_store(library_id)?;
         let unassigned = store.get_unassigned_faces().await?;
         
@@ -390,15 +392,29 @@ impl ModelController {
             return Ok(ClusteringResult { clusters_created: 0 });
         }
         
+        // Collect all face IDs before moving unassigned into closure
+        let all_face_ids: Vec<String> = unassigned.iter().map(|f| f.id.clone()).collect();
+        
         // Chinese Whispers clustering (CPU-bound)
         let clusters = tokio::task::spawn_blocking(move || {
             chinese_whispers_clustering(&unassigned, 0.7)
         }).await.map_err(|e| RsError::Error(format!("Clustering task failed: {}", e)))?;
         
+        // Track all face IDs that were clustered (in clusters with 2+ faces)
+        let mut all_clustered_face_ids = std::collections::HashSet::new();
         let mut created = 0;
+        
         for (cluster_id, face_ids) in clusters {
+            // Track all faces in this cluster
+            for face_id in &face_ids {
+                all_clustered_face_ids.insert(face_id.clone());
+            }
+            
             if face_ids.len() >= 3 {
-                // Create person
+                // First assign cluster_id to faces (required for promote_cluster_to_person to find them)
+                store.assign_cluster_to_faces(face_ids.clone(), cluster_id.clone()).await?;
+                
+                // Then create person and promote
                 let new_person = PersonForAdd {
                     name: format!("Unknown Person {}", nanoid!(5)),
                     generated: true,
@@ -407,18 +423,124 @@ impl ModelController {
                 let person = self.add_pesron(library_id, new_person, &ConnectedUser::ServerAdmin).await?;
                 store.promote_cluster_to_person(cluster_id, person.id).await?;
                 created += 1;
-            } else {
+            } else if face_ids.len() >= 2 {
+                // Cluster with 2+ faces but not enough to create person - assign cluster_id
                 store.assign_cluster_to_faces(face_ids, cluster_id).await?;
             }
+        }
+        
+        // Mark singleton faces as processed (they were in clustering but didn't form clusters)
+        let singleton_face_ids: Vec<String> = all_face_ids.iter()
+            .filter(|id| !all_clustered_face_ids.contains(*id))
+            .cloned()
+            .collect();
+        
+        if !singleton_face_ids.is_empty() {
+            crate::tools::log::log_info(crate::tools::log::LogServiceType::Other, format!("Marking {} singleton faces as processed", singleton_face_ids.len()));
+            store.mark_faces_as_processed(singleton_face_ids).await?;
         }
         
         Ok(ClusteringResult { clusters_created: created })
     }
 
-    pub async fn get_unassigned_faces(&self, library_id: &str) -> RsResult<Vec<UnassignedFace>> {
+    pub async fn get_unassigned_faces(&self, library_id: &str, requesting_user: &ConnectedUser) -> RsResult<Vec<UnassignedFace>> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id)?;
         let faces = store.get_unassigned_faces().await?;
         Ok(faces)
+    }
+
+    pub async fn get_all_unassigned_faces(&self, library_id: &str, requesting_user: &ConnectedUser) -> RsResult<Vec<UnassignedFace>> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        let store = self.store.get_library_store(library_id)?;
+        let faces = store.get_all_unassigned_faces().await?;
+        Ok(faces)
+    }
+
+    pub async fn get_person_faces(&self, library_id: &str, person_id: &str, requesting_user: &ConnectedUser) -> RsResult<Vec<FaceEmbedding>> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        let store = self.store.get_library_store(library_id)?;
+        let faces = store.get_person_embeddings(person_id).await?;
+        Ok(faces)
+    }
+
+    pub async fn delete_face(&self, library_id: &str, face_id: &str, requesting_user: &ConnectedUser) -> RsResult<()> {
+        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        let store = self.store.get_library_store(library_id)?;
+        
+        // Try deleting from people_faces first
+        match store.delete_face_embedding(face_id).await {
+            Ok(_) => return Ok(()),
+            Err(_) => {
+                // If not found in people_faces, try unassigned_faces
+                store.delete_unassigned_face(face_id).await?;
+                Ok(())
+            }
+        }
+    }
+
+    pub async fn get_face_image(&self, library_id: &str, face_id: &str, requesting_user: &ConnectedUser) -> RsResult<Vec<u8>> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        let store = self.store.get_library_store(library_id)?;
+        
+        // Get face details (media_ref and bbox)
+        let (media_ref, bbox) = store.get_face_by_id(face_id).await?
+            .ok_or_else(|| RsError::NotFound(format!("Face not found: {}", face_id)))?;
+        
+        if media_ref.is_empty() {
+            return Err(RsError::Error("Face has no associated media".to_string()));
+        }
+        
+        let bbox = bbox.ok_or_else(|| RsError::Error("Face has no bounding box".to_string()))?;
+        
+        // Load media image
+        let m = self.library_file(library_id, &media_ref, None, MediaFileQuery::default(), requesting_user).await?;
+        let mut m = m.into_reader(Some(library_id), None, None, Some((self.clone(), &requesting_user)), None).await?;
+        let image_result = crate::tools::image_tools::reader_to_image(&mut m.stream).await?;
+        let image = image_result.image;
+        
+        // Crop face using bbox
+        use image::GenericImageView;
+        let (width, height) = image.dimensions();
+        let x1 = (bbox.x1.max(0.0) as u32).min(width);
+        let y1 = (bbox.y1.max(0.0) as u32).min(height);
+        let x2 = (bbox.x2.max(0.0) as u32).min(width);
+        let y2 = (bbox.y2.max(0.0) as u32).min(height);
+        
+        let crop_w = if x2 > x1 { x2 - x1 } else { 1 };
+        let crop_h = if y2 > y1 { y2 - y1 } else { 1 };
+        
+        let cropped = image.crop_imm(x1, y1, crop_w, crop_h);
+        
+        // Convert to bytes (JPEG format)
+        let image_bytes = tokio::task::spawn_blocking(move || {
+            use std::io::Cursor;
+            use image::ImageFormat;
+            let mut buffer = Cursor::new(Vec::new());
+            cropped.write_to(&mut buffer, ImageFormat::Jpeg)?;
+            Ok::<Vec<u8>, image::ImageError>(buffer.into_inner())
+        }).await.map_err(|e| RsError::Error(format!("Task join error: {}", e)))??;
+        
+        Ok(image_bytes)
+    }
+
+    pub async fn merge_people(&self, library_id: &str, source_person_id: &str, target_person_id: &str, requesting_user: &ConnectedUser) -> RsResult<usize> {
+        requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
+        
+        // Verify both people exist
+        let source_person = self.get_person(library_id, source_person_id.to_string(), requesting_user).await?
+            .ok_or_else(|| RsError::NotFoundPerson(source_person_id.to_string()))?;
+        let target_person = self.get_person(library_id, target_person_id.to_string(), requesting_user).await?
+            .ok_or_else(|| RsError::NotFoundPerson(target_person_id.to_string()))?;
+        
+        // Transfer faces
+        let store = self.store.get_library_store(library_id)?;
+        let faces_transferred = store.transfer_faces_between_people(source_person_id, target_person_id).await?;
+        
+        // Delete source person (this also checks Admin permissions internally)
+        self.remove_person(library_id, source_person_id, requesting_user).await?;
+        
+        Ok(faces_transferred)
     }
 
     pub async fn get_medias_for_face_processing(&self, library_id: &str, limit: usize) -> RsResult<Vec<String>> {
@@ -455,17 +577,31 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 
 fn chinese_whispers_clustering(faces: &[UnassignedFace], threshold: f32) -> HashMap<String, Vec<String>> {
     let n = faces.len();
+    crate::tools::log::log_info(crate::tools::log::LogServiceType::Other, format!("Clustering {} unassigned faces with threshold {}", n, threshold));
+    
     let mut adj = vec![Vec::new(); n];
+    let mut similarities = Vec::new();
     
     // Build graph
     for i in 0..n {
         for j in i+1..n {
             let sim = cosine_similarity(&faces[i].embedding, &faces[j].embedding);
+            similarities.push(sim);
             if sim >= threshold {
                 adj[i].push(j);
                 adj[j].push(i);
             }
         }
+    }
+    
+    let edges_formed: usize = adj.iter().map(|neighbors| neighbors.len()).sum::<usize>() / 2;
+    crate::tools::log::log_info(crate::tools::log::LogServiceType::Other, format!("Formed {} edges (similarity >= {})", edges_formed, threshold));
+    
+    if !similarities.is_empty() {
+        let min_sim = similarities.iter().fold(f32::INFINITY, |a, &b| a.min(b));
+        let max_sim = similarities.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+        let avg_sim = similarities.iter().sum::<f32>() / similarities.len() as f32;
+        crate::tools::log::log_info(crate::tools::log::LogServiceType::Other, format!("Similarity stats: min={:.3}, max={:.3}, avg={:.3}", min_sim, max_sim, avg_sim));
     }
 
     // Initialize labels (each node is its own class initially)
@@ -504,6 +640,14 @@ fn chinese_whispers_clustering(faces: &[UnassignedFace], threshold: f32) -> Hash
         let cluster_id = format!("cluster_{}", label);
         clusters.entry(cluster_id).or_insert_with(Vec::new).push(faces[i].id.clone());
     }
+    
+    let cluster_sizes: Vec<usize> = clusters.values().map(|v| v.len()).collect();
+    crate::tools::log::log_info(crate::tools::log::LogServiceType::Other, format!("Created {} clusters (sizes: {:?})", clusters.len(), cluster_sizes));
+    
+    // Filter out singleton clusters (only keep clusters with 2+ faces)
+    clusters.retain(|_, face_ids| face_ids.len() >= 2);
+    
+    crate::tools::log::log_info(crate::tools::log::LogServiceType::Other, format!("After filtering singletons: {} clusters remaining", clusters.len()));
     
     clusters
 }

@@ -28,6 +28,7 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/:id/image", post(handler_post_image))
         .route("/:id/faces", get(handler_get_person_faces))
         .route("/faces/:face_id", delete(handler_delete_face))
+        .route("/faces/:face_id/image", get(handler_get_face_image))
 		.with_state(mc)
         
 }
@@ -110,7 +111,7 @@ async fn handler_cluster_unassigned_faces(
     State(mc): State<ModelController>,
     user: ConnectedUser
 ) -> Result<Json<Value>> {
-    let result = mc.cluster_unassigned_faces(&library_id).await?;
+    let result = mc.cluster_unassigned_faces(&library_id, &user).await?;
     Ok(Json(json!(result)))
 }
 
@@ -119,22 +120,36 @@ async fn handler_get_unassigned_faces(
     State(mc): State<ModelController>,
     user: ConnectedUser
 ) -> Result<Json<Value>> {
-    // Need to implement get_unassigned_faces in ModelController or expose store method
-    // For now assuming we can access store
-    let faces = mc.get_unassigned_faces(&library_id).await?;
+    let faces = mc.get_all_unassigned_faces(&library_id, &user).await?;
     Ok(Json(json!(faces)))
 }
 
 async fn handler_batch_detect_faces(
     Path(library_id): Path<String>,
     State(mc): State<ModelController>,
-    user: ConnectedUser
+    user: ConnectedUser,
+    Json(payload): Json<DetectFacesRequest>
 ) -> Result<Json<Value>> {
-    // Simplified batch: just return "not implemented" or trigger for all?
-    // The plan mentioned implementation detail but for now let's just create a placeholder response
-    // or we could implement it if we had time.
-    // For plan completion:
-    Ok(Json(json!({"status": "Batch processing started (not fully implemented in this step)"})))
+    let mut results = Vec::new();
+    for media_id in payload.media_ids {
+        match mc.process_media_faces(&library_id, &media_id, &user).await {
+            Ok(faces) => {
+                results.push(json!({
+                    "media_id": media_id,
+                    "status": "success",
+                    "faces": faces
+                }));
+            }
+            Err(e) => {
+                results.push(json!({
+                    "media_id": media_id,
+                    "status": "error",
+                    "error": e.to_string()
+                }));
+            }
+        }
+    }
+    Ok(Json(json!(results)))
 }
 
 async fn handler_get_person_faces(
@@ -142,10 +157,8 @@ async fn handler_get_person_faces(
     State(mc): State<ModelController>,
     user: ConnectedUser
 ) -> Result<Json<Value>> {
-    // Need to implement get_person_faces in store
-    // The plan had get_person_embeddings but we might want full face info.
-    // Placeholder
-    Ok(Json(json!({"faces": []})))
+    let faces = mc.get_person_faces(&library_id, &person_id, &user).await?;
+    Ok(Json(json!(faces)))
 }
 
 async fn handler_delete_face(
@@ -153,8 +166,19 @@ async fn handler_delete_face(
     State(mc): State<ModelController>,
     user: ConnectedUser
 ) -> Result<Json<Value>> {
-    // Placeholder
+    mc.delete_face(&library_id, &face_id, &user).await?;
     Ok(Json(json!({"status": "deleted"})))
+}
+
+async fn handler_get_face_image(
+    Path((library_id, face_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser
+) -> Result<Response> {
+    let image_bytes = mc.get_face_image(&library_id, &face_id, &user).await?;
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(axum::http::header::CONTENT_TYPE, "image/jpeg".parse().unwrap());
+    Ok((headers, Body::from(image_bytes)).into_response())
 }
 
 #[derive(Deserialize)]
@@ -169,8 +193,11 @@ async fn handler_merge_people(
     user: ConnectedUser,
     Json(payload): Json<MergePeopleRequest>
 ) -> Result<Json<Value>> {
-    // Placeholder
-    Ok(Json(json!({"status": "merged"})))
+    let faces_transferred = mc.merge_people(&library_id, &payload.source_person_id, &payload.target_person_id, &user).await?;
+    Ok(Json(json!({
+        "status": "merged",
+        "faces_transferred": faces_transferred
+    })))
 }
 
 async fn handler_start_face_recognition_task(

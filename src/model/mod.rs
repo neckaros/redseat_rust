@@ -114,7 +114,7 @@ impl ModelController {
 		
 		scheduler.add(RsTaskType::Refresh, scheduler::RsSchedulerWhen::Every(SECONDS_IN_HOUR), RefreshTask {specific_library:None} ).await?;
 		scheduler.add(RsTaskType::Ip, scheduler::RsSchedulerWhen::Every(SECONDS_IN_HOUR/2), RefreshIpTask {} ).await?;
-		scheduler.add(RsTaskType::Face, scheduler::RsSchedulerWhen::Every(SECONDS_IN_HOUR * 3), FaceRecognitionTask {specific_library:None} ).await?;
+		//scheduler.add(RsTaskType::Face, scheduler::RsSchedulerWhen::Every(SECONDS_IN_HOUR * 3), FaceRecognitionTask {specific_library:None} ).await?;
 		//scheduler.add(RsTaskType::Refresh, scheduler::RsSchedulerWhen::At(0), RefreshTask {specific_library:None} ).await?;
 		//scheduler.tick(mc.clone()).await;
 		Ok(mc)

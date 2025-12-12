@@ -1,4 +1,42 @@
-<!-- ae2da667-c375-419c-b02c-8b53e549609b 56a514e8-5de8-4542-9189-c31a9c218e00 -->
+---
+name: Face Recognition System Implementation
+overview: ""
+todos:
+  - id: dad4aa66-caf2-485e-bb5b-8e2aed50425b
+    content: Create migration with unassigned_faces and BLOB storage
+    status: pending
+  - id: 75cc608e-b7d2-471d-acc3-3de9780f034f
+    content: Integrate 3DDFA-V2 for 68 3D landmarks and pose estimation
+    status: pending
+  - id: 186a0bc9-84e5-4f4f-bd88-6455ce266ba6
+    content: Implement 3D similarity transform for pose normalization
+    status: pending
+  - id: c9b99e42-3372-4242-a3ab-49059fd460af
+    content: Add ArcFace with correct (x-127.5)/128 normalization
+    status: pending
+  - id: 72b3bb0c-30e3-4c27-89cd-7b9be1d1ab86
+    content: Add spawn_blocking and intra_threads(1) configuration
+    status: pending
+  - id: d8e8e512-1299-4098-bd96-d55823a7e9d1
+    content: Implement bytemuck BLOB serialization for embeddings
+    status: pending
+  - id: 2a078e8d-8330-428f-9214-47c5dbbc2dc6
+    content: Implement Chinese Whispers clustering algorithm
+    status: pending
+  - id: 2418c370-3927-4f48-9346-fbbe0612863f
+    content: Add 0.7 threshold matching with staging workflow
+    status: pending
+  - id: afbfa3a7-5cdc-450c-90da-e1d72dc8149e
+    content: Add detection, clustering, and management endpoints
+    status: pending
+  - id: c7a30d35-e186-4fca-a335-b032ef75dc6d
+    content: Document 3DDFA-V2 and ArcFace R100 model download
+    status: pending
+  - id: 32d45955-861c-4c66-9f87-a1051ce6e1e7
+    content: Test on non-frontal faces and validate accuracy
+    status: pending
+---
+
 # Face Recognition System Implementation
 
 ## Architecture Overview
@@ -562,17 +600,3 @@ bytemuck = { version = "1.14", features = ["derive"] }
 - ✅ Clean people table (only clusters with 3+ faces)
 - ✅ >90% accuracy for same person
 - ✅ <5% false positive rate
-
-### To-dos
-
-- [ ] Create migration with unassigned_faces and BLOB storage
-- [ ] Integrate 3DDFA-V2 for 68 3D landmarks and pose estimation
-- [ ] Implement 3D similarity transform for pose normalization
-- [ ] Add ArcFace with correct (x-127.5)/128 normalization
-- [ ] Add spawn_blocking and intra_threads(1) configuration
-- [ ] Implement bytemuck BLOB serialization for embeddings
-- [ ] Implement Chinese Whispers clustering algorithm
-- [ ] Add 0.7 threshold matching with staging workflow
-- [ ] Add detection, clustering, and management endpoints
-- [ ] Document 3DDFA-V2 and ArcFace R100 model download
-- [ ] Test on non-frontal faces and validate accuracy
