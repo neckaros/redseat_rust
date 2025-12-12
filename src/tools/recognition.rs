@@ -186,13 +186,14 @@ impl FaceRecognitionService {
         for det in detections {
             let face_crop = self.crop_face_with_padding(image, &det.bbox, 0.3)?;
             let landmarks = self.extract_106_landmarks(&face_crop)?;
+            let pose = estimate_head_pose(&landmarks);
             let aligned = self.align_face_5points(&face_crop, &landmarks)?;
             let embedding = self.extract_embedding(&aligned)?;
             
             faces.push(DetectedFace {
                 bbox: det.bbox.clone(),
                 landmarks,
-                pose: (0.0, 0.0, 0.0),
+                pose,
                 confidence: det.bbox.confidence,
                 embedding,
                 aligned_image: Some(aligned),
@@ -247,10 +248,10 @@ impl FaceRecognitionService {
         let conf_shape_vec: Vec<usize> = conf_array_raw.shape().to_vec();
         
         // Log shapes for debugging
-        log_info(LogServiceType::Other, format!(
+        /*log_info(LogServiceType::Other, format!(
             "ONNX output shapes - bbox: {:?}, conf: {:?}",
             bbox_shape_vec, conf_shape_vec
-        ));
+        ));*/
         
         // Handle different output formats for bbox
         let (bbox_array, num_detections) = if bbox_shape_vec.len() == 2 && bbox_shape_vec[1] == 1 {
@@ -265,10 +266,10 @@ impl FaceRecognitionService {
             let n = total_elements / 4;
             let reshaped = bbox_array_raw.into_shape((n, 4))
                 .map_err(|e| RsError::Error(format!("Failed to reshape bbox: {}", e)))?;
-            log_info(LogServiceType::Other, format!(
+            /*log_info(LogServiceType::Other, format!(
                 "Reshaped bbox from {:?} to {:?}",
                 bbox_shape_vec, reshaped.shape()
-            ));
+            ));*/
             (reshaped.into_dyn(), n)
         } else if bbox_shape_vec.len() == 3 && bbox_shape_vec[0] == 1 && bbox_shape_vec[1] == 4 && bbox_shape_vec[2] > 100 {
             // Format: [1, 4, N] - permute to [1, N, 4]
@@ -294,10 +295,10 @@ impl FaceRecognitionService {
         
         let (conf_array, has_two_classes) = if conf_shape_vec.len() == 2 && conf_shape_vec[1] == 1 {
             // Format: [N, 1] - single confidence per anchor
-            log_info(LogServiceType::Other, format!(
+            /*log_info(LogServiceType::Other, format!(
                 "Using direct confidence scores from shape {:?}",
                 conf_shape_vec
-            ));
+            ));*/
             (conf_array_raw, false)
         } else if conf_shape_vec.len() == 3 && conf_shape_vec[0] == 1 && conf_shape_vec[1] == 2 && conf_shape_vec[2] > 100 {
             // Format: [1, 2, N] - permute to [1, N, 2]
@@ -792,6 +793,63 @@ fn get_5_points_from_106(landmarks: &[(f32, f32)]) -> Vec<(f32, f32)> {
     let left_mouth = landmarks[76];
     let right_mouth = landmarks[82];
     vec![left_eye, right_eye, nose, left_mouth, right_mouth]
+}
+
+/// Estimate head pose (pitch, yaw, roll) from 106 facial landmarks using geometric heuristics.
+/// Returns (pitch, yaw, roll) in degrees.
+/// - Pitch: positive = looking up, negative = looking down
+/// - Yaw: positive = turning right, negative = turning left
+/// - Roll: positive = tilting right, negative = tilting left
+fn estimate_head_pose(landmarks: &[(f32, f32)]) -> (f32, f32, f32) {
+    // Safety check
+    if landmarks.len() < 96 {
+        return (0.0, 0.0, 0.0);
+    }
+    
+    // Extract key points
+    let left_eye = average_points(&landmarks[33..42]);
+    let right_eye = average_points(&landmarks[87..96]);
+    let nose = landmarks[54];
+    let left_mouth = landmarks[76];
+    let right_mouth = landmarks[82];
+    let mouth_center = ((left_mouth.0 + right_mouth.0) / 2.0, (left_mouth.1 + right_mouth.1) / 2.0);
+    let eye_center = ((left_eye.0 + right_eye.0) / 2.0, (left_eye.1 + right_eye.1) / 2.0);
+    
+    // Calculate distances
+    let dist_nose_to_left_eye = ((nose.0 - left_eye.0).powi(2) + (nose.1 - left_eye.1).powi(2)).sqrt();
+    let dist_nose_to_right_eye = ((nose.0 - right_eye.0).powi(2) + (nose.1 - right_eye.1).powi(2)).sqrt();
+    let dist_eyes_to_nose = ((eye_center.0 - nose.0).powi(2) + (eye_center.1 - nose.1).powi(2)).sqrt();
+    let dist_nose_to_mouth = ((nose.0 - mouth_center.0).powi(2) + (nose.1 - mouth_center.1).powi(2)).sqrt();
+    
+    // Yaw: Ratio of distance from nose to left eye vs. nose to right eye
+    // If left eye is closer, person is turning right (positive yaw)
+    // If right eye is closer, person is turning left (negative yaw)
+    let yaw_ratio = if dist_nose_to_right_eye > 0.0 {
+        (dist_nose_to_left_eye - dist_nose_to_right_eye) / (dist_nose_to_left_eye + dist_nose_to_right_eye)
+    } else {
+        0.0
+    };
+    // Convert ratio to degrees (empirically calibrated: ratio of 0.3 ≈ 30 degrees)
+    let yaw = yaw_ratio * 60.0; // Scale factor to convert to degrees
+    
+    // Pitch: Ratio of distance from eyes to nose vs. nose to mouth
+    // If eyes-to-nose is smaller relative to nose-to-mouth, person is looking up (positive pitch)
+    // If eyes-to-nose is larger relative to nose-to-mouth, person is looking down (negative pitch)
+    let pitch_ratio = if dist_nose_to_mouth > 0.0 {
+        (dist_eyes_to_nose - dist_nose_to_mouth) / (dist_eyes_to_nose + dist_nose_to_mouth)
+    } else {
+        0.0
+    };
+    // Convert ratio to degrees (empirically calibrated)
+    let pitch = pitch_ratio * 45.0; // Scale factor to convert to degrees
+    
+    // Roll: Angle of the line connecting the eyes relative to horizontal
+    let eye_dx = right_eye.0 - left_eye.0;
+    let eye_dy = right_eye.1 - left_eye.1;
+    let roll_rad = eye_dy.atan2(eye_dx);
+    let roll = roll_rad.to_degrees();
+    
+    (pitch, yaw, roll)
 }
 
 fn average_points(points: &[(f32, f32)]) -> (f32, f32) {
