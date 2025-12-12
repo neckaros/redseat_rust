@@ -512,13 +512,15 @@ impl ModelController {
         
         let cropped = image.crop_imm(x1, y1, crop_w, crop_h);
         
-        // Convert to bytes (JPEG format)
+        // Convert to bytes (WebP format - supports RGBA)
+        use crate::tools::image_tools::{ImageAndProfile, save_image_native};
+        use image::ImageFormat;
         let image_bytes = tokio::task::spawn_blocking(move || {
-            use std::io::Cursor;
-            use image::ImageFormat;
-            let mut buffer = Cursor::new(Vec::new());
-            cropped.write_to(&mut buffer, ImageFormat::Jpeg)?;
-            Ok::<Vec<u8>, image::ImageError>(buffer.into_inner())
+            let image_and_profile = ImageAndProfile {
+                image: cropped,
+                profile: None
+            };
+            save_image_native(image_and_profile, ImageFormat::WebP, Some(85), false)
         }).await.map_err(|e| RsError::Error(format!("Task join error: {}", e)))??;
         
         Ok(image_bytes)
