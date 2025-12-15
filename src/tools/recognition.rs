@@ -219,7 +219,7 @@ impl FaceRecognitionService {
             for (i, (lx, ly)) in cropped_landmarks.iter().enumerate() {
               let gx = cropped_landmarks[i].0;
               let gy = cropped_landmarks[i].1;
-              println!("Landmark {}: {}, {}", i, gx, gy);
+              //println!("Landmark {}: {}, {}", i, gx, gy);
               Self::draw_circle(&mut face_crop_rgb, gx as i32, gy as i32, 12, image::Rgb([255, 255, 255]));  
             }
 
@@ -1283,7 +1283,7 @@ fn simple_align_matrix(src: &[[f32; 2]], dst: &[[f32; 2]]) -> [f32; 9] {
     let tx = src_mean_x - (a * dst_mean_x + b * dst_mean_y);
     let ty = src_mean_y - (d * dst_mean_x + e * dst_mean_y);
 
-    println!("Align Matrix: Scale={:.3}, Rot={:.3}rad, Tx={:.1}, Ty={:.1}", scale, rotation, tx, ty);
+    //println!("Align Matrix: Scale={:.3}, Rot={:.3}rad, Tx={:.1}, Ty={:.1}", scale, rotation, tx, ty);
 
     // Return 3x3 Matrix for Projection [a, b, c, d, e, f, 0, 0, 1]
     [
@@ -1337,7 +1337,7 @@ fn umeyama_dst_to_src(src: &[[f32; 2]], dst: &[[f32; 2]]) -> [f32; 9] {
     // t = SrcMean - Scale * R * DstMean
     let t = src_mean - scale * r * dst_mean;
 
-    println!("Umeyama Dst->Src: Scale={:.3}, Tx={:.1}, Ty={:.1}", scale, t.x, t.y);
+    //println!("Umeyama Dst->Src: Scale={:.3}, Tx={:.1}, Ty={:.1}", scale, t.x, t.y);
 
     // 8. Return 3x3 Matrix [a, b, c, d, e, f, 0, 0, 1]
     let scaled_r = r * scale;
@@ -1365,8 +1365,8 @@ pub fn align_face_manual(
     let src_img = image.to_rgba8();
     let mut warped = ImageBuffer::from_pixel(112, 112, Rgba([0, 0, 0, 0]));
 
-    println!("Manual Warp Debug:");
-    println!("Matrix: a={}, b={}, c={}, d={}, e={}, f={}", a, b, c, d, e, f);
+    //println!("Manual Warp Debug:");
+    //println!("Matrix: a={}, b={}, c={}, d={}, e={}, f={}", a, b, c, d, e, f);
     
     // 3. Iterate Output Pixels
     for y in 0..112 {
@@ -1375,10 +1375,7 @@ pub fn align_face_manual(
             let u = a * (x as f32) + b * (y as f32) + c;
             let v = d * (x as f32) + e * (y as f32) + f;
 
-            // Debug center pixel
-            if x == 56 && y == 56 {
-                println!("Center (56,56) maps to Source ({}, {})", u, v);
-            }
+
 
             // Sample (Bilinear Interpolation)
             if u >= 0.0 && u < (src_img.width() as f32 - 1.0) && v >= 0.0 && v < (src_img.height() as f32 - 1.0) {

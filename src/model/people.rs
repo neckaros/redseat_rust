@@ -17,6 +17,8 @@ use crate::{domain::{deleted::RsDeleted, library::LibraryRole, people::{FaceBBox
 
 use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
 
+// Default face recognition threshold when library doesn't specify one
+pub const DEFAULT_FACE_THRESHOLD: f32 = 0.4;
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct PersonForAdd {
@@ -136,6 +138,15 @@ impl ModelController {
         let service = Arc::new(service);
         *guard = Some(service.clone());
         Ok(service)
+    }
+
+    /// Get the face recognition threshold for a library.
+    /// Returns library.settings.face_threshold if set, otherwise DEFAULT_FACE_THRESHOLD.
+    async fn get_face_threshold(&self, library_id: &str) -> RsResult<f32> {
+        let library = self.get_internal_library(library_id).await?
+            .ok_or_else(|| RsError::Error(format!("Library not found: {}", library_id)))?;
+        
+        Ok(library.settings.face_threshold.unwrap_or(DEFAULT_FACE_THRESHOLD))
     }
 
 	pub async fn get_people(&self, library_id: &str, query: PeopleQuery, requesting_user: &ConnectedUser) -> Result<Vec<Person>> {
@@ -389,11 +400,12 @@ impl ModelController {
         let service = self.get_face_recognition_service().await?;
         let faces = service.detect_and_extract_faces_async(image).await?;
         
+        let threshold = self.get_face_threshold(library_id).await?;
         let mut results = Vec::new();
 
         for face in &faces {
             // Try matching with threshold
-            if let Some((person_id, sim)) = self.match_face_to_person(library_id, &face.embedding, 0.4).await? {
+            if let Some((person_id, sim)) = self.match_face_to_person(library_id, &face.embedding, threshold).await? {
                 // High confidence → assign directly
                 let face_id = nanoid!();
                 store.add_face_embedding(
@@ -431,9 +443,13 @@ impl ModelController {
         // Collect all face IDs before moving unassigned into closure
         let all_face_ids: Vec<String> = unassigned.iter().map(|f| f.id.clone()).collect();
         
+        // Get threshold for this library
+        let threshold = self.get_face_threshold(library_id).await?;
+        let threshold_clone = threshold; // Clone for move into closure
+        
         // Chinese Whispers clustering (CPU-bound)
         let clusters = tokio::task::spawn_blocking(move || {
-            chinese_whispers_clustering(&unassigned, 0.4)
+            chinese_whispers_clustering(&unassigned, threshold_clone)
         }).await.map_err(|e| RsError::Error(format!("Clustering task failed: {}", e)))?;
         
         // Track all face IDs that were clustered (in clusters with 2+ faces)
@@ -527,6 +543,51 @@ impl ModelController {
         let store = self.store.get_library_store(library_id)?;
         let count = store.assign_unassigned_faces_to_person_batch(face_ids.to_vec(), person_id.to_string()).await?;
         Ok(count)
+    }
+
+    pub async fn match_unassigned_faces_to_people(&self, library_id: &str, requesting_user: &ConnectedUser) -> RsResult<usize> {
+        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        let store = self.store.get_library_store(library_id)?;
+        let unassigned_faces = store.get_all_unassigned_faces().await?;
+        
+        let threshold = self.get_face_threshold(library_id).await?;
+        let mut matched_count = 0;
+        
+        for face in unassigned_faces {
+            // Skip faces with empty embeddings
+            if face.embedding.is_empty() {
+                continue;
+            }
+            
+            // Try to match this face to an existing person
+            match self.match_face_to_person(library_id, &face.embedding, threshold).await {
+                Ok(Some((person_id, _sim))) => {
+                    // Match found - assign the face to this person
+                    match self.assign_unassigned_face_to_person(library_id, &face.id, &person_id, requesting_user).await {
+                        Ok(_) => {
+                            matched_count += 1;
+                        }
+                        Err(e) => {
+                            crate::tools::log::log_error(
+                                crate::tools::log::LogServiceType::Scheduler,
+                                format!("Error assigning face {} to person {}: {:#}", face.id, person_id, e)
+                            );
+                        }
+                    }
+                }
+                Ok(None) => {
+                    // No match found - continue to next face
+                }
+                Err(e) => {
+                    crate::tools::log::log_error(
+                        crate::tools::log::LogServiceType::Scheduler,
+                        format!("Error matching face {}: {:#}", face.id, e)
+                    );
+                }
+            }
+        }
+        
+        Ok(matched_count)
     }
 
     pub async fn get_face_image(&self, library_id: &str, face_id: &str, requesting_user: &ConnectedUser) -> RsResult<Vec<u8>> {

@@ -31,6 +31,18 @@ impl RsSchedulerTask for FaceRecognitionTask {
         for library in libraries {
             log_info(crate::tools::log::LogServiceType::Scheduler, format!("Processing face recognition for library {:?}", library.name));
             
+            // Match all unassigned faces to existing people (new people_face entries may enable matches)
+            match mc.match_unassigned_faces_to_people(&library.id, &connected_user).await {
+                Ok(matched_count) => {
+                    if matched_count > 0 {
+                        log_info(crate::tools::log::LogServiceType::Scheduler, format!("Matched {} unassigned faces to existing people in library {}", matched_count, library.name));
+                    }
+                }
+                Err(e) => {
+                    log_error(crate::tools::log::LogServiceType::Scheduler, format!("Error matching unassigned faces to people for library {}: {:#}", library.name, e));
+                }
+            }
+            
             // Process unprocessed media in chunks
             const CHUNK_SIZE: usize = 50;
             let mut processed_count = 0;
@@ -68,6 +80,18 @@ impl RsSchedulerTask for FaceRecognitionTask {
                 // If we got fewer than CHUNK_SIZE, we've processed all media
                 if media_ids.len() < CHUNK_SIZE {
                     break;
+                }
+            }
+            
+            // Final clustering pass to cluster any remaining unassigned faces that weren't clustered in chunks
+            match mc.cluster_unassigned_faces(&library.id, &connected_user).await {
+                Ok(result) => {
+                    if result.clusters_created > 0 {
+                        log_info(crate::tools::log::LogServiceType::Scheduler, format!("Final clustering: Created {} clusters from remaining unassigned faces in library {}", result.clusters_created, library.name));
+                    }
+                }
+                Err(e) => {
+                    log_error(crate::tools::log::LogServiceType::Scheduler, format!("Error in final clustering for library {}: {:#}", library.name, e));
                 }
             }
             
