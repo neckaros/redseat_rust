@@ -224,12 +224,12 @@ impl FaceRecognitionService {
             }
 
             
-            face_crop_rgb.save(&format!("C:\\Users\\arnau\\Downloads\\test\\debug_face_crop_{}.png", face_idx))?;
+            //face_crop_rgb.save(&format!("C:\\Users\\arnau\\Downloads\\test\\debug_face_crop_{}.png", face_idx))?;
 
 
             let aligned_face_112 = align_face_manual(&face_crop, &cropped_landmarks);
                 // aligned_face is now a perfect 112x112 image ready for embedding
-            aligned_face_112.save(format!("C:\\Users\\arnau\\Downloads\\test\\aligned_{}.png", face_idx))?;
+            //aligned_face_112.save(format!("C:\\Users\\arnau\\Downloads\\test\\aligned_{}.png", face_idx))?;
             
 
             let embedding = self.extract_embedding(&aligned_face_112)?;
@@ -1054,24 +1054,24 @@ fn get_5_points_from_106(landmarks: &[(f32, f32)]) -> Vec<(f32, f32)> {
     vec![left_eye, right_eye, nose, left_mouth, right_mouth]
 }
 
-/// Estimate head pose (pitch, yaw, roll) from 106 facial landmarks using geometric heuristics.
+/// Estimate head pose (pitch, yaw, roll) from 5 facial landmarks using geometric heuristics.
 /// Returns (pitch, yaw, roll) in degrees.
 /// - Pitch: positive = looking up, negative = looking down
 /// - Yaw: positive = turning right, negative = turning left
 /// - Roll: positive = tilting right, negative = tilting left
 fn estimate_head_pose(landmarks: &[(f32, f32)]) -> (f32, f32, f32) {
     // Safety check
-    if landmarks.len() < 106 {
+    if landmarks.len() < 5 {
         return (0.0, 0.0, 0.0);
     }
 
-    // Extract key points using CORRECTED indices [10, 96, 63, 6, 20]
-    // These were determined by finding landmarks closest to ARCFACE_DST positions
-    let left_eye = landmarks[10];
-    let right_eye = landmarks[96];
-    let nose = landmarks[63];
-    let left_mouth = landmarks[6];
-    let right_mouth = landmarks[20];
+    // Extract key points from 5-point landmark format:
+    // [0] = Left Eye, [1] = Right Eye, [2] = Nose, [3] = Left Mouth, [4] = Right Mouth
+    let left_eye = landmarks[0];
+    let right_eye = landmarks[1];
+    let nose = landmarks[2];
+    let left_mouth = landmarks[3];
+    let right_mouth = landmarks[4];
     let mouth_center = (
         (left_mouth.0 + right_mouth.0) / 2.0,
         (left_mouth.1 + right_mouth.1) / 2.0,
