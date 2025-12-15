@@ -177,11 +177,12 @@ async fn handler_get_face_image(
 ) -> Result<Response> {
     let image_bytes = mc.get_face_image(&library_id, &face_id, &user).await?;
     let mut headers = axum::http::HeaderMap::new();
-    headers.insert(axum::http::header::CONTENT_TYPE, "image/webp".parse().unwrap());
+    headers.insert(axum::http::header::CONTENT_TYPE, "image/avif".parse().unwrap());
     Ok((headers, Body::from(image_bytes)).into_response())
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct MergePeopleRequest {
     source_person_id: String,
     target_person_id: String,

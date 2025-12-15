@@ -1,5 +1,5 @@
 
-use std::{collections::HashMap, sync::{Arc, Mutex}};
+use std::{collections::HashMap, io::Cursor, sync::{Arc, Mutex}};
 
 use async_recursion::async_recursion;
 use futures::TryStreamExt;
@@ -247,8 +247,43 @@ impl ModelController {
             }
         } else {
             if !self.has_library_image(library_id, ".portraits", person_id, kind.clone(), requesting_user).await? {
-                log_info(crate::tools::log::LogServiceType::Source, format!("Updating person image: {} {:?}", person_id, kind.clone()));
-                self.refresh_person_image(library_id, person_id, &kind, requesting_user).await?;
+                // Try to refresh from external source first
+                let refresh_result = self.refresh_person_image(library_id, person_id, &kind, requesting_user).await;
+                match refresh_result {
+                    Ok(_) => {
+                        // External image refresh succeeded, image should now exist
+                        log_info(crate::tools::log::LogServiceType::Source, format!("Successfully refreshed person image from external source: {} {:?}", person_id, kind.clone()));
+                    }
+                    Err(_) => {
+                        // External image refresh failed, try face fallback
+                        log_info(crate::tools::log::LogServiceType::Source, format!("Updating person image from face: {} {:?}", person_id, kind.clone()));
+                        let store = self.store.get_library_store(library_id)?;
+                        if let Ok(Some(face)) = store.get_highest_confidence_face(person_id).await {
+                            // Check that face has required fields
+                            if let (Some(media_ref), Some(_bbox)) = (face.media_ref.as_ref(), face.bbox.as_ref()) {
+                                if !media_ref.is_empty() {
+                                    // Extract face image and save as person image
+                                    match self.get_face_image(library_id, &face.id, &ConnectedUser::ServerAdmin).await {
+                                        Ok(face_bytes) => {
+                                            let reader = Cursor::new(face_bytes);
+                                            match self.update_person_image(library_id, person_id, &kind, reader, &ConnectedUser::ServerAdmin).await {
+                                                Ok(_) => {
+                                                    log_info(crate::tools::log::LogServiceType::Source, format!("Successfully saved face image as person image for: {}", person_id));
+                                                }
+                                                Err(e) => {
+                                                    log_info(crate::tools::log::LogServiceType::Source, format!("Failed to save face image as person image: {}", e));
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            log_info(crate::tools::log::LogServiceType::Source, format!("Failed to get face image: {}", e));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
             
             let image = self.library_image(library_id, ".portraits", person_id, kind, size, requesting_user).await?;
@@ -513,15 +548,18 @@ impl ModelController {
         
         let cropped = image.crop_imm(x1, y1, crop_w, crop_h);
         
-        // Convert to bytes (WebP format - supports RGBA)
+        // Resize to match person image sizing and convert to AVIF format
         use crate::tools::image_tools::{ImageAndProfile, save_image_native};
         use image::ImageFormat;
+        let target_size = ImageSize::Large.to_size(); // 1024
         let image_bytes = tokio::task::spawn_blocking(move || {
+            // Resize the cropped face to target size (maintains aspect ratio)
+            let resized = cropped.thumbnail(target_size, target_size);
             let image_and_profile = ImageAndProfile {
-                image: cropped,
+                image: resized,
                 profile: None
             };
-            save_image_native(image_and_profile, ImageFormat::WebP, Some(85), false)
+            save_image_native(image_and_profile, ImageFormat::Avif, Some(70), false)
         }).await.map_err(|e| RsError::Error(format!("Task join error: {}", e)))??;
         
         Ok(image_bytes)

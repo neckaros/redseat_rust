@@ -416,6 +416,43 @@ else 0 end) as score", q, q, q, q, q, q);
         Ok(res)
     }
 
+    pub async fn get_highest_confidence_face(&self, person_id: &str) -> Result<Option<FaceEmbedding>> {
+        let pid = person_id.to_string();
+        let res = self.connection.call(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, embedding, media_ref, bbox, confidence, pose 
+                 FROM people_faces WHERE people_ref = ? ORDER BY confidence DESC LIMIT 1"
+            )?;
+            
+            let row = stmt.query_row(params![pid], |row| {
+                let embedding_blob: Vec<u8> = row.get(1)?;
+                let embedding = if embedding_blob.len() % 4 == 0 {
+                    bytemuck::cast_slice::<u8, f32>(&embedding_blob).to_vec()
+                } else {
+                    Vec::new()
+                };
+                
+                let bbox_str: Option<String> = row.get(3)?;
+                let bbox = bbox_str.and_then(|s| serde_json::from_str(&s).ok());
+
+                let pose_str: Option<String> = row.get(5)?;
+                let pose = pose_str.and_then(|s| serde_json::from_str(&s).ok());
+
+                Ok(FaceEmbedding {
+                    id: row.get(0)?,
+                    embedding,
+                    media_ref: row.get(2)?,
+                    bbox,
+                    confidence: row.get(4)?,
+                    pose,
+                })
+            }).optional()?;
+            
+            Ok(row)
+        }).await?;
+        Ok(res)
+    }
+
     pub async fn get_all_embeddings(&self) -> Result<Vec<(String, Vec<f32>)>> {
         let res = self.connection.call(|conn| {
             let mut stmt = conn.prepare("SELECT people_ref, embedding FROM people_faces")?;
