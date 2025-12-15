@@ -5,6 +5,7 @@ use async_recursion::async_recursion;
 use futures::TryStreamExt;
 use lazy_static::lazy_static;
 use nanoid::nanoid;
+use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use strum_macros::EnumString;
@@ -356,8 +357,8 @@ impl ModelController {
         let mut results = Vec::new();
 
         for face in &faces {
-            // Try matching with 0.7 threshold
-            if let Some((person_id, _sim)) = self.match_face_to_person(library_id, &face.embedding, 0.7).await? {
+            // Try matching with threshold
+            if let Some((person_id, _sim)) = self.match_face_to_person(library_id, &face.embedding, 0.4).await? {
                 // High confidence → assign directly
                 let face_id = nanoid!();
                 store.add_face_embedding(
@@ -386,7 +387,7 @@ impl ModelController {
     pub async fn cluster_unassigned_faces(&self, library_id: &str, requesting_user: &ConnectedUser) -> RsResult<ClusteringResult> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         let store = self.store.get_library_store(library_id)?;
-        let unassigned = store.get_unassigned_faces().await?;
+        let unassigned = store.get_all_unassigned_faces().await?;
         
         if unassigned.len() < 3 {
             return Ok(ClusteringResult { clusters_created: 0 });
@@ -397,7 +398,7 @@ impl ModelController {
         
         // Chinese Whispers clustering (CPU-bound)
         let clusters = tokio::task::spawn_blocking(move || {
-            chinese_whispers_clustering(&unassigned, 0.7)
+            chinese_whispers_clustering(&unassigned, 0.4)
         }).await.map_err(|e| RsError::Error(format!("Clustering task failed: {}", e)))?;
         
         // Track all face IDs that were clustered (in clusters with 2+ faces)
@@ -423,7 +424,7 @@ impl ModelController {
                 let person = self.add_pesron(library_id, new_person, &ConnectedUser::ServerAdmin).await?;
                 store.promote_cluster_to_person(cluster_id, person.id).await?;
                 created += 1;
-            } else if face_ids.len() >= 2 {
+            } else if face_ids.len() >= 4 {
                 // Cluster with 2+ faces but not enough to create person - assign cluster_id
                 store.assign_cluster_to_faces(face_ids, cluster_id).await?;
             }
@@ -568,7 +569,7 @@ impl ModelController {
     }
 }
 
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     // Handle empty or mismatched embeddings
     if a.is_empty() || b.is_empty() || a.len() != b.len() {
         return 0.0;
@@ -577,21 +578,24 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
-fn chinese_whispers_clustering(faces: &[UnassignedFace], threshold: f32) -> HashMap<String, Vec<String>> {
+pub fn chinese_whispers_clustering(faces: &[UnassignedFace], threshold: f32) -> HashMap<String, Vec<String>> {
     let n = faces.len();
     crate::tools::log::log_info(crate::tools::log::LogServiceType::Other, format!("Clustering {} unassigned faces with threshold {}", n, threshold));
     
-    let mut adj = vec![Vec::new(); n];
+    // CHANGED: Store (neighbor_index, score) for weighted voting
+    let mut adj: Vec<Vec<(usize, f32)>> = vec![Vec::new(); n];
     let mut similarities = Vec::new();
     
-    // Build graph
+    // Build graph (O(N^2))
     for i in 0..n {
         for j in i+1..n {
             let sim = cosine_similarity(&faces[i].embedding, &faces[j].embedding);
             similarities.push(sim);
+            
             if sim >= threshold {
-                adj[i].push(j);
-                adj[j].push(i);
+                // CHANGED: Store the score
+                adj[i].push((j, sim));
+                adj[j].push((i, sim));
             }
         }
     }
@@ -611,27 +615,44 @@ fn chinese_whispers_clustering(faces: &[UnassignedFace], threshold: f32) -> Hash
     
     // Iterations
     let iterations = 20;
-    for _ in 0..iterations {
+    let mut rng = rand::thread_rng(); // Initialize RNG once
+
+    for iter in 0..iterations {
         let mut changes = 0;
         let mut indices: Vec<usize> = (0..n).collect();
-        // Shuffle indices? Not strictly necessary for simple impl but good for randomness
-        // indices.shuffle(&mut rand::thread_rng()); 
+        
+        // CHANGED: Shuffle is critical for CW stability
+        indices.shuffle(&mut rng);
 
         for &i in &indices {
-            // Find most frequent label among neighbors
-            let mut label_counts = HashMap::new();
-            for &neighbor in &adj[i] {
-                *label_counts.entry(labels[neighbor]).or_insert(0) += 1;
+            // Find best label among neighbors using Weighted Voting
+            // Key: Label, Value: Sum of similarity scores
+            let mut label_scores: HashMap<usize, f32> = HashMap::new();
+            
+            // CHANGED: Weighted voting logic
+            if adj[i].is_empty() {
+                continue; // No neighbors, keep original label
+            }
+
+            for &(neighbor_idx, score) in &adj[i] {
+                let neighbor_label = labels[neighbor_idx];
+                *label_scores.entry(neighbor_label).or_insert(0.0) += score;
             }
             
-            if let Some((&best_label, _)) = label_counts.iter().max_by_key(|&(_, count)| count) {
+            // Find label with highest total score
+            // Uses partial_cmp for floats
+            if let Some((&best_label, _)) = label_scores.iter()
+                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal)) 
+            {
                 if labels[i] != best_label {
                     labels[i] = best_label;
                     changes += 1;
                 }
             }
         }
+        
         if changes == 0 {
+            crate::tools::log::log_info(crate::tools::log::LogServiceType::Other, format!("Clustering converged after {} iterations", iter + 1));
             break;
         }
     }
@@ -639,12 +660,14 @@ fn chinese_whispers_clustering(faces: &[UnassignedFace], threshold: f32) -> Hash
     // Group by label
     let mut clusters = HashMap::new();
     for (i, &label) in labels.iter().enumerate() {
+        // Use consistent naming (e.g. cluster_0, cluster_5)
+        // Note: The 'label' is just an arbitrary index from the initial set
         let cluster_id = format!("cluster_{}", label);
         clusters.entry(cluster_id).or_insert_with(Vec::new).push(faces[i].id.clone());
     }
     
     let cluster_sizes: Vec<usize> = clusters.values().map(|v| v.len()).collect();
-    crate::tools::log::log_info(crate::tools::log::LogServiceType::Other, format!("Created {} clusters (sizes: {:?})", clusters.len(), cluster_sizes));
+    crate::tools::log::log_info(crate::tools::log::LogServiceType::Other, format!("Created {} raw clusters (sizes: {:?})", clusters.len(), cluster_sizes));
     
     // Filter out singleton clusters (only keep clusters with 2+ faces)
     clusters.retain(|_, face_ids| face_ids.len() >= 2);

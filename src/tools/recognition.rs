@@ -227,108 +227,18 @@ impl FaceRecognitionService {
             face_crop_rgb.save(&format!("C:\\Users\\arnau\\Downloads\\test\\debug_face_crop_{}.png", face_idx))?;
 
 
-            if let Some(aligned_face) = align_face_manual(&face_crop, &cropped_landmarks) {
+            let aligned_face_112 = align_face_manual(&face_crop, &cropped_landmarks);
                 // aligned_face is now a perfect 112x112 image ready for embedding
-                aligned_face.save(format!("C:\\Users\\arnau\\Downloads\\test\\aligned_{}.png", face_idx))?;
-            }
-
-
-
-           let face_crop_for_2d106det = Self::resize_with_padding(&face_crop, 192);
+            aligned_face_112.save(format!("C:\\Users\\arnau\\Downloads\\test\\aligned_{}.png", face_idx))?;
             
-           face_crop_for_2d106det.save(&format!("C:\\Users\\arnau\\Downloads\\test\\debug_input_192_{}.png", face_idx))?;
-
-            // Step 2: Run 2d106det on the ALIGNED face - landmarks will be in aligned 192x192 space
-            let landmarks_192  = self.extract_106_landmarks(&face_crop_for_2d106det)?;
-            
-            // 3. Map Landmarks back to ORIGINAL Image Space (CRITICAL)
-            // x_orig = x_192 * (crop_width / 192) + crop_start_x
-            let mut landmarks_global = Vec::with_capacity(106);
-            let scale_w = face_crop.width() as f32 / 192.0;
-            let scale_h = face_crop.height() as f32 / 192.0;
-
-            for (lx, ly) in landmarks_192.clone() {
-                
-                //println!("Raw lx: {}, ly: {}", lx, ly);
-                let gx = lx * scale_w + offset_x;
-                let gy = ly * scale_h + offset_y;
-                //println!("Calculated gx: {}, gy: {}", gx, gy);
-                
-
-                landmarks_global.push((gx, gy));
-            }
-                    
-// --- DEBUG START ---
-let mut debug_canvas = image.to_rgb8(); // Clone full image
-
-// Find the Nose Index
-let mut best_idx = 0;
-let mut min_dist = 9999.0;
-for (i, (lx, ly)) in landmarks_192.iter().enumerate() {
-    let dx = lx - 96.0;
-    let dy = ly - 96.0; // Center of face is roughly center of image
-    let dist = dx*dx + dy*dy;
-    if dist < min_dist {
-        min_dist = dist;
-        best_idx = i;
-    }
-
-    let gx = lx * scale_w + offset_x;
-    let gy = ly * scale_h + offset_y;
-
-    //Self::draw_circle(&mut debug_canvas, gx as i32, gy as i32, 12, image::Rgb([255, 255, 0]));  
-}
-
-for (i, (lx, ly)) in det.landmarks.iter().enumerate() {
-    let gx = det.landmarks[i].0;
-    let gy = det.landmarks[i].1;
-    Self::draw_circle(&mut debug_canvas, gx as i32, gy as i32, 12, image::Rgb([255, 255, 255]));  
-  }
-
-
-println!("Closest point to center (Likely Nose): Index {}", best_idx);
-let point = landmarks_192[best_idx];
-println!("Closest point to center (Likely Nose): Point {:?}", point);
-Self::draw_circle(&mut debug_canvas, point.0 as i32, point.1 as i32, 12, image::Rgb([0, 0, 0]));  
-
-// Draw the 5 key points we use for warping
-let key_pts = Self::extract_5_landmarks_from_106(&landmarks_global);
-let colors = [
-    image::Rgb([255, 0, 0]),   // Left Eye (Red)
-    image::Rgb([0, 255, 0]),   // Right Eye (Green)
-    image::Rgb([0, 0, 255]),   // Nose (Blue)
-    image::Rgb([255, 255, 0]), // Left Mouth (Yellow)
-    image::Rgb([0, 255, 255]), // Right Mouth (Cyan)
-];
-let w = debug_canvas.width() as i32;
-let h = debug_canvas.height() as i32;
-
-for (i, (x, y)) in key_pts.iter().enumerate() {
-    println!("Initiating point {}", i);
-    let ix = *x as i32;
-    let iy = *y as i32;
-    
-    //Self::draw_circle(&mut debug_canvas, ix, iy, 12, colors[i]);
-                     //p.put_pixel(px as u32, py as u32, colors[i]);
- 
-}
-
-debug_canvas.save(&format!("C:\\Users\\arnau\\Downloads\\test\\debug_landmarks_global_{}.png", face_idx))?;
-    
-// --- DEBUG END ---
-
-
-            let aligned_face_112 = Self::warp_face_standard(image, &landmarks_global).unwrap();
-         
-            aligned_face_112.save(&format!("C:\\Users\\arnau\\Downloads\\test\\debug_wrap_{}.png", face_idx))?;
 
             let embedding = self.extract_embedding(&aligned_face_112)?;
 
-            let pose: (f32, f32, f32) = estimate_head_pose(&landmarks_global);
+            let pose: (f32, f32, f32) = estimate_head_pose(&cropped_landmarks);
 
             faces.push(DetectedFace {
                 bbox: det.bbox.clone(),
-                landmarks: landmarks_global, // Store aligned landmarks for visualization
+                landmarks: cropped_landmarks, // Store aligned landmarks for visualization
                 pose,
                 confidence: det.bbox.confidence,
                 embedding,
@@ -1323,120 +1233,6 @@ const REFERENCE_POINTS_112: [[f32; 2]; 5] = [
     [70.7299, 92.2041], // Right Mouth Corner
 ];
 
-/// Estimates a Similarity Transform (Scale + Rotation + Translation)
-/// Returns a 3x3 Homogeneous Matrix
-fn umeyama_similarity(src: &[[f32; 2]], dst: &[[f32; 2]]) -> Option<Matrix3<f32>> {
-    let n = src.len() as f32;
-    if src.len() != dst.len() || n < 3.0 {
-        return None;
-    }
-
-    // 1. Compute centroids
-    let src_mean = src.iter().fold(Vector2::zeros(), |acc, p| acc + Vector2::new(p[0], p[1])) / n;
-    let dst_mean = dst.iter().fold(Vector2::zeros(), |acc, p| acc + Vector2::new(p[0], p[1])) / n;
-
-    // 2. Compute variance of src
-    let src_var = src.iter().fold(0.0, |acc, p| {
-        let diff = Vector2::new(p[0], p[1]) - src_mean;
-        acc + diff.norm_squared()
-    }) / n;
-
-    if src_var < 1e-8 { return None; } // Degenerate case
-
-    // 3. Compute Covariance Matrix (Sigma)
-    // Sigma = (1/n) * sum( (dst_i - dst_mean) * (src_i - src_mean)^T )
-    let mut sigma = Matrix2::zeros();
-    for i in 0..src.len() {
-        let s = Vector2::new(src[i][0], src[i][1]) - src_mean;
-        let d = Vector2::new(dst[i][0], dst[i][1]) - dst_mean;
-        sigma += d * s.transpose();
-    }
-    sigma /= n;
-
-    // 4. Compute SVD of Sigma
-    let svd = SVD::new(sigma, true, true);
-    let u = svd.u?;
-    let v_t = svd.v_t?;
-    
-    // 5. Compute Rotation Matrix (R = U * S * V^T)
-    // We need to handle reflection case where det(R) < 0
-    let mut s = Matrix2::identity();
-    if (u * v_t).determinant() < 0.0 {
-        s[(1, 1)] = -1.0;
-    }
-    let r = u * s * v_t;
-
-    // 6. Compute Scale (s = 1/src_var * trace(D * S))
-    // Note: The Umeyama formula for scale is typically trace(D*S) / var(src)
-    // But since we used covariance matrix Sigma, it simplifies to:
-    let trace_sigma_s = (sigma * r.transpose()).trace(); // Simplified scale calculation
-    let scale = trace_sigma_s / src_var; // Wait, standard formula is (1/sigma_src^2) * tr(S*D)
-
-    // Actually, simpler scale derivation:
-    // s = (sum( (dst - dst_mean) . (R * (src - src_mean)) )) / sum( ||src - src_mean||^2 )
-    // Which is equivalent to: scale = trace(Sigma * R^T) / src_var
-    let scale = (sigma * r.transpose()).trace() / src_var;
-
-
-    // 7. Compute Translation (t = dst_mean - s * R * src_mean)
-    let t = dst_mean - scale * r * src_mean;
-
-    // 8. Construct 3x3 Affine Matrix
-    // [ s*R  t ]
-    // [  0   1 ]
-    let mut transform = Matrix3::identity();
-    let scaled_r = r * scale;
-    
-    transform[(0, 0)] = scaled_r[(0, 0)];
-    transform[(0, 1)] = scaled_r[(0, 1)];
-    transform[(0, 2)] = t.x;
-    
-    transform[(1, 0)] = scaled_r[(1, 0)];
-    transform[(1, 1)] = scaled_r[(1, 1)];
-    transform[(1, 2)] = t.y;
-
-    Some(transform)
-}
-
-/// Warps the face from the original image using the calculated affine matrix
-pub fn align_face_pure_rust(
-    image: &DynamicImage,
-    landmarks: &[(f32, f32)],
-) -> Option<DynamicImage> {
-    // 1. Calculate the similarity transform (Source -> 112x112 Template)
-    // Note: We convert landmarks to standard format
-    let src_pts: Vec<[f32; 2]> = landmarks.iter().map(|(x, y)| [*x, *y]).collect();
-    
-    // Get the FORWARD transform (Image -> Template)
-    //let tfm_matrix = umeyama_similarity(&src_pts, &REFERENCE_POINTS_112)?;
-
-    // 2. Prepare Inverse Transform for Warping
-    // 'warp' function iterates over destination pixels and looks up source pixels.
-    // So we need the INVERSE transform: Template -> Image
-    let inv_tfm_matrix = umeyama_similarity(&REFERENCE_POINTS_112, &src_pts)?;
-    // 3. Convert Matrix3 to Projection
-    // Projection expects a 3x3 matrix in row-major order as a flat array [f32; 9]
-    let matrix_data = simple_align_matrix(&src_pts, &REFERENCE_POINTS_112);
-    let projection = Projection::from_matrix(matrix_data)?;
-
-    // 4. Perform Warp
-    // Convert to ImageBuffer for imageproc
-    let src_img = image.to_rgba8();
-    let (width, height) = (112, 112);
-    
-// Create the exact buffer size expected by the model
-    let mut warped = ImageBuffer::from_pixel(112, 112, Rgba([0, 0, 0, 0]));
-
-    imageproc::geometric_transformations::warp_into(
-        &src_img,
-        &projection,
-        Interpolation::Bilinear,
-        Rgba([0, 0, 0, 0]),
-        &mut warped
-    );
-
-    Some(DynamicImage::ImageRgba8(warped))
-}
 
 
 fn simple_align_matrix(src: &[[f32; 2]], dst: &[[f32; 2]]) -> [f32; 9] {
@@ -1496,16 +1292,71 @@ fn simple_align_matrix(src: &[[f32; 2]], dst: &[[f32; 2]]) -> [f32; 9] {
         0.0, 0.0, 1.0
     ]
 }
+fn umeyama_dst_to_src(src: &[[f32; 2]], dst: &[[f32; 2]]) -> [f32; 9] {
+    let n = src.len() as f32;
+    
+    // 1. Compute centroids
+    let src_mean = src.iter().fold(Vector2::zeros(), |acc, p| acc + Vector2::new(p[0], p[1])) / n;
+    let dst_mean = dst.iter().fold(Vector2::zeros(), |acc, p| acc + Vector2::new(p[0], p[1])) / n;
+
+    // 2. Compute variance of DST (since we are transforming Dst -> Src)
+    let dst_var = dst.iter().fold(0.0, |acc, p| {
+        let diff = Vector2::new(p[0], p[1]) - dst_mean;
+        acc + diff.norm_squared()
+    }) / n;
+
+    // 3. Compute Covariance Matrix (Sigma)
+    // Sigma = (1/n) * sum( (Src - SrcMean) * (Dst - DstMean)^T )
+    // Note order: Src * Dst^T because we want R such that Src ~ R * Dst
+    let mut sigma = Matrix2::zeros();
+    for i in 0..src.len() {
+        let s = Vector2::new(src[i][0], src[i][1]) - src_mean;
+        let d = Vector2::new(dst[i][0], dst[i][1]) - dst_mean;
+        sigma += s * d.transpose(); 
+    }
+    sigma /= n;
+
+    // 4. Compute SVD
+    let svd = SVD::new(sigma, true, true);
+    let u = svd.u.unwrap();
+    let v_t = svd.v_t.unwrap();
+    
+    // 5. Compute Rotation (R = U * S * V^T)
+    let mut s = Matrix2::identity();
+    if (u * v_t).determinant() < 0.0 {
+        s[(1, 1)] = -1.0;
+    }
+    let r = u * s * v_t;
+
+    // 6. Compute Scale
+    // scale = trace(Sigma * R^T) / Var(Dst)
+    // Because we map Dst -> Src, we divide by Dst variance.
+    let scale = (sigma * r.transpose()).trace() / dst_var;
+
+    // 7. Compute Translation
+    // t = SrcMean - Scale * R * DstMean
+    let t = src_mean - scale * r * dst_mean;
+
+    println!("Umeyama Dst->Src: Scale={:.3}, Tx={:.1}, Ty={:.1}", scale, t.x, t.y);
+
+    // 8. Return 3x3 Matrix [a, b, c, d, e, f, 0, 0, 1]
+    let scaled_r = r * scale;
+    [
+        scaled_r[(0, 0)], scaled_r[(0, 1)], t.x,
+        scaled_r[(1, 0)], scaled_r[(1, 1)], t.y,
+        0.0,              0.0,              1.0
+    ]
+}
 
 pub fn align_face_manual(
     image: &DynamicImage,
     landmarks: &[(f32, f32)],
-) -> Option<DynamicImage> {
+) -> DynamicImage {
     // 1. Convert landmarks to array format [f32; 2]
     let src_pts: Vec<[f32; 2]> = landmarks.iter().map(|(x, y)| [*x, *y]).collect();
 
     // 2. Calculate Matrix (Dst -> Src) using simple solver
-    let matrix = simple_align_matrix(&src_pts, &REFERENCE_POINTS_112);
+    let matrix = umeyama_dst_to_src(&src_pts, &REFERENCE_POINTS_112);
     // matrix is [a, b, c, d, e, f, 0, 0, 1]
 
     let (a, b, c) = (matrix[0], matrix[1], matrix[2]);
@@ -1562,7 +1413,7 @@ pub fn align_face_manual(
         }
     }
 
-    Some(DynamicImage::ImageRgba8(warped))
+    DynamicImage::ImageRgba8(warped)
 }
 
 // ============== FACE WARPING CODE END ==============

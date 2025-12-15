@@ -921,12 +921,14 @@ impl SqliteLibraryStore {
 
     pub async fn remove_media(&self, media_id: String) -> Result<()> {
         self.connection.call( move |conn| { 
-            conn.execute("DELETE FROM medias WHERE id = ?", params![media_id])?;
             conn.execute("DELETE FROM ratings WHERE media_ref = ?", params![media_id])?;
             conn.execute("DELETE FROM media_tag_mapping WHERE media_ref = ?", params![media_id])?;
             conn.execute("DELETE FROM media_serie_mapping WHERE media_ref = ?", params![media_id])?;
             conn.execute("DELETE FROM media_people_mapping WHERE media_ref = ?", params![media_id])?;
             conn.execute("DELETE FROM shares WHERE media_ref = ?", params![media_id])?;
+            conn.execute("DELETE FROM unassigned_faces WHERE media_ref = ?", params![media_id])?;
+            conn.execute("DELETE FROM people_faces WHERE media_ref = ?", params![media_id])?;
+            conn.execute("DELETE FROM medias WHERE id = ?", params![media_id])?;
 
             Ok(())
         }).await?;
