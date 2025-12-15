@@ -13,7 +13,7 @@ use tokio::{fs::File, io::{AsyncRead, AsyncWriteExt, BufReader}};
 
 use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, url::RsLink, ExternalImage, Gender, ImageType};
 use tokio_util::io::StreamReader;
-use crate::{domain::{deleted::RsDeleted, library::LibraryRole, people::{FaceBBox, FaceEmbedding, PeopleMessage, Person, PersonWithAction, UnassignedFace}, tag::Tag, ElementAction}, error::{RsError, RsResult}, model::medias::MediaFileQuery, plugins::sources::{error::SourcesError, AsyncReadPinBox, FileStreamResult, Source}, tools::{image_tools::{resize_image_reader, ImageSize}, log::log_info, recognition::{DetectedFace, FaceRecognitionService}}};
+use crate::{domain::{deleted::RsDeleted, library::LibraryRole, media::FileType, people::{FaceBBox, FaceEmbedding, PeopleMessage, Person, PersonWithAction, UnassignedFace}, tag::Tag, ElementAction}, error::{RsError, RsResult}, model::medias::MediaFileQuery, plugins::sources::{error::SourcesError, AsyncReadPinBox, FileStreamResult, Source}, tools::{image_tools::{convert_image_reader, resize_image_reader, ImageSize}, log::log_info, recognition::{DetectedFace, FaceRecognitionService}, video_tools::VideoTime}};
 
 use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
 
@@ -392,38 +392,55 @@ impl ModelController {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         let store = self.store.get_library_store(library_id)?;
         
-        // Load image from source
-        let m = self.library_file(library_id, media_id, None, MediaFileQuery::default() , requesting_user).await?;
-        let mut m = m.into_reader(Some(library_id), None, None, Some((self.clone(), &requesting_user)), None).await?;
-        let image = crate::tools::image_tools::reader_to_image(&mut m.stream).await?.image;
+        // Get media to check type
+        let media = self.get_media(library_id, media_id.to_string(), requesting_user).await?
+            .ok_or(SourcesError::UnableToFindMedia(library_id.to_string(), media_id.to_string(), "process_media_faces".to_string()))?;
+        
+        // Load images - for videos, extract multiple frames like in prediction
+        let mut reader_response = self.media_image(&library_id, &media_id, None, &requesting_user).await?;
+        let buffer = convert_image_reader(reader_response.stream, image::ImageFormat::Png, None, true).await?;
+        
+        let mut images = vec![buffer];
+        if media.kind == FileType::Video {
+            let percents = vec![15, 30, 45, 60, 75, 95];
+            for percent in percents {
+                let thumb = self.get_video_thumb(library_id, media_id, VideoTime::Percent(percent), image::ImageFormat::Png, Some(70), requesting_user).await?;
+                images.push(thumb);
+            }
+        }
 
         let service = self.get_face_recognition_service().await?;
-        let faces = service.detect_and_extract_faces_async(image).await?;
-        
         let threshold = self.get_face_threshold(library_id).await?;
         let mut results = Vec::new();
 
-        for face in &faces {
-            // Try matching with threshold
-            if let Some((person_id, sim)) = self.match_face_to_person(library_id, &face.embedding, threshold).await? {
-                // High confidence → assign directly
-                let face_id = nanoid!();
-                store.add_face_embedding(
-                    face_id.clone(), &person_id, face.embedding.clone(),
-                    Some(media_id.to_string()), Some(FaceBBox {x1: face.bbox.x1, y1: face.bbox.y1, x2: face.bbox.x2, y2: face.bbox.y2}),
-                    face.confidence, Some(face.pose), Some(sim)
-                ).await?;
-                // Note: add_face_embedding now handles media_people_mapping internally
-                results.push(DetectedFaceResult { face_id: Some(face_id), confidence: face.confidence, bbox: FaceBBox {x1: face.bbox.x1, y1: face.bbox.y1, x2: face.bbox.x2, y2: face.bbox.y2} });
-            } else {
-                // No match → stage for clustering
-                let face_id = nanoid!();
-                store.add_unassigned_face(
-                    face_id.clone(), face.embedding.clone(), media_id.to_string(),
-                    FaceBBox {x1: face.bbox.x1, y1: face.bbox.y1, x2: face.bbox.x2, y2: face.bbox.y2},
-                    face.confidence, Some(face.pose)
-                ).await?;
-                results.push(DetectedFaceResult { face_id: Some(face_id), confidence: face.confidence, bbox: FaceBBox {x1: face.bbox.x1, y1: face.bbox.y1, x2: face.bbox.x2, y2: face.bbox.y2} });
+        // Process faces from all images
+        for image_buffer in &images {
+            let mut cursor = Cursor::new(image_buffer.clone());
+            let image = crate::tools::image_tools::reader_to_image(&mut cursor).await?.image;
+            let faces = service.detect_and_extract_faces_async(image).await?;
+
+            for face in &faces {
+                // Try matching with threshold
+                if let Some((person_id, sim)) = self.match_face_to_person(library_id, &face.embedding, threshold).await? {
+                    // High confidence → assign directly
+                    let face_id = nanoid!();
+                    store.add_face_embedding(
+                        face_id.clone(), &person_id, face.embedding.clone(),
+                        Some(media_id.to_string()), Some(FaceBBox {x1: face.bbox.x1, y1: face.bbox.y1, x2: face.bbox.x2, y2: face.bbox.y2}),
+                        face.confidence, Some(face.pose), Some(sim)
+                    ).await?;
+                    // Note: add_face_embedding now handles media_people_mapping internally
+                    results.push(DetectedFaceResult { face_id: Some(face_id), confidence: face.confidence, bbox: FaceBBox {x1: face.bbox.x1, y1: face.bbox.y1, x2: face.bbox.x2, y2: face.bbox.y2} });
+                } else {
+                    // No match → stage for clustering
+                    let face_id = nanoid!();
+                    store.add_unassigned_face(
+                        face_id.clone(), face.embedding.clone(), media_id.to_string(),
+                        FaceBBox {x1: face.bbox.x1, y1: face.bbox.y1, x2: face.bbox.x2, y2: face.bbox.y2},
+                        face.confidence, Some(face.pose)
+                    ).await?;
+                    results.push(DetectedFaceResult { face_id: Some(face_id), confidence: face.confidence, bbox: FaceBBox {x1: face.bbox.x1, y1: face.bbox.y1, x2: face.bbox.x2, y2: face.bbox.y2} });
+                }
             }
         }
         
