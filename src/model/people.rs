@@ -393,13 +393,13 @@ impl ModelController {
 
         for face in &faces {
             // Try matching with threshold
-            if let Some((person_id, _sim)) = self.match_face_to_person(library_id, &face.embedding, 0.4).await? {
+            if let Some((person_id, sim)) = self.match_face_to_person(library_id, &face.embedding, 0.4).await? {
                 // High confidence → assign directly
                 let face_id = nanoid!();
                 store.add_face_embedding(
                     face_id.clone(), &person_id, face.embedding.clone(),
                     Some(media_id.to_string()), Some(FaceBBox {x1: face.bbox.x1, y1: face.bbox.y1, x2: face.bbox.x2, y2: face.bbox.y2}),
-                    face.confidence, Some(face.pose)
+                    face.confidence, Some(face.pose), Some(sim)
                 ).await?;
                 // Note: add_face_embedding now handles media_people_mapping internally
                 results.push(DetectedFaceResult { face_id: Some(face_id), confidence: face.confidence, bbox: FaceBBox {x1: face.bbox.x1, y1: face.bbox.y1, x2: face.bbox.x2, y2: face.bbox.y2} });
@@ -513,6 +513,20 @@ impl ModelController {
                 Ok(())
             }
         }
+    }
+
+    pub async fn assign_unassigned_face_to_person(&self, library_id: &str, face_id: &str, person_id: &str, requesting_user: &ConnectedUser) -> RsResult<()> {
+        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        let store = self.store.get_library_store(library_id)?;
+        store.assign_unassigned_face_to_person(face_id.to_string(), person_id.to_string()).await?;
+        Ok(())
+    }
+
+    pub async fn assign_unassigned_faces_to_person(&self, library_id: &str, face_ids: &[String], person_id: &str, requesting_user: &ConnectedUser) -> RsResult<usize> {
+        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        let store = self.store.get_library_store(library_id)?;
+        let count = store.assign_unassigned_faces_to_person_batch(face_ids.to_vec(), person_id.to_string()).await?;
+        Ok(count)
     }
 
     pub async fn get_face_image(&self, library_id: &str, face_id: &str, requesting_user: &ConnectedUser) -> RsResult<Vec<u8>> {

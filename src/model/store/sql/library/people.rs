@@ -338,7 +338,8 @@ else 0 end) as score", q, q, q, q, q, q);
         media_id: Option<String>,
         bbox: Option<FaceBBox>,
         confidence: f32,
-        pose: Option<(f32, f32, f32)>
+        pose: Option<(f32, f32, f32)>,
+        similarity: Option<f32>
     ) -> Result<()> {
         let pid = person_id.to_string();
         let media_id_clone = media_id.clone();
@@ -365,11 +366,11 @@ else 0 end) as score", q, q, q, q, q, q);
                 params![face_id, pid.clone(), embedding_blob, media_id_clone.clone(), bbox_json, confidence, pose_json, chrono::Utc::now().timestamp_millis()]
             )?;
             
-            // Also insert into media_people_mapping if media_id is provided
+            // Also insert or update media_people_mapping if media_id is provided
             if let Some(ref m_id) = media_id_clone {
                 tx.execute(
-                    "INSERT OR IGNORE INTO media_people_mapping (media_ref, people_ref, confidence) VALUES (?, ?, ?)",
-                    params![m_id, pid, confidence_int]
+                    "INSERT OR REPLACE INTO media_people_mapping (media_ref, people_ref, confidence, people_face_ref, similarity) VALUES (?, ?, ?, ?, ?)",
+                    params![m_id, pid, confidence_int, face_id.clone(), similarity]
                 )?;
             }
             
@@ -586,18 +587,20 @@ else 0 end) as score", q, q, q, q, q, q);
                 }
             }
 
-            // 3. Insert into media_people_mapping for unique media_refs
+            // 3. Insert or update media_people_mapping for unique media_refs
             {
-                use std::collections::HashSet;
-                let mut unique_media_refs = HashSet::new();
-                for (_, _, mref, _, _, _, _) in &faces {
-                    unique_media_refs.insert(mref.clone());
+                use std::collections::HashMap;
+                let mut media_to_face: HashMap<String, String> = HashMap::new();
+                // Track first face_id for each media_ref
+                for (face_id, _, mref, _, _, _, _) in &faces {
+                    media_to_face.entry(mref.clone()).or_insert_with(|| face_id.clone());
                 }
                 
-                let mut stmt = tx.prepare("INSERT OR IGNORE INTO media_people_mapping (media_ref, people_ref, confidence) VALUES (?, ?, ?)")?;
-                for media_ref in unique_media_refs {
+                let mut stmt = tx.prepare("INSERT OR REPLACE INTO media_people_mapping (media_ref, people_ref, confidence, people_face_ref, similarity) VALUES (?, ?, ?, ?, ?)")?;
+                for (media_ref, face_id) in media_to_face {
                     // Use default confidence of 100 for cluster promotions
-                    stmt.execute(params![media_ref, pid.clone(), 100])?;
+                    // Similarity is NULL for cluster promotions (no automatic matching)
+                    stmt.execute(params![media_ref, pid.clone(), 100, face_id, None::<f32>])?;
                 }
             }
 
@@ -608,6 +611,119 @@ else 0 end) as score", q, q, q, q, q, q);
             Ok(())
         }).await?;
         Ok(())
+    }
+
+    pub async fn assign_unassigned_face_to_person(&self, face_id: String, person_id: String) -> Result<()> {
+        let fid = face_id.clone();
+        let pid = person_id.clone();
+        self.connection.call(move |conn| {
+            let tx = conn.transaction()?;
+            
+            // 1. Get the unassigned face
+            let mut face_data: Option<(Vec<u8>, String, String, f32, Option<String>, i64)> = None;
+            {
+                let mut stmt = tx.prepare("SELECT embedding, media_ref, bbox, confidence, pose, created FROM unassigned_faces WHERE id = ?")?;
+                let result = stmt.query_row(params![fid.clone()], |row| {
+                    Ok((
+                        row.get::<_, Vec<u8>>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, f32>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, i64>(5)?,
+                    ))
+                }).optional()?;
+                
+                if result.is_none() {
+                    return Err(rusqlite::Error::QueryReturnedNoRows.into());
+                }
+                face_data = result;
+            }
+            
+            let (embedding_blob, media_ref, bbox_str, confidence, pose_json, created) = face_data.unwrap();
+            
+            // 2. Insert into people_faces
+            {
+                let mut stmt = tx.prepare("INSERT INTO people_faces (id, people_ref, embedding, media_ref, bbox, confidence, pose, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")?;
+                stmt.execute(params![fid.clone(), pid.clone(), embedding_blob, media_ref.clone(), bbox_str, confidence, pose_json, created])?;
+            }
+            
+            // 3. Insert or update media_people_mapping
+            {
+                let confidence_int = (confidence * 100.0) as i32;
+                tx.execute(
+                    "INSERT OR REPLACE INTO media_people_mapping (media_ref, people_ref, confidence, people_face_ref, similarity) VALUES (?, ?, ?, ?, ?)",
+                    params![media_ref, pid, confidence_int, fid.clone(), None::<f32>]
+                )?;
+            }
+            
+            // 4. Delete from unassigned_faces
+            tx.execute("DELETE FROM unassigned_faces WHERE id = ?", params![fid])?;
+            
+            tx.commit()?;
+            Ok(())
+        }).await?;
+        Ok(())
+    }
+
+    pub async fn assign_unassigned_faces_to_person_batch(&self, face_ids: Vec<String>, person_id: String) -> Result<usize> {
+        let pid = person_id.clone();
+        let face_ids_clone = face_ids.clone();
+        let res = self.connection.call(move |conn| {
+            let tx = conn.transaction()?;
+            
+            let mut assigned_count = 0;
+            
+            // Process each face
+            for face_id in &face_ids_clone {
+                // 1. Get the unassigned face
+                let mut face_data: Option<(Vec<u8>, String, String, f32, Option<String>, i64)> = None;
+                {
+                    let mut stmt = tx.prepare("SELECT embedding, media_ref, bbox, confidence, pose, created FROM unassigned_faces WHERE id = ?")?;
+                    let result = stmt.query_row(params![face_id], |row| {
+                        Ok((
+                            row.get::<_, Vec<u8>>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, f32>(3)?,
+                            row.get::<_, Option<String>>(4)?,
+                            row.get::<_, i64>(5)?,
+                        ))
+                    }).optional()?;
+                    
+                    if result.is_none() {
+                        continue; // Skip if face not found
+                    }
+                    face_data = result;
+                }
+                
+                let (embedding_blob, media_ref, bbox_str, confidence, pose_json, created) = face_data.unwrap();
+                
+                // 2. Insert into people_faces
+                {
+                    let mut stmt = tx.prepare("INSERT INTO people_faces (id, people_ref, embedding, media_ref, bbox, confidence, pose, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")?;
+                    stmt.execute(params![face_id, pid.clone(), embedding_blob, media_ref.clone(), bbox_str, confidence, pose_json, created])?;
+                }
+                
+                // 3. Insert or update media_people_mapping
+                {
+                    let confidence_int = (confidence * 100.0) as i32;
+                    tx.execute(
+                        "INSERT OR REPLACE INTO media_people_mapping (media_ref, people_ref, confidence, people_face_ref, similarity) VALUES (?, ?, ?, ?, ?)",
+                        params![media_ref, pid.clone(), confidence_int, face_id, None::<f32>]
+                    )?;
+                }
+                
+                // 4. Delete from unassigned_faces
+                tx.execute("DELETE FROM unassigned_faces WHERE id = ?", params![face_id])?;
+                
+                assigned_count += 1;
+            }
+            
+            tx.commit()?;
+            Ok(assigned_count)
+        }).await?;
+        Ok(res)
     }
 
     pub async fn mark_media_face_processed(&self, media_id: String) -> Result<()> {

@@ -106,6 +106,14 @@ impl SqliteLibraryStore {
                     conn.pragma_update(None, "user_version", version)?;
                     log_info(LogServiceType::Database, format!("Update Library Database to version: {}", version));                   
                 }
+
+                if version < 36 {
+                    let initial = String::from_utf8_lossy(include_bytes!("036 - PEOPLE FACE REF.sql"));
+                    conn.execute_batch(&initial)?;
+                    version = 36;
+                    conn.pragma_update(None, "user_version", version)?;
+                    log_info(LogServiceType::Database, format!("Update Library Database to version: {}", version));
+                }
                 
                 
                 conn.execute("VACUUM;", params![])?;
