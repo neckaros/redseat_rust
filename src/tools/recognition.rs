@@ -484,7 +484,7 @@ impl FaceRecognitionService {
 
         // SCRFD format: outputs[0,1,2]=scores, outputs[3,4,5]=bbox, outputs[6,7,8]=kps
         // Process all 3 pyramid levels (stride 8, 16, 32)
-        let conf_thres = 0.5f32;
+        let conf_thres = 0.65f32;  // Increased from 0.5 to reduce false positives
         let iou_thres = 0.4f32;
         let strides = [8, 16, 32];
         let fmc = 3; // number of feature map types (scores, bbox, kps)
@@ -598,7 +598,42 @@ impl FaceRecognitionService {
         }
         
         let nms_result = non_max_suppression(detections, iou_thres);
-        Ok(nms_result)
+        
+        // Post-detection validation: filter out low-quality detections
+        let validated: Vec<Detection> = nms_result
+            .into_iter()
+            .filter(|det| {
+                // 1. Minimum face size validation (filter very small faces)
+                let w = det.bbox.x2 - det.bbox.x1;
+                let h = det.bbox.y2 - det.bbox.y1;
+                let min_size = 64.0; // Minimum 32x32 pixels
+                if w < min_size || h < min_size {
+                    return false;
+                }
+                
+                // 2. Landmark validation (require exactly 5 landmarks for proper alignment)
+                // SCRFD/RetinaFace models output 5 keypoints (left eye, right eye, nose, left mouth, right mouth)
+                // If we don't have 5 landmarks, the detection is likely poor quality or a false positive
+                if det.landmarks.len() != 5 {
+                    return false;
+                }
+                
+                // 3. Pose validation (filter extreme poses that are likely false positives)
+                let (pitch, yaw, roll) = estimate_head_pose(&det.landmarks);
+                
+                // Filter extreme poses:
+                // - Yaw > 60°: too much profile view (hard to identify)
+                // - Pitch > 45°: looking too far up/down
+                // - Roll > 30°: head tilted too much
+                if yaw.abs() > 60.0 || pitch.abs() > 45.0 || roll.abs() > 30.0 {
+                    return false;
+                }
+                
+                true
+            })
+            .collect();
+        
+        Ok(validated)
     }
 
     fn crop_face_with_padding(

@@ -224,7 +224,7 @@ impl ModelController {
 	pub async fn person_image(&self, library_id: &str, person_id: &str, kind: Option<ImageType>, size: Option<ImageSize>, requesting_user: &ConnectedUser) -> crate::Result<FileStreamResult<AsyncReadPinBox>> {
         if RsIds::is_id(person_id) {
             let mut person_ids: RsIds = person_id.to_string().try_into()?;
-            let store: std::sync::Arc<super::store::sql::library::SqliteLibraryStore> = self.store.get_library_store_optional(library_id).ok_or(SourcesError::UnableToFindPerson(library_id.to_string(), person_id.to_string(), "person_image".to_string()))?;
+            let store = self.store.get_library_store_optional(library_id).ok_or(SourcesError::UnableToFindPerson(library_id.to_string(), person_id.to_string(), "person_image".to_string()))?;
             let existing_person = store.get_person_by_external_id(person_ids.clone()).await?;
             if let Some(existing_person) = existing_person {
                 let image = self.person_image(library_id, &existing_person.id, kind, size, requesting_user).await?;
@@ -267,13 +267,13 @@ impl ModelController {
                     }
                     Err(_) => {
                         // External image refresh failed, try face fallback
-                        log_info(crate::tools::log::LogServiceType::Source, format!("Updating person image from face: {} {:?}", person_id, kind.clone()));
-                        let store = self.store.get_library_store(library_id)?;
+                        let store = self.store.get_library_store_optional(library_id).ok_or(SourcesError::UnableToFindPerson(library_id.to_string(), person_id.to_string(), "person_image".to_string()))?;
                         if let Ok(Some(face)) = store.get_highest_confidence_face(person_id).await {
                             // Check that face has required fields
                             if let (Some(media_ref), Some(_bbox)) = (face.media_ref.as_ref(), face.bbox.as_ref()) {
                                 if !media_ref.is_empty() {
                                     // Extract face image and save as person image
+                                    log_info(crate::tools::log::LogServiceType::Source, format!("Updating person ({}) image from face: {}", person_id, face.id));
                                     match self.get_face_image(library_id, &face.id, &ConnectedUser::ServerAdmin).await {
                                         Ok(face_bytes) => {
                                             let reader = Cursor::new(face_bytes);
@@ -479,7 +479,7 @@ impl ModelController {
                 all_clustered_face_ids.insert(face_id.clone());
             }
             
-            if face_ids.len() >= 3 {
+            if face_ids.len() >= 10 {
                 // First assign cluster_id to faces (required for promote_cluster_to_person to find them)
                 store.assign_cluster_to_faces(face_ids.clone(), cluster_id.clone()).await?;
                 
@@ -492,7 +492,7 @@ impl ModelController {
                 let person = self.add_pesron(library_id, new_person, &ConnectedUser::ServerAdmin).await?;
                 store.promote_cluster_to_person(cluster_id, person.id).await?;
                 created += 1;
-            } else if face_ids.len() >= 4 {
+            } else if face_ids.len() >= 2 {
                 // Cluster with 2+ faces but not enough to create person - assign cluster_id
                 store.assign_cluster_to_faces(face_ids, cluster_id).await?;
             }
