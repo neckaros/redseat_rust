@@ -614,6 +614,13 @@ impl ModelController {
         Ok(count)
     }
 
+    pub async fn unassign_faces_from_person(&self, library_id: &str, face_ids: &[String], requesting_user: &ConnectedUser) -> RsResult<usize> {
+        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        let store = self.store.get_library_store(library_id)?;
+        let count = store.unassign_faces_from_person_batch(face_ids.to_vec()).await?;
+        Ok(count)
+    }
+
     pub async fn match_unassigned_faces_to_people(&self, library_id: &str, requesting_user: &ConnectedUser) -> RsResult<usize> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         let store = self.store.get_library_store(library_id)?;

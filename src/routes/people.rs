@@ -20,6 +20,7 @@ pub fn routes(mc: ModelController) -> Router {
         .route("/batch-detect", post(handler_batch_detect_faces))
         .route("/merge", post(handler_merge_people))
         .route("/assign-face", post(handler_assign_face_to_person))
+        .route("/unassign-face", post(handler_unassign_face_from_person))
         .route("/tasks/face-recognition", post(handler_start_face_recognition_task))
         
 		.route("/:id", get(handler_get))
@@ -209,18 +210,44 @@ struct AssignFaceRequest {
     person_id: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UnassignFaceRequest {
+    face_ids: Vec<String>,
+}
+
 async fn handler_assign_face_to_person(
     Path(library_id): Path<String>,
     State(mc): State<ModelController>,
     user: ConnectedUser,
     Json(payload): Json<AssignFaceRequest>
 ) -> Result<Json<Value>> {
+    // First unassign any faces that are already assigned to a person
+    let unassigned_count = mc.unassign_faces_from_person(&library_id, &payload.face_ids, &user).await?;
+    
+    // Then assign all faces to the new person
     let assigned_count = mc.assign_unassigned_faces_to_person(&library_id, &payload.face_ids, &payload.person_id, &user).await?;
+    
     Ok(Json(json!({
         "status": "assigned",
         "face_ids": payload.face_ids,
         "person_id": payload.person_id,
+        "unassigned_count": unassigned_count,
         "assigned_count": assigned_count
+    })))
+}
+
+async fn handler_unassign_face_from_person(
+    Path(library_id): Path<String>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Json(payload): Json<UnassignFaceRequest>
+) -> Result<Json<Value>> {
+    let unassigned_count = mc.unassign_faces_from_person(&library_id, &payload.face_ids, &user).await?;
+    Ok(Json(json!({
+        "status": "unassigned",
+        "face_ids": payload.face_ids,
+        "unassigned_count": unassigned_count
     })))
 }
 

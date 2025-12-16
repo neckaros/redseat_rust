@@ -818,6 +818,84 @@ else 0 end) as score", q, q, q, q, q, q);
         Ok(res)
     }
 
+    pub async fn unassign_faces_from_person_batch(&self, face_ids: Vec<String>) -> Result<usize> {
+        use crate::domain::people::FaceBBox;
+        let face_ids_clone = face_ids.clone();
+        let res = self.connection.call(move |conn| {
+            let tx = conn.transaction()?;
+            
+            let mut unassigned_count = 0;
+            
+            // Process each face
+            for face_id in &face_ids_clone {
+                // 1. Get the assigned face from people_faces
+                let mut face_data: Option<(Vec<u8>, Option<String>, Option<String>, f32, Option<String>, i64)> = None;
+                {
+                    let mut stmt = tx.prepare("SELECT embedding, media_ref, bbox, confidence, pose, created FROM people_faces WHERE id = ?")?;
+                    let result = stmt.query_row(params![face_id], |row| {
+                        Ok((
+                            row.get::<_, Vec<u8>>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, f32>(3)?,
+                            row.get::<_, Option<String>>(4)?,
+                            row.get::<_, i64>(5)?,
+                        ))
+                    }).optional()?;
+                    
+                    if result.is_none() {
+                        continue; // Skip if face not found
+                    }
+                    face_data = result;
+                }
+                
+                let (embedding_blob, media_ref_opt, bbox_str_opt, confidence, pose_json, created) = face_data.unwrap();
+                
+                // Skip if media_ref is None (required in unassigned_faces)
+                let media_ref = match media_ref_opt {
+                    Some(ref_val) if !ref_val.is_empty() => ref_val,
+                    _ => continue, // Skip faces without media_ref
+                };
+                
+                // Handle bbox - use default if None, deserialize if Some
+                let bbox_str = match bbox_str_opt {
+                    Some(ref bbox_json) if !bbox_json.is_empty() => {
+                        // Validate it's valid JSON, use default if not
+                        match serde_json::from_str::<FaceBBox>(bbox_json) {
+                            Ok(_) => bbox_json.clone(),
+                            Err(_) => {
+                                // Invalid JSON, use default
+                                serde_json::to_string(&FaceBBox::default()).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?
+                            }
+                        }
+                    },
+                    _ => {
+                        // None or empty, use default
+                        serde_json::to_string(&FaceBBox::default()).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?
+                    }
+                };
+                
+                // 2. Insert into unassigned_faces
+                {
+                    let mut stmt = tx.prepare("INSERT INTO unassigned_faces (id, embedding, media_ref, bbox, confidence, pose, created) VALUES (?, ?, ?, ?, ?, ?, ?)")?;
+                    stmt.execute(params![face_id, embedding_blob, media_ref.clone(), bbox_str.clone(), confidence, pose_json, created])?;
+                }
+                
+                // 3. Delete from media_people_mapping where people_face_ref matches
+                tx.execute("DELETE FROM media_people_mapping WHERE people_face_ref = ?", params![face_id])?;
+                
+                // 4. Delete from people_faces
+                tx.execute("DELETE FROM people_faces WHERE id = ?", params![face_id])?;
+                
+                unassigned_count += 1;
+            }
+            
+            tx.commit()?;
+            Ok(unassigned_count)
+        }).await?;
+        Ok(res)
+    }
+
     pub async fn mark_media_face_processed(&self, media_id: String) -> Result<()> {
         self.connection.call(move |conn| {
             conn.execute("UPDATE medias SET face_processed = 1 WHERE id = ?", params![media_id])?;
@@ -874,7 +952,7 @@ else 0 end) as score", q, q, q, q, q, q);
     pub async fn get_medias_for_face_processing(&self, limit: usize) -> Result<Vec<String>> {
         let limit = limit as i64;
         let res = self.connection.call(move |conn| {
-            let mut stmt = conn.prepare("SELECT id FROM medias WHERE face_processed = 0 AND type = 'photo' LIMIT ?")?;
+            let mut stmt = conn.prepare("SELECT id FROM medias WHERE face_processed = 0 AND type = 'photo' ORDER BY added DESC LIMIT ?")?;
             let rows = stmt.query_map(params![limit], |row| {
                 Ok(row.get::<_, String>(0)?)
             })?;
