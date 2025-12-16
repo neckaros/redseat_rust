@@ -13,7 +13,7 @@ use tokio::{fs::File, io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader}};
 
 use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, url::RsLink, ExternalImage, Gender, ImageType};
 use tokio_util::io::StreamReader;
-use crate::{domain::{deleted::RsDeleted, library::LibraryRole, media::FileType, people::{FaceBBox, FaceEmbedding, PeopleMessage, Person, PersonWithAction, UnassignedFace}, tag::Tag, ElementAction}, error::{RsError, RsResult}, model::medias::MediaFileQuery, plugins::sources::{error::SourcesError, AsyncReadPinBox, FileStreamResult, Source}, tools::{image_tools::{convert_image_reader, resize_image_reader, ImageSize}, log::log_info, recognition::{BBox, DetectedFace, FaceRecognitionService}, video_tools::VideoTime}};
+use crate::{domain::{deleted::RsDeleted, library::LibraryRole, media::{FileType, Media, MediaWithAction, MediasMessage}, people::{FaceBBox, FaceEmbedding, PeopleMessage, Person, PersonWithAction, UnassignedFace}, tag::Tag, ElementAction}, error::{RsError, RsResult}, model::medias::MediaFileQuery, plugins::sources::{error::SourcesError, AsyncReadPinBox, FileStreamResult, Source}, tools::{image_tools::{convert_image_reader, resize_image_reader, ImageSize}, log::log_info, recognition::{BBox, DetectedFace, FaceRecognitionService}, video_tools::VideoTime}};
 
 use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
 
@@ -496,6 +496,12 @@ impl ModelController {
         // Collect all face IDs before moving unassigned into closure
         let all_face_ids: Vec<String> = unassigned.iter().map(|f| f.id.clone()).collect();
         
+        // Create lookup map from face_id to media_ref for threshold counting
+        let face_to_media: std::collections::HashMap<String, String> = unassigned
+            .iter()
+            .map(|f| (f.id.clone(), f.media_ref.clone()))
+            .collect();
+        
         // Get threshold for this library
         let threshold = self.get_face_threshold(library_id).await?;
         let threshold_clone = threshold; // Clone for move into closure
@@ -515,7 +521,14 @@ impl ModelController {
                 all_clustered_face_ids.insert(face_id.clone());
             }
             
-            if face_ids.len() >= 10 {
+            // Count unique media_refs instead of total faces
+            let unique_media_count: usize = face_ids
+                .iter()
+                .filter_map(|face_id| face_to_media.get(face_id))
+                .collect::<std::collections::HashSet<_>>()
+                .len();
+            
+            if unique_media_count >= 10 {
                 // First assign cluster_id to faces (required for promote_cluster_to_person to find them)
                 store.assign_cluster_to_faces(face_ids.clone(), cluster_id.clone()).await?;
                 
@@ -527,9 +540,20 @@ impl ModelController {
                 };
                 let person = self.add_pesron(library_id, new_person, &ConnectedUser::ServerAdmin).await?;
                 store.promote_cluster_to_person(cluster_id, person.id).await?;
+                
+                // Get unique media IDs from the faces in this cluster and send update events
+                let cluster_media_ids: Vec<String> = face_ids
+                    .iter()
+                    .filter_map(|face_id| face_to_media.get(face_id))
+                    .cloned()
+                    .collect::<std::collections::HashSet<_>>()
+                    .into_iter()
+                    .collect();
+                self.send_media_update_events(library_id, &cluster_media_ids, requesting_user).await;
+                
                 created += 1;
             } else if face_ids.len() >= 2 {
-                // Cluster with 2+ faces but not enough to create person - assign cluster_id
+                // Cluster with 2+ faces but not enough unique media to create person - assign cluster_id
                 store.assign_cluster_to_faces(face_ids, cluster_id).await?;
             }
         }
@@ -602,22 +626,46 @@ impl ModelController {
 
     pub async fn assign_unassigned_face_to_person(&self, library_id: &str, face_id: &str, person_id: &str, requesting_user: &ConnectedUser) -> RsResult<()> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        
+        // Get media IDs before assignment
+        let media_ids = self.get_media_ids_from_face_ids(library_id, &[face_id.to_string()], true).await?;
+        
         let store = self.store.get_library_store(library_id)?;
         store.assign_unassigned_face_to_person(face_id.to_string(), person_id.to_string()).await?;
+        
+        // Send media update events
+        self.send_media_update_events(library_id, &media_ids, requesting_user).await;
+        
         Ok(())
     }
 
     pub async fn assign_unassigned_faces_to_person(&self, library_id: &str, face_ids: &[String], person_id: &str, requesting_user: &ConnectedUser) -> RsResult<usize> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        
+        // Get media IDs before assignment
+        let media_ids = self.get_media_ids_from_face_ids(library_id, face_ids, true).await?;
+        
         let store = self.store.get_library_store(library_id)?;
         let count = store.assign_unassigned_faces_to_person_batch(face_ids.to_vec(), person_id.to_string()).await?;
+        
+        // Send media update events
+        self.send_media_update_events(library_id, &media_ids, requesting_user).await;
+        
         Ok(count)
     }
 
     pub async fn unassign_faces_from_person(&self, library_id: &str, face_ids: &[String], requesting_user: &ConnectedUser) -> RsResult<usize> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        
+        // Get media IDs before unassignment (faces are in people_faces)
+        let media_ids = self.get_media_ids_from_face_ids(library_id, face_ids, false).await?;
+        
         let store = self.store.get_library_store(library_id)?;
         let count = store.unassign_faces_from_person_batch(face_ids.to_vec()).await?;
+        
+        // Send media update events
+        self.send_media_update_events(library_id, &media_ids, requesting_user).await;
+        
         Ok(count)
     }
 
@@ -764,6 +812,52 @@ impl ModelController {
         }
         
         Ok(image_bytes)
+    }
+
+    /// Helper function to get media IDs from face IDs
+    /// Checks both unassigned_faces and people_faces tables
+    async fn get_media_ids_from_face_ids(&self, library_id: &str, face_ids: &[String], from_unassigned: bool) -> RsResult<Vec<String>> {
+        let store = self.store.get_library_store(library_id)?;
+        let mut media_ids = std::collections::HashSet::new();
+        
+        for face_id in face_ids {
+            if let Ok(Some((media_ref, _))) = store.get_face_by_id(face_id).await {
+                if !media_ref.is_empty() {
+                    media_ids.insert(media_ref);
+                }
+            }
+        }
+        
+        Ok(media_ids.into_iter().collect())
+    }
+
+    /// Helper function to send media update events for affected media
+    async fn send_media_update_events(&self, library_id: &str, media_ids: &[String], requesting_user: &ConnectedUser) {
+        if media_ids.is_empty() {
+            return;
+        }
+
+        let store = match self.store.get_library_store(library_id) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+
+        let mut medias_to_send = Vec::new();
+        for media_id in media_ids {
+            if let Ok(Some(media)) = store.get_media(media_id, requesting_user.user_id().ok()).await {
+                medias_to_send.push(MediaWithAction {
+                    media,
+                    action: ElementAction::Updated,
+                });
+            }
+        }
+
+        if !medias_to_send.is_empty() {
+            self.send_media(MediasMessage {
+                library: library_id.to_string(),
+                medias: medias_to_send,
+            });
+        }
     }
 
     pub async fn merge_people(&self, library_id: &str, source_person_id: &str, target_person_id: &str, requesting_user: &ConnectedUser) -> RsResult<usize> {
