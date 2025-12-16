@@ -113,6 +113,14 @@ pub struct DetectedFaceResult {
     pub bbox: FaceBBox,
 }
 
+// Temporary structure to hold face data before deduplication
+#[derive(Clone)]
+struct CollectedFace {
+    face: DetectedFace,
+    video_percent: Option<u32>,
+    bbox: FaceBBox,
+}
+
 #[derive(Serialize)]
 pub struct ClusteringResult {
     pub clusters_created: usize,
@@ -413,18 +421,20 @@ impl ModelController {
                 vec![(None, buffer)]
             },
             FileType::Video => {
-                // Extract multiple video frames (existing logic)
-                let percents = vec![15, 30, 45, 60, 75, 95];
+                
                 let mut video_images = Vec::new();
-                for percent in percents {
-                    let thumb = self.get_video_thumb(library_id, media_id, VideoTime::Percent(percent), image::ImageFormat::Png, Some(70), requesting_user).await?;
-                    video_images.push((Some(percent), thumb)); // Store percent with image
-                }
                 // Also add media_image if it exists
                 if let Ok(mut reader_response) = self.media_image(&library_id, &media_id, None, &requesting_user).await {
                     if let Ok(buffer) = convert_image_reader(reader_response.stream, image::ImageFormat::Png, None, true).await {
                         video_images.push((None, buffer)); // Store with None percent for media_image
                     }
+                }
+
+                // Extract multiple video frames (existing logic)
+                let percents = vec![15, 30, 45, 60, 75, 95];
+                for percent in percents {
+                    let thumb = self.get_video_thumb(library_id, media_id, VideoTime::Percent(percent), image::ImageFormat::Png, Some(70), requesting_user).await?;
+                    video_images.push((Some(percent), thumb)); // Store percent with image
                 }
                 video_images
             },
@@ -438,15 +448,15 @@ impl ModelController {
 
         let service = self.get_face_recognition_service().await?;
         let threshold = self.get_face_threshold(library_id).await?;
-        let mut results = Vec::new();
-
-        // Process faces from all images
+        
+        // Collect all faces from all images first
+        let mut collected_faces = Vec::new();
         for (video_percent, image_buffer) in &images_data {
             let mut cursor = Cursor::new(image_buffer.clone());
             let image = crate::tools::image_tools::reader_to_image(&mut cursor).await?.image;
             let faces = service.detect_and_extract_faces_async(image).await?;
 
-            for face in &faces {
+            for face in faces {
                 // Create bbox with video_percent if available
                 let bbox = FaceBBox {
                     x1: face.bbox.x1,
@@ -456,27 +466,48 @@ impl ModelController {
                     video_percent: *video_percent,
                 };
                 
-                // Try matching with threshold
-                if let Some((person_id, sim)) = self.match_face_to_person(library_id, &face.embedding, threshold).await? {
-                    // High confidence → assign directly
-                    let face_id = nanoid!();
-                    store.add_face_embedding(
-                        face_id.clone(), &person_id, face.embedding.clone(),
-                        Some(media_id.to_string()), Some(bbox.clone()),
-                        face.confidence, Some(face.pose), Some(sim)
-                    ).await?;
-                    // Note: add_face_embedding now handles media_people_mapping internally
-                    results.push(DetectedFaceResult { face_id: Some(face_id), confidence: face.confidence, bbox: bbox.clone() });
-                } else {
-                    // No match → stage for clustering
-                    let face_id = nanoid!();
-                    store.add_unassigned_face(
-                        face_id.clone(), face.embedding.clone(), media_id.to_string(),
-                        bbox.clone(),
-                        face.confidence, Some(face.pose)
-                    ).await?;
-                    results.push(DetectedFaceResult { face_id: Some(face_id), confidence: face.confidence, bbox: bbox.clone() });
-                }
+                collected_faces.push(CollectedFace {
+                    face,
+                    video_percent: *video_percent,
+                    bbox,
+                });
+            }
+        }
+        
+        // Deduplicate similar faces (keep only highest confidence from each cluster)
+        let deduplicated_faces = deduplicate_faces(collected_faces, threshold);
+        
+        // Process deduplicated faces
+        let mut results = Vec::new();
+        for collected_face in deduplicated_faces {
+            // Try matching with threshold
+            if let Some((person_id, sim)) = self.match_face_to_person(library_id, &collected_face.face.embedding, threshold).await? {
+                // High confidence → assign directly
+                let face_id = nanoid!();
+                store.add_face_embedding(
+                    face_id.clone(), &person_id, collected_face.face.embedding.clone(),
+                    Some(media_id.to_string()), Some(collected_face.bbox.clone()),
+                    collected_face.face.confidence, Some(collected_face.face.pose), Some(sim)
+                ).await?;
+                // Note: add_face_embedding now handles media_people_mapping internally
+                results.push(DetectedFaceResult { 
+                    face_id: Some(face_id), 
+                    confidence: collected_face.face.confidence, 
+                    bbox: collected_face.bbox.clone() 
+                });
+            } else {
+                // No match → stage for clustering
+                let face_id = nanoid!();
+                store.add_unassigned_face(
+                    face_id.clone(), collected_face.face.embedding.clone(), media_id.to_string(),
+                    collected_face.bbox.clone(),
+                    collected_face.face.confidence, Some(collected_face.face.pose)
+                ).await?;
+                results.push(DetectedFaceResult { 
+                    face_id: Some(face_id), 
+                    confidence: collected_face.face.confidence, 
+                    bbox: collected_face.bbox.clone() 
+                });
             }
         }
         
@@ -909,6 +940,74 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     }
     // Assuming L2-normalized embeddings: cosine = dot product
     a.iter().zip(b).map(|(x, y)| x * y).sum()
+}
+
+/// Deduplicate faces by clustering similar ones and keeping only the highest confidence face from each cluster.
+/// Uses cosine similarity with the given threshold to determine if faces are similar.
+fn deduplicate_faces(collected_faces: Vec<CollectedFace>, threshold: f32) -> Vec<CollectedFace> {
+    if collected_faces.len() <= 1 {
+        return collected_faces;
+    }
+
+    let n = collected_faces.len();
+    
+    // Build similarity graph: adjacency list where edges connect similar faces
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+    
+    // Calculate similarity for all pairs
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let sim = cosine_similarity(&collected_faces[i].face.embedding, &collected_faces[j].face.embedding);
+            if sim >= threshold {
+                adj[i].push(j);
+                adj[j].push(i);
+            }
+        }
+    }
+    
+    // Find connected components (clusters) using DFS
+    let mut visited = vec![false; n];
+    let mut clusters: Vec<Vec<usize>> = Vec::new();
+    
+    for i in 0..n {
+        if !visited[i] {
+            let mut cluster = Vec::new();
+            let mut stack = vec![i];
+            visited[i] = true;
+            
+            while let Some(node) = stack.pop() {
+                cluster.push(node);
+                for &neighbor in &adj[node] {
+                    if !visited[neighbor] {
+                        visited[neighbor] = true;
+                        stack.push(neighbor);
+                    }
+                }
+            }
+            clusters.push(cluster);
+        }
+    }
+    
+    // For each cluster, keep only the face with highest confidence
+    let mut deduplicated = Vec::new();
+    for cluster in clusters {
+        if cluster.len() == 1 {
+            // Singleton cluster - keep as is
+            deduplicated.push(collected_faces[cluster[0]].clone());
+        } else {
+            // Multiple faces in cluster - keep the one with highest confidence
+            let best_idx = cluster.iter()
+                .max_by(|&&a, &&b| {
+                    collected_faces[a].face.confidence
+                        .partial_cmp(&collected_faces[b].face.confidence)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .unwrap();
+            deduplicated.push(collected_faces[*best_idx].clone());
+        }
+    }
+    
+    deduplicated
 }
 
 pub fn chinese_whispers_clustering(faces: &[UnassignedFace], threshold: f32) -> HashMap<String, Vec<String>> {
