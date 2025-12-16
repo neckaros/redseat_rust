@@ -13,7 +13,7 @@ use tokio::{fs::File, io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader}};
 
 use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, url::RsLink, ExternalImage, Gender, ImageType};
 use tokio_util::io::StreamReader;
-use crate::{domain::{deleted::RsDeleted, library::LibraryRole, media::FileType, people::{FaceBBox, FaceEmbedding, PeopleMessage, Person, PersonWithAction, UnassignedFace}, tag::Tag, ElementAction}, error::{RsError, RsResult}, model::medias::MediaFileQuery, plugins::sources::{error::SourcesError, AsyncReadPinBox, FileStreamResult, Source}, tools::{image_tools::{convert_image_reader, resize_image_reader, ImageSize}, log::log_info, recognition::{DetectedFace, FaceRecognitionService}, video_tools::VideoTime}};
+use crate::{domain::{deleted::RsDeleted, library::LibraryRole, media::FileType, people::{FaceBBox, FaceEmbedding, PeopleMessage, Person, PersonWithAction, UnassignedFace}, tag::Tag, ElementAction}, error::{RsError, RsResult}, model::medias::MediaFileQuery, plugins::sources::{error::SourcesError, AsyncReadPinBox, FileStreamResult, Source}, tools::{image_tools::{convert_image_reader, resize_image_reader, ImageSize}, log::log_info, recognition::{BBox, DetectedFace, FaceRecognitionService}, video_tools::VideoTime}};
 
 use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
 
@@ -396,50 +396,80 @@ impl ModelController {
         let media = self.get_media(library_id, media_id.to_string(), requesting_user).await?
             .ok_or(SourcesError::UnableToFindMedia(library_id.to_string(), media_id.to_string(), "process_media_faces".to_string()))?;
         
-        // Load images - for videos, extract multiple frames like in prediction
-        let mut reader_response = self.media_image(&library_id, &media_id, None, &requesting_user).await?;
-        let buffer = convert_image_reader(reader_response.stream, image::ImageFormat::Png, None, true).await?;
-        
-        let mut images = vec![buffer];
-        if media.kind == FileType::Video {
-            let percents = vec![15, 30, 45, 60, 75, 95];
-            for percent in percents {
-                let thumb = self.get_video_thumb(library_id, media_id, VideoTime::Percent(percent), image::ImageFormat::Png, Some(70), requesting_user).await?;
-                images.push(thumb);
+        // Load images based on media type
+        let images_data = match media.kind {
+            FileType::Photo => {
+                // Load full image for photos
+                let reader = self.library_file(library_id, media_id, None, MediaFileQuery::default(), requesting_user).await?;
+                let mut reader = reader.into_reader(Some(library_id), None, None, Some((self.clone(), requesting_user)), None).await?;
+                let image_result = crate::tools::image_tools::reader_to_image(&mut reader.stream).await?;
+                
+                // Convert DynamicImage to buffer using spawn_blocking for consistency with codebase
+                let buffer = tokio::task::spawn_blocking(move || {
+                    use crate::tools::image_tools::save_image_native;
+                    save_image_native(image_result, image::ImageFormat::Png, None, true)
+                }).await
+                .map_err(|e| RsError::Error(format!("Task join error: {}", e)))??;
+                vec![(None, buffer)]
+            },
+            FileType::Video => {
+                // Extract multiple video frames (existing logic)
+                let percents = vec![15, 30, 45, 60, 75, 95];
+                let mut video_images = Vec::new();
+                for percent in percents {
+                    let thumb = self.get_video_thumb(library_id, media_id, VideoTime::Percent(percent), image::ImageFormat::Png, Some(70), requesting_user).await?;
+                    video_images.push((Some(percent), thumb)); // Store percent with image
+                }
+                video_images
+            },
+            _ => {
+                // For other types, use thumbnail
+                let mut reader_response = self.media_image(&library_id, &media_id, None, &requesting_user).await?;
+                let buffer = convert_image_reader(reader_response.stream, image::ImageFormat::Png, None, true).await?;
+                vec![(None, buffer)]
             }
-        }
+        };
 
         let service = self.get_face_recognition_service().await?;
         let threshold = self.get_face_threshold(library_id).await?;
         let mut results = Vec::new();
 
         // Process faces from all images
-        for image_buffer in &images {
+        for (video_percent, image_buffer) in &images_data {
             let mut cursor = Cursor::new(image_buffer.clone());
             let image = crate::tools::image_tools::reader_to_image(&mut cursor).await?.image;
             let faces = service.detect_and_extract_faces_async(image).await?;
 
             for face in &faces {
+                // Create bbox with video_percent if available
+                let bbox = FaceBBox {
+                    x1: face.bbox.x1,
+                    y1: face.bbox.y1,
+                    x2: face.bbox.x2,
+                    y2: face.bbox.y2,
+                    video_percent: *video_percent,
+                };
+                
                 // Try matching with threshold
                 if let Some((person_id, sim)) = self.match_face_to_person(library_id, &face.embedding, threshold).await? {
                     // High confidence → assign directly
                     let face_id = nanoid!();
                     store.add_face_embedding(
                         face_id.clone(), &person_id, face.embedding.clone(),
-                        Some(media_id.to_string()), Some(FaceBBox {x1: face.bbox.x1, y1: face.bbox.y1, x2: face.bbox.x2, y2: face.bbox.y2}),
+                        Some(media_id.to_string()), Some(bbox.clone()),
                         face.confidence, Some(face.pose), Some(sim)
                     ).await?;
                     // Note: add_face_embedding now handles media_people_mapping internally
-                    results.push(DetectedFaceResult { face_id: Some(face_id), confidence: face.confidence, bbox: FaceBBox {x1: face.bbox.x1, y1: face.bbox.y1, x2: face.bbox.x2, y2: face.bbox.y2} });
+                    results.push(DetectedFaceResult { face_id: Some(face_id), confidence: face.confidence, bbox: bbox.clone() });
                 } else {
                     // No match → stage for clustering
                     let face_id = nanoid!();
                     store.add_unassigned_face(
                         face_id.clone(), face.embedding.clone(), media_id.to_string(),
-                        FaceBBox {x1: face.bbox.x1, y1: face.bbox.y1, x2: face.bbox.x2, y2: face.bbox.y2},
+                        bbox.clone(),
                         face.confidence, Some(face.pose)
                     ).await?;
-                    results.push(DetectedFaceResult { face_id: Some(face_id), confidence: face.confidence, bbox: FaceBBox {x1: face.bbox.x1, y1: face.bbox.y1, x2: face.bbox.x2, y2: face.bbox.y2} });
+                    results.push(DetectedFaceResult { face_id: Some(face_id), confidence: face.confidence, bbox: bbox.clone() });
                 }
             }
         }
@@ -648,45 +678,47 @@ impl ModelController {
         
         let bbox = bbox.ok_or_else(|| RsError::Error("Face has no bounding box".to_string()))?;
         
-        // Load media image
-        let m = self.library_file(library_id, &media_ref, None, MediaFileQuery::default(), requesting_user).await?;
-        let mut m = m.into_reader(Some(library_id), None, None, Some((self.clone(), &requesting_user)), None).await?;
-        let image_result = crate::tools::image_tools::reader_to_image(&mut m.stream).await?;
+        // Get media type
+        let media = self.get_media(library_id, media_ref.clone(), requesting_user).await?
+            .ok_or_else(|| RsError::NotFound(format!("Media not found: {}", media_ref)))?;
+        
+        // Load media image based on type
+        let image_result = match media.kind {
+            FileType::Photo => {
+                // Load full image for photos
+                let reader = self.library_file(library_id, &media_ref, None, MediaFileQuery::default(), requesting_user).await?;
+                let mut reader = reader.into_reader(Some(library_id), None, None, Some((self.clone(), requesting_user)), None).await?;
+                crate::tools::image_tools::reader_to_image(&mut reader.stream).await?
+            },
+            FileType::Video => {
+                // Load video frame at the percent where face was detected
+                let percent = bbox.video_percent.unwrap_or(50); // Default to 50% if not specified
+                let thumb_buffer = self.get_video_thumb(library_id, &media_ref, VideoTime::Percent(percent), image::ImageFormat::Png, Some(70), requesting_user).await?;
+                let mut cursor = Cursor::new(thumb_buffer);
+                crate::tools::image_tools::reader_to_image(&mut cursor).await?
+            },
+            _ => {
+                // For other types, use thumbnail
+                let mut reader_response = self.media_image(library_id, &media_ref, None, requesting_user).await?;
+                crate::tools::image_tools::reader_to_image(&mut reader_response.stream).await?
+            }
+        };
         let image = image_result.image;
         
         // Crop face using bbox with 30% padding
-        use image::GenericImageView;
-        let (width, height) = image.dimensions();
-        
-        // Calculate bounding box dimensions
-        let w = bbox.x2 - bbox.x1;
-        let h = bbox.y2 - bbox.y1;
-        
-        // Calculate 30% padding
-        let pad_w = w * 0.3;
-        let pad_h = h * 0.3;
-        
-        // Expand coordinates with boundary clamping
-        let x1_f = (bbox.x1 - pad_w).max(0.0).min(width as f32);
-        let y1_f = (bbox.y1 - pad_h).max(0.0).min(height as f32);
-        let x2_f = (bbox.x2 + pad_w).max(0.0).min(width as f32);
-        let y2_f = (bbox.y2 + pad_h).max(0.0).min(height as f32);
-        
-        // Convert to u32
-        let x1 = x1_f as u32;
-        let y1 = y1_f as u32;
-        let x2 = x2_f as u32;
-        let y2 = y2_f as u32;
-        
-        // Ensure valid crop dimensions
-        let crop_w = if x2 > x1 { x2 - x1 } else { 1 };
-        let crop_h = if y2 > y1 { y2 - y1 } else { 1 };
-        
-        let cropped = image.crop_imm(x1, y1, crop_w, crop_h);
+        // Convert FaceBBox to BBox (confidence not needed for cropping)
+        let bbox_for_crop = BBox {
+            x1: bbox.x1,
+            y1: bbox.y1,
+            x2: bbox.x2,
+            y2: bbox.y2,
+            confidence: 0.0, // Not used for cropping
+        };
+        let (cropped, _offset_x, _offset_y) = FaceRecognitionService::crop_face_with_padding(&image, &bbox_for_crop, 0.3)?;
         
         // Resize to match person image sizing and convert to AVIF format
         use crate::tools::image_tools::{ImageAndProfile, save_image_native};
-        use image::ImageFormat;
+        use image::{ImageFormat, GenericImageView};
         let target_size = ImageSize::Thumb.to_size(); // 258
         let (cropped_width, cropped_height) = cropped.dimensions();
         let image_bytes = tokio::task::spawn_blocking(move || {

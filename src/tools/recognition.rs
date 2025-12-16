@@ -204,7 +204,8 @@ impl FaceRecognitionService {
 
             
             // Use 30% padding for face crop
-            let (mut face_crop, offset_x, offset_y) = self.crop_face_with_padding(image, &det.bbox, 0.3)?;
+            let (mut face_crop, offset_x, offset_y) = FaceRecognitionService::crop_face_with_padding(image, &det.bbox, 0.3)?;
+            
             let cropped_landmarks: Vec<(f32, f32)> = det.landmarks
                 .iter()
                 .map(|(lx, ly)| {
@@ -223,13 +224,13 @@ impl FaceRecognitionService {
               Self::draw_circle(&mut face_crop_rgb, gx as i32, gy as i32, 12, image::Rgb([255, 255, 255]));  
             }
 
-            
-            //face_crop_rgb.save(&format!("C:\\Users\\arnau\\Downloads\\test\\debug_face_crop_{}.png", face_idx))?;
+            println!("bbox: {:?}", det.bbox);
+            face_crop_rgb.save(&format!("C:\\Users\\arnau\\Downloads\\test\\debug_face_crop_{}.png", face_idx))?;
 
 
             let aligned_face_112 = align_face_manual(&face_crop, &cropped_landmarks);
                 // aligned_face is now a perfect 112x112 image ready for embedding
-            //aligned_face_112.save(format!("C:\\Users\\arnau\\Downloads\\test\\aligned_{}.png", face_idx))?;
+            aligned_face_112.save(format!("C:\\Users\\arnau\\Downloads\\test\\aligned_{}.png", face_idx))?;
             
 
             let embedding = self.extract_embedding(&aligned_face_112)?;
@@ -636,8 +637,7 @@ impl FaceRecognitionService {
         Ok(validated)
     }
 
-    fn crop_face_with_padding(
-        &self,
+    pub fn crop_face_with_padding(
         image: &DynamicImage,
         bbox: &BBox,
         padding: f32,

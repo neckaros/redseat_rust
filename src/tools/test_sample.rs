@@ -74,7 +74,7 @@ mod tests {
 
 
         //let img_path = Path::new("C:\\Users\\arnau\\Downloads\\IMG_2231.avif");
-        let img_path2 = Path::new("E:\\downloads\\temp\\kVtw_nkrqPRYP0DsP9-Jo.jpeg");
+        let img_path2 = Path::new("C:\\Users\\arnau\\AppData\\Local\\redseat\\dbs\\old\\new\\daintywilder_2021-01-23_3.jpg");
         println!("Testing image: {:?}", img_path2);
         let img2 = image::open(&img_path2).expect("Failed to open image");
 

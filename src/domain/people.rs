@@ -58,11 +58,14 @@ pub struct PersonWithAction {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct FaceBBox {
     pub x1: f32,
     pub y1: f32,
     pub x2: f32,
     pub y2: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub video_percent: Option<u32>, // Percent (0-100) of video where face was detected
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
