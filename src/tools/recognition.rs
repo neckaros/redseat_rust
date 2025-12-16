@@ -485,7 +485,7 @@ impl FaceRecognitionService {
 
         // SCRFD format: outputs[0,1,2]=scores, outputs[3,4,5]=bbox, outputs[6,7,8]=kps
         // Process all 3 pyramid levels (stride 8, 16, 32)
-        let conf_thres = 0.65f32;  // Increased from 0.5 to reduce false positives
+        let conf_thres = 0.60f32;
         let iou_thres = 0.4f32;
         let strides = [8, 16, 32];
         let fmc = 3; // number of feature map types (scores, bbox, kps)

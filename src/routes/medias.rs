@@ -43,10 +43,11 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/:id/progress", patch(handler_patch_progress))
 		.route("/:id/rating", patch(handler_patch_rating))
 		.route("/:id", delete(handler_delete))
-		.route("/:id/image", get(handler_image))
-		.route("/:id/image", post(handler_post_image))
-		.route("/:id/faces", get(handler_get_media_faces))
-		.with_state(mc.clone())
+	.route("/:id/image", get(handler_image))
+	.route("/:id/image", post(handler_post_image))
+	.route("/:id/faces", get(handler_get_media_faces))
+	.route("/:id/faces", post(handler_process_media_faces))
+	.with_state(mc.clone())
 		.nest("/:id/", super::episodes::routes(mc))
         
 }
@@ -383,4 +384,25 @@ async fn handler_get_media_faces(
 ) -> Result<Json<Value>> {
     let faces = mc.get_media_faces(&library_id, &media_id, &user).await?;
     Ok(Json(json!(faces)))
+}
+
+async fn handler_process_media_faces(
+    Path((library_id, media_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser
+) -> Result<Json<Value>> {
+    // Get all existing faces for this media (both recognized and unrecognized)
+    let existing_faces = mc.get_media_faces(&library_id, &media_id, &user).await?;
+    
+    // Delete each existing face (best effort - continue even if some fail)
+    for face in &existing_faces {
+        if let Err(e) = mc.delete_face(&library_id, &face.id, &user).await {
+            log_error(crate::tools::log::LogServiceType::Other, format!("Failed to delete face {} for media {}: {}", face.id, media_id, e));
+        }
+    }
+    
+    // Start new face recognition process
+    let detected_faces = mc.process_media_faces(&library_id, &media_id, &user).await?;
+    
+    Ok(Json(json!(detected_faces)))
 }

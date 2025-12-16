@@ -361,9 +361,9 @@ else 0 end) as score", q, q, q, q, q, q);
 
             // Insert into people_faces
             tx.execute(
-                "INSERT INTO people_faces (id, people_ref, embedding, media_ref, bbox, confidence, pose, created) 
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                params![face_id, pid.clone(), embedding_blob, media_id_clone.clone(), bbox_json, confidence, pose_json, chrono::Utc::now().timestamp_millis()]
+                "INSERT INTO people_faces (id, people_ref, embedding, media_ref, bbox, confidence, pose, similarity, created) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                params![face_id, pid.clone(), embedding_blob, media_id_clone.clone(), bbox_json, confidence, pose_json, similarity, chrono::Utc::now().timestamp_millis()]
             )?;
             
             // Also insert or update media_people_mapping if media_id is provided
@@ -673,9 +673,9 @@ else 0 end) as score", q, q, q, q, q, q);
 
             // 2. Insert into people_faces
             {
-                let mut stmt = tx.prepare("INSERT INTO people_faces (id, people_ref, embedding, media_ref, bbox, confidence, pose, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")?;
+                let mut stmt = tx.prepare("INSERT INTO people_faces (id, people_ref, embedding, media_ref, bbox, confidence, pose, similarity, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")?;
                 for (id, emb, mref, bbox, conf, pose, created) in &faces {
-                    stmt.execute(params![id, pid.clone(), emb, mref, bbox, conf, pose, created])?;
+                    stmt.execute(params![id, pid.clone(), emb, mref, bbox, conf, pose, None::<f32>, created])?;
                 }
             }
 
@@ -736,8 +736,8 @@ else 0 end) as score", q, q, q, q, q, q);
             
             // 2. Insert into people_faces
             {
-                let mut stmt = tx.prepare("INSERT INTO people_faces (id, people_ref, embedding, media_ref, bbox, confidence, pose, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")?;
-                stmt.execute(params![fid.clone(), pid.clone(), embedding_blob, media_ref.clone(), bbox_str, confidence, pose_json, created])?;
+                let mut stmt = tx.prepare("INSERT INTO people_faces (id, people_ref, embedding, media_ref, bbox, confidence, pose, similarity, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")?;
+                stmt.execute(params![fid.clone(), pid.clone(), embedding_blob, media_ref.clone(), bbox_str, confidence, pose_json, 1.0, created])?;
             }
             
             // 3. Insert or update media_people_mapping
@@ -745,7 +745,7 @@ else 0 end) as score", q, q, q, q, q, q);
                 let confidence_int = (confidence * 100.0) as i32;
                 tx.execute(
                     "INSERT OR REPLACE INTO media_people_mapping (media_ref, people_ref, confidence, people_face_ref, similarity) VALUES (?, ?, ?, ?, ?)",
-                    params![media_ref, pid, confidence_int, fid.clone(), None::<f32>]
+                    params![media_ref, pid, confidence_int, fid.clone(), 1.0]
                 )?;
             }
             
@@ -793,8 +793,8 @@ else 0 end) as score", q, q, q, q, q, q);
                 
                 // 2. Insert into people_faces
                 {
-                    let mut stmt = tx.prepare("INSERT INTO people_faces (id, people_ref, embedding, media_ref, bbox, confidence, pose, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")?;
-                    stmt.execute(params![face_id, pid.clone(), embedding_blob, media_ref.clone(), bbox_str, confidence, pose_json, created])?;
+                    let mut stmt = tx.prepare("INSERT INTO people_faces (id, people_ref, embedding, media_ref, bbox, confidence, pose, similarity, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")?;
+                    stmt.execute(params![face_id, pid.clone(), embedding_blob, media_ref.clone(), bbox_str, confidence, pose_json, 1.0, created])?;
                 }
                 
                 // 3. Insert or update media_people_mapping
@@ -802,7 +802,7 @@ else 0 end) as score", q, q, q, q, q, q);
                     let confidence_int = (confidence * 100.0) as i32;
                     tx.execute(
                         "INSERT OR REPLACE INTO media_people_mapping (media_ref, people_ref, confidence, people_face_ref, similarity) VALUES (?, ?, ?, ?, ?)",
-                        params![media_ref, pid.clone(), confidence_int, face_id, None::<f32>]
+                        params![media_ref, pid.clone(), confidence_int, face_id, 1.0]
                     )?;
                 }
                 
@@ -952,7 +952,7 @@ else 0 end) as score", q, q, q, q, q, q);
     pub async fn get_medias_for_face_processing(&self, limit: usize) -> Result<Vec<String>> {
         let limit = limit as i64;
         let res = self.connection.call(move |conn| {
-            let mut stmt = conn.prepare("SELECT id FROM medias WHERE face_processed = 0 AND type = 'photo' ORDER BY added DESC LIMIT ?")?;
+            let mut stmt = conn.prepare("SELECT id FROM medias WHERE face_processed = 0 ORDER BY added DESC LIMIT ?")?;
             let rows = stmt.query_map(params![limit], |row| {
                 Ok(row.get::<_, String>(0)?)
             })?;
