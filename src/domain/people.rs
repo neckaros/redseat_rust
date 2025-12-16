@@ -87,4 +87,5 @@ pub struct FaceEmbedding {
     pub bbox: Option<FaceBBox>,
     pub confidence: Option<f32>,
     pub pose: Option<(f32, f32, f32)>,
+    pub person_id: Option<String>,
 }

@@ -533,6 +533,13 @@ impl ModelController {
         Ok(faces)
     }
 
+    pub async fn get_media_faces(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> RsResult<Vec<FaceEmbedding>> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        let store = self.store.get_library_store(library_id)?;
+        let faces = store.get_media_embeddings(media_id).await?;
+        Ok(faces)
+    }
+
     pub async fn delete_face(&self, library_id: &str, face_id: &str, requesting_user: &ConnectedUser) -> RsResult<()> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         let store = self.store.get_library_store(library_id)?;
@@ -680,10 +687,15 @@ impl ModelController {
         // Resize to match person image sizing and convert to AVIF format
         use crate::tools::image_tools::{ImageAndProfile, save_image_native};
         use image::ImageFormat;
-        let target_size = ImageSize::Large.to_size(); // 1024
+        let target_size = ImageSize::Thumb.to_size(); // 258
+        let (cropped_width, cropped_height) = cropped.dimensions();
         let image_bytes = tokio::task::spawn_blocking(move || {
-            // Resize the cropped face to target size (maintains aspect ratio)
-            let resized = cropped.thumbnail(target_size, target_size);
+            // Only resize if the image is larger than the target size (downscale only, no upscaling)
+            let resized = if cropped_width > target_size || cropped_height > target_size {
+                cropped.thumbnail(target_size, target_size)
+            } else {
+                cropped
+            };
             let image_and_profile = ImageAndProfile {
                 image: resized,
                 profile: None

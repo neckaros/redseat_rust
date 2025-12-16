@@ -9,7 +9,7 @@ use strum_macros::EnumString;
 
 use crate::plugins::sources::SourceRead;
 
-use super::{progress::RsProgress, ElementAction};
+use super::{people::FaceEmbedding, progress::RsProgress, ElementAction};
 
 
 pub const DEFAULT_MIME: &str = "application/octet-stream";
@@ -162,6 +162,8 @@ pub struct Media {
     pub series: Option<Vec<FileEpisode>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub people: Option<Vec<MediaItemReference>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub faces: Option<Vec<FaceEmbedding>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thumb: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

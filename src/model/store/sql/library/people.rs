@@ -384,7 +384,7 @@ else 0 end) as score", q, q, q, q, q, q);
         let pid = person_id.to_string();
         let res = self.connection.call(move |conn| {
             let mut stmt = conn.prepare(
-                "SELECT id, embedding, media_ref, bbox, confidence, pose 
+                "SELECT id, embedding, media_ref, bbox, confidence, pose, people_ref 
                  FROM people_faces WHERE people_ref = ?"
             )?;
             
@@ -409,6 +409,7 @@ else 0 end) as score", q, q, q, q, q, q);
                     bbox,
                     confidence: row.get(4)?,
                     pose,
+                    person_id: Some(row.get(6)?),
                 })
             })?;
             
@@ -421,7 +422,7 @@ else 0 end) as score", q, q, q, q, q, q);
         let pid = person_id.to_string();
         let res = self.connection.call(move |conn| {
             let mut stmt = conn.prepare(
-                "SELECT id, embedding, media_ref, bbox, confidence, pose 
+                "SELECT id, embedding, media_ref, bbox, confidence, pose, people_ref 
                  FROM people_faces WHERE people_ref = ? ORDER BY confidence DESC LIMIT 1"
             )?;
             
@@ -446,10 +447,95 @@ else 0 end) as score", q, q, q, q, q, q);
                     bbox,
                     confidence: row.get(4)?,
                     pose,
+                    person_id: Some(row.get(6)?),
                 })
             }).optional()?;
             
             Ok(row)
+        }).await?;
+        Ok(res)
+    }
+
+    pub async fn get_media_embeddings(&self, media_id: &str) -> Result<Vec<FaceEmbedding>> {
+        let media_id_str = media_id.to_string();
+        let res = self.connection.call(move |conn| {
+            let mut all_faces = Vec::new();
+            
+            // Query assigned faces from people_faces
+            {
+                let mut stmt = conn.prepare(
+                    "SELECT id, embedding, media_ref, bbox, confidence, pose, people_ref 
+                     FROM people_faces WHERE media_ref = ?"
+                )?;
+                
+                let rows = stmt.query_map(params![media_id_str.clone()], |row| {
+                    let embedding_blob: Vec<u8> = row.get(1)?;
+                    let embedding = if embedding_blob.len() % 4 == 0 {
+                        bytemuck::cast_slice::<u8, f32>(&embedding_blob).to_vec()
+                    } else {
+                        Vec::new()
+                    };
+                    
+                    let bbox_str: Option<String> = row.get(3)?;
+                    let bbox = bbox_str.and_then(|s| serde_json::from_str(&s).ok());
+
+                    let pose_str: Option<String> = row.get(5)?;
+                    let pose = pose_str.and_then(|s| serde_json::from_str(&s).ok());
+
+                    Ok(FaceEmbedding {
+                        id: row.get(0)?,
+                        embedding,
+                        media_ref: row.get(2)?,
+                        bbox,
+                        confidence: row.get(4)?,
+                        pose,
+                        person_id: Some(row.get(6)?),
+                    })
+                })?;
+                
+                for face in rows {
+                    all_faces.push(face?);
+                }
+            }
+            
+            // Query unassigned faces from unassigned_faces
+            {
+                let mut stmt = conn.prepare(
+                    "SELECT id, embedding, media_ref, bbox, confidence, pose 
+                     FROM unassigned_faces WHERE media_ref = ?"
+                )?;
+                
+                let rows = stmt.query_map(params![media_id_str], |row| {
+                    let embedding_blob: Vec<u8> = row.get(1)?;
+                    let embedding = if embedding_blob.len() % 4 == 0 {
+                        bytemuck::cast_slice::<u8, f32>(&embedding_blob).to_vec()
+                    } else {
+                        Vec::new()
+                    };
+                    
+                    let bbox_str: String = row.get(3)?;
+                    let bbox = serde_json::from_str(&bbox_str).ok();
+
+                    let pose_str: Option<String> = row.get(5)?;
+                    let pose = pose_str.and_then(|s| serde_json::from_str(&s).ok());
+
+                    Ok(FaceEmbedding {
+                        id: row.get(0)?,
+                        embedding,
+                        media_ref: Some(row.get(2)?),
+                        bbox,
+                        confidence: Some(row.get(4)?),
+                        pose,
+                        person_id: None,
+                    })
+                })?;
+                
+                for face in rows {
+                    all_faces.push(face?);
+                }
+            }
+            
+            Ok(all_faces)
         }).await?;
         Ok(res)
     }
@@ -475,7 +561,10 @@ else 0 end) as score", q, q, q, q, q, q);
     pub async fn delete_face_embedding(&self, face_id: &str) -> Result<()> {
         let fid = face_id.to_string();
         self.connection.call(move |conn| {
-            conn.execute("DELETE FROM people_faces WHERE id = ?", params![fid])?;
+            let rows_affected = conn.execute("DELETE FROM people_faces WHERE id = ?", params![fid])?;
+            if rows_affected == 0 {
+                return Err(rusqlite::Error::QueryReturnedNoRows.into());
+            }
             Ok(())
         }).await?;
         Ok(())
@@ -484,7 +573,10 @@ else 0 end) as score", q, q, q, q, q, q);
     pub async fn delete_unassigned_face(&self, face_id: &str) -> Result<()> {
         let fid = face_id.to_string();
         self.connection.call(move |conn| {
-            conn.execute("DELETE FROM unassigned_faces WHERE id = ?", params![fid])?;
+            let rows_affected = conn.execute("DELETE FROM unassigned_faces WHERE id = ?", params![fid])?;
+            if rows_affected == 0 {
+                return Err(rusqlite::Error::QueryReturnedNoRows.into());
+            }
             Ok(())
         }).await?;
         Ok(())

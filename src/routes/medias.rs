@@ -45,6 +45,7 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/:id", delete(handler_delete))
 		.route("/:id/image", get(handler_image))
 		.route("/:id/image", post(handler_post_image))
+		.route("/:id/faces", get(handler_get_media_faces))
 		.with_state(mc.clone())
 		.nest("/:id/", super::episodes::routes(mc))
         
@@ -143,7 +144,11 @@ async fn handler_split(Path((library_id, media_id)): Path<(String, String)>, Sta
 
 
 async fn handler_get(Path((library_id, media_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
-	let library = mc.get_media(&library_id, media_id, &user).await?;
+	let mut library = mc.get_media(&library_id, media_id.clone(), &user).await?;
+	if let Some(ref mut media) = library {
+		let faces = mc.get_media_faces(&library_id, &media_id, &user).await?;
+		media.faces = Some(faces);
+	}
 	let body = Json(json!(library));
 	Ok(body)
 }
@@ -369,4 +374,13 @@ async fn handler_post_image(Path((library_id, media_id)): Path<(String, String)>
     }
 	
     Ok(Json(json!({"data": "ok"})))
+}
+
+async fn handler_get_media_faces(
+    Path((library_id, media_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser
+) -> Result<Json<Value>> {
+    let faces = mc.get_media_faces(&library_id, &media_id, &user).await?;
+    Ok(Json(json!(faces)))
 }

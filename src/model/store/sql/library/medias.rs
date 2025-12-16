@@ -223,6 +223,7 @@ impl SqliteLibraryStore {
             tags: from_comma_separated_optional(row.get(42)?),
             people: from_comma_separated_optional(row.get(43)?),
             series: from_comma_separated_optional(row.get(44)?),
+            faces: None,
 
             
             f_number: row.get(45)?,
