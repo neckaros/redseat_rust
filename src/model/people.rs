@@ -9,7 +9,7 @@ use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use strum_macros::EnumString;
-use tokio::{fs::File, io::{AsyncRead, AsyncWriteExt, BufReader}};
+use tokio::{fs::File, io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader}};
 
 use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, url::RsLink, ExternalImage, Gender, ImageType};
 use tokio_util::io::StreamReader;
@@ -538,14 +538,23 @@ impl ModelController {
         let store = self.store.get_library_store(library_id)?;
         
         // Try deleting from people_faces first
-        match store.delete_face_embedding(face_id).await {
-            Ok(_) => return Ok(()),
+        let deleted = match store.delete_face_embedding(face_id).await {
+            Ok(_) => true,
             Err(_) => {
                 // If not found in people_faces, try unassigned_faces
                 store.delete_unassigned_face(face_id).await?;
-                Ok(())
+                true
+            }
+        };
+        
+        // Delete cached face image if it exists (ignore errors - cache cleanup is best effort)
+        if deleted {
+            if let Err(e) = self.remove_library_image(library_id, ".faces", face_id, &None, &None, requesting_user).await {
+                log_info(crate::tools::log::LogServiceType::Other, format!("Failed to delete cached face image {}: {}", face_id, e));
             }
         }
+        
+        Ok(())
     }
 
     pub async fn assign_unassigned_face_to_person(&self, library_id: &str, face_id: &str, person_id: &str, requesting_user: &ConnectedUser) -> RsResult<()> {
@@ -609,6 +618,17 @@ impl ModelController {
 
     pub async fn get_face_image(&self, library_id: &str, face_id: &str, requesting_user: &ConnectedUser) -> RsResult<Vec<u8>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        
+        // Check if cached image exists
+        if self.has_library_image(library_id, ".faces", face_id, None, requesting_user).await? {
+            // Load cached image
+            let mut cached_image = self.library_image(library_id, ".faces", face_id, None, None, requesting_user).await?;
+            let mut buffer = Vec::new();
+            cached_image.stream.read_to_end(&mut buffer).await?;
+            return Ok(buffer);
+        }
+        
+        // Cache miss - generate the image
         let store = self.store.get_library_store(library_id)?;
         
         // Get face details (media_ref and bbox)
@@ -627,14 +647,31 @@ impl ModelController {
         let image_result = crate::tools::image_tools::reader_to_image(&mut m.stream).await?;
         let image = image_result.image;
         
-        // Crop face using bbox
+        // Crop face using bbox with 30% padding
         use image::GenericImageView;
         let (width, height) = image.dimensions();
-        let x1 = (bbox.x1.max(0.0) as u32).min(width);
-        let y1 = (bbox.y1.max(0.0) as u32).min(height);
-        let x2 = (bbox.x2.max(0.0) as u32).min(width);
-        let y2 = (bbox.y2.max(0.0) as u32).min(height);
         
+        // Calculate bounding box dimensions
+        let w = bbox.x2 - bbox.x1;
+        let h = bbox.y2 - bbox.y1;
+        
+        // Calculate 30% padding
+        let pad_w = w * 0.3;
+        let pad_h = h * 0.3;
+        
+        // Expand coordinates with boundary clamping
+        let x1_f = (bbox.x1 - pad_w).max(0.0).min(width as f32);
+        let y1_f = (bbox.y1 - pad_h).max(0.0).min(height as f32);
+        let x2_f = (bbox.x2 + pad_w).max(0.0).min(width as f32);
+        let y2_f = (bbox.y2 + pad_h).max(0.0).min(height as f32);
+        
+        // Convert to u32
+        let x1 = x1_f as u32;
+        let y1 = y1_f as u32;
+        let x2 = x2_f as u32;
+        let y2 = y2_f as u32;
+        
+        // Ensure valid crop dimensions
         let crop_w = if x2 > x1 { x2 - x1 } else { 1 };
         let crop_h = if y2 > y1 { y2 - y1 } else { 1 };
         
@@ -653,6 +690,13 @@ impl ModelController {
             };
             save_image_native(image_and_profile, ImageFormat::Avif, Some(70), false)
         }).await.map_err(|e| RsError::Error(format!("Task join error: {}", e)))??;
+        
+        // Cache the generated image (use ServerAdmin for write permission)
+        let reader = Cursor::new(image_bytes.clone());
+        if let Err(e) = self.update_library_image(library_id, ".faces", face_id, &None, &None, reader, &ConnectedUser::ServerAdmin).await {
+            // Log error but don't fail the request if caching fails
+            log_info(crate::tools::log::LogServiceType::Other, format!("Failed to cache face image {}: {}", face_id, e));
+        }
         
         Ok(image_bytes)
     }
