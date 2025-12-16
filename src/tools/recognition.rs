@@ -223,14 +223,14 @@ impl FaceRecognitionService {
               //println!("Landmark {}: {}, {}", i, gx, gy);
               Self::draw_circle(&mut face_crop_rgb, gx as i32, gy as i32, 12, image::Rgb([255, 255, 255]));  
             }
-
+            /* 
             println!("bbox: {:?}", det.bbox);
             face_crop_rgb.save(&format!("C:\\Users\\arnau\\Downloads\\test\\debug_face_crop_{}.png", face_idx))?;
-
+            */
 
             let aligned_face_112 = align_face_manual(&face_crop, &cropped_landmarks);
                 // aligned_face is now a perfect 112x112 image ready for embedding
-            aligned_face_112.save(format!("C:\\Users\\arnau\\Downloads\\test\\aligned_{}.png", face_idx))?;
+            //aligned_face_112.save(format!("C:\\Users\\arnau\\Downloads\\test\\aligned_{}.png", face_idx))?;
             
 
             let embedding = self.extract_embedding(&aligned_face_112)?;

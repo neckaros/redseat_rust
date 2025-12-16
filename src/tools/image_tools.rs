@@ -391,17 +391,17 @@ pub fn save_image_native(image: ImageAndProfile, format: ImageFormat, quality: O
         } else if format == ImageFormat::Jpeg {
             let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, quality.unwrap_or(80) as u8);
             if let Some(profile) = image.profile {
-                println!("Setting icc profile {:?}", profile);
+                //println!("Setting icc profile {:?}", profile);
                 let r = encoder.set_icc_profile(profile);
-                println!("result! {:?}", r);
+                //println!("result! {:?}", r);
             }
             encoder.write_image(&image.image.into_bytes(), width, height, color.into())?;
         } else if format == ImageFormat::Png {
             let mut encoder = image::codecs::png::PngEncoder::new(&mut buffer);
             if let Some(profile) = image.profile {
-                println!("Setting icc profile {:?}", profile);
+                //println!("Setting icc profile {:?}", profile);
                 let r = encoder.set_icc_profile(profile);
-                println!("result! {:?}", r);
+                //println!("result! {:?}", r);
             }
             image.image.write_with_encoder(encoder)?;
         } else {

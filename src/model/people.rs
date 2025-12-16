@@ -420,6 +420,12 @@ impl ModelController {
                     let thumb = self.get_video_thumb(library_id, media_id, VideoTime::Percent(percent), image::ImageFormat::Png, Some(70), requesting_user).await?;
                     video_images.push((Some(percent), thumb)); // Store percent with image
                 }
+                // Also add media_image if it exists
+                if let Ok(mut reader_response) = self.media_image(&library_id, &media_id, None, &requesting_user).await {
+                    if let Ok(buffer) = convert_image_reader(reader_response.stream, image::ImageFormat::Png, None, true).await {
+                        video_images.push((None, buffer)); // Store with None percent for media_image
+                    }
+                }
                 video_images
             },
             _ => {
@@ -691,11 +697,19 @@ impl ModelController {
                 crate::tools::image_tools::reader_to_image(&mut reader.stream).await?
             },
             FileType::Video => {
-                // Load video frame at the percent where face was detected
-                let percent = bbox.video_percent.unwrap_or(50); // Default to 50% if not specified
-                let thumb_buffer = self.get_video_thumb(library_id, &media_ref, VideoTime::Percent(percent), image::ImageFormat::Png, Some(70), requesting_user).await?;
-                let mut cursor = Cursor::new(thumb_buffer);
-                crate::tools::image_tools::reader_to_image(&mut cursor).await?
+                // Load video frame at the percent where face was detected, or use media_image if no percent
+                match bbox.video_percent {
+                    Some(percent) => {
+                        let thumb_buffer = self.get_video_thumb(library_id, &media_ref, VideoTime::Percent(percent), image::ImageFormat::Png, Some(70), requesting_user).await?;
+                        let mut cursor = Cursor::new(thumb_buffer);
+                        crate::tools::image_tools::reader_to_image(&mut cursor).await?
+                    },
+                    None => {
+                        // Use media_image when no video_percent is specified
+                        let mut reader_response = self.media_image(library_id, &media_ref, None, requesting_user).await?;
+                        crate::tools::image_tools::reader_to_image(&mut reader_response.stream).await?
+                    }
+                }
             },
             _ => {
                 // For other types, use thumbnail

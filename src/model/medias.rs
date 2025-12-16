@@ -543,11 +543,10 @@ impl ModelController {
 
         let existing = self.get_media(library_id, media_id.to_owned(), requesting_user).await?.ok_or(SourcesError::UnableToFindMedia(library_id.to_string(), media_id.to_string(), "process_media".to_string()))?;
 
-        if existing.kind == FileType::Photo {
-            let r = self.process_media_faces(library_id, media_id, requesting_user).await;
-            if let Err(e) = r {
-                log_error(LogServiceType::Source, format!("Face detection failed for {}: {:?}", media_id, e));
-            }
+        
+        let r = self.process_media_faces(library_id, media_id, requesting_user).await;
+        if let Err(e) = r {
+            log_error(LogServiceType::Source, format!("Face detection failed for {}: {:?}", media_id, e));
         }
 
         if existing.kind == FileType::Video {
@@ -1581,6 +1580,12 @@ impl ModelController {
         let store = self.store.get_library_store(library_id)?;
         let existing = store.get_media_source(&media_id).await?;
 
+        // Get all face IDs associated with this media before deletion
+        let face_ids = match self.get_media_faces(library_id, media_id, requesting_user).await {
+            Ok(faces) => faces.iter().map(|f| f.id.clone()).collect::<Vec<String>>(),
+            Err(_) => Vec::new(), // If we can't get faces, continue anyway (best effort)
+        };
+
         if let Some(existing) = existing {
             let m = self.source_for_library(&library_id).await?;
             let r = m.remove(&existing.source).await;
@@ -1591,6 +1596,12 @@ impl ModelController {
         }
         self.remove_library_image(library_id, ".thumbs", media_id, &None, &None, requesting_user).await?;
 
+        // Delete cached face images (ignore errors - cache cleanup is best effort)
+        for face_id in face_ids {
+            if let Err(e) = self.remove_library_image(library_id, ".faces", &face_id, &None, &None, requesting_user).await {
+                log_info(crate::tools::log::LogServiceType::Other, format!("Failed to delete cached face image {}: {}", face_id, e));
+            }
+        }
 
         Ok(())
 	}
