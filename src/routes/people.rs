@@ -120,9 +120,12 @@ async fn handler_cluster_unassigned_faces(
 async fn handler_get_unassigned_faces(
     Path(library_id): Path<String>,
     State(mc): State<ModelController>,
-    user: ConnectedUser
+    user: ConnectedUser,
+    Query(query): Query<UnassignedFacesQuery>
 ) -> Result<Json<Value>> {
-    let faces = mc.get_all_unassigned_faces(&library_id, &user).await?;
+    // Always provide a limit for API calls (default 50)
+    let limit = query.limit.or(Some(50));
+    let faces = mc.get_all_unassigned_faces(&library_id, limit, query.created_before, &user).await?;
     Ok(Json(json!(faces)))
 }
 
@@ -214,6 +217,13 @@ struct AssignFaceRequest {
 #[serde(rename_all = "camelCase")]
 struct UnassignFaceRequest {
     face_ids: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UnassignedFacesQuery {
+    limit: Option<usize>,
+    created_before: Option<i64>,
 }
 
 async fn handler_assign_face_to_person(

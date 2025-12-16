@@ -487,7 +487,7 @@ impl ModelController {
     pub async fn cluster_unassigned_faces(&self, library_id: &str, requesting_user: &ConnectedUser) -> RsResult<ClusteringResult> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         let store = self.store.get_library_store(library_id)?;
-        let unassigned = store.get_all_unassigned_faces().await?;
+        let unassigned = store.get_all_unassigned_faces(None, None).await?;
         
         if unassigned.len() < 3 {
             return Ok(ClusteringResult { clusters_created: 0 });
@@ -555,10 +555,10 @@ impl ModelController {
         Ok(faces)
     }
 
-    pub async fn get_all_unassigned_faces(&self, library_id: &str, requesting_user: &ConnectedUser) -> RsResult<Vec<UnassignedFace>> {
+    pub async fn get_all_unassigned_faces(&self, library_id: &str, limit: Option<usize>, created_before: Option<i64>, requesting_user: &ConnectedUser) -> RsResult<Vec<UnassignedFace>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id)?;
-        let faces = store.get_all_unassigned_faces().await?;
+        let faces = store.get_all_unassigned_faces(limit, created_before).await?;
         Ok(faces)
     }
 
@@ -624,7 +624,7 @@ impl ModelController {
     pub async fn match_unassigned_faces_to_people(&self, library_id: &str, requesting_user: &ConnectedUser) -> RsResult<usize> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         let store = self.store.get_library_store(library_id)?;
-        let unassigned_faces = store.get_all_unassigned_faces().await?;
+        let unassigned_faces = store.get_all_unassigned_faces(None, None).await?;
         
         let threshold = self.get_face_threshold(library_id).await?;
         let mut matched_count = 0;

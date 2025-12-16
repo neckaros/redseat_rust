@@ -290,42 +290,80 @@ else 0 end) as score", q, q, q, q, q, q);
         Ok(res)
     }
 
-    pub async fn get_all_unassigned_faces(&self) -> Result<Vec<UnassignedFace>> {
-        let res = self.connection.call(|conn| {
-            let mut stmt = conn.prepare(
-                "SELECT id, embedding, media_ref, bbox, confidence, pose, cluster_id, created 
-                 FROM unassigned_faces"
-            )?;
-            
-            let rows = stmt.query_map([], |row| {
-                let embedding_blob: Vec<u8> = row.get(1)?;
-                // Safety: Validate blob size is multiple of f32 size
-                let embedding = if embedding_blob.len() % 4 == 0 {
-                    bytemuck::cast_slice::<u8, f32>(&embedding_blob).to_vec()
-                } else {
-                    // Corrupted data - return empty embedding
-                    Vec::new()
-                };
-                
-                let bbox_str: String = row.get(3)?;
-                let bbox: FaceBBox = serde_json::from_str(&bbox_str).unwrap_or_default();
+    fn row_to_unassigned_face(row: &rusqlite::Row) -> rusqlite::Result<UnassignedFace> {
+        let embedding_blob: Vec<u8> = row.get(1)?;
+        let embedding = if embedding_blob.len() % 4 == 0 {
+            bytemuck::cast_slice::<u8, f32>(&embedding_blob).to_vec()
+        } else {
+            Vec::new()
+        };
+        
+        let bbox_str: String = row.get(3)?;
+        let bbox: FaceBBox = serde_json::from_str(&bbox_str).unwrap_or_default();
+        let pose_str: Option<String> = row.get(5)?;
+        let pose = pose_str.and_then(|s| serde_json::from_str(&s).ok());
 
-                let pose_str: Option<String> = row.get(5)?;
-                let pose = pose_str.and_then(|s| serde_json::from_str(&s).ok());
+        Ok(UnassignedFace {
+            id: row.get(0)?,
+            embedding,
+            media_ref: row.get(2)?,
+            bbox,
+            confidence: row.get(4)?,
+            pose,
+            cluster_id: row.get(6)?,
+            created: row.get(7)?,
+        })
+    }
 
-                Ok(UnassignedFace {
-                    id: row.get(0)?,
-                    embedding,
-                    media_ref: row.get(2)?,
-                    bbox,
-                    confidence: row.get(4)?,
-                    pose,
-                    cluster_id: row.get(6)?,
-                    created: row.get(7)?,
-                })
-            })?;
+    pub async fn get_all_unassigned_faces(&self, limit: Option<usize>, created_before: Option<i64>) -> Result<Vec<UnassignedFace>> {
+        // If both are None, return all faces (for internal calls)
+        // Otherwise, use default limit of 50 for API calls
+        let get_all = limit.is_none() && created_before.is_none();
+        let limit_val = limit.unwrap_or(50);
+        let created_before_val = created_before;
+        let res = self.connection.call(move |conn| {
+            let faces = match (created_before_val, get_all) {
+                (Some(created_before_ts), false) => {
+                    // Query with WHERE clause and LIMIT for pagination
+                    
+                    let mut stmt = conn.prepare(
+                        "SELECT id, embedding, media_ref, bbox, confidence, pose, cluster_id, created 
+                            FROM unassigned_faces 
+                            WHERE created < ? 
+                            ORDER BY created DESC 
+                            LIMIT ?"
+                    )?;
+                    let created_before_param = created_before_ts;
+                    let limit_param = limit_val as i64;
+                    let rows = stmt.query_map(params![created_before_param, limit_param], Self::row_to_unassigned_face)?;
+                    rows.collect::<rusqlite::Result<Vec<_>>>()?
+                    
+                },
+                (None, false) => {
+                    // Query without WHERE clause but with LIMIT (first page of API call)
+                    let mut stmt = conn.prepare(
+                        "SELECT id, embedding, media_ref, bbox, confidence, pose, cluster_id, created 
+                            FROM unassigned_faces 
+                            ORDER BY created DESC 
+                            LIMIT ?"
+                    )?;
+                    let limit_param = limit_val as i64;
+                    let rows = stmt.query_map(params![limit_param], Self::row_to_unassigned_face)?;
+                    rows.collect::<rusqlite::Result<Vec<_>>>()?
+                },
+                (_, true) => {
+                    // Query without WHERE clause and without LIMIT (get all faces for internal calls)
+                    let mut stmt = conn.prepare(
+                        "SELECT id, embedding, media_ref, bbox, confidence, pose, cluster_id, created 
+                         FROM unassigned_faces 
+                         ORDER BY created DESC"
+                    )?;
+                    let rows = stmt.query_map([], Self::row_to_unassigned_face)?;
+                    rows.collect::<rusqlite::Result<Vec<_>>>()?
+                }
+            };
             
-            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+            Ok(faces)
         }).await?;
         Ok(res)
     }
