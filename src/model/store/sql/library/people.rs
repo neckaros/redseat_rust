@@ -942,6 +942,14 @@ else 0 end) as score", q, q, q, q, q, q);
         Ok(())
     }
 
+    pub async fn mark_media_face_error(&self, media_id: String, error: String) -> Result<()> {
+        self.connection.call(move |conn| {
+            conn.execute("UPDATE medias SET face_recognition_error = ? WHERE id = ?", params![error, media_id])?;
+            Ok(())
+        }).await?;
+        Ok(())
+    }
+
     pub async fn transfer_faces_between_people(&self, source_person_id: &str, target_person_id: &str) -> Result<usize> {
         let source_id = source_person_id.to_string();
         let target_id = target_person_id.to_string();
@@ -990,7 +998,7 @@ else 0 end) as score", q, q, q, q, q, q);
     pub async fn get_medias_for_face_processing(&self, limit: usize) -> Result<Vec<String>> {
         let limit = limit as i64;
         let res = self.connection.call(move |conn| {
-            let mut stmt = conn.prepare("SELECT id FROM medias WHERE face_processed = 0 ORDER BY added DESC LIMIT ?")?;
+            let mut stmt = conn.prepare("SELECT id FROM medias WHERE face_processed = 0 AND (face_recognition_error IS NULL OR face_recognition_error = '') ORDER BY added DESC LIMIT ?")?;
             let rows = stmt.query_map(params![limit], |row| {
                 Ok(row.get::<_, String>(0)?)
             })?;

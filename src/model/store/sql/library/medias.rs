@@ -73,7 +73,7 @@ const MEDIA_QUERY: &str = "SELECT
             m.fnumber, m.icc, m.mp,
 			m.progress as user_progress,
 			art.rating as user_rating,
-            m.originalhash, m.originalid
+            m.originalhash, m.originalid, m.face_recognition_error
 			
             FROM medias as m
             LEFT JOIN 
@@ -105,7 +105,7 @@ fn media_query(user_id: &Option<String>) -> String {
             m.fnumber, m.icc, m.mp,
 			mp.progress as user_progress,
 			rt.rating as user_rating,
-            m.originalhash, m.originalid
+            m.originalhash, m.originalid, m.face_recognition_error
 
             FROM medias as m
             LEFT JOIN 
@@ -234,7 +234,8 @@ impl SqliteLibraryStore {
             
 
             original_hash: row.get(50)?,
-            original_id: row.get(51)?
+            original_id: row.get(51)?,
+            face_recognition_error: row.get(52)?,
             //series: None,
         })
     }

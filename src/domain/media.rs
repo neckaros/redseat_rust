@@ -1,29 +1,31 @@
 use std::str::FromStr;
 
 use nanoid::nanoid;
-use rs_plugin_common_interfaces::{request::{RsCookie, RsRequest, RsRequestStatus}, url::RsLink, video::{RsVideoTranscodeStatus, VideoConvertRequest}};
+use rs_plugin_common_interfaces::{
+    request::{RsCookie, RsRequest, RsRequestStatus},
+    url::RsLink,
+    video::{RsVideoTranscodeStatus, VideoConvertRequest},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use strum_macros::EnumString;
 
-
 use crate::plugins::sources::SourceRead;
 
 use super::{people::FaceEmbedding, progress::RsProgress, ElementAction};
-
 
 pub const DEFAULT_MIME: &str = "application/octet-stream";
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct FileEpisode {
-   pub id: String, 
-   #[serde(skip_serializing_if = "Option::is_none")]
-   pub season: Option<u32>,
-   #[serde(skip_serializing_if = "Option::is_none")]
-   pub episode: Option<u32>,
-   #[serde(skip_serializing_if = "Option::is_none")]
-   pub episode_to: Option<u32>
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub season: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub episode: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub episode_to: Option<u32>,
 }
 
 impl FromStr for FileEpisode {
@@ -32,21 +34,53 @@ impl FromStr for FileEpisode {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let splitted: Vec<&str> = s.split("|").collect();
         if splitted.len() == 3 {
-            Ok(FileEpisode { id: splitted[0].to_string(), season: splitted[1].parse::<u32>().ok().and_then(|i| if i == 0 {None} else {Some(i)}), episode: splitted[2].parse::<u32>().ok().and_then(|i| if i == 0 {None} else {Some(i)}) , episode_to: None})
+            Ok(FileEpisode {
+                id: splitted[0].to_string(),
+                season: splitted[1].parse::<u32>().ok().and_then(|i| {
+                    if i == 0 {
+                        None
+                    } else {
+                        Some(i)
+                    }
+                }),
+                episode: splitted[2].parse::<u32>().ok().and_then(|i| {
+                    if i == 0 {
+                        None
+                    } else {
+                        Some(i)
+                    }
+                }),
+                episode_to: None,
+            })
         } else if splitted.len() == 2 {
-            Ok(FileEpisode { id: splitted[0].to_string(), season: splitted[1].parse::<u32>().ok().and_then(|i| if i == 0 {None} else {Some(i)}), episode: None, episode_to: None })
+            Ok(FileEpisode {
+                id: splitted[0].to_string(),
+                season: splitted[1].parse::<u32>().ok().and_then(|i| {
+                    if i == 0 {
+                        None
+                    } else {
+                        Some(i)
+                    }
+                }),
+                episode: None,
+                episode_to: None,
+            })
         } else {
-            Ok(FileEpisode { id: splitted[0].to_string(), season: None, episode: None, episode_to: None })
+            Ok(FileEpisode {
+                id: splitted[0].to_string(),
+                season: None,
+                episode: None,
+                episode_to: None,
+            })
         }
     }
 }
 
-
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct MediaItemReference {
-   pub id: String,
-   #[serde(skip_serializing_if = "Option::is_none")]
-   pub conf: Option<u16>
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conf: Option<u16>,
 }
 
 impl FromStr for MediaItemReference {
@@ -55,15 +89,28 @@ impl FromStr for MediaItemReference {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let splitted: Vec<&str> = s.split('|').collect();
         if splitted.len() == 2 {
-            Ok(MediaItemReference { id: splitted[0].to_string(), conf: splitted[1].parse::<u16>().ok().and_then(|e| if e == 100 {None} else {Some(e)}) })
+            Ok(MediaItemReference {
+                id: splitted[0].to_string(),
+                conf: splitted[1].parse::<u16>().ok().and_then(|e| {
+                    if e == 100 {
+                        None
+                    } else {
+                        Some(e)
+                    }
+                }),
+            })
         } else {
-            Ok(MediaItemReference { id: splitted[0].to_string(), conf: None })
+            Ok(MediaItemReference {
+                id: splitted[0].to_string(),
+                conf: None,
+            })
         }
     }
 }
 
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, strum_macros::Display,EnumString, Default)]
+#[derive(
+    Debug, Serialize, Deserialize, Clone, PartialEq, strum_macros::Display, EnumString, Default,
+)]
 #[strum(serialize_all = "camelCase")]
 #[serde(rename_all = "camelCase")]
 pub enum FileType {
@@ -73,7 +120,7 @@ pub enum FileType {
     Archive,
     Album,
     #[default]
-    Other
+    Other,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -90,7 +137,7 @@ pub struct Media {
     pub kind: FileType,
     pub mimetype: String,
     pub size: Option<u64>,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<Value>,
 
@@ -187,14 +234,17 @@ pub struct Media {
     pub original_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub original_id: Option<String>,
-} 
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub face_recognition_error: Option<String>,
+}
 
 impl Media {
     pub fn max_date(&self) -> i64 {
         *[
-        self.created.unwrap_or(0),
-        self.added.unwrap_or(0),
-        self.modified.unwrap_or(0),
+            self.created.unwrap_or(0),
+            self.added.unwrap_or(0),
+            self.modified.unwrap_or(0),
         ]
         .iter()
         .max()
@@ -205,14 +255,13 @@ impl Media {
         if self.iv.is_none() {
             self.size
         } else {
-            
-        //16 Bytes to store IV
-        //4 to store encrypted thumb size = T (can be 0)
-        //4 to store encrypted Info size = I (can be 0)
-        //32 to store thumb mimetype
-        //256 to store file mimetype
-        //T Bytes for the encrypted thumb
-        //I Bytes for the encrypted info
+            //16 Bytes to store IV
+            //4 to store encrypted thumb size = T (can be 0)
+            //4 to store encrypted Info size = I (can be 0)
+            //32 to store thumb mimetype
+            //256 to store file mimetype
+            //T Bytes for the encrypted thumb
+            //I Bytes for the encrypted info
             if let Some(file_size) = self.size {
                 Some(file_size + 16 + 4 + 4 + 32 + 256 + self.thumbsize.unwrap_or(0) + 0)
             } else {
@@ -239,7 +288,7 @@ pub struct MediaForUpdate {
     pub size: Option<u64>,
 
     pub md5: Option<String>,
-    
+
     pub modified: Option<i64>,
     pub created: Option<i64>,
 
@@ -262,13 +311,13 @@ pub struct MediaForUpdate {
     pub pages: Option<usize>,
 
     pub duration: Option<u64>,
- 
+
     pub progress: Option<usize>,
 
     pub add_tags: Option<Vec<MediaItemReference>>,
     pub remove_tags: Option<Vec<String>>,
     pub tags_lookup: Option<Vec<String>>,
-    
+
     pub add_series: Option<Vec<FileEpisode>>,
     pub remove_series: Option<Vec<FileEpisode>>,
     pub series_lookup: Option<Vec<String>>,
@@ -301,12 +350,9 @@ pub struct MediaForUpdate {
     pub uploadkey: Option<String>,
     pub upload_id: Option<String>,
 
-    
     pub original_hash: Option<String>,
     pub original_id: Option<String>,
-
-} 
-
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct MediaForAdd {
@@ -318,7 +364,7 @@ pub struct MediaForAdd {
     pub kind: FileType,
     pub mimetype: String,
     pub size: Option<u64>,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<Value>,
 
@@ -369,28 +415,31 @@ pub struct MediaForAdd {
     pub original_id: Option<String>,
 
     pub created: Option<i64>,
-} 
-
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MediaForInsert {
     pub id: String,
-    pub media: MediaForAdd
+    pub media: MediaForAdd,
 }
 
 impl MediaForAdd {
     pub fn into_insert(self) -> MediaForInsert {
-        MediaForInsert {id : nanoid!(), media: self}
+        MediaForInsert {
+            id: nanoid!(),
+            media: self,
+        }
     }
     pub fn into_insert_with_id(self, media_id: String) -> MediaForInsert {
-        MediaForInsert {id : media_id, media: self}
+        MediaForInsert {
+            id: media_id,
+            media: self,
+        }
     }
 }
 
-
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")] 
+#[serde(rename_all = "camelCase")]
 pub struct GroupMediaDownload<T> {
     pub group: Option<bool>,
     pub group_thumbnail_url: Option<String>,
@@ -406,7 +455,7 @@ pub struct GroupMediaDownload<T> {
     pub title: Option<String>,
 
     pub ignore_origin_duplicate: Option<bool>,
-    
+
     pub description: Option<String>,
     pub people_lookup: Option<Vec<String>>,
     pub series_lookup: Option<Vec<String>>,
@@ -417,15 +466,19 @@ pub struct GroupMediaDownload<T> {
 impl<T> GroupMediaDownload<T> {
     pub fn headers_as_tuple(&self) -> Option<Vec<(String, String)>> {
         if let Some(headers) = &self.headers {
-            headers.iter().map(|v| {
+            headers
+                .iter()
+                .map(|v| {
                     let splitted: Vec<&str> = v.split(':').collect();
-                    let result = if let (Some(name), Some(value)) = (splitted.get(0), splitted.get(1)) {
-                        Some((name.to_string(), value.to_string()))
-                    } else {
-                        None
-                    };
+                    let result =
+                        if let (Some(name), Some(value)) = (splitted.get(0), splitted.get(1)) {
+                            Some((name.to_string(), value.to_string()))
+                        } else {
+                            None
+                        };
                     return result;
-            }).collect()
+                })
+                .collect()
         } else {
             None
         }
@@ -433,23 +486,22 @@ impl<T> GroupMediaDownload<T> {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")] 
+#[serde(rename_all = "camelCase")]
 pub struct MediaDownloadUrl {
     pub url: String,
     pub parse: bool,
     pub upload_id: Option<String>,
-    
+
     #[serde(default)]
     pub ignore_origin_duplicate: bool,
     //pub infos: Option<MediaForUpdate>,
-
     pub kind: Option<FileType>,
     pub filename: Option<String>,
     pub mime: Option<String>,
     pub description: Option<String>,
     pub length: Option<u64>,
     pub thumbnail_url: Option<String>,
-    
+
     pub people_lookup: Option<Vec<String>>,
     pub series_lookup: Option<Vec<String>>,
     pub tags_lookup: Option<Vec<String>>,
@@ -464,7 +516,11 @@ impl From<MediaDownloadUrl> for RsRequest {
             mime: value.mime,
             size: None,
             filename: value.filename,
-            status: if value.parse { RsRequestStatus::NeedParsing } else { RsRequestStatus::Unprocessed },
+            status: if value.parse {
+                RsRequestStatus::NeedParsing
+            } else {
+                RsRequestStatus::Unprocessed
+            },
             headers: None,
             cookies: None,
             files: None,
@@ -484,39 +540,48 @@ impl From<GroupMediaDownload<MediaDownloadUrl>> for Vec<RsRequest> {
         //println!("Headers parsed {:?}", headers);
         let mut output = Vec::new();
         for file in value.files {
-            output.push(
-            RsRequest {
-                        upload_id: file.upload_id,
-                        url: file.url,
-                        mime: None,
-                        size: None,
-                        filename: file.filename,
-                        status: if file.parse { RsRequestStatus::NeedParsing } else { RsRequestStatus::Unprocessed },
-                        headers: headers.clone(),
-                        cookies: value.cookies.as_ref().and_then(|c| c.iter().map(|s| RsCookie::from_str(s).ok()).collect()),
-                        files: None,
-                        selected_file: None,
-                        referer: value.referer.clone(),
-                        tags: file.tags_lookup.or(value.tags_lookup.clone()),
-                        albums: file.series_lookup.or(value.series_lookup.clone()),
-                        people: file.people_lookup.or(value.people_lookup.clone()),
-                        description: file.description.or(value.title.clone()),
-                        ignore_origin_duplicate: file.ignore_origin_duplicate,
-                        ..Default::default()
-                    });
+            output.push(RsRequest {
+                upload_id: file.upload_id,
+                url: file.url,
+                mime: None,
+                size: None,
+                filename: file.filename,
+                status: if file.parse {
+                    RsRequestStatus::NeedParsing
+                } else {
+                    RsRequestStatus::Unprocessed
+                },
+                headers: headers.clone(),
+                cookies: value
+                    .cookies
+                    .as_ref()
+                    .and_then(|c| c.iter().map(|s| RsCookie::from_str(s).ok()).collect()),
+                files: None,
+                selected_file: None,
+                referer: value.referer.clone(),
+                tags: file.tags_lookup.or(value.tags_lookup.clone()),
+                albums: file.series_lookup.or(value.series_lookup.clone()),
+                people: file.people_lookup.or(value.people_lookup.clone()),
+                description: file.description.or(value.title.clone()),
+                ignore_origin_duplicate: file.ignore_origin_duplicate,
+                ..Default::default()
+            });
         }
         output
     }
 }
-
 
 impl From<Media> for MediaForAdd {
     fn from(value: Media) -> Self {
         MediaForAdd {
             name: value.name,
             description: value.description,
-            people: value.people.map(|e| e.iter().map(|p| p.id.to_string()).collect::<Vec<String>>()),
-            tags: value.tags.map(|e| e.iter().map(|p| p.id.to_string()).collect::<Vec<String>>()),
+            people: value
+                .people
+                .map(|e| e.iter().map(|p| p.id.to_string()).collect::<Vec<String>>()),
+            tags: value
+                .tags
+                .map(|e| e.iter().map(|p| p.id.to_string()).collect::<Vec<String>>()),
             long: value.long,
             lat: value.lat,
             created: value.created,
@@ -615,53 +680,46 @@ impl From<GroupMediaDownload<MediaDownloadUrl>> for MediaForUpdate {
 impl From<&SourceRead> for MediaForUpdate {
     fn from(value: &SourceRead) -> Self {
         match value {
-            SourceRead::Stream(stream) => {
-                MediaForUpdate {
-                    name: stream.name.clone(),
-                    mimetype: stream.mime.clone(),
-                    size: stream.size.clone(),
-                    ..Default::default()
-                }
+            SourceRead::Stream(stream) => MediaForUpdate {
+                name: stream.name.clone(),
+                mimetype: stream.mime.clone(),
+                size: stream.size.clone(),
+                ..Default::default()
             },
-            SourceRead::Request(r) => {
-                MediaForUpdate {
-                    name: r.filename.clone(),
-                    mimetype: r.mime.clone(),
-                    size: r.size.clone(),
-                    ..Default::default()
-                }
+            SourceRead::Request(r) => MediaForUpdate {
+                name: r.filename.clone(),
+                mimetype: r.mime.clone(),
+                size: r.size.clone(),
+                ..Default::default()
             },
         }
     }
 }
 
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")] 
+#[serde(rename_all = "camelCase")]
 pub struct MediaWithAction {
     pub action: ElementAction,
-    pub media: Media
+    pub media: Media,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")] 
+#[serde(rename_all = "camelCase")]
 pub struct MediasMessage {
     pub library: String,
-    pub medias: Vec<MediaWithAction>
+    pub medias: Vec<MediaWithAction>,
 }
 
-
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")] 
+#[serde(rename_all = "camelCase")]
 pub struct ProgressMessage {
     pub library: String,
     pub progress: RsProgress,
-    pub remaining_secondes: Option<u64>
+    pub remaining_secondes: Option<u64>,
 }
 
-
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")] 
+#[serde(rename_all = "camelCase")]
 pub struct ConvertProgress {
     pub id: String,
     pub filename: String,
@@ -674,8 +732,8 @@ pub struct ConvertProgress {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")] 
+#[serde(rename_all = "camelCase")]
 pub struct ConvertMessage {
     pub library: String,
-    pub progress: ConvertProgress
+    pub progress: ConvertProgress,
 }

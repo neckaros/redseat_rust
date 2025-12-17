@@ -2,15 +2,20 @@ use crate::error::{RsError, RsResult};
 use crate::tools::log::{log_info, LogServiceType};
 use futures::StreamExt;
 use image::ImageBuffer;
-use image::{imageops::FilterType, GenericImage, DynamicImage, GenericImageView, Rgb, RgbImage, Rgba};
+use image::{
+    imageops::FilterType, DynamicImage, GenericImage, GenericImageView, Rgb, RgbImage, Rgba,
+};
+use imageproc::geometric_transformations::{warp, Interpolation, Projection};
+use nalgebra::{Matrix2, Matrix3, Point2, Vector2, SVD};
 use ndarray::{Array, Array4, ArrayD, Axis};
-use ort::{session::{Session, SessionInputs, builder::GraphOptimizationLevel}, value::Tensor};
+use ort::{
+    session::{builder::GraphOptimizationLevel, Session, SessionInputs},
+    value::Tensor,
+};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
-use imageproc::geometric_transformations::{warp, Interpolation, Projection};
-use nalgebra::{Matrix3, Point2, Vector2, Matrix2, SVD};
 
 const MODELS: &[(&str, &str)] = &[
     (
@@ -200,38 +205,47 @@ impl FaceRecognitionService {
 
         let mut faces = Vec::new();
         for (face_idx, det) in detections.iter().enumerate() {
-
-
-            
             // Use 30% padding for face crop
-            let (mut face_crop, offset_x, offset_y) = FaceRecognitionService::crop_face_with_padding(image, &det.bbox, 0.3)?;
-            
-            let cropped_landmarks: Vec<(f32, f32)> = det.landmarks
+            let (mut face_crop, offset_x, offset_y) =
+                FaceRecognitionService::crop_face_with_padding(image, &det.bbox, 0.3)?;
+
+            let cropped_landmarks: Vec<(f32, f32)> = det
+                .landmarks
                 .iter()
                 .map(|(lx, ly)| {
                     (
                         lx - offset_x as f32, // Shift X
-                        ly - offset_y as f32  // Shift Y
+                        ly - offset_y as f32, // Shift Y
                     )
                 })
                 .collect();
 
             let mut face_crop_rgb = face_crop.to_rgb8();
             for (i, (lx, ly)) in cropped_landmarks.iter().enumerate() {
-              let gx = cropped_landmarks[i].0;
-              let gy = cropped_landmarks[i].1;
-              //println!("Landmark {}: {}, {}", i, gx, gy);
-              Self::draw_circle(&mut face_crop_rgb, gx as i32, gy as i32, 12, image::Rgb([255, 255, 255]));  
+                let gx = cropped_landmarks[i].0;
+                let gy = cropped_landmarks[i].1;
+                //println!("Landmark {}: {}, {}", i, gx, gy);
+                Self::draw_circle(
+                    &mut face_crop_rgb,
+                    gx as i32,
+                    gy as i32,
+                    12,
+                    image::Rgb([255, 255, 255]),
+                );
             }
-            /* 
-            println!("bbox: {:?}", det.bbox);
-            face_crop_rgb.save(&format!("C:\\Users\\arnau\\Downloads\\test\\debug_face_crop_{}.png", face_idx))?;
-            */
+
+            // println!("bbox: {:?}", det.bbox);
+            // face_crop_rgb.save(&format!(
+            //     "C:\\Users\\arnau\\Downloads\\test\\debug_face_crop_{}.png",
+            //     face_idx
+            // ))?;
 
             let aligned_face_112 = align_face_manual(&face_crop, &cropped_landmarks);
-                // aligned_face is now a perfect 112x112 image ready for embedding
-            //aligned_face_112.save(format!("C:\\Users\\arnau\\Downloads\\test\\aligned_{}.png", face_idx))?;
-            
+            // aligned_face is now a perfect 112x112 image ready for embedding
+            // aligned_face_112.save(format!(
+            //     "C:\\Users\\arnau\\Downloads\\test\\aligned_{}.png",
+            //     face_idx
+            // ))?;
 
             let embedding = self.extract_embedding(&aligned_face_112)?;
 
@@ -249,25 +263,24 @@ impl FaceRecognitionService {
         Ok(faces)
     }
 
-
-
     // WRAP FACE CODE
-
 
     // Standard ArcFace 112x112 reference coordinates
     const ARCFACE_DST: [[f32; 2]; 5] = [
-        [38.2946, 51.6963],  // Left Eye
-        [73.5318, 51.5014],  // Right Eye
-        [56.0252, 71.7366],  // Nose
-        [41.5493, 92.3655],  // Left Mouth
-        [70.7299, 92.2041],  // Right Mouth
+        [38.2946, 51.6963], // Left Eye
+        [73.5318, 51.5014], // Right Eye
+        [56.0252, 71.7366], // Nose
+        [41.5493, 92.3655], // Left Mouth
+        [70.7299, 92.2041], // Right Mouth
     ];
 
     /// Extracts the 5 key landmarks from the 106-point set (InsightFace standard)
     pub fn extract_5_landmarks_from_106(landmarks_106: &[(f32, f32)]) -> [(f32, f32); 5] {
         let avg = |indices: std::ops::Range<usize>| -> (f32, f32) {
             let count = (indices.end - indices.start) as f32;
-            let sum = indices.fold((0.0, 0.0), |acc, i| (acc.0 + landmarks_106[i].0, acc.1 + landmarks_106[i].1));
+            let sum = indices.fold((0.0, 0.0), |acc, i| {
+                (acc.0 + landmarks_106[i].0, acc.1 + landmarks_106[i].1)
+            });
             (sum.0 / count, sum.1 / count)
         };
 
@@ -285,10 +298,9 @@ impl FaceRecognitionService {
         source_image: &DynamicImage,
         landmarks_106: &[(f32, f32)],
     ) -> Result<DynamicImage, String> {
-        
         // 1. Get the 5 source points from the global 106 landmarks
         let src_pts = Self::extract_5_landmarks_from_106(landmarks_106);
-        
+
         // 2. Estimate Similarity Transform Matrix (Scale, Rotation, Translation)
         // Returns a 2x3 matrix as [m0, m1, m2, m3, m4, m5]
         let m = Self::estimate_similarity_transform(&src_pts, &Self::ARCFACE_DST)?;
@@ -318,7 +330,6 @@ impl FaceRecognitionService {
         Ok(DynamicImage::ImageRgb8(out_img))
     }
 
-
     fn draw_circle(img: &mut RgbImage, cx: i32, cy: i32, radius: i32, color: Rgb<u8>) {
         let (w, h) = (img.width() as i32, img.height() as i32);
         for dy in -radius..=radius {
@@ -335,15 +346,22 @@ impl FaceRecognitionService {
     }
     // --- Minimal Math Helpers (No external crate required) ---
 
-    fn estimate_similarity_transform(src: &[(f32, f32); 5], dst: &[[f32; 2]; 5]) -> Result<[f32; 6], String> {
+    fn estimate_similarity_transform(
+        src: &[(f32, f32); 5],
+        dst: &[[f32; 2]; 5],
+    ) -> Result<[f32; 6], String> {
         let mut src_mean = (0.0, 0.0);
         let mut dst_mean = (0.0, 0.0);
         for i in 0..5 {
-            src_mean.0 += src[i].0; src_mean.1 += src[i].1;
-            dst_mean.0 += dst[i][0]; dst_mean.1 += dst[i][1];
+            src_mean.0 += src[i].0;
+            src_mean.1 += src[i].1;
+            dst_mean.0 += dst[i][0];
+            dst_mean.1 += dst[i][1];
         }
-        src_mean.0 /= 5.0; src_mean.1 /= 5.0;
-        dst_mean.0 /= 5.0; dst_mean.1 /= 5.0;
+        src_mean.0 /= 5.0;
+        src_mean.1 /= 5.0;
+        dst_mean.0 /= 5.0;
+        dst_mean.1 /= 5.0;
 
         let mut src_demean = [[0.0; 2]; 5];
         let mut dst_demean = [[0.0; 2]; 5];
@@ -352,7 +370,7 @@ impl FaceRecognitionService {
             dst_demean[i] = [dst[i][0] - dst_mean.0, dst[i][1] - dst_mean.1];
         }
 
-        let mut a = 0.0; 
+        let mut a = 0.0;
         let mut b = 0.0;
         let mut d = 0.0;
         for i in 0..5 {
@@ -361,9 +379,11 @@ impl FaceRecognitionService {
             d += src_demean[i][0].powi(2) + src_demean[i][1].powi(2);
         }
 
-        if d < 1e-6 { return Err("Degenerate points".to_string()); }
+        if d < 1e-6 {
+            return Err("Degenerate points".to_string());
+        }
 
-        let scale = (a*a + b*b).sqrt() / d;
+        let scale = (a * a + b * b).sqrt() / d;
         let angle = b.atan2(a);
         let cos_a = angle.cos();
         let sin_a = angle.sin();
@@ -374,7 +394,7 @@ impl FaceRecognitionService {
         let m1 = -scale * sin_a;
         let m3 = scale * sin_a;
         let m4 = scale * cos_a;
-        
+
         let m2 = dst_mean.0 - (m0 * src_mean.0 + m1 * src_mean.1);
         let m5 = dst_mean.1 - (m3 * src_mean.0 + m4 * src_mean.1);
 
@@ -383,9 +403,11 @@ impl FaceRecognitionService {
 
     fn invert_affine_matrix(m: [f32; 6]) -> Result<[f32; 6], String> {
         let det = m[0] * m[4] - m[1] * m[3];
-        if det.abs() < 1e-6 { return Err("Matrix singular".to_string()); }
+        if det.abs() < 1e-6 {
+            return Err("Matrix singular".to_string());
+        }
         let inv_det = 1.0 / det;
-        
+
         // Standard 2x3 inversion (assuming bottom row is 0 0 1)
         let i0 = m[4] * inv_det;
         let i1 = -m[1] * inv_det;
@@ -427,15 +449,7 @@ impl FaceRecognitionService {
         Rgb(out)
     }
 
-
-
     //==============================================================================================================
-
-
-
-
-
-
 
     pub fn detect_faces_retinaface(&self, img: &DynamicImage) -> RsResult<Vec<Detection>> {
         let cfg = Config {
@@ -470,7 +484,10 @@ impl FaceRecognitionService {
         }
 
         let input_tensor_value = Tensor::from_array(input)?;
-        let session = self.detection_session.lock().map_err(|e| RsError::Error(format!("Failed to lock session: {:?}", e)))?;
+        let session = self
+            .detection_session
+            .lock()
+            .map_err(|e| RsError::Error(format!("Failed to lock session: {:?}", e)))?;
         let name = session
             .inputs
             .iter()
@@ -480,7 +497,10 @@ impl FaceRecognitionService {
             .clone();
         drop(session);
 
-        let mut session = self.detection_session.lock().map_err(|e| RsError::Error(format!("Failed to lock session: {:?}", e)))?;
+        let mut session = self
+            .detection_session
+            .lock()
+            .map_err(|e| RsError::Error(format!("Failed to lock session: {:?}", e)))?;
         let outputs = session.run(ort::inputs![name => input_tensor_value])?;
 
         // SCRFD format: outputs[0,1,2]=scores, outputs[3,4,5]=bbox, outputs[6,7,8]=kps
@@ -489,66 +509,75 @@ impl FaceRecognitionService {
         let iou_thres = 0.4f32;
         let strides = [8, 16, 32];
         let fmc = 3; // number of feature map types (scores, bbox, kps)
-        
+
         let input_height = final_h as usize;
         let input_width = final_w as usize;
-        
+
         let mut scores_list = Vec::new();
         let mut bboxes_list = Vec::new();
         let mut kps_list: Vec<Vec<(f32, f32)>> = Vec::new();
-        
+
         // Process each pyramid level
         for level_idx in 0..3 {
             let stride = strides[level_idx];
             let scores_tensor = &outputs[level_idx];
             let bbox_tensor = &outputs[level_idx + fmc];
             let kps_tensor = &outputs[level_idx + fmc * 2]; // keypoints at outputs[6,7,8]
-            
+
             let (scores_shape, scores_data) = scores_tensor.try_extract_tensor::<f32>()?;
-            let scores_shape_vec: Vec<usize> = (0..scores_shape.len()).map(|i| scores_shape[i] as usize).collect();
-            let scores_arr = ArrayD::from_shape_vec(scores_shape_vec.as_slice(), scores_data.to_vec())?;
+            let scores_shape_vec: Vec<usize> = (0..scores_shape.len())
+                .map(|i| scores_shape[i] as usize)
+                .collect();
+            let scores_arr =
+                ArrayD::from_shape_vec(scores_shape_vec.as_slice(), scores_data.to_vec())?;
             let (bbox_shape, bbox_data) = bbox_tensor.try_extract_tensor::<f32>()?;
-            let bbox_shape_vec: Vec<usize> = (0..bbox_shape.len()).map(|i| bbox_shape[i] as usize).collect();
+            let bbox_shape_vec: Vec<usize> = (0..bbox_shape.len())
+                .map(|i| bbox_shape[i] as usize)
+                .collect();
             let bbox_arr = ArrayD::from_shape_vec(bbox_shape_vec.as_slice(), bbox_data.to_vec())?;
             let (kps_shape, kps_data) = kps_tensor.try_extract_tensor::<f32>()?;
-            let kps_shape_vec: Vec<usize> = (0..kps_shape.len()).map(|i| kps_shape[i] as usize).collect();
+            let kps_shape_vec: Vec<usize> = (0..kps_shape.len())
+                .map(|i| kps_shape[i] as usize)
+                .collect();
             let kps_arr = ArrayD::from_shape_vec(kps_shape_vec.as_slice(), kps_data.to_vec())?;
-            
+
             // Generate anchor centers for this level
             let height = input_height / stride;
             let width = input_width / stride;
             let anchor_centers = generate_anchor_centers(height, width, stride);
-            
+
             // Reshape bbox predictions: [N, 4] format
             let bbox_reshaped = if bbox_arr.shape().len() == 2 && bbox_arr.shape()[1] == 4 {
                 bbox_arr
             } else {
                 return Err(RsError::Error(format!(
                     "Unexpected bbox shape for level {}: {:?}, expected [N, 4]",
-                    level_idx, bbox_arr.shape()
+                    level_idx,
+                    bbox_arr.shape()
                 )));
             };
-            
+
             // Scale bbox predictions by stride (as per Python reference)
             let bbox_scaled = &bbox_reshaped * stride as f32;
-            
+
             // Decode bboxes using distance-based decoding
             let decoded_bboxes = distance2bbox(&anchor_centers, &bbox_scaled);
-            
+
             // Extract scores: [N, 1] format
             let scores_reshaped = if scores_arr.shape().len() == 2 && scores_arr.shape()[1] == 1 {
                 scores_arr
             } else {
                 return Err(RsError::Error(format!(
                     "Unexpected scores shape for level {}: {:?}, expected [N, 1]",
-                    level_idx, scores_arr.shape()
+                    level_idx,
+                    scores_arr.shape()
                 )));
             };
-            
+
             // Decode keypoints: [N, 10] format (5 keypoints × 2 coords)
             let kps_scaled = &kps_arr * stride as f32;
             let decoded_kps = distance2kps(&anchor_centers, &kps_scaled);
-            
+
             // Filter by confidence threshold and collect
             for i in 0..decoded_bboxes.len().min(scores_reshaped.shape()[0]) {
                 let score = scores_reshaped[[i, 0]];
@@ -563,11 +592,15 @@ impl FaceRecognitionService {
                 }
             }
         }
-        
+
         // Sort by confidence (descending)
         let mut indices: Vec<usize> = (0..scores_list.len()).collect();
-        indices.sort_by(|&a, &b| scores_list[b].partial_cmp(&scores_list[a]).unwrap_or(std::cmp::Ordering::Equal));
-        
+        indices.sort_by(|&a, &b| {
+            scores_list[b]
+                .partial_cmp(&scores_list[a])
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
         // Convert to Detection format and scale back to original image size
         let mut detections = Vec::new();
         for &idx in &indices {
@@ -580,7 +613,7 @@ impl FaceRecognitionService {
                 y2: y2 / scale,
                 confidence: scores_list[idx],
             };
-            
+
             // Scale keypoints back to original image size
             let landmarks: Vec<(f32, f32)> = if idx < kps_list.len() {
                 kps_list[idx]
@@ -589,7 +622,7 @@ impl FaceRecognitionService {
                         // First, clip to valid region (removes padding effects)
                         let x_clipped = x.min(new_w as f32);
                         let y_clipped = y.min(new_h as f32);
-                        
+
                         // Then scale back to original image size
                         (x_clipped / scale, y_clipped / scale)
                     })
@@ -597,15 +630,12 @@ impl FaceRecognitionService {
             } else {
                 vec![]
             };
-            
-            detections.push(Detection {
-                bbox,
-                landmarks,
-            });
+
+            detections.push(Detection { bbox, landmarks });
         }
-        
+
         let nms_result = non_max_suppression(detections, iou_thres);
-        
+
         // Post-detection validation: filter out low-quality detections
         let validated: Vec<Detection> = nms_result
             .into_iter()
@@ -617,17 +647,17 @@ impl FaceRecognitionService {
                 if w < min_size || h < min_size {
                     return false;
                 }
-                
+
                 // 2. Landmark validation (require exactly 5 landmarks for proper alignment)
                 // SCRFD/RetinaFace models output 5 keypoints (left eye, right eye, nose, left mouth, right mouth)
                 // If we don't have 5 landmarks, the detection is likely poor quality or a false positive
                 if det.landmarks.len() != 5 {
                     return false;
                 }
-                
+
                 // 3. Pose validation (filter extreme poses that are likely false positives)
                 let (pitch, yaw, roll) = estimate_head_pose(&det.landmarks);
-                
+
                 // Filter extreme poses:
                 // - Yaw > 60°: too much profile view (hard to identify)
                 // - Pitch > 45°: looking too far up/down
@@ -635,11 +665,11 @@ impl FaceRecognitionService {
                 if yaw.abs() > 60.0 || pitch.abs() > 45.0 || roll.abs() > 30.0 {
                     return false;
                 }
-                
+
                 true
             })
             .collect();
-        
+
         Ok(validated)
     }
 
@@ -651,32 +681,32 @@ impl FaceRecognitionService {
         let (width, height) = image.dimensions();
         let w = bbox.x2 - bbox.x1;
         let h = bbox.y2 - bbox.y1;
-    
+
         // Calculate padding
         let pad_w = w * padding;
         let pad_h = h * padding;
-    
+
         // Calculate crop coordinates with boundary checks
         // We keep these as f32 initially for the offset return
         let x1_f = (bbox.x1 - pad_w).max(0.0);
         let y1_f = (bbox.y1 - pad_h).max(0.0);
         let x2_f = (bbox.x2 + pad_w).min(width as f32);
         let y2_f = (bbox.y2 + pad_h).min(height as f32);
-    
+
         let x1 = x1_f as u32;
         let y1 = y1_f as u32;
         let x2 = x2_f as u32;
         let y2 = y2_f as u32;
-    
+
         // Ensure valid crop dimensions
         let crop_w = if x2 > x1 { x2 - x1 } else { 1 };
         let crop_h = if y2 > y1 { y2 - y1 } else { 1 };
-    
+
         // Perform the crop
         let crop = image.crop_imm(x1, y1, crop_w, crop_h);
-    
+
         // Return the crop and the top-left coordinate (x1, y1)
-        // This (x1, y1) is the offset you add to local crop landmarks 
+        // This (x1, y1) is the offset you add to local crop landmarks
         // to get back to global image coordinates.
         Ok((crop, x1 as f32, y1 as f32))
     }
@@ -684,20 +714,21 @@ impl FaceRecognitionService {
     fn resize_with_padding(img: &DynamicImage, target_size: u32) -> DynamicImage {
         let (w, h) = img.dimensions();
         let max_dim = w.max(h);
-    
+
         // 1. Create a square canvas (black/transparent)
         // Using Rgba<u8> ensures compatibility, init with (0,0,0,0) or (0,0,0,255)
-        let mut canvas = image::ImageBuffer::from_pixel(max_dim, max_dim, image::Rgba([0, 0, 0, 0]));
-    
+        let mut canvas =
+            image::ImageBuffer::from_pixel(max_dim, max_dim, image::Rgba([0, 0, 0, 0]));
+
         // 2. Calculate offsets to center the image
         let offset_x = (max_dim - w) / 2;
         let offset_y = (max_dim - h) / 2;
-    
+
         // 3. Paste the original image onto the canvas
         // We use copy_from which handles the pasting
         // Note: requires `GenericImage` trait import
         let _ = canvas.copy_from(img, offset_x, offset_y);
-    
+
         // 4. Resize the now-square canvas to target size (192x192)
         let square_img = DynamicImage::ImageRgba8(canvas);
         square_img.resize_exact(target_size, target_size, FilterType::Triangle)
@@ -712,43 +743,50 @@ impl FaceRecognitionService {
         } else {
             face_crop.clone()
         };
-    
+
         let input = preprocess_for_landmark(&face_crop_192);
         let tensor = Tensor::from_array(input)?;
-    
+
         // 2. Run Inference
         // The model typically has one output: [1, 212] (flattened x,y pairs) OR [1, 106, 2]
-        let session = self.alignment_session.lock().map_err(|e| RsError::Error(format!("Failed to lock session: {:?}", e)))?;
+        let session = self
+            .alignment_session
+            .lock()
+            .map_err(|e| RsError::Error(format!("Failed to lock session: {:?}", e)))?;
         let input_name = session.inputs[0].name.clone();
         drop(session);
-        let mut session = self.alignment_session.lock().map_err(|e| RsError::Error(format!("Failed to lock session: {:?}", e)))?;
+        let mut session = self
+            .alignment_session
+            .lock()
+            .map_err(|e| RsError::Error(format!("Failed to lock session: {:?}", e)))?;
         let outputs = session.run(ort::inputs![input_name.as_str() => tensor])?;
         let (_, data) = outputs[0].try_extract_tensor::<f32>()?;
-        
+
         // 3. Parse Output
         // Handle both [1, 212] and [1, 106, 2] shapes automatically
-        
+
         let mut landmarks = Vec::with_capacity(106);
-        
+
         // Iterate pairwise (x, y)
         // Note: Some models output 0..1 (normalized), some output 0..192 (pixels).
         // Based on your logs, your model outputs PIXELS (0..192).
         for chunk in data.chunks(2) {
             if chunk.len() == 2 {
-                let x = (chunk[0] + 1.0) * 96.0; 
+                let x = (chunk[0] + 1.0) * 96.0;
                 let y = (chunk[1] + 1.0) * 96.0;
                 landmarks.push((x, y));
             }
         }
-        
-    
+
         if landmarks.len() != 106 {
-            return Err(RsError::Error(format!("Expected 106 landmarks, got {}", landmarks.len())));
+            return Err(RsError::Error(format!(
+                "Expected 106 landmarks, got {}",
+                landmarks.len()
+            )));
         }
-    
+
         Ok(landmarks)
     }
-
 
     fn extract_embedding(&self, aligned_face: &DynamicImage) -> RsResult<Vec<f32>> {
         // Validate input image dimensions
@@ -769,7 +807,10 @@ impl FaceRecognitionService {
 
         // ArcFace input name usually "input" or "data"
         // Let's get the first input name dynamically
-        let session = self.recognition_session.lock().map_err(|e| RsError::Error(format!("Failed to lock session: {:?}", e)))?;
+        let session = self
+            .recognition_session
+            .lock()
+            .map_err(|e| RsError::Error(format!("Failed to lock session: {:?}", e)))?;
         let name = session
             .inputs
             .iter()
@@ -781,11 +822,17 @@ impl FaceRecognitionService {
             .clone();
         drop(session);
 
-        let mut session = self.recognition_session.lock().map_err(|e| RsError::Error(format!("Failed to lock session: {:?}", e)))?;
+        let mut session = self
+            .recognition_session
+            .lock()
+            .map_err(|e| RsError::Error(format!("Failed to lock session: {:?}", e)))?;
         let outputs = session.run(ort::inputs![name => tensor])?;
         let (embedding_shape, embedding_data) = outputs[0].try_extract_tensor::<f32>()?;
-        let embedding_shape_vec: Vec<usize> = (0..embedding_shape.len()).map(|i| embedding_shape[i] as usize).collect();
-        let embedding = ArrayD::from_shape_vec(embedding_shape_vec.as_slice(), embedding_data.to_vec())?;
+        let embedding_shape_vec: Vec<usize> = (0..embedding_shape.len())
+            .map(|i| embedding_shape[i] as usize)
+            .collect();
+        let embedding =
+            ArrayD::from_shape_vec(embedding_shape_vec.as_slice(), embedding_data.to_vec())?;
 
         // Validate embedding shape
         let embedding_size = embedding.len();
@@ -888,8 +935,12 @@ fn distance2bbox(anchor_centers: &[[f32; 2]], distance: &ArrayD<f32>) -> Vec<[f3
 fn distance2kps(anchor_centers: &[[f32; 2]], distance: &ArrayD<f32>) -> Vec<Vec<(f32, f32)>> {
     let mut kps_list = Vec::with_capacity(anchor_centers.len());
     let n = distance.shape()[0];
-    let num_kps = if distance.shape().len() > 1 { distance.shape()[1] / 2 } else { 0 };
-    
+    let num_kps = if distance.shape().len() > 1 {
+        distance.shape()[1] / 2
+    } else {
+        0
+    };
+
     for (i, &center) in anchor_centers.iter().enumerate() {
         if i >= n {
             break;
@@ -914,7 +965,7 @@ fn generate_anchor_centers(height: usize, width: usize, stride: usize) -> Vec<[f
     let mut centers = Vec::with_capacity(height * width * num_anchors);
     for i in 0..height {
         for j in 0..width {
-            let cx = (j as f32 ) * stride as f32;
+            let cx = (j as f32) * stride as f32;
             let cy = (i as f32) * stride as f32;
             // Add both anchors at same location (SCRFD uses 2 anchors per location)
             centers.push([cx, cy]);
@@ -1019,9 +1070,9 @@ fn non_max_suppression(detections: Vec<Detection>, iou_threshold: f32) -> Vec<De
 }
 
 fn preprocess_for_landmark(img: &DynamicImage) -> Array4<f32> {
-    let rgb = img.to_rgb8(); 
+    let rgb = img.to_rgb8();
     let (w, h) = rgb.dimensions();
-    
+
     let mut input = Array4::<f32>::zeros((1, 3, h as usize, w as usize));
 
     // RGB Format, Normalized -1.0 to 1.0
@@ -1030,10 +1081,10 @@ fn preprocess_for_landmark(img: &DynamicImage) -> Array4<f32> {
             let pixel = rgb.get_pixel(x, y);
             // Channel 0 = R, 1 = G, 2 = B (RGB Order)
             // (x / 127.5) - 1.0 is equivalent to (x - 127.5) / 127.5
-            
-            input[[0, 0, y as usize, x as usize]] = (pixel[0] as f32 / 127.5) - 1.0; 
-            input[[0, 1, y as usize, x as usize]] = (pixel[1] as f32 / 127.5) - 1.0; 
-            input[[0, 2, y as usize, x as usize]] = (pixel[2] as f32 / 127.5) - 1.0; 
+
+            input[[0, 0, y as usize, x as usize]] = (pixel[0] as f32 / 127.5) - 1.0;
+            input[[0, 1, y as usize, x as usize]] = (pixel[1] as f32 / 127.5) - 1.0;
+            input[[0, 2, y as usize, x as usize]] = (pixel[2] as f32 / 127.5) - 1.0;
         }
     }
     input
@@ -1089,7 +1140,7 @@ fn get_5_points_from_106(landmarks: &[(f32, f32)]) -> Vec<(f32, f32)> {
     // Verified across multiple faces: [10, 96, 63, 6, 20]
     // NOTE: For face alignment, prefer using SCRFD 5-point keypoints directly
     // as they are more reliable. This function is for 106-landmark-based operations.
-    
+
     // Use the correct indices determined from runtime analysis
     let left_eye = landmarks[10];
     let right_eye = landmarks[96];
@@ -1176,8 +1227,6 @@ fn average_points(points: &[(f32, f32)]) -> (f32, f32) {
     (sum.0 / points.len() as f32, sum.1 / points.len() as f32)
 }
 
-
-
 fn estimate_similarity_transform(src: &[(f32, f32)], dst: &[(f32, f32)]) -> [f32; 6] {
     let n = src.len().min(dst.len());
     if n == 0 {
@@ -1258,16 +1307,6 @@ fn invert_transform(t: &[f32; 6]) -> [f32; 6] {
     [r00, r01, r02, r10, r11, r12]
 }
 
-
-
-
-
-
-
-
-
-
-
 // ============== FACE WARPING CODE ==============
 
 // Standard 5 facial points for 112x112 ArcFace model
@@ -1278,8 +1317,6 @@ const REFERENCE_POINTS_112: [[f32; 2]; 5] = [
     [41.5493, 92.3655], // Left Mouth Corner
     [70.7299, 92.2041], // Right Mouth Corner
 ];
-
-
 
 fn simple_align_matrix(src: &[[f32; 2]], dst: &[[f32; 2]]) -> [f32; 9] {
     // 1. Centroids
@@ -1293,11 +1330,11 @@ fn simple_align_matrix(src: &[[f32; 2]], dst: &[[f32; 2]]) -> [f32; 9] {
     let src_eye_dx = src[1][0] - src[0][0];
     let src_eye_dy = src[1][1] - src[0][1];
     let src_eye_dist = (src_eye_dx.powi(2) + src_eye_dy.powi(2)).sqrt();
-    
+
     let dst_eye_dx = dst[1][0] - dst[0][0];
     let dst_eye_dy = dst[1][1] - dst[0][1];
     let dst_eye_dist = (dst_eye_dx.powi(2) + dst_eye_dy.powi(2)).sqrt();
-    
+
     // We want Inverse Scale (Dst -> Src)
     let scale = src_eye_dist / dst_eye_dist;
 
@@ -1305,10 +1342,10 @@ fn simple_align_matrix(src: &[[f32; 2]], dst: &[[f32; 2]]) -> [f32; 9] {
     // Calculate angle of eyes in both images
     let angle_src = src_eye_dy.atan2(src_eye_dx);
     let angle_dst = dst_eye_dy.atan2(dst_eye_dx);
-    
+
     // We want to rotate Dst coordinate to match Src orientation
     let rotation = angle_src - angle_dst;
-    
+
     let cos_a = rotation.cos();
     let sin_a = rotation.sin();
 
@@ -1317,7 +1354,7 @@ fn simple_align_matrix(src: &[[f32; 2]], dst: &[[f32; 2]]) -> [f32; 9] {
     // Expanded:
     // SrcX = s*cos*DstX - s*sin*DstY + Tx
     // SrcY = s*sin*DstX + s*cos*DstY + Ty
-    
+
     let a = scale * cos_a;
     let b = scale * -sin_a; // -sin because standard rotation matrix is [cos -sin; sin cos]
     let d = scale * sin_a;
@@ -1332,18 +1369,20 @@ fn simple_align_matrix(src: &[[f32; 2]], dst: &[[f32; 2]]) -> [f32; 9] {
     //println!("Align Matrix: Scale={:.3}, Rot={:.3}rad, Tx={:.1}, Ty={:.1}", scale, rotation, tx, ty);
 
     // Return 3x3 Matrix for Projection [a, b, c, d, e, f, 0, 0, 1]
-    [
-        a, b, tx,
-        d, e, ty,
-        0.0, 0.0, 1.0
-    ]
+    [a, b, tx, d, e, ty, 0.0, 0.0, 1.0]
 }
 fn umeyama_dst_to_src(src: &[[f32; 2]], dst: &[[f32; 2]]) -> [f32; 9] {
     let n = src.len() as f32;
-    
+
     // 1. Compute centroids
-    let src_mean = src.iter().fold(Vector2::zeros(), |acc, p| acc + Vector2::new(p[0], p[1])) / n;
-    let dst_mean = dst.iter().fold(Vector2::zeros(), |acc, p| acc + Vector2::new(p[0], p[1])) / n;
+    let src_mean = src
+        .iter()
+        .fold(Vector2::zeros(), |acc, p| acc + Vector2::new(p[0], p[1]))
+        / n;
+    let dst_mean = dst
+        .iter()
+        .fold(Vector2::zeros(), |acc, p| acc + Vector2::new(p[0], p[1]))
+        / n;
 
     // 2. Compute variance of DST (since we are transforming Dst -> Src)
     let dst_var = dst.iter().fold(0.0, |acc, p| {
@@ -1358,7 +1397,7 @@ fn umeyama_dst_to_src(src: &[[f32; 2]], dst: &[[f32; 2]]) -> [f32; 9] {
     for i in 0..src.len() {
         let s = Vector2::new(src[i][0], src[i][1]) - src_mean;
         let d = Vector2::new(dst[i][0], dst[i][1]) - dst_mean;
-        sigma += s * d.transpose(); 
+        sigma += s * d.transpose();
     }
     sigma /= n;
 
@@ -1366,7 +1405,7 @@ fn umeyama_dst_to_src(src: &[[f32; 2]], dst: &[[f32; 2]]) -> [f32; 9] {
     let svd = SVD::new(sigma, true, true);
     let u = svd.u.unwrap();
     let v_t = svd.v_t.unwrap();
-    
+
     // 5. Compute Rotation (R = U * S * V^T)
     let mut s = Matrix2::identity();
     if (u * v_t).determinant() < 0.0 {
@@ -1388,16 +1427,19 @@ fn umeyama_dst_to_src(src: &[[f32; 2]], dst: &[[f32; 2]]) -> [f32; 9] {
     // 8. Return 3x3 Matrix [a, b, c, d, e, f, 0, 0, 1]
     let scaled_r = r * scale;
     [
-        scaled_r[(0, 0)], scaled_r[(0, 1)], t.x,
-        scaled_r[(1, 0)], scaled_r[(1, 1)], t.y,
-        0.0,              0.0,              1.0
+        scaled_r[(0, 0)],
+        scaled_r[(0, 1)],
+        t.x,
+        scaled_r[(1, 0)],
+        scaled_r[(1, 1)],
+        t.y,
+        0.0,
+        0.0,
+        1.0,
     ]
 }
 
-pub fn align_face_manual(
-    image: &DynamicImage,
-    landmarks: &[(f32, f32)],
-) -> DynamicImage {
+pub fn align_face_manual(image: &DynamicImage, landmarks: &[(f32, f32)]) -> DynamicImage {
     // 1. Convert landmarks to array format [f32; 2]
     let src_pts: Vec<[f32; 2]> = landmarks.iter().map(|(x, y)| [*x, *y]).collect();
 
@@ -1413,7 +1455,7 @@ pub fn align_face_manual(
 
     //println!("Manual Warp Debug:");
     //println!("Matrix: a={}, b={}, c={}, d={}, e={}, f={}", a, b, c, d, e, f);
-    
+
     // 3. Iterate Output Pixels
     for y in 0..112 {
         for x in 0..112 {
@@ -1421,10 +1463,12 @@ pub fn align_face_manual(
             let u = a * (x as f32) + b * (y as f32) + c;
             let v = d * (x as f32) + e * (y as f32) + f;
 
-
-
             // Sample (Bilinear Interpolation)
-            if u >= 0.0 && u < (src_img.width() as f32 - 1.0) && v >= 0.0 && v < (src_img.height() as f32 - 1.0) {
+            if u >= 0.0
+                && u < (src_img.width() as f32 - 1.0)
+                && v >= 0.0
+                && v < (src_img.height() as f32 - 1.0)
+            {
                 // Manual Bilinear Interpolation
                 let u_i = u.floor() as u32;
                 let v_i = v.floor() as u32;
@@ -1443,13 +1487,12 @@ pub fn align_face_manual(
                 let w11 = u_f * v_f;
 
                 let mut pixel = Rgba([0, 0, 0, 255]);
-                for c in 0..3 { // RGB channels
-                    pixel[c] = (
-                        p00[c] as f32 * w00 +
-                        p10[c] as f32 * w10 +
-                        p01[c] as f32 * w01 +
-                        p11[c] as f32 * w11
-                    ) as u8;
+                for c in 0..3 {
+                    // RGB channels
+                    pixel[c] = (p00[c] as f32 * w00
+                        + p10[c] as f32 * w10
+                        + p01[c] as f32 * w01
+                        + p11[c] as f32 * w11) as u8;
                 }
                 warped.put_pixel(x, y, pixel);
             }

@@ -544,7 +544,7 @@ impl ModelController {
         let existing = self.get_media(library_id, media_id.to_owned(), requesting_user).await?.ok_or(SourcesError::UnableToFindMedia(library_id.to_string(), media_id.to_string(), "process_media".to_string()))?;
 
         
-        let r = self.process_media_faces(library_id, media_id, requesting_user).await;
+        let r = self.process_media_faces(library_id, media_id, requesting_user, None).await;
         if let Err(e) = r {
             log_error(LogServiceType::Source, format!("Face detection failed for {}: {:?}", media_id, e));
         }
