@@ -83,7 +83,7 @@ volumes:
 # Setup dev env
 
 ## Windows
-
+you need a recent version of visual studio installed for C++ builds
 one-time
 ```bash
 cargo install cargo-vcpkg

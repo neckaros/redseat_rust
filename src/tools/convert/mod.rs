@@ -1,5 +1,5 @@
 use crate::error::{RsError, RsResult};
-use ort::Utf8Data;
+use ort::tensor::Utf8Data;
 use rs_torrent_magnet::magnet_from_torrent;
 use tokio::io::{AsyncRead, AsyncReadExt};
 pub mod magnet;

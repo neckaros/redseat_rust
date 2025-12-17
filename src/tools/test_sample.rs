@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use crate::tools::recognition::FaceRecognitionService;
-    use image::{GenericImageView, Rgb, RgbImage, DynamicImage};
+    use image::{DynamicImage, GenericImageView, Rgb, RgbImage};
     use std::fs;
     use std::path::Path;
 
@@ -63,35 +63,44 @@ mod tests {
         //let img_path = Path::new("C:\\Users\\arnau\\Downloads\\IMG_2231.avif");
         let img_path = Path::new("E:\\downloads\\temp\\vXOtUQnmyCD_iUmla_mnL.jpeg");
         println!("Testing image: {:?}", img_path);
-        let img = image::open(&img_path).expect("Failed to open image");
+        // Create a dummy image for testing if file doesn't exist
+        let img = if img_path.exists() {
+            image::open(&img_path).expect("Failed to open image")
+        } else {
+            println!("Test image not found, using dummy image");
+            DynamicImage::ImageRgb8(RgbImage::new(640, 640))
+        };
 
         // Run full face extraction process
-        let faces = service.detect_and_extract_faces_async(img.clone())
+        let faces = service
+            .detect_and_extract_faces_async(img.clone())
             .await
             .expect("Face extraction failed");
-
-
-
 
         //let img_path = Path::new("C:\\Users\\arnau\\Downloads\\IMG_2231.avif");
-        let img_path2 = Path::new("C:\\Users\\arnau\\AppData\\Local\\redseat\\dbs\\old\\new\\daintywilder_2021-01-23_3.jpg");
+        let img_path2 = Path::new("E:\\downloads\\temp\\IMG_3105.jpeg");
         println!("Testing image: {:?}", img_path2);
-        let img2 = image::open(&img_path2).expect("Failed to open image");
+        let img2 = if img_path2.exists() {
+            image::open(&img_path2).expect("Failed to open image")
+        } else {
+            println!("Test image 2 not found, using dummy image");
+            DynamicImage::ImageRgb8(RgbImage::new(640, 640))
+        };
 
         // Run full face extraction process
-        let faces2 = service.detect_and_extract_faces_async(img2.clone())
+        let faces2 = service
+            .detect_and_extract_faces_async(img2.clone())
             .await
             .expect("Face extraction failed");
 
-
-        let score = crate::model::people::cosine_similarity(&faces2[0].embedding, &faces[0].embedding);
+        let score =
+            crate::model::people::cosine_similarity(&faces2[0].embedding, &faces[0].embedding);
         println!("Similarity Score: {:.4}", score);
 
         if score > 0.6 {
             println!("MATCH: Same Person!");
         } else {
             println!("Different People.");
-        }    
-
+        }
     }
 }

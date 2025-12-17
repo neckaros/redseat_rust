@@ -332,6 +332,7 @@ impl  ModelController {
 		self.for_connected_users(&message, |user, socket, message| {
 			// Check if user has Read access to the library
 			if user.check_library_role(&message.library, LibraryRole::Admin).is_ok() {
+				println!("Sending library status to user: {:?} message: {:?}", user.user_id(), message);
 				let _ = socket.emit("library-status", message);
 			}
 		});

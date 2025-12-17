@@ -1,17 +1,30 @@
-use std::{collections::VecDeque, fs::read_to_string, io::{Read, Write}, path::PathBuf, str::FromStr};
+use std::{
+    collections::VecDeque,
+    fs::read_to_string,
+    io::{Read, Write},
+    path::PathBuf,
+    str::FromStr,
+};
 
-use ort::{inputs, GraphOptimizationLevel, Session, SessionOutputs, Tensor, ValueType};
-use ndarray::{s, Array, Array4, Axis};
-use image::{imageops::{self, FilterType}, DynamicImage, GenericImageView, ImageBuffer, ImageFormat, Rgb, Rgba};
-use serde::{Deserialize, Serialize};
 use crate::{Error, Result};
+use image::{
+    imageops::{self, FilterType},
+    DynamicImage, GenericImageView, ImageBuffer, ImageFormat, Rgb, Rgba,
+};
+use ndarray::{s, Array, Array4, Axis};
+use ort::{
+    inputs,
+    session::{builder::GraphOptimizationLevel, Session, SessionOutputs},
+    value::{Tensor, ValueType},
+};
+use serde::{Deserialize, Serialize};
 
 pub enum PreductionModelType {
     WD,
     ImageNet,
 }
 
-/* 
+/*
 pub fn predict(buffer_image: Vec<u8>) -> Result<Vec<PredictionTagResult>> {
     let target2 = PathBuf::from_str("models/wd-v1-4-tags.onnx").unwrap();
     let target = PathBuf::from_str("models/efficientnet-lite4-11-int8.onnx").expect("unable to set path");
@@ -22,7 +35,7 @@ pub fn predict(buffer_image: Vec<u8>) -> Result<Vec<PredictionTagResult>> {
     } else {
         Err(crate::Error::NoModelFound)
     }
-    
+
 }*/
 
 pub fn prepare_image(buffer_image: Vec<u8>, width: u32, height: u32) -> Result<DynamicImage> {
@@ -38,7 +51,7 @@ fn resize_center_crop(img: &DynamicImage, width: u32, height: u32) -> DynamicIma
     let min_dim = src_width.min(src_height);
     let crop_width = min_dim * width / height;
     let crop_height = min_dim * height / width;
-    
+
     // Recadrez l'image au centre
     let cropped_img = imageops::crop_imm(
         img,
@@ -46,11 +59,12 @@ fn resize_center_crop(img: &DynamicImage, width: u32, height: u32) -> DynamicIma
         (src_height - crop_height) / 2,
         crop_width,
         crop_height,
-    ).to_image();
-    
+    )
+    .to_image();
+
     let dynamic_cropped_img = DynamicImage::ImageRgba8(cropped_img);
     // Redimensionnez l'image à la taille souhaitée
-    
+
     dynamic_cropped_img.resize_exact(width, height, FilterType::Lanczos3)
 }
 
@@ -68,59 +82,74 @@ pub fn rgb_to_bgr(image: DynamicImage) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
 
 pub async fn preload_model(path: &PathBuf) -> Result<Session> {
     let path = path.to_owned();
-    tokio::task::spawn_blocking(move || {
-        preload_model_sync(&path)
-    }).await?
+    tokio::task::spawn_blocking(move || preload_model_sync(&path)).await?
 }
 
 pub fn preload_model_sync(path: &PathBuf) -> Result<Session> {
     Ok(Session::builder()?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_intra_threads(4)?
-            .commit_from_file(path)?)
-}
-
-
-pub async fn predict_net(path: PathBuf, bgr: bool, normalize: bool, buffer_image: Vec<u8>, model: Option<&Session>) -> Result<Vec<PredictionTagResult>> {
-    tokio::task::spawn_blocking(move || {
-        predict_net_sync(path, bgr, normalize, buffer_image, None)
-    }).await?
-}
-pub fn predict_net_sync(path: PathBuf, bgr: bool, normalize: bool, buffer_image: Vec<u8>, model: Option<&Session>) -> Result<Vec<PredictionTagResult>> {
-    let mut mapping_path = path.clone();
-    mapping_path.set_extension("csv");
-    let tags = mapping(mapping_path)?;
-    
-
-    let loaded_session = if model.is_none() {
-        Some(Session::builder()?
         .with_optimization_level(GraphOptimizationLevel::Level3)?
         .with_intra_threads(4)?
         .commit_from_file(path)?)
+}
+
+pub async fn predict_net(
+    path: PathBuf,
+    bgr: bool,
+    normalize: bool,
+    buffer_image: Vec<u8>,
+    model: Option<&mut Session>,
+) -> Result<Vec<PredictionTagResult>> {
+    tokio::task::spawn_blocking(move || predict_net_sync(path, bgr, normalize, buffer_image, None))
+        .await?
+}
+pub fn predict_net_sync(
+    path: PathBuf,
+    bgr: bool,
+    normalize: bool,
+    buffer_image: Vec<u8>,
+    model: Option<&mut Session>,
+) -> Result<Vec<PredictionTagResult>> {
+    let mut mapping_path = path.clone();
+    mapping_path.set_extension("csv");
+    let tags = mapping(mapping_path)?;
+
+    let mut loaded_session = if model.is_none() {
+        Some(
+            Session::builder()?
+                .with_optimization_level(GraphOptimizationLevel::Level3)?
+                .with_intra_threads(4)?
+                .commit_from_file(path)?,
+        )
     } else {
         None
     };
-    let ref_session = loaded_session.as_ref();
 
-    let model = match model {
-        Some(m) => m,
-        None => {
-            ref_session.unwrap()
-        },
+    // Get output and input info first (immutable borrow)
+    let (output_name, input_name, size) = {
+        let sess_ref = match &model {
+            Some(m) => m,
+            None => loaded_session.as_ref().unwrap(),
+        };
+        let output_info = sess_ref.outputs.first().ok_or(Error::Error(
+            "Prediction model does not have outputs".into(),
+        ))?;
+        let input_info = sess_ref.inputs.first().ok_or(Error::Error(
+            "Prediction model does not have outputs".into(),
+        ))?;
+
+        let size = match &input_info.input_type {
+            ValueType::Tensor {
+                ty: _,
+                shape,
+                dimension_symbols: _,
+            } => shape.get(1).map(|i| *i as u32),
+            ValueType::Sequence(_) => None,
+            ValueType::Map { key: _, value: _ } => None,
+            ValueType::Optional(_) => None,
+        };
+        let size = size.ok_or(Error::Error("Unable to get dimensions".into()))?;
+        (output_info.name.clone(), input_info.name.clone(), size)
     };
-
-    let output_info = model.outputs.first().ok_or(Error::Error("Prediction model does not have outputs".into()))?;
-
-    let input_info = model.inputs.first().ok_or(Error::Error("Prediction model does not have outputs".into()))?;
-
-       let size = match &input_info.input_type {
-
-        ValueType::Tensor { ty: _, dimensions } => dimensions.get(1).map(|i| *i as u32),
-        ValueType::Sequence(_) => None,
-        ValueType::Map { key: _, value: _ } => None,
-        ValueType::Optional(value_type) => None,
-    };
-    let size = size.ok_or(Error::Error("Unable to get dimensions".into()))?;
     let resized = prepare_image(buffer_image, size, size)?;
     let image_rgb = if bgr {
         rgb_to_bgr(resized)
@@ -131,27 +160,48 @@ pub fn predict_net_sync(path: PathBuf, bgr: bool, normalize: bool, buffer_image:
     //let img_bgr = rgb_to_bgr(resized);
 
     // Convertir l'image en un tableau 1D
-    let image_data: Vec<f32> = image_rgb.iter().map(|&v| {
-                if normalize {
-                    (v as f32 -127.0) / 128.0
-                } else {
-                    v as f32
-                }
-            
-        }).collect();
+    let image_data: Vec<f32> = image_rgb
+        .iter()
+        .map(|&v| {
+            if normalize {
+                (v as f32 - 127.0) / 128.0
+            } else {
+                v as f32
+            }
+        })
+        .collect();
 
     // Convertir le tableau 1D en un tableau 4D
-    let input = Array4::from_shape_vec((1_usize, size as usize, size as usize, 3_usize), image_data)?;
-    let input_tensor = input.view();
+    let input =
+        Array4::from_shape_vec((1_usize, size as usize, size as usize, 3_usize), image_data)?;
+    let input_tensor = Tensor::from_array(input)?;
 
     //let outputs: SessionOutputs = model.run(inputs!["images" => input.view()]?)?;
-    let outputs: SessionOutputs = model.run(inputs![input_info.name.to_string() => input_tensor]?)?;
+    let outputs: SessionOutputs = match model {
+        Some(m) => m.run(inputs![input_name => input_tensor])?,
+        None => loaded_session
+            .as_mut()
+            .unwrap()
+            .run(inputs![input_name => input_tensor])?,
+    };
 
-    let binding = outputs[output_info.name.clone()].try_extract_tensor::<f32>()?;
-    let output = binding.view();
-    let a = output.axis_iter(Axis(0)).next().ok_or(crate::Error::NotFound("axis not found".to_string()))?;
+    let (shape, data) = outputs[output_name].try_extract_tensor::<f32>()?;
+    let shape_vec: Vec<usize> = (0..shape.len()).map(|i| shape[i] as usize).collect();
+    let output = Array4::from_shape_vec(
+        (shape_vec[0], shape_vec[1], shape_vec[2], shape_vec[3]),
+        data.to_vec(),
+    )?;
+    let a = output
+        .axis_iter(Axis(0))
+        .next()
+        .ok_or(crate::Error::NotFound("axis not found".to_string()))?;
     //println!("{:?}", a);
-        let row: Vec<_> = a.iter().copied().enumerate().filter(|(_i, p)| p > &(0.3_f32)).filter_map(|(index, proba)| {
+    let row: Vec<_> = a
+        .iter()
+        .copied()
+        .enumerate()
+        .filter(|(_i, p)| p > &(0.3_f32))
+        .filter_map(|(index, proba)| {
             //println!("{:?}", index);
             let element = tags.get(index);
             if let Some(element) = element {
@@ -163,19 +213,20 @@ pub fn predict_net_sync(path: PathBuf, bgr: bool, normalize: bool, buffer_image:
             } else {
                 None
             }
-        }).collect();
-        Ok(row)
+        })
+        .collect();
+    Ok(row)
 }
 
 pub fn predict_wd(path: PathBuf, buffer_image: Vec<u8>) -> Result<Vec<PredictionTagResult>> {
     let mut mapping_path = path.clone();
     mapping_path.set_extension("csv");
     let tags = mapping(mapping_path)?;
-    
+
     let model = Session::builder()?
-    .with_optimization_level(GraphOptimizationLevel::Level3)?
-    .with_intra_threads(4)?
-    .commit_from_file(path)?;
+        .with_optimization_level(GraphOptimizationLevel::Level3)?
+        .with_intra_threads(4)?
+        .commit_from_file(path)?;
 
     let width = 448;
     let height = 448;
@@ -188,16 +239,31 @@ pub fn predict_wd(path: PathBuf, buffer_image: Vec<u8>) -> Result<Vec<Prediction
 
     // Convertir le tableau 1D en un tableau 4D
     let input = Array4::from_shape_vec((1, 448, 448, 3), image_data).unwrap();
-    let input_tensor = input.view();
+    let input_tensor = Tensor::from_array(input)?;
 
     //let outputs: SessionOutputs = model.run(inputs!["images" => input.view()]?)?;
-    let outputs: SessionOutputs = model.run(inputs!["input_1:0" => input_tensor]?)?;
+    let mut model = model;
+    let outputs: SessionOutputs = model.run(inputs!["input_1:0" => input_tensor])?;
 
-    let binding = outputs["predictions_sigmoid"].try_extract_tensor::<f32>()?;
-    let output = binding.view();
-    let a = output.axis_iter(Axis(0)).next().ok_or(crate::Error::NotFound("axis not found for precition".to_string()))?;
+    let (shape, data) = outputs["predictions_sigmoid"].try_extract_tensor::<f32>()?;
+    let shape_vec: Vec<usize> = (0..shape.len()).map(|i| shape[i] as usize).collect();
+    let output = Array4::from_shape_vec(
+        (shape_vec[0], shape_vec[1], shape_vec[2], shape_vec[3]),
+        data.to_vec(),
+    )?;
+    let a = output
+        .axis_iter(Axis(0))
+        .next()
+        .ok_or(crate::Error::NotFound(
+            "axis not found for precition".to_string(),
+        ))?;
 
-        let row: Vec<_> = a.iter().copied().enumerate().filter(|(_i, p)| p > &0.3_f32).filter_map(|(index, proba)| {
+    let row: Vec<_> = a
+        .iter()
+        .copied()
+        .enumerate()
+        .filter(|(_i, p)| p > &0.3_f32)
+        .filter_map(|(index, proba)| {
             let element: Option<&PredictionTag> = tags.get(index);
             if let Some(element) = element {
                 let tag = PredictionTagResult {
@@ -208,8 +274,9 @@ pub fn predict_wd(path: PathBuf, buffer_image: Vec<u8>) -> Result<Vec<Prediction
             } else {
                 None
             }
-        }).collect();
-        Ok(row)
+        })
+        .collect();
+    Ok(row)
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
@@ -218,7 +285,7 @@ pub struct PredictionTag {
     pub id: String,
     pub name: String,
     pub alts: Vec<String>,
-    pub kind: PredictionTagKind
+    pub kind: PredictionTagKind,
 }
 
 impl PredictionTag {
@@ -230,7 +297,6 @@ impl PredictionTag {
     }
 }
 
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PredictionTagResult {
     pub probability: f32,
@@ -240,14 +306,13 @@ pub struct PredictionTagResult {
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum PredictionTagKind {
-	Category,
-	Character,
+    Category,
+    Character,
     #[default]
-	Tag,
+    Tag,
 }
 
-
-impl  PredictionTag {
+impl PredictionTag {
     pub fn from_csv(line: (usize, &str)) -> Self {
         let (index, tag) = line;
         let splitted = tag.split(',');
@@ -261,25 +326,39 @@ impl  PredictionTag {
             PredictionTagKind::Tag
         };
         let name = elements[1].replace('_', " ").replace('\"', "");
-        let mut names: VecDeque<String> = VecDeque::from_iter(name.split('|').map(|t| t.trim().to_string()));
+        let mut names: VecDeque<String> =
+            VecDeque::from_iter(name.split('|').map(|t| t.trim().to_string()));
         let name = names.pop_front().unwrap_or(name);
-        let preduction = PredictionTag { index, id: format!("wd-v1-4-tags:{}", elements[0]), name, kind, alts: names.make_contiguous().to_vec()};
+        let preduction = PredictionTag {
+            index,
+            id: format!("wd-v1-4-tags:{}", elements[0]),
+            name,
+            kind,
+            alts: names.make_contiguous().to_vec(),
+        };
         preduction
     }
 }
 
 fn mapping(path: PathBuf) -> Result<Vec<PredictionTag>> {
     if path.exists() {
-        let tags: Vec<PredictionTag> = read_to_string(path)?.lines().enumerate().map(PredictionTag::from_csv).collect();
+        let tags: Vec<PredictionTag> = read_to_string(path)?
+            .lines()
+            .enumerate()
+            .map(PredictionTag::from_csv)
+            .collect();
         Ok(tags)
     } else {
         Err(crate::Error::ModelMappingNotFound)
-    } 
+    }
 }
 
-
 fn calculate_similarity(embedding1: &[f32], embedding2: &[f32]) -> f32 {
-    let dot: f32 = embedding1.iter().zip(embedding2.iter()).map(|(a, b)| a * b).sum();
+    let dot: f32 = embedding1
+        .iter()
+        .zip(embedding2.iter())
+        .map(|(a, b)| a * b)
+        .sum();
     let norm1: f32 = embedding1.iter().map(|a| a * a).sum::<f32>().sqrt();
     let norm2: f32 = embedding2.iter().map(|a| a * a).sum::<f32>().sqrt();
     dot / (norm1 * norm2)

@@ -4,9 +4,9 @@ use futures::StreamExt;
 use image::ImageBuffer;
 use image::{imageops::FilterType, GenericImage, DynamicImage, GenericImageView, Rgb, RgbImage, Rgba};
 use ndarray::{Array, Array4, ArrayD, Axis};
-use ort::{GraphOptimizationLevel, Session, SessionInputs, Tensor};
+use ort::{session::{Session, SessionInputs, builder::GraphOptimizationLevel}, value::Tensor};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use imageproc::geometric_transformations::{warp, Interpolation, Projection};
@@ -135,9 +135,9 @@ pub struct DetectedFace {
 
 #[derive(Clone)]
 pub struct FaceRecognitionService {
-    detection_session: Arc<Session>,   // det_10g
-    alignment_session: Arc<Session>,   // 2d106det
-    recognition_session: Arc<Session>, // w600k_r50
+    detection_session: Arc<Mutex<Session>>,   // det_10g
+    alignment_session: Arc<Mutex<Session>>,   // 2d106det
+    recognition_session: Arc<Mutex<Session>>, // w600k_r50
 }
 
 impl FaceRecognitionService {
@@ -170,9 +170,9 @@ impl FaceRecognitionService {
             .commit_from_file(format!("{}/w600k_r50.onnx", models_path))?;
 
         Ok(Self {
-            detection_session: Arc::new(detection_session),
-            alignment_session: Arc::new(alignment_session),
-            recognition_session: Arc::new(recognition_session),
+            detection_session: Arc::new(Mutex::new(detection_session)),
+            alignment_session: Arc::new(Mutex::new(alignment_session)),
+            recognition_session: Arc::new(Mutex::new(recognition_session)),
         })
     }
 
@@ -470,18 +470,18 @@ impl FaceRecognitionService {
         }
 
         let input_tensor_value = Tensor::from_array(input)?;
-        let name = self
-            .detection_session
+        let session = self.detection_session.lock().map_err(|e| RsError::Error(format!("Failed to lock session: {:?}", e)))?;
+        let name = session
             .inputs
             .iter()
             .next()
             .ok_or(RsError::Error("Unable to get input name".to_string()))?
             .name
             .clone();
+        drop(session);
 
-        let outputs = self
-            .detection_session
-            .run(ort::inputs![name => input_tensor_value]?)?;
+        let mut session = self.detection_session.lock().map_err(|e| RsError::Error(format!("Failed to lock session: {:?}", e)))?;
+        let outputs = session.run(ort::inputs![name => input_tensor_value])?;
 
         // SCRFD format: outputs[0,1,2]=scores, outputs[3,4,5]=bbox, outputs[6,7,8]=kps
         // Process all 3 pyramid levels (stride 8, 16, 32)
@@ -504,9 +504,15 @@ impl FaceRecognitionService {
             let bbox_tensor = &outputs[level_idx + fmc];
             let kps_tensor = &outputs[level_idx + fmc * 2]; // keypoints at outputs[6,7,8]
             
-            let scores_arr: ArrayD<f32> = scores_tensor.try_extract_tensor()?.to_owned();
-            let bbox_arr: ArrayD<f32> = bbox_tensor.try_extract_tensor()?.to_owned();
-            let kps_arr: ArrayD<f32> = kps_tensor.try_extract_tensor()?.to_owned();
+            let (scores_shape, scores_data) = scores_tensor.try_extract_tensor::<f32>()?;
+            let scores_shape_vec: Vec<usize> = (0..scores_shape.len()).map(|i| scores_shape[i] as usize).collect();
+            let scores_arr = ArrayD::from_shape_vec(scores_shape_vec.as_slice(), scores_data.to_vec())?;
+            let (bbox_shape, bbox_data) = bbox_tensor.try_extract_tensor::<f32>()?;
+            let bbox_shape_vec: Vec<usize> = (0..bbox_shape.len()).map(|i| bbox_shape[i] as usize).collect();
+            let bbox_arr = ArrayD::from_shape_vec(bbox_shape_vec.as_slice(), bbox_data.to_vec())?;
+            let (kps_shape, kps_data) = kps_tensor.try_extract_tensor::<f32>()?;
+            let kps_shape_vec: Vec<usize> = (0..kps_shape.len()).map(|i| kps_shape[i] as usize).collect();
+            let kps_arr = ArrayD::from_shape_vec(kps_shape_vec.as_slice(), kps_data.to_vec())?;
             
             // Generate anchor centers for this level
             let height = input_height / stride;
@@ -712,12 +718,15 @@ impl FaceRecognitionService {
     
         // 2. Run Inference
         // The model typically has one output: [1, 212] (flattened x,y pairs) OR [1, 106, 2]
-        let outputs = self.alignment_session.run(ort::inputs![self.alignment_session.inputs[0].name.as_str() => tensor]?)?;
-        let output_tensor = outputs[0].try_extract_tensor::<f32>()?;
+        let session = self.alignment_session.lock().map_err(|e| RsError::Error(format!("Failed to lock session: {:?}", e)))?;
+        let input_name = session.inputs[0].name.clone();
+        drop(session);
+        let mut session = self.alignment_session.lock().map_err(|e| RsError::Error(format!("Failed to lock session: {:?}", e)))?;
+        let outputs = session.run(ort::inputs![input_name.as_str() => tensor])?;
+        let (_, data) = outputs[0].try_extract_tensor::<f32>()?;
         
         // 3. Parse Output
         // Handle both [1, 212] and [1, 106, 2] shapes automatically
-        let data = output_tensor.as_slice().ok_or(RsError::Error("Failed to convert tensor to slice".to_string()))?;
         
         let mut landmarks = Vec::with_capacity(106);
         
@@ -760,8 +769,8 @@ impl FaceRecognitionService {
 
         // ArcFace input name usually "input" or "data"
         // Let's get the first input name dynamically
-        let name = self
-            .recognition_session
+        let session = self.recognition_session.lock().map_err(|e| RsError::Error(format!("Failed to lock session: {:?}", e)))?;
+        let name = session
             .inputs
             .iter()
             .next()
@@ -770,11 +779,13 @@ impl FaceRecognitionService {
             ))?
             .name
             .clone();
+        drop(session);
 
-        let outputs = self
-            .recognition_session
-            .run(ort::inputs![name => tensor]?)?;
-        let embedding: ArrayD<f32> = outputs[0].try_extract_tensor()?.to_owned();
+        let mut session = self.recognition_session.lock().map_err(|e| RsError::Error(format!("Failed to lock session: {:?}", e)))?;
+        let outputs = session.run(ort::inputs![name => tensor])?;
+        let (embedding_shape, embedding_data) = outputs[0].try_extract_tensor::<f32>()?;
+        let embedding_shape_vec: Vec<usize> = (0..embedding_shape.len()).map(|i| embedding_shape[i] as usize).collect();
+        let embedding = ArrayD::from_shape_vec(embedding_shape_vec.as_slice(), embedding_data.to_vec())?;
 
         // Validate embedding shape
         let embedding_size = embedding.len();
