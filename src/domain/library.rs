@@ -1,15 +1,17 @@
-use rusqlite::{types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, ToSql};
+use rusqlite::{
+    types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef},
+    ToSql,
+};
 use serde::{Deserialize, Serialize};
 use strum_macros::{Display, EnumString};
 
 use super::ElementAction;
 
-
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct ServerLibrary {
     pub id: String,
-	pub name: String,
-	pub source: String,
+    pub name: String,
+    pub source: String,
     pub root: Option<String>,
     #[serde(rename = "type")]
     pub kind: LibraryType,
@@ -22,18 +24,16 @@ pub struct ServerLibrary {
     pub hidden: bool,
 }
 
-
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, EnumString, Default)]
-#[serde(rename_all = "camelCase")] 
+#[serde(rename_all = "camelCase")]
 #[strum(serialize_all = "camelCase")]
 pub enum LibraryRole {
-	Admin,
-	Read,
-	Write,
+    Admin,
+    Read,
+    Write,
     #[default]
-	None,
+    None,
 }
-
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
 pub struct LibraryLimits {
@@ -47,7 +47,6 @@ pub struct LibraryLimits {
     pub delay: Option<i64>,
     #[serde(default)]
     pub user_id: Option<String>,
-
 }
 
 impl LibraryLimits {
@@ -74,32 +73,27 @@ impl ToSql for LibraryLimits {
     }
 }
 
-
-
-
-
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default, EnumString, Display)]
-#[serde(rename_all = "camelCase")] 
+#[serde(rename_all = "camelCase")]
 #[strum(serialize_all = "camelCase")]
 pub enum LibraryType {
-	Photos,
-	Shows,
-	Movies,
-	Iptv,
+    Photos,
+    Shows,
+    Movies,
+    Iptv,
     #[default]
     Other,
 }
 
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")] 
+#[serde(rename_all = "camelCase")]
 pub struct UserMapping {
     pub from: String,
-    pub to: String
+    pub to: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")] 
+#[serde(rename_all = "camelCase")]
 pub struct ServerLibrarySettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub face_threshold: Option<f32>,
@@ -111,21 +105,16 @@ pub struct ServerLibrarySettings {
     pub map_progress: Option<Vec<UserMapping>>,
 }
 
-
-
-
-
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")] 
+#[serde(rename_all = "camelCase")]
 pub struct LibraryMessage {
     pub action: ElementAction,
-    pub library: ServerLibrary
+    pub library: ServerLibrary,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")] 
+#[serde(rename_all = "camelCase")]
 pub struct LibraryStatusMessage {
     pub message: String,
-    pub library: String
+    pub library: String,
 }

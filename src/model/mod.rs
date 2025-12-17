@@ -58,7 +58,7 @@ use std::{
     io::Read,
     path::PathBuf,
     pin::Pin,
-    sync::Arc,
+    sync::{Arc, RwLock as StdRwLock},
     thread::JoinHandle,
 };
 use strum::IntoEnumIterator;
@@ -120,7 +120,7 @@ impl VideoConvertQueueElement {
 #[derive(Clone)]
 pub struct ModelController {
     store: Arc<SqliteStore>,
-    pub io: Arc<Option<SocketIo>>,
+    pub io: Arc<StdRwLock<Option<SocketIo>>>,
     pub plugin_manager: Arc<PluginManager>,
     pub trakt: Arc<TraktContext>,
     pub tmdb: Arc<TmdbContext>,
@@ -148,7 +148,7 @@ impl ModelController {
 
         let mc = Self {
             store: Arc::new(store),
-            io: Arc::new(None),
+            io: Arc::new(StdRwLock::new(None)),
             plugin_manager: Arc::new(plugin_manager),
             trakt: Arc::new(TraktContext::new(
                 "455f81b3409a8dd140a941e9250ff22b2ed92d68003491c3976363fe752a9024".to_string(),
@@ -526,7 +526,8 @@ impl ModelController {
 
 impl ModelController {
     pub fn set_socket(&mut self, io: SocketIo) {
-        self.io = Arc::new(Some(io));
+        let mut w = self.io.write().unwrap();
+        *w = Some(io);
     }
 
     fn for_connected_users<T: Clone>(
@@ -534,8 +535,11 @@ impl ModelController {
         message: &T,
         action: fn(user: &ConnectedUser, socket: &SocketRef, message: T) -> (),
     ) {
-        let io = self.io.clone();
-        if let Some(ref io) = *io {
+        let io = {
+            let guard = self.io.read().unwrap();
+            guard.clone()
+        };
+        if let Some(ref io) = io {
             if let Ok(sockets) = io.sockets() {
                 for socket in sockets {
                     if let Some(user) = socket.extensions.get::<ConnectedUser>() {
@@ -556,18 +560,10 @@ impl ModelController {
 
     pub fn send_library_status(&self, message: LibraryStatusMessage) {
         self.for_connected_users(&message, |user, socket, message| {
-            // Check if user has Read access to the library
-
-            println!(
-                "send_library_status,	 user: {:?}, message: {:?}",
-                user.user_id(),
-                message
-            );
             if user
                 .check_library_role(&message.library, LibraryRole::Admin)
                 .is_ok()
             {
-                println!("Sent status");
                 let _ = socket.emit("library-status", message);
             }
         });

@@ -60,13 +60,14 @@ impl RsSchedulerTask for FaceRecognitionTask {
                     0
                 }
             };
-
+            println!("Total count: {}", total_count);
             // Send starting message
             if total_count > 0 {
                 let message = format!(
                     "Starting face recognition for library {} (0/{} - 0%)",
                     library.name, total_count
                 );
+                println!("will try to send message: {:?}", message);
                 mc.send_library_status(LibraryStatusMessage {
                     message,
                     library: library.id.clone(),
@@ -132,6 +133,17 @@ impl RsSchedulerTask for FaceRecognitionTask {
                                 format!("Error processing faces for media {}: {:#}", media_id, e),
                             );
                         }
+                    }
+                    if total_count > 0 {
+                        let percent = ((processed_count as u64 * 100) / total_count).min(100);
+                        let message = format!(
+                            "Processing media items... ({}/{}) - {}%",
+                            processed_count, total_count, percent
+                        );
+                        mc.send_library_status(LibraryStatusMessage {
+                            message,
+                            library: library.id.clone(),
+                        });
                     }
                 }
 

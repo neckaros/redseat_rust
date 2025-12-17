@@ -770,28 +770,27 @@ impl ModelController {
                 let duration = media.duration.unwrap_or(0);
 
                 // Determine percentages to scan
-                let percents = if duration < 1000 * 60 * 2 {
+                let percents = if duration < 1000 * 60 {
+                    // < 1 min
+                    vec![20, 50, 80]
+                } else if duration < 1000 * 60 * 2 {
                     // < 2 min
-                    vec![10, 20, 30, 40, 50, 60, 70, 80, 90]
+                    vec![10, 30, 50, 66, 85]
                 } else if duration < 1000 * 60 * 10 {
                     // < 10 min
-                    vec![
-                        5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95,
-                    ]
+                    vec![5, 12, 19, 26, 33, 40, 54, 68, 75, 89, 96]
                 } else {
-                    vec![
-                        2, 5, 7, 10, 12, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80,
-                        85, 90, 92, 95, 97,
-                    ]
+                    vec![2, 8, 20, 26, 38, 44, 50, 56, 68, 74, 86, 92, 98]
                 };
 
                 for percent in percents {
                     // Get thumb as byte buffer
+                    let seconds = (duration as f64 / 1000.0) * (percent as f64 / 100.0);
                     let thumb = self
                         .get_video_thumb(
                             library_id,
                             media_id,
-                            VideoTime::Percent(percent as u32),
+                            VideoTime::Seconds(seconds),
                             image::ImageFormat::Png,
                             Some(70),
                             requesting_user,
