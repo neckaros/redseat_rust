@@ -1,6 +1,6 @@
 use axum::async_trait;
 use serde::{Deserialize, Serialize};
-use crate::{error::RsResult, model::{ModelController, users::ConnectedUser}, tools::log::{log_error, log_info}};
+use crate::{domain::library::LibraryStatusMessage, error::RsResult, model::{ModelController, users::ConnectedUser}, tools::log::{log_error, log_info}};
 
 use super::RsSchedulerTask;
 
@@ -30,6 +30,24 @@ impl RsSchedulerTask for FaceRecognitionTask {
 
         for library in libraries {
             log_info(crate::tools::log::LogServiceType::Scheduler, format!("Processing face recognition for library {:?}", library.name));
+            
+            // Get total count of unprocessed medias before starting
+            let total_count = match mc.count_medias_for_face_processing(&library.id, &connected_user).await {
+                Ok(count) => count,
+                Err(e) => {
+                    log_error(crate::tools::log::LogServiceType::Scheduler, format!("Error getting media count for library {}: {:#}", library.name, e));
+                    0
+                }
+            };
+
+            // Send starting message
+            if total_count > 0 {
+                let message = format!("Starting face recognition for library {} (0/{} - 0%)", library.name, total_count);
+                mc.send_library_status(LibraryStatusMessage {
+                    message,
+                    library: library.id.clone(),
+                });
+            }
             
             // Match all unassigned faces to existing people (new people_face entries may enable matches)
             match mc.match_unassigned_faces_to_people(&library.id, &connected_user).await {
@@ -65,6 +83,16 @@ impl RsSchedulerTask for FaceRecognitionTask {
                     }
                 }
                 
+                // Send progress update after each chunk
+                if total_count > 0 {
+                    let percent = ((processed_count as u64 * 100) / total_count).min(100);
+                    let message = format!("Processing media items... ({}/{}) - {}%", processed_count, total_count, percent);
+                    mc.send_library_status(LibraryStatusMessage {
+                        message,
+                        library: library.id.clone(),
+                    });
+                }
+                
                 // Run clustering periodically (after each chunk)
                 match mc.cluster_unassigned_faces(&library.id, &connected_user).await {
                     Ok(result) => {
@@ -95,10 +123,24 @@ impl RsSchedulerTask for FaceRecognitionTask {
                 }
             }
             
+            // Send completion message
+            if total_count > 0 {
+                let message = format!("Completed face recognition for library {} ({}/{}) - 100%", library.name, processed_count, total_count);
+                mc.send_library_status(LibraryStatusMessage {
+                    message,
+                    library: library.id.clone(),
+                });
+            }
+            
             log_info(crate::tools::log::LogServiceType::Scheduler, format!("Processed {} media items for face recognition in library {}", processed_count, library.name));
         }
         
         log_info(crate::tools::log::LogServiceType::Scheduler, "Face recognition task completed".to_string());
+        
+        // Send final completion message (without library ID since task is complete for all libraries)
+        // Note: This is a general completion message, so we'll send it to all connected users
+        // For simplicity, we'll skip this or send a generic message if needed
+        
         Ok(())
     }
 }

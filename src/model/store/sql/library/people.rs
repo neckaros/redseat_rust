@@ -998,4 +998,13 @@ else 0 end) as score", q, q, q, q, q, q);
         }).await?;
         Ok(res)
     }
+
+    pub async fn count_medias_for_face_processing(&self) -> Result<u64> {
+        let res = self.connection.call(move |conn| {
+            let mut stmt = conn.prepare("SELECT COUNT(*) FROM medias WHERE face_processed = 0")?;
+            let count: u64 = stmt.query_row([], |row| row.get(0))?;
+            Ok(count)
+        }).await?;
+        Ok(res)
+    }
 }

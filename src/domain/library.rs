@@ -122,3 +122,10 @@ pub struct LibraryMessage {
     pub action: ElementAction,
     pub library: ServerLibrary
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")] 
+pub struct LibraryStatusMessage {
+    pub message: String,
+    pub library: String
+}

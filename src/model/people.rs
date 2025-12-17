@@ -916,6 +916,13 @@ impl ModelController {
         Ok(media_ids)
     }
 
+    pub async fn count_medias_for_face_processing(&self, library_id: &str, requesting_user: &ConnectedUser) -> RsResult<u64> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        let store = self.store.get_library_store(library_id)?;
+        let count = store.count_medias_for_face_processing().await?;
+        Ok(count)
+    }
+
     async fn match_face_to_person(&self, library_id: &str, embedding: &[f32], threshold: f32) -> RsResult<Option<(String, f32)>> {
         let store = self.store.get_library_store(library_id)?;
         let all_embeddings = store.get_all_embeddings().await?;

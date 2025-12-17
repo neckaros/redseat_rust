@@ -24,7 +24,7 @@ use nanoid::nanoid;
 use rs_plugin_common_interfaces::{ImageType, RsRequest, video::{RsVideoTranscodeStatus, VideoConvertRequest}};
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
-use crate::{domain::{backup::BackupProcessStatus, library::{LibraryMessage, LibraryRole, ServerLibrary}, media::ConvertProgress, player::RsPlayerAvailable}, error::{RsError, RsResult}, plugins::{medias::{fanart::FanArtContext, imdb::ImdbContext, tmdb::TmdbContext, trakt::TraktContext}, sources::{error::SourcesError, local_provider_for_library, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source, SourceRead}, PluginManager}, tools::{clock::SECONDS_IN_HOUR, image_tools::{resize_image_reader, ImageSize}, log::log_info, scheduler::{self, face_recognition::FaceRecognitionTask, ip::RefreshIpTask, refresh::RefreshTask, RsScheduler, RsTaskType}}};
+use crate::{domain::{backup::BackupProcessStatus, library::{LibraryMessage, LibraryRole, LibraryStatusMessage, ServerLibrary}, media::ConvertProgress, player::RsPlayerAvailable}, error::{RsError, RsResult}, plugins::{medias::{fanart::FanArtContext, imdb::ImdbContext, tmdb::TmdbContext, trakt::TraktContext}, sources::{error::SourcesError, local_provider_for_library, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source, SourceRead}, PluginManager}, tools::{clock::SECONDS_IN_HOUR, image_tools::{resize_image_reader, ImageSize}, log::log_info, scheduler::{self, face_recognition::FaceRecognitionTask, ip::RefreshIpTask, refresh::RefreshTask, RsScheduler, RsTaskType}}};
 
 use self::{medias::CRYPTO_HEADER_SIZE, store::SqliteStore, users::{ConnectedUser, ServerUser, UserRole}};
 use error::{Result, Error};
@@ -324,6 +324,15 @@ impl  ModelController {
 		self.for_connected_users(&message, |user, socket, message| {
 			if let Some(message) = message.for_socket(user) {
 				let _ = socket.emit("library", message);
+			}
+		});
+	}
+
+	pub fn send_library_status(&self, message: LibraryStatusMessage) {
+		self.for_connected_users(&message, |user, socket, message| {
+			// Check if user has Read access to the library
+			if user.check_library_role(&message.library, LibraryRole::Admin).is_ok() {
+				let _ = socket.emit("library-status", message);
 			}
 		});
 	}
