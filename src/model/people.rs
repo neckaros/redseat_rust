@@ -712,7 +712,6 @@ impl ModelController {
         service: Option<Arc<FaceRecognitionService>>,
     ) -> RsResult<Vec<DetectedFaceResult>> {
         use crate::tools::video_tools::VideoTime;
-        print!("Processing media faces for media {}", media_id);
         let service = if let Some(s) = service {
             s
         } else {
@@ -736,7 +735,6 @@ impl ModelController {
             let mut collected_faces = Vec::new();
 
             if media.kind == FileType::Video {
-                print!("Processing media faces for video {}", media_id);
                 // Video Logic
 
                 // 1. Media Image (Thumbnail) - Optional
@@ -751,7 +749,6 @@ impl ModelController {
                         let faces = service
                             .detect_and_extract_faces_async(response.image)
                             .await?;
-                        println!("Faces in thumb: {}", faces.len());
                         for face in faces {
                             let bbox = FaceBBox {
                                 x1: face.bbox.x1,
@@ -791,7 +788,6 @@ impl ModelController {
                 for percent in percents {
                     // Get thumb as byte buffer
                     let seconds = (duration as f64) * (percent as f64 / 100.0);
-                    println!("processing faces at Seconds: {}", seconds);
                     let thumb = self
                         .get_video_thumb(
                             library_id,
@@ -811,7 +807,6 @@ impl ModelController {
                         let faces = service
                             .detect_and_extract_faces_async(response.image)
                             .await?;
-                        println!("Faces in second: {}", faces.len());
                         for face in faces {
                             let bbox = FaceBBox {
                                 x1: face.bbox.x1,
@@ -876,9 +871,7 @@ impl ModelController {
 
             // Deduplicate similar faces (keep only highest confidence from each cluster)
             let threshold = self.get_face_threshold(library_id).await?;
-            println!("Deduplicating faces: {}", collected_faces.len());
             let deduplicated_faces = deduplicate_faces(collected_faces, threshold);
-            println!("Deduplicated faces: {}", deduplicated_faces.len());
 
             // Process deduplicated faces
             let mut results = Vec::new();
@@ -907,6 +900,20 @@ impl ModelController {
                         confidence: collected_face.face.confidence,
                         bbox: collected_face.bbox.clone(),
                     });
+
+                    // Notify person updated
+                    if let Ok(Some(person)) = self
+                        .get_person(library_id, person_id.clone(), requesting_user)
+                        .await
+                    {
+                        self.send_people(PeopleMessage {
+                            library: library_id.to_string(),
+                            people: vec![PersonWithAction {
+                                person: person.clone(),
+                                action: ElementAction::Updated,
+                            }],
+                        });
+                    }
                 } else {
                     // No match -> stage for clustering
                     let face_id = nanoid!();
@@ -927,6 +934,10 @@ impl ModelController {
                     });
                 }
             }
+
+            // Notify media updated
+            self.send_media_update_events(library_id, &[media_id.to_string()], requesting_user)
+                .await;
 
             Ok(results)
         }
@@ -1172,6 +1183,20 @@ impl ModelController {
         // Send media update events
         self.send_media_update_events(library_id, &media_ids, requesting_user)
             .await;
+
+        // Notify person updated
+        if let Ok(Some(person)) = self
+            .get_person(library_id, person_id.to_string(), requesting_user)
+            .await
+        {
+            self.send_people(PeopleMessage {
+                library: library_id.to_string(),
+                people: vec![PersonWithAction {
+                    person: person.clone(),
+                    action: ElementAction::Updated,
+                }],
+            });
+        }
 
         Ok(())
     }
