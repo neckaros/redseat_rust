@@ -156,6 +156,7 @@ pub struct DetectedFaceResult {
 #[derive(Clone)]
 struct CollectedFace {
     face: DetectedFace,
+    video_s: Option<f32>,
     video_percent: Option<u32>,
     bbox: FaceBBox,
 }
@@ -711,7 +712,7 @@ impl ModelController {
         service: Option<Arc<FaceRecognitionService>>,
     ) -> RsResult<Vec<DetectedFaceResult>> {
         use crate::tools::video_tools::VideoTime;
-
+        print!("Processing media faces for media {}", media_id);
         let service = if let Some(s) = service {
             s
         } else {
@@ -735,6 +736,7 @@ impl ModelController {
             let mut collected_faces = Vec::new();
 
             if media.kind == FileType::Video {
+                print!("Processing media faces for video {}", media_id);
                 // Video Logic
 
                 // 1. Media Image (Thumbnail) - Optional
@@ -749,16 +751,19 @@ impl ModelController {
                         let faces = service
                             .detect_and_extract_faces_async(response.image)
                             .await?;
+                        println!("Faces in thumb: {}", faces.len());
                         for face in faces {
                             let bbox = FaceBBox {
                                 x1: face.bbox.x1,
                                 y1: face.bbox.y1,
                                 x2: face.bbox.x2,
                                 y2: face.bbox.y2,
+                                video_s: None,
                                 video_percent: None,
                             };
                             collected_faces.push(CollectedFace {
                                 face,
+                                video_s: None,
                                 video_percent: None,
                                 bbox,
                             });
@@ -785,7 +790,8 @@ impl ModelController {
 
                 for percent in percents {
                     // Get thumb as byte buffer
-                    let seconds = (duration as f64 / 1000.0) * (percent as f64 / 100.0);
+                    let seconds = (duration as f64) * (percent as f64 / 100.0);
+                    println!("processing faces at Seconds: {}", seconds);
                     let thumb = self
                         .get_video_thumb(
                             library_id,
@@ -805,17 +811,20 @@ impl ModelController {
                         let faces = service
                             .detect_and_extract_faces_async(response.image)
                             .await?;
+                        println!("Faces in second: {}", faces.len());
                         for face in faces {
                             let bbox = FaceBBox {
                                 x1: face.bbox.x1,
                                 y1: face.bbox.y1,
                                 x2: face.bbox.x2,
                                 y2: face.bbox.y2,
-                                video_percent: Some(percent as u32),
+                                video_s: Some(seconds as f32),
+                                video_percent: None,
                             };
                             collected_faces.push(CollectedFace {
                                 face,
-                                video_percent: Some(percent as u32),
+                                video_s: Some(seconds as f32),
+                                video_percent: None,
                                 bbox,
                             });
                         }
@@ -853,10 +862,12 @@ impl ModelController {
                         y1: face.bbox.y1,
                         x2: face.bbox.x2,
                         y2: face.bbox.y2,
+                        video_s: None,
                         video_percent: None,
                     };
                     collected_faces.push(CollectedFace {
                         face,
+                        video_s: None,
                         video_percent: None,
                         bbox,
                     });
@@ -865,7 +876,9 @@ impl ModelController {
 
             // Deduplicate similar faces (keep only highest confidence from each cluster)
             let threshold = self.get_face_threshold(library_id).await?;
+            println!("Deduplicating faces: {}", collected_faces.len());
             let deduplicated_faces = deduplicate_faces(collected_faces, threshold);
+            println!("Deduplicated faces: {}", deduplicated_faces.len());
 
             // Process deduplicated faces
             let mut results = Vec::new();
@@ -1345,14 +1358,22 @@ impl ModelController {
                 crate::tools::image_tools::reader_to_image(&mut reader.stream).await?
             }
             FileType::Video => {
-                // Load video frame at the percent where face was detected, or use media_image if no percent
-                match bbox.video_percent {
-                    Some(percent) => {
+                // Load video frame at the seconds/percentage where face was detected, or use media_image if no time
+                let video_time = if let Some(s) = bbox.video_s {
+                    Some(VideoTime::Seconds(s as f64))
+                } else if let Some(percent) = bbox.video_percent {
+                    Some(VideoTime::Percent(percent))
+                } else {
+                    None
+                };
+
+                match video_time {
+                    Some(time) => {
                         let thumb_buffer = self
                             .get_video_thumb(
                                 library_id,
                                 &media_ref,
-                                VideoTime::Percent(percent),
+                                time,
                                 image::ImageFormat::Png,
                                 Some(70),
                                 requesting_user,
@@ -1362,7 +1383,7 @@ impl ModelController {
                         crate::tools::image_tools::reader_to_image(&mut cursor).await?
                     }
                     None => {
-                        // Use media_image when no video_percent is specified
+                        // Use media_image when no video time is specified
                         let mut reader_response = self
                             .media_image(library_id, &media_ref, None, requesting_user)
                             .await?;
