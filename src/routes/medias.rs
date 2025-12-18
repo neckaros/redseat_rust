@@ -237,6 +237,10 @@ async fn handler_get(
     if let Some(ref mut media) = library {
         let faces = mc.get_media_faces(&library_id, &media_id, &user).await?;
         media.faces = Some(faces);
+        let backups = mc
+            .get_library_media_backup_files(&library_id, &media_id, &user)
+            .await?;
+        media.backups = Some(backups);
     }
     let body = Json(json!(library));
     Ok(body)

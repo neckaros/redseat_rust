@@ -151,8 +151,8 @@ impl RsSchedulerTask for FaceRecognitionTask {
                 if total_count > 0 {
                     let percent = ((processed_count as u64 * 100) / total_count).min(100);
                     let message = format!(
-                        "Processing media items... ({}/{}) - {}%",
-                        processed_count, total_count, percent
+                        "Clustering {} new files... ({}/{}) - {}%",
+                        CHUNK_SIZE, processed_count, total_count, percent
                     );
                     mc.send_library_status(LibraryStatusMessage {
                         message,

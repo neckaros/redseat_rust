@@ -224,6 +224,7 @@ impl SqliteLibraryStore {
             people: from_comma_separated_optional(row.get(43)?),
             series: from_comma_separated_optional(row.get(44)?),
             faces: None,
+            backups: None,
 
             
             f_number: row.get(45)?,

@@ -506,7 +506,7 @@ impl ModelController {
         if !query.unsupported_mime.is_empty() && !query.raw {
             if existing.kind == FileType::Photo && !IMAGES_MIME_FULL_BROWSER_SUPPORT.contains(&existing.mime.as_str()) && (query.unsupported_mime.contains(&existing.mime) || query.unsupported_mime.contains(&"all".to_owned())) {
                 let mut data = reader_response.into_reader(Some(library_id), range, None, Some((self.clone(), &requesting_user)), None).await?; 
-                let resized = convert_image_reader(data.stream, image::ImageFormat::Avif, Some(80), true).await?;
+                let resized = convert_image_reader(data.stream, image::ImageFormat::WebP, Some(80), true).await?;
                 let len = resized.len();
                 let resized = Cursor::new(resized);
                 Ok(SourceRead::Stream(FileStreamResult {
@@ -514,8 +514,8 @@ impl ModelController {
                     size: Some(len as u64),
                     accept_range: false,
                     range: None,
-                    mime: Some("image/avif".to_owned()),
-                    name: Some("converted.avif".to_owned()),
+                    mime: Some("image/webp".to_owned()),
+                    name: Some("converted.webp".to_owned()),
                     cleanup: None,
                 }))
             } else {

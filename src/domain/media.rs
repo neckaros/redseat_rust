@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use strum_macros::EnumString;
 
-use crate::plugins::sources::SourceRead;
+use crate::{domain::backup::BackupFile, plugins::sources::SourceRead};
 
 use super::{people::FaceEmbedding, progress::RsProgress, ElementAction};
 
@@ -211,6 +211,8 @@ pub struct Media {
     pub people: Option<Vec<MediaItemReference>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub faces: Option<Vec<FaceEmbedding>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backups: Option<Vec<BackupFile>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thumb: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
