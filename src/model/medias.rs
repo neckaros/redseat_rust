@@ -85,7 +85,7 @@ pub struct MediaQuery {
     pub vcodec: Option<String>,
     
     
-    pub page_key: Option<i64>,
+    pub page_key: Option<String>,
 
     /// For legacy if user put serialized query in filter field
     pub filter: Option<String>,

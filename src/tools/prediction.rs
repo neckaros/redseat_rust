@@ -187,10 +187,7 @@ pub fn predict_net_sync(
 
     let (shape, data) = outputs[output_name].try_extract_tensor::<f32>()?;
     let shape_vec: Vec<usize> = (0..shape.len()).map(|i| shape[i] as usize).collect();
-    let output = Array4::from_shape_vec(
-        (shape_vec[0], shape_vec[1], shape_vec[2], shape_vec[3]),
-        data.to_vec(),
-    )?;
+    let output = ndarray::ArrayD::from_shape_vec(shape_vec, data.to_vec())?;
     let a = output
         .axis_iter(Axis(0))
         .next()
@@ -247,10 +244,7 @@ pub fn predict_wd(path: PathBuf, buffer_image: Vec<u8>) -> Result<Vec<Prediction
 
     let (shape, data) = outputs["predictions_sigmoid"].try_extract_tensor::<f32>()?;
     let shape_vec: Vec<usize> = (0..shape.len()).map(|i| shape[i] as usize).collect();
-    let output = Array4::from_shape_vec(
-        (shape_vec[0], shape_vec[1], shape_vec[2], shape_vec[3]),
-        data.to_vec(),
-    )?;
+    let output = ndarray::ArrayD::from_shape_vec(shape_vec, data.to_vec())?;
     let a = output
         .axis_iter(Axis(0))
         .next()

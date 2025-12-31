@@ -251,10 +251,12 @@ impl SqliteLibraryStore {
         }
         let sort = query.sort.to_media_query();
         if let Some(page_key) = query.page_key {
-            if query.order == SqlOrder::DESC {
-                query.before = Some(page_key);
-            } else {
-                query.after = Some(page_key);
+            if let Ok(page_key) = page_key.parse::<i64>() {
+                if query.order == SqlOrder::DESC {
+                    query.before = Some(page_key);
+                } else {
+                    query.after = Some(page_key);
+                }
             }
         }
 

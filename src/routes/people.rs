@@ -26,13 +26,13 @@ pub fn routes(mc: ModelController) -> Router {
     Router::new()
         .route("/", get(handler_list))
         .route("/", post(handler_post))
-        .route("/detect-faces", post(handler_detect_faces_in_media))
-        .route("/cluster-faces", post(handler_cluster_unassigned_faces))
-        .route("/unassigned-faces", get(handler_get_unassigned_faces))
+        .route("/faces/detect", post(handler_detect_faces_in_media))
+        .route("/faces/cluster", post(handler_cluster_unassigned_faces))
+        .route("/faces/unassigned", get(handler_get_unassigned_faces))
         .route("/batch-detect", post(handler_batch_detect_faces))
         .route("/merge", post(handler_merge_people))
-        .route("/assign-face", post(handler_assign_face_to_person))
-        .route("/unassign-face", post(handler_unassign_face_from_person))
+        .route("/faces/assign", post(handler_assign_face_to_person))
+        .route("/faces/unassign", post(handler_unassign_face_from_person))
         .route(
             "/tasks/face-recognition",
             post(handler_start_face_recognition_task),
