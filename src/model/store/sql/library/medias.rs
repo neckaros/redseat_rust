@@ -250,12 +250,37 @@ impl SqliteLibraryStore {
             where_query.add_where(SqlWhereType::Or(vec![SqlWhereType::Like("name".to_owned(), Box::new(text.clone())), SqlWhereType::Like("description".to_owned(), Box::new(text.clone()))]));
         }
         let sort = query.sort.to_media_query();
-        if let Some(page_key) = query.page_key {
-            if let Ok(page_key) = page_key.parse::<i64>() {
-                if query.order == SqlOrder::DESC {
-                    query.before = Some(page_key);
-                } else {
-                    query.after = Some(page_key);
+
+
+          if let Some(page_key_str) = query.page_key {
+        // Try to split the key into [primary_cursor, id_cursor]
+            if let Some((primary, secondary)) = page_key_str.split_once('|') {
+                // 1. Process Primary Cursor (Standard behavior)
+                if let Ok(val) = primary.parse::<i64>() {
+                    if query.order == SqlOrder::DESC {
+                        query.before = Some(val);
+                    } else {
+                        query.after = Some(val);
+                    }
+                }
+
+                // 2. Process Secondary Cursor (ID filter)
+                if let Ok(id_val) = secondary.parse::<i64>() {
+                    if query.order == SqlOrder::DESC {
+                        where_query.add_where(SqlWhereType::Before("id".to_owned(), Box::new(id_val)));
+                    } else {
+                        where_query.add_where(SqlWhereType::After("id".to_owned(), Box::new(id_val)));
+                    }
+                    // Mark that we need the secondary sort
+                }
+            } else {
+                // Fallback: No separator, use original logic (single integer)
+                if let Ok(val) = page_key_str.parse::<i64>() {
+                    if query.order == SqlOrder::DESC {
+                        query.before = Some(val);
+                    } else {
+                        query.after = Some(val);
+                    }
                 }
             }
         }
@@ -384,10 +409,14 @@ impl SqliteLibraryStore {
         }
 
         
-        where_query.add_oder(OrderBuilder::new(sort.to_owned(), query.order));
+        where_query.add_oder(OrderBuilder::new(sort.to_owned(), query.order.clone()));
         if sort == "rating" {
             where_query.add_oder(OrderBuilder::new("m.added".to_owned(), SqlOrder::DESC));  
         }
+        
+        where_query.add_oder(OrderBuilder::new("id".to_owned(), query.order));
+        
+    
 
 
         let tag_filter = query.tags_confidence.map(|conf| format!(" and (IFNULL(confidence, 100) >= {conf})"));
