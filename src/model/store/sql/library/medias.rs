@@ -251,28 +251,33 @@ impl SqliteLibraryStore {
         }
         let sort = query.sort.to_media_query();
 
+        let mut pagination_handled = false;
 
-          if let Some(page_key_str) = query.page_key {
+        if let Some(page_key_str) = query.page_key {
+            //println!("page key {}", page_key_str);
         // Try to split the key into [primary_cursor, id_cursor]
             if let Some((primary, secondary)) = page_key_str.split_once('|') {
                 // 1. Process Primary Cursor (Standard behavior)
-                if let Ok(val) = primary.parse::<i64>() {
-                    if query.order == SqlOrder::DESC {
-                        query.before = Some(val);
-                    } else {
-                        query.after = Some(val);
-                    }
+                if let Ok(primary_val) = primary.parse::<i64>() {
+                    // Determine operator based on sort order
+                    let op = if query.order == SqlOrder::DESC { "<" } else { ">" };
+                    
+                    // Construct Tuple Comparison: (sort < val) OR (sort = val AND id < sec_val)
+                    // We inject `primary_val` directly (safe as it is an integer)
+                    // We bind `secondary` via the parameter (?)
+                    let sql = format!(
+                        "({col} {op} {val} OR ({col} = {val} AND m.id {op} ?))", 
+                        col = sort, 
+                        op = op, 
+                        val = primary_val
+                    );
+                    
+                    where_query.add_where(SqlWhereType::Custom(sql, Box::new(secondary.to_string())));
+                    
+                    pagination_handled = true;
                 }
-
-                // 2. Process Secondary Cursor (ID filter)
-                if let Ok(id_val) = secondary.parse::<i64>() {
-                    if query.order == SqlOrder::DESC {
-                        where_query.add_where(SqlWhereType::Before("id".to_owned(), Box::new(id_val)));
-                    } else {
-                        where_query.add_where(SqlWhereType::After("id".to_owned(), Box::new(id_val)));
-                    }
                     // Mark that we need the secondary sort
-                }
+                
             } else {
                 // Fallback: No separator, use original logic (single integer)
                 if let Ok(val) = page_key_str.parse::<i64>() {
@@ -289,13 +294,13 @@ impl SqliteLibraryStore {
             if query.sort == RsSort::Added || query.sort == RsSort::Modified || query.sort == RsSort::Created {
                 where_query.add_where(SqlWhereType::After(sort.clone(), Box::new(q)));
             } else {
-                where_query.add_where(SqlWhereType::After("modified".to_owned(), Box::new(q)));
+                where_query.add_where(SqlWhereType::After("m.modified".to_owned(), Box::new(q)));
             }
         } else if let Some(q) = query.before {
             if query.sort == RsSort::Added || query.sort == RsSort::Modified || query.sort == RsSort::Created {
                 where_query.add_where(SqlWhereType::Before(sort.clone(), Box::new(q)));
             } else {
-                where_query.add_where(SqlWhereType::Before("modified".to_owned(), Box::new(q)));
+                where_query.add_where(SqlWhereType::Before("m.modified".to_owned(), Box::new(q)));
             }
         }
 
@@ -311,27 +316,27 @@ impl SqliteLibraryStore {
             } else {
                 added
             };
-            where_query.add_where(SqlWhereType::Before("added".to_owned(), Box::new(added)));
+            where_query.add_where(SqlWhereType::Before("m.added".to_owned(), Box::new(added)));
         } else if let Some(limit) = limit {
-            where_query.add_where(SqlWhereType::Before("added".to_owned(), Box::new(limit)));
+            where_query.add_where(SqlWhereType::Before("m.added".to_owned(), Box::new(limit)));
         }
         if let Some(added) = query.added_after {
-            where_query.add_where(SqlWhereType::After("added".to_owned(), Box::new(added)));
+            where_query.add_where(SqlWhereType::After("m.added".to_owned(), Box::new(added)));
         }
 
         
         if let Some(added) = query.created_before {
-            where_query.add_where(SqlWhereType::Before("created".to_owned(), Box::new(added)));
+            where_query.add_where(SqlWhereType::Before("m.created".to_owned(), Box::new(added)));
         }
         if let Some(added) = query.created_after {
-            where_query.add_where(SqlWhereType::After("created".to_owned(), Box::new(added)));
+            where_query.add_where(SqlWhereType::After("m.created".to_owned(), Box::new(added)));
         }
 
         if let Some(added) = query.modified_before {
-            where_query.add_where(SqlWhereType::Before("modified".to_owned(), Box::new(added)));
+            where_query.add_where(SqlWhereType::Before("m.modified".to_owned(), Box::new(added)));
         }
         if let Some(added) = query.modified_after {
-            where_query.add_where(SqlWhereType::After("modified".to_owned(), Box::new(added)));
+            where_query.add_where(SqlWhereType::After("m.modified".to_owned(), Box::new(added)));
         }
 
         
@@ -413,8 +418,8 @@ impl SqliteLibraryStore {
         if sort == "rating" {
             where_query.add_oder(OrderBuilder::new("m.added".to_owned(), SqlOrder::DESC));  
         }
-        
-        where_query.add_oder(OrderBuilder::new("id".to_owned(), query.order));
+
+        where_query.add_oder(OrderBuilder::new("m.id".to_owned(), query.order));
         
     
 
@@ -447,7 +452,6 @@ impl SqliteLibraryStore {
              where_query.format_order(), limit))?;
 
             //println!("query {:?}", query.expanded_sql());
-
 
             let rows = query.query_map(
             where_query.values(), Self::row_to_media,

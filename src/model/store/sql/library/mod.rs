@@ -171,7 +171,9 @@ impl SqliteLibraryStore {
                 }
 
                 conn.execute("VACUUM;", params![])?;
-
+                conn.execute("DELETE FROM media_people_mapping where people_ref not in (select id from people) or media_ref not in (select id from medias);", []);
+                conn.execute("DELETE FROM media_tag_mapping where tag_ref not in (select id from tags) or media_ref not in (select id from medias);", []);
+                conn.execute("DELETE FROM media_serie_mapping where serie_ref not in (select id from series) or media_ref not in (select id from medias);", []);
                 Ok((initial_version, version))
             })
             .await?;

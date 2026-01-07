@@ -62,6 +62,8 @@ flowchart TD
     CreatePerson --> Assigned
 ```
 
+
+
 ## Database Schema Changes
 
 ### Migration SQL File
@@ -122,9 +124,7 @@ ALTER TABLE medias ADD COLUMN face_processed INTEGER DEFAULT 0;
 
 ### 1. Recognition Module with 3DDFA-V2
 
-**File**: [`src/tools/recognition.rs`](src/tools/recognition.rs)
-
-**Three ONNX sessions required:**
+**File**: [`src/tools/recognition.rs`](src/tools/recognition.rs)**Three ONNX sessions required:**
 
 ```rust
 pub struct FaceRecognitionService {
@@ -321,6 +321,8 @@ fn l2_normalize(v: &[f32]) -> Vec<f32> {
 }
 ```
 
+
+
 ### 2. Database Operations
 
 **File**: [`src/model/store/sql/library/people.rs`](src/model/store/sql/library/people.rs)
@@ -397,6 +399,8 @@ pub async fn get_all_embeddings(&self) -> Result<Vec<(String, Vec<f32>)>>;
 pub async fn assign_cluster_to_faces(&self, face_ids: Vec<String>, cluster_id: String) -> Result<()>;
 pub async fn promote_cluster_to_person(&self, cluster_id: String, person_id: String) -> Result<()>;
 ```
+
+
 
 ### 3. Matching and Clustering Logic
 
@@ -499,6 +503,8 @@ fn chinese_whispers_clustering(faces: &[UnassignedFace], threshold: f32) -> Hash
 }
 ```
 
+
+
 ### 4. API Routes
 
 **File**: [`src/routes/people.rs`](src/routes/people.rs)
@@ -518,6 +524,8 @@ pub fn routes(mc: ModelController) -> Router {
 }
 ```
 
+
+
 ### 5. Configuration
 
 ```rust
@@ -531,6 +539,8 @@ pub struct FaceRecognitionConfig {
     pub models_path: String,            // Path to ONNX models
 }
 ```
+
+
 
 ### 6. Concurrency Control
 
@@ -548,6 +558,8 @@ let results = stream::iter(media_ids)
     .await;
 ```
 
+
+
 ## Model Files Required
 
 **Location**: Project root or `models/` directory
@@ -555,14 +567,14 @@ let results = stream::iter(media_ids)
 1. **retinaface.onnx** (existing) - Face detection
 2. **3ddfa_v2.onnx** (~100MB) - 3D face alignment
 
-   - Download from [3DDFA_V2 GitHub](https://github.com/cleardusk/3DDFA_V2)
-   - Export ONNX or use pre-converted model
-   - Input: 1×3×120×120, Output: 3DMM parameters
+- Download from [3DDFA_V2 GitHub](https://github.com/cleardusk/3DDFA_V2)
+- Export ONNX or use pre-converted model
+- Input: 1×3×120×120, Output: 3DMM parameters
 
 3. **arcface_r100.onnx** (~250MB) - Face recognition
 
-   - Download from InsightFace or ONNX Model Zoo
-   - Input: 1×3×112×112, Output: 1×512
+- Download from InsightFace or ONNX Model Zoo
+- Input: 1×3×112×112, Output: 1×512
 
 ## Critical Implementation Checklist
 
@@ -583,6 +595,8 @@ bytemuck = { version = "1.14", features = ["derive"] }
 # ... existing deps ...
 ```
 
+
+
 ## Files to Modify
 
 1. [`src/tools/recognition.rs`](src/tools/recognition.rs) - Three-stage pipeline
@@ -598,5 +612,3 @@ bytemuck = { version = "1.14", features = ["derive"] }
 - ✅ Correct normalization (verify embeddings stable)
 - ✅ No async executor blocking
 - ✅ Clean people table (only clusters with 3+ faces)
-- ✅ >90% accuracy for same person
-- ✅ <5% false positive rate
