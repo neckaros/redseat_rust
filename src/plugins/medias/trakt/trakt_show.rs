@@ -1,8 +1,8 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rs_plugin_common_interfaces::domain::rs_ids::RsIds;
-use serde::{Serialize, Deserialize};
 use chrono::{DateTime, Utc};
+use rs_plugin_common_interfaces::domain::rs_ids::RsIds;
+use serde::{Deserialize, Serialize};
 use strum_macros::{Display, EnumString};
 
 use crate::domain::serie::{Serie, SerieStatus};
@@ -23,8 +23,10 @@ pub enum TraktShowStatus {
     Released,
     Canceled,
     Pilot,
-    #[strum(default)] Other(String),
-    #[default] Unknown,
+    #[strum(default)]
+    Other(String),
+    #[default]
+    Unknown,
 }
 
 impl From<TraktShowStatus> for SerieStatus {
@@ -78,14 +80,21 @@ pub struct TraktIds {
 
 impl From<RsIds> for TraktIds {
     fn from(value: RsIds) -> Self {
-        TraktIds { trakt: value.trakt, slug: value.slug, tvdb: value.tvdb, imdb: value.imdb, tmdb: value.tmdb, tvrage: value.tvrage }
+        TraktIds {
+            trakt: value.trakt,
+            slug: value.slug,
+            tvdb: value.tvdb,
+            imdb: value.imdb,
+            tmdb: value.tmdb,
+            tvrage: value.tvrage,
+        }
     }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TraktTrendingShowResult {
     pub watchers: u64,
-    pub show: TraktFullShow
+    pub show: TraktFullShow,
 }
 
 /// A [show] with full [extended info]
@@ -99,7 +108,7 @@ pub struct TraktFullShow {
     pub ids: TraktIds,
     pub overview: Option<String>,
     pub first_aired: Option<DateTime<Utc>>,
-    pub airs: Airing,
+    pub airs: Option<Airing>,
     pub runtime: Option<u32>,
     pub certification: Option<String>,
     pub network: Option<String>,
@@ -107,19 +116,22 @@ pub struct TraktFullShow {
     pub trailer: Option<String>,
     pub homepage: Option<String>,
     pub status: Option<TraktShowStatus>,
-    pub rating: f64,
-    pub votes: u32,
-    pub comment_count: u32,
+    pub rating: Option<f64>,
+    pub votes: Option<u32>,
+    pub comment_count: Option<u32>,
     pub updated_at: Option<DateTime<Utc>>,
     pub language: Option<String>,
-    pub available_translations: Vec<String>,
-    pub genres: Vec<String>,
-    pub aired_episodes: u32,
+    pub available_translations: Option<Vec<String>>,
+    pub genres: Option<Vec<String>>,
+    pub aired_episodes: Option<u32>,
 }
 
 impl From<TraktFullShow> for Serie {
     fn from(value: TraktFullShow) -> Self {
-        let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+        let t = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
         Serie {
             id: format!("trakt:{}", value.ids.trakt.unwrap()),
             name: value.title,
@@ -135,14 +147,14 @@ impl From<TraktFullShow> for Serie {
             otherids: None,
             imdb_rating: None,
             imdb_votes: None,
-            trakt_votes: Some(value.votes as u64),
-            trakt_rating: Some(value.rating as f32),
+            trakt_votes: value.votes.map(|v| v as u64),
+            trakt_rating: value.rating.map(|r| r as f32),
             trailer: value.trailer,
             year: value.year,
             max_created: None,
             modified: t,
             added: t,
-            
+
             ..Default::default()
         }
     }
@@ -151,6 +163,5 @@ impl From<TraktFullShow> for Serie {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TraktShowSearchElement {
     pub score: f64,
-    pub show: TraktFullShow
+    pub show: TraktFullShow,
 }
-

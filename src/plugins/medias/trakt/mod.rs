@@ -1,7 +1,8 @@
 use chrono::{DateTime, FixedOffset};
 use http::{header::USER_AGENT, HeaderMap, HeaderValue};
-use reqwest::{Client, Url};
+use reqwest::{Client, Response, Url};
 use rs_plugin_common_interfaces::{domain::rs_ids::{RsIds, RsIdsError}, lookup::RsLookupMovie};
+use serde::de::DeserializeOwned;
 use tower::Service;
 use trakt_people::{TraktActorsResult, TraktPeopleSearchElement, TraktPerson};
 use crate::{domain::{episode::Episode, movie::Movie, people::Person, serie::Serie}, plugins::medias::trakt::{trakt_episode::TraktSeasonWithEpisodes, trakt_show::TraktFullShow}, tools::clock::{Clock, RsNaiveDate}, Error, Result};
@@ -9,6 +10,20 @@ use crate::{domain::{episode::Episode, movie::Movie, people::Person, serie::Seri
 use self::{trakt_episode::TraktFullEpisode, trakt_movie::{TraktFullMovie, TraktMovieSearchElement, TraktRelease, TraktReleaseType, TraktReleases, TraktTrendingMoviesResult}, trakt_show::{TraktShowSearchElement, TraktTrendingShowResult}};
 // Context required for all requests
 use unidecode::unidecode;
+
+/// Deserialize JSON response with detailed error path information
+async fn json_with_path<T: DeserializeOwned>(response: Response, context: &str) -> crate::Result<T> {
+    let url = response.url().to_string();
+    let bytes = response.bytes().await?;
+    let jd = &mut serde_json::Deserializer::from_slice(&bytes);
+    serde_path_to_error::deserialize(jd).map_err(|e| {
+        let path = e.path().to_string();
+        Error::Error(format!(
+            "JSON parse error in {} at field '{}': {} (url: {})",
+            context, path, e.inner(), url
+        ))
+    })
+}
 
 mod trakt_show;
 mod trakt_episode;
@@ -70,7 +85,7 @@ impl TraktContext {
 
         let url = self.base_url.join(&format!("shows/{}?extended=full", id)).unwrap();
         let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
-        let show = r.json::<TraktFullShow>().await?;
+        let show: TraktFullShow = json_with_path(r, &format!("get_serie({})", id)).await?;
         
         let show_nous: Serie = show.into();
         Ok(show_nous)
@@ -100,7 +115,8 @@ impl TraktContext {
         let url = self.base_url.join(&format!("shows/{}/seasons?extended=full,episodes", serie_id)).unwrap();
         let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
         let best_serie_id = id.clone().into_best().unwrap_or(serie_id.to_owned());
-        let episodes = r.json::<Vec<TraktSeasonWithEpisodes>>().await?.into_iter().flat_map(|s| s.episodes).map(|e| e.into_trakt(best_serie_id.clone())).collect::<Vec<_>>();
+        let seasons: Vec<TraktSeasonWithEpisodes> = json_with_path(r, &format!("all_episodes({})", serie_id)).await?;
+        let episodes = seasons.into_iter().flat_map(|s| s.episodes).map(|e| e.into_trakt(best_serie_id.clone())).collect::<Vec<_>>();
         Ok(episodes)
     }
 
@@ -115,8 +131,8 @@ impl TraktContext {
         }?;
         let url = self.base_url.join(&format!("shows/{}/seasons/{}/episodes/{}?extended=full", id, season, episode)).unwrap();
         let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
-        let episodes = r.json::<TraktFullEpisode>().await?;
-        Ok(episodes.into_trakt(format!("trakt:")))
+        let ep: TraktFullEpisode = json_with_path(r, &format!("episode({} S{}E{})", id, season, episode)).await?;
+        Ok(ep.into_trakt(format!("trakt:")))
     }
 }
 
