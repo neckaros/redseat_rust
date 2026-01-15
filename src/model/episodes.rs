@@ -228,7 +228,7 @@ impl ModelController {
         let existing = store.get_episode(serie_id, season, number).await?;
         if let Some(existing) = existing { 
             store.remove_episode(serie_id.to_string(), season, number).await?;
-            self.add_deleted(library_id, RsDeleted::episode(serie_id.to_owned()), requesting_user).await?;
+            self.add_deleted(library_id, RsDeleted::episode(existing.id()), requesting_user).await?;
             self.send_episode(EpisodesMessage { library: library_id.to_string(), episodes: vec![EpisodeWithAction {action: ElementAction::Deleted, episode: existing.clone()}] });
             Ok(existing)
         } else {

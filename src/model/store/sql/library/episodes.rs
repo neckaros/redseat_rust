@@ -57,7 +57,9 @@ impl SqliteLibraryStore {
         let row = self.connection.call( move |conn| { 
             let mut where_query = QueryBuilder::new();
             if let Some(q) = &query.after {
-                where_query.add_where(QueryWhereType::After("u.modified", q));
+                if q > &0 {
+                    where_query.add_where(QueryWhereType::After("u.modified", q));
+                }
             }
             
             if let Some(q) = &query.aired_after {
