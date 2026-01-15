@@ -73,8 +73,10 @@ use socketioxide::{extract::SocketRef, SocketIo};
 use tokio::{
     fs::{self, remove_file, File},
     io::{copy, AsyncRead, BufReader},
-    sync::RwLock,
+    sync::{broadcast, RwLock},
 };
+
+use crate::routes::sse::SseEvent;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct VideoConvertQueueElement {
@@ -137,6 +139,9 @@ pub struct ModelController {
     pub backup_processes: Arc<RwLock<Vec<BackupProcessStatus>>>,
 
     pub chache_libraries: Arc<RwLock<HashMap<String, ServerLibrary>>>,
+
+    /// Broadcast channel for SSE events
+    pub sse_tx: broadcast::Sender<SseEvent>,
 }
 
 // Constructor
@@ -145,6 +150,7 @@ impl ModelController {
         let tmdb = TmdbContext::new("4a01db3a73eed5cf17e9c7c27fd9d008".to_string()).await?;
         let fanart = FanArtContext::new("a6eb2f1acb7b54550e498a9b37a574fa".to_string());
         let scheduler = RsScheduler::new();
+        let (sse_tx, _) = broadcast::channel::<SseEvent>(1024);
 
         let mc = Self {
             store: Arc::new(store),
@@ -164,6 +170,7 @@ impl ModelController {
             convert_current_process: Arc::new(RwLock::new(None)),
 
             backup_processes: Arc::new(RwLock::new(vec![])),
+            sse_tx,
         };
 
         let pm_forload = mc.plugin_manager.clone();
@@ -550,7 +557,13 @@ impl ModelController {
         }
     }
 
+    /// Broadcasts an event to all SSE subscribers
+    pub fn broadcast_sse(&self, event: SseEvent) {
+        let _ = self.sse_tx.send(event);
+    }
+
     pub fn send_library(&self, message: LibraryMessage) {
+        self.broadcast_sse(SseEvent::Library(message.clone()));
         self.for_connected_users(&message, |user, socket, message| {
             if let Some(message) = message.for_socket(user) {
                 let _ = socket.emit("library", message);
@@ -559,6 +572,7 @@ impl ModelController {
     }
 
     pub fn send_library_status(&self, message: LibraryStatusMessage) {
+        self.broadcast_sse(SseEvent::LibraryStatus(message.clone()));
         self.for_connected_users(&message, |user, socket, message| {
             if user
                 .check_library_role(&message.library, LibraryRole::Admin)

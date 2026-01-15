@@ -19,6 +19,7 @@ use tokio_util::io::{ReaderStream, StreamReader};
 use crate::{domain::{backup::{self, Backup, BackupError, BackupFile, BackupFileProgress, BackupMessage, BackupProcessStatus, BackupStatus, BackupWithStatus}, library::{LibraryRole, ServerLibrary}, media::{self, Media, MediaForUpdate, DEFAULT_MIME}, progress::{RsProgress, RsProgressType}}, error::{RsError, RsResult}, model::libraries::ServerLibraryForAdd, plugins::sources::{async_reader_progress::ProgressReader, error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}, routes::mw_range::RangeDefinition, tools::{clock::now, encryption::{ceil_to_multiple_of_16, derive_key, estimated_encrypted_size, random_iv, AesTokioDecryptStream, AesTokioEncryptStream}, log::{log_error, log_info}}};
 
 use super::{error::{Error, Result}, medias::{MediaFileQuery, MediaQuery, MediaSource}, store::sql::backups::BackupInfos, users::{ConnectedUser, UserRole}, ModelController};
+use crate::routes::sse::SseEvent;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BackupForAdd {
@@ -54,6 +55,7 @@ pub struct BackupForUpdate {
 impl ModelController {
 
     pub fn send_backup_status(&self, message: BackupMessage) {
+		self.broadcast_sse(SseEvent::Backups(message.clone()));
 		self.for_connected_users(&message, |user, socket, message| {
             if let Some(library) = &message.backup.backup.library {
                 let r = user.check_library_role(library, LibraryRole::Admin);
@@ -69,6 +71,7 @@ impl ModelController {
 		});
 	}
     pub fn send_backup_file_status(&self, message: BackupFileProgress) {
+		self.broadcast_sse(SseEvent::BackupsFiles(message.clone()));
 		self.for_connected_users(&message, |user, socket, message| {
             let r = user.check_role(&UserRole::Admin);
 			if r.is_ok() {

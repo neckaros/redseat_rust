@@ -48,6 +48,7 @@ use super::{
     users::ConnectedUser,
     ModelController,
 };
+use crate::routes::sse::SseEvent;
 
 // Default face recognition threshold when library doesn't specify one
 pub const DEFAULT_FACE_THRESHOLD: f32 = 0.4;
@@ -273,6 +274,7 @@ impl ModelController {
     }
 
     pub fn send_people(&self, message: PeopleMessage) {
+        self.broadcast_sse(SseEvent::People(message.clone()));
         self.for_connected_users(&message, |user, socket, message| {
             let r = user.check_library_role(&message.library, LibraryRole::Read);
             if r.is_ok() {

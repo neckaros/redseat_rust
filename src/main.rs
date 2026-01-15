@@ -172,6 +172,7 @@ async fn app() -> Result<Router> {
         .nest("/credentials", routes::credentials::routes(mc.clone()))
         .nest("/backups", routes::backups::routes(mc.clone()))
         .nest("/plugins", routes::plugins::routes(mc.clone()))
+        .nest("/sse", routes::sse::routes(mc.clone()))
         .fallback(fallback)
         .layer(middleware::from_fn(mw_range::mw_range))
         //.layer(middleware::map_response(main_response_mapper))
