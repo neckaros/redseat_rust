@@ -335,8 +335,8 @@ async fn handler_unassign_face_from_person(
         .await?;
     Ok(Json(json!({
         "status": "unassigned",
-        "face_ids": payload.face_ids,
-        "unassigned_count": unassigned_count
+        "faceIds": payload.face_ids,
+        "count": unassigned_count
     })))
 }
 

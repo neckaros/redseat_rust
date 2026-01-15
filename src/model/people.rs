@@ -146,6 +146,7 @@ lazy_static! {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DetectedFaceResult {
     pub face_id: Option<String>,
     pub confidence: f32,
