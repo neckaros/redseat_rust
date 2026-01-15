@@ -12,6 +12,7 @@ use x509_parser::nom::branch::alt;
 use crate::{domain::{deleted::RsDeleted, library::LibraryRole, tag::{self, Tag, TagMessage, TagWithAction}, ElementAction}, error::RsResult, plugins::sources::error::SourcesError, tools::prediction::PredictionTag};
 
 use super::{error::{Error, Result}, users::ConnectedUser, ModelController};
+use crate::routes::sse::SseEvent;
 
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -256,6 +257,7 @@ impl ModelController {
 
 
 	pub fn send_tags(&self, message: TagMessage) {
+		self.broadcast_sse(SseEvent::Tags(message.clone()));
 		self.for_connected_users(&message, |user, socket, message| {
             let r = user.check_library_role(&message.library, LibraryRole::Read);
 			if r.is_ok() {

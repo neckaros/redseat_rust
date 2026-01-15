@@ -27,6 +27,7 @@ use crate::{domain::{MediaElement, deleted::RsDeleted, library::LibraryType, med
 use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaItemReference, MediaWithAction, MediasMessage, ProgressMessage}, progress::{RsProgress, RsProgressType}, ElementAction}, error::RsResult, plugins::{get_plugin_fodler, sources::{async_reader_progress::ProgressReader, error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{self, resize_image_reader, ImageSize}, log::{log_error, log_warn, log_info, LogServiceType}, prediction::{predict_net, preload_model, PredictionTagResult}, video_tools::{self, probe_video, VideoTime}}};
 
 use super::{error::{Error, Result}, plugins::PluginQuery, store::{self, sql::library::medias::MediaBackup}, users::ConnectedUser, ModelController, VideoConvertQueueElement};
+use crate::routes::sse::SseEvent;
 
 pub const CRYPTO_HEADER_SIZE: u64 = 16 + 4 + 4 + 32 + 256;
 
@@ -258,6 +259,7 @@ impl ModelController {
 
 
 	pub fn send_media(&self, message: MediasMessage) {
+		self.broadcast_sse(SseEvent::Medias(message.clone()));
 		self.for_connected_users(&message, |user, socket, message| {
             let r = user.check_library_role(&message.library, LibraryRole::Read);
 			if r.is_ok() {
@@ -267,6 +269,7 @@ impl ModelController {
 	}
 
 	pub fn send_progress(&self, message: ProgressMessage) {
+		self.broadcast_sse(SseEvent::MediasProgress(message.clone()));
 		self.for_connected_users(&message, |user, socket, message| {
             let r = user.check_library_role(&message.library, LibraryRole::Read);
 			if r.is_ok() {
@@ -276,6 +279,7 @@ impl ModelController {
 	}
 
     pub fn send_convert_progress(&self, message: ConvertMessage) {
+		self.broadcast_sse(SseEvent::ConvertProgress(message.clone()));
 		self.for_connected_users(&message, |user, socket, message| {
             let r = user.check_library_role(&message.library, LibraryRole::Read);
 			if r.is_ok() {

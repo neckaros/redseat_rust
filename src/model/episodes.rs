@@ -17,6 +17,7 @@ use tokio_util::io::StreamReader;
 use crate::{domain::{deleted::RsDeleted, episode::{self, Episode, EpisodeWithAction, EpisodeWithShow, EpisodesMessage}, library::LibraryRole, people::{PeopleMessage, Person}, serie::{self, Serie, SeriesMessage}, ElementAction}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{error::SourcesError, AsyncReadPinBox, FileStreamResult, Source}}, tools::{array_tools::Dedup, clock::now, image_tools::{resize_image_reader, ImageSize}, log::log_info}};
 
 use super::{error::{Error, Result}, medias::{RsSort, RsSortOrder}, store::sql::SqlOrder, users::{ConnectedUser, HistoryQuery}, ModelController};
+use crate::routes::sse::SseEvent;
 
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -203,6 +204,7 @@ impl ModelController {
 
 
 	pub fn send_episode(&self, message: EpisodesMessage) {
+		self.broadcast_sse(SseEvent::Episodes(message.clone()));
 		self.for_connected_users(&message, |user, socket, message| {
             let r = user.check_library_role(&message.library, LibraryRole::Read);
 			if r.is_ok() {
