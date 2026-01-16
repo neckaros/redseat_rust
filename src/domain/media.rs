@@ -440,139 +440,6 @@ impl MediaForAdd {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct GroupMediaDownload<T> {
-    pub group: Option<bool>,
-    pub group_thumbnail_url: Option<String>,
-    pub group_filename: Option<String>,
-    pub group_mime: Option<String>,
-    pub files: Vec<T>,
-
-    pub referer: Option<String>,
-    pub headers: Option<Vec<String>>,
-    pub cookies: Option<Vec<String>>,
-    pub origin_url: Option<String>,
-
-    pub title: Option<String>,
-
-    pub ignore_origin_duplicate: Option<bool>,
-
-    pub description: Option<String>,
-    pub people_lookup: Option<Vec<String>>,
-    pub series_lookup: Option<Vec<String>>,
-    pub tags_lookup: Option<Vec<String>>,
-    pub season: Option<u32>,
-    pub episode: Option<u32>,
-}
-impl<T> GroupMediaDownload<T> {
-    pub fn headers_as_tuple(&self) -> Option<Vec<(String, String)>> {
-        if let Some(headers) = &self.headers {
-            headers
-                .iter()
-                .map(|v| {
-                    let splitted: Vec<&str> = v.split(':').collect();
-                    let result =
-                        if let (Some(name), Some(value)) = (splitted.get(0), splitted.get(1)) {
-                            Some((name.to_string(), value.to_string()))
-                        } else {
-                            None
-                        };
-                    return result;
-                })
-                .collect()
-        } else {
-            None
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct MediaDownloadUrl {
-    pub url: String,
-    pub parse: bool,
-    pub upload_id: Option<String>,
-
-    #[serde(default)]
-    pub ignore_origin_duplicate: bool,
-    //pub infos: Option<MediaForUpdate>,
-    pub kind: Option<FileType>,
-    pub filename: Option<String>,
-    pub mime: Option<String>,
-    pub description: Option<String>,
-    pub length: Option<u64>,
-    pub thumbnail_url: Option<String>,
-
-    pub people_lookup: Option<Vec<String>>,
-    pub series_lookup: Option<Vec<String>>,
-    pub tags_lookup: Option<Vec<String>>,
-    pub season: Option<i32>,
-    pub episode: Option<i32>,
-}
-
-impl From<MediaDownloadUrl> for RsRequest {
-    fn from(value: MediaDownloadUrl) -> Self {
-        RsRequest {
-            url: value.url,
-            mime: value.mime,
-            size: None,
-            filename: value.filename,
-            status: if value.parse {
-                RsRequestStatus::NeedParsing
-            } else {
-                RsRequestStatus::Unprocessed
-            },
-            headers: None,
-            cookies: None,
-            files: None,
-            selected_file: None,
-            tags: value.tags_lookup,
-            albums: value.series_lookup,
-            people: value.people_lookup,
-            ignore_origin_duplicate: value.ignore_origin_duplicate,
-            ..Default::default()
-        }
-    }
-}
-
-impl From<GroupMediaDownload<MediaDownloadUrl>> for Vec<RsRequest> {
-    fn from(value: GroupMediaDownload<MediaDownloadUrl>) -> Self {
-        let headers = value.headers_as_tuple();
-        //println!("Headers parsed {:?}", headers);
-        let mut output = Vec::new();
-        for file in value.files {
-            output.push(RsRequest {
-                upload_id: file.upload_id,
-                url: file.url,
-                mime: None,
-                size: None,
-                filename: file.filename,
-                status: if file.parse {
-                    RsRequestStatus::NeedParsing
-                } else {
-                    RsRequestStatus::Unprocessed
-                },
-                headers: headers.clone(),
-                cookies: value
-                    .cookies
-                    .as_ref()
-                    .and_then(|c| c.iter().map(|s| RsCookie::from_str(s).ok()).collect()),
-                files: None,
-                selected_file: None,
-                referer: value.referer.clone(),
-                tags: file.tags_lookup.or(value.tags_lookup.clone()),
-                albums: file.series_lookup.or(value.series_lookup.clone()),
-                people: file.people_lookup.or(value.people_lookup.clone()),
-                description: file.description.or(value.title.clone()),
-                ignore_origin_duplicate: file.ignore_origin_duplicate,
-                ..Default::default()
-            });
-        }
-        output
-    }
-}
-
 impl From<Media> for MediaForAdd {
     fn from(value: Media) -> Self {
         MediaForAdd {
@@ -621,61 +488,15 @@ impl From<RsRequest> for MediaForUpdate {
             name: value.filename_or_extract_from_url(),
             description: value.description,
             ignore_origin_duplicate: value.ignore_origin_duplicate,
-            //kind: value.k,
             size: value.size,
-            people_lookup: value.people,
-            tags_lookup: value.tags,
-            series_lookup: value.albums,
-            ..Default::default()
-        }
-    }
-}
-
-impl From<GroupMediaDownload<MediaDownloadUrl>> for MediaForUpdate {
-    fn from(value: GroupMediaDownload<MediaDownloadUrl>) -> Self {
-        let mut update = MediaForUpdate {
-            name: value.group_filename,
-            description: value.description,
-            ignore_origin_duplicate: value.ignore_origin_duplicate.unwrap_or_default(),
+            // Use the new lookup fields for database text search
             people_lookup: value.people_lookup,
             tags_lookup: value.tags_lookup,
-            series_lookup: value.series_lookup,
+            series_lookup: value.albums_lookup,
             season: value.season,
             episode: value.episode,
             ..Default::default()
-        };
-
-        if value.group.unwrap_or_default() {
-            let mut people_final = update.people_lookup.clone().unwrap_or_default();
-            for file in &value.files {
-                if let Some(people) = &file.people_lookup {
-                    for person in people {
-                        if !people_final.contains(person) {
-                            people_final.push(person.to_string());
-                        }
-                    }
-                }
-            }
-            if !people_final.is_empty() {
-                update.people_lookup = Some(people_final);
-            }
-
-            let mut tags_final = update.tags_lookup.clone().unwrap_or_default();
-            for file in &value.files {
-                if let Some(tags) = &file.tags_lookup {
-                    for tag in tags {
-                        if !tags_final.contains(tag) {
-                            tags_final.push(tag.to_string());
-                        }
-                    }
-                }
-            }
-            if !tags_final.is_empty() {
-                update.tags_lookup = Some(tags_final);
-            }
         }
-
-        update
     }
 }
 

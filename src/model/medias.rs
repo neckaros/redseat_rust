@@ -13,7 +13,7 @@ use mime_guess::get_mime_extensions_str;
 use nanoid::nanoid;
 use query_external_ip::SourceError;
 use regex::Regex;
-use rs_plugin_common_interfaces::{request::{RsRequest, RsRequestStatus}, url::{RsLink, RsLinkType}, video::{RsVideoTranscodeJob, RsVideoTranscodeJobPluginRequest, RsVideoTranscodeStatus, VideoConvertRequest, VideoOverlayType}, PluginType, RsCookie};
+use rs_plugin_common_interfaces::{request::{RsGroupDownload, RsRequest, RsRequestStatus}, url::{RsLink, RsLinkType}, video::{RsVideoTranscodeJob, RsVideoTranscodeJobPluginRequest, RsVideoTranscodeStatus, VideoConvertRequest, VideoOverlayType}, PluginType, RsCookie};
 use rusqlite::{types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, ToSql};
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
@@ -24,7 +24,7 @@ use zip::ZipWriter;
 
 use crate::{domain::{MediaElement, deleted::RsDeleted, library::LibraryType, media::{self, ConvertMessage, ConvertProgress, DEFAULT_MIME, RsGpsPosition}, plugin}, error::RsError, model::store::sql::SqlOrder, plugins::sources::{Source, path_provider::PathProvider}, routes::infos, server::get_config, tools::{file_tools::{filename_from_path, remove_extension}, image_tools::{IMAGES_MIME_FULL_BROWSER_SUPPORT, convert_image_reader, image_infos}, recognition, video_tools::VideoCommandBuilder}};
 
-use crate::{domain::{library::LibraryRole, media::{FileType, GroupMediaDownload, Media, MediaDownloadUrl, MediaForAdd, MediaForInsert, MediaForUpdate, MediaItemReference, MediaWithAction, MediasMessage, ProgressMessage}, progress::{RsProgress, RsProgressType}, ElementAction}, error::RsResult, plugins::{get_plugin_fodler, sources::{async_reader_progress::ProgressReader, error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{self, resize_image_reader, ImageSize}, log::{log_error, log_warn, log_info, LogServiceType}, prediction::{predict_net, preload_model, PredictionTagResult}, video_tools::{self, probe_video, VideoTime}}};
+use crate::{domain::{library::LibraryRole, media::{FileType, Media, MediaForAdd, MediaForInsert, MediaForUpdate, MediaItemReference, MediaWithAction, MediasMessage, ProgressMessage}, progress::{RsProgress, RsProgressType}, ElementAction}, error::RsResult, plugins::{get_plugin_fodler, sources::{async_reader_progress::ProgressReader, error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{self, resize_image_reader, ImageSize}, log::{log_error, log_warn, log_info, LogServiceType}, prediction::{predict_net, preload_model, PredictionTagResult}, video_tools::{self, probe_video, VideoTime}}};
 
 use super::{error::{Error, Result}, plugins::PluginQuery, store::{self, sql::library::medias::MediaBackup}, users::ConnectedUser, ModelController, VideoConvertQueueElement};
 use crate::routes::sse::SseEvent;
@@ -179,6 +179,28 @@ impl TryFrom<Media> for MediaSource {
 }
 
 impl ModelController {
+
+    /// Helper to aggregate lookup fields from multiple requests into a single deduplicated list
+    fn aggregate_lookup_field<F>(requests: &[RsRequest], getter: F) -> Option<Vec<String>>
+    where
+        F: Fn(&RsRequest) -> Option<Vec<String>>,
+    {
+        let mut result: Vec<String> = Vec::new();
+        for request in requests {
+            if let Some(values) = getter(request) {
+                for value in values {
+                    if !result.contains(&value) {
+                        result.push(value);
+                    }
+                }
+            }
+        }
+        if result.is_empty() {
+            None
+        } else {
+            Some(result)
+        }
+    }
 
 	pub async fn get_medias(&self, library_id: &str, query: MediaQuery, requesting_user: &ConnectedUser) -> RsResult<Vec<Media>> {
         let progress_user = self.get_library_mapped_user(library_id, requesting_user.user_id()?).await.ok();
@@ -655,7 +677,7 @@ impl ModelController {
 	}
 
 
-    pub async fn download_library_url(&self, library_id: &str, files: GroupMediaDownload<MediaDownloadUrl>, requesting_user: &ConnectedUser) -> RsResult<Vec<Media>> {
+    pub async fn download_library_url(&self, library_id: &str, files: RsGroupDownload, requesting_user: &ConnectedUser) -> RsResult<Vec<Media>> {
 
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         self.cache_check_library_notcrypt(library_id).await?;
@@ -663,20 +685,36 @@ impl ModelController {
         let m = self.source_for_library(library_id).await?;
         let store = self.store.get_library_store(library_id)?;
         let mut medias: Vec<Media> = vec![];
-        let origin = if let Some(origin) = &files.origin_url {
+
+        // Get group-level info from the first request
+        let first_request = files.requests.first();
+        let origin_url = first_request.and_then(|r| r.origin_url.clone());
+        let origin = if let Some(origin) = &origin_url {
             Some(self.exec_parse(Some(library_id.to_owned()), origin.to_owned(), requesting_user).await.ok().unwrap_or(RsLink {platform: "link".to_owned(), kind: Some(RsLinkType::Post), id: origin.to_owned(), ..Default::default()}))
         } else {
             None
         };
 
 
-        if files.group.unwrap_or_default() {
+        if files.group {
             let thumbnail = files.group_thumbnail_url.clone();
-            let mut infos: MediaForUpdate = files.clone().into();
+            // Build MediaForUpdate from group data and first request
+            let mut infos = MediaForUpdate {
+                name: files.group_filename.clone(),
+                mimetype: files.group_mime.clone(),
+                // Aggregate lookup fields from all requests
+                people_lookup: Self::aggregate_lookup_field(&files.requests, |r| r.people_lookup.clone()),
+                tags_lookup: Self::aggregate_lookup_field(&files.requests, |r| r.tags_lookup.clone()),
+                series_lookup: Self::aggregate_lookup_field(&files.requests, |r| r.albums_lookup.clone()),
+                ignore_origin_duplicate: first_request.map(|r| r.ignore_origin_duplicate).unwrap_or_default(),
+                season: first_request.and_then(|r| r.season),
+                episode: first_request.and_then(|r| r.episode),
+                ..Default::default()
+            };
             infos.origin = origin.clone();
 
             let mut medias: Vec<Media> = vec![];
-            let requests: Vec<RsRequest> = files.clone().into(); 
+            let requests = files.requests.clone(); 
 
             let upload_id = nanoid!();
             //Progress
@@ -684,7 +722,7 @@ impl ModelController {
 
 
             if let Some(origin) = &mut infos.origin {
-                let origin_filename = if let Some(origin_url) = files.origin_url.clone() { filename_from_path(&origin_url) } else { None };
+                let origin_filename = if let Some(origin_url) = origin_url.clone() { filename_from_path(&origin_url) } else { None };
                 origin.file = origin_filename;
                 if !infos.ignore_origin_duplicate {
                     let existing = store.get_media_by_origin(origin.clone()).await;
@@ -771,7 +809,7 @@ impl ModelController {
 
             let mut loaded_thumb = false;
             if let Some(thumbUrl) = thumbnail {
-                let headers = files.headers_as_tuple();
+                // Get headers, cookies, and referer from first request
                 let request = RsRequest {
                     upload_id: None,
                     url: thumbUrl,
@@ -779,11 +817,11 @@ impl ModelController {
                     size: None,
                     filename: None,
                     status: RsRequestStatus::Unprocessed,
-                    headers: headers.clone(),
-                    cookies: files.cookies.as_ref().and_then(|c| c.iter().map(|s| RsCookie::from_str(s).ok()).collect()),
+                    headers: first_request.and_then(|r| r.headers.clone()),
+                    cookies: first_request.and_then(|r| r.cookies.clone()),
                     files: None,
                     selected_file: None,
-                    referer: files.referer.clone(),
+                    referer: first_request.and_then(|r| r.referer.clone()),
                     ..Default::default()
                 };
 
@@ -819,10 +857,8 @@ impl ModelController {
 
             Ok(medias)
         } else {
-            let requests: Vec<RsRequest> = files.into(); 
-        
-            //let infos = infos.unwrap_or_else(|| MediaForUpdate::default());
-            for mut request in requests {
+            // Non-grouped path - process each request individually
+            for mut request in files.requests {
                 let upload_id = request.upload_id.clone().unwrap_or_else(|| nanoid!());
 
                 self.plugin_manager.fill_infos(&mut request).await;

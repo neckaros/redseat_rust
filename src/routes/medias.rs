@@ -4,7 +4,7 @@ use super::{mw_range::RangeDefinition, ImageRequestOptions, ImageUploadOptions};
 use crate::{
     domain::{
         media::{
-            self, GroupMediaDownload, MediaDownloadUrl, MediaForUpdate, MediaItemReference,
+            self, MediaForUpdate, MediaItemReference,
             MediaWithAction, MediasMessage,
         },
         ElementAction,
@@ -35,7 +35,7 @@ use axum::{
 use axum_extra::extract::Query;
 use futures::TryStreamExt;
 use hyper::{header::ACCEPT_RANGES, StatusCode};
-use rs_plugin_common_interfaces::{request::RsRequest, video::VideoConvertRequest};
+use rs_plugin_common_interfaces::{request::{RsGroupDownload, RsRequest}, video::VideoConvertRequest};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -559,7 +559,7 @@ async fn handler_download(
     State(mc): State<ModelController>,
     user: ConnectedUser,
     Query(query): Query<UploadOption>,
-    Json(download): Json<GroupMediaDownload<MediaDownloadUrl>>,
+    Json(download): Json<RsGroupDownload>,
 ) -> Result<Json<Value>> {
     if query.spawn {
         tokio::spawn(async move {
