@@ -55,29 +55,11 @@ pub struct BackupForUpdate {
 impl ModelController {
 
     pub fn send_backup_status(&self, message: BackupMessage) {
-		self.broadcast_sse(SseEvent::Backups(message.clone()));
-		self.for_connected_users(&message, |user, socket, message| {
-            if let Some(library) = &message.backup.backup.library {
-                let r = user.check_library_role(library, LibraryRole::Admin);
-                if r.is_ok() {
-                    let _ = socket.emit("backups", message);
-                }
-            } else {
-                let r = user.check_role(&UserRole::Admin);
-                if r.is_ok() {
-                    let _ = socket.emit("backups", message);
-                }
-            }
-		});
+		self.broadcast_sse(SseEvent::Backups(message));
 	}
+
     pub fn send_backup_file_status(&self, message: BackupFileProgress) {
-		self.broadcast_sse(SseEvent::BackupsFiles(message.clone()));
-		self.for_connected_users(&message, |user, socket, message| {
-            let r = user.check_role(&UserRole::Admin);
-			if r.is_ok() {
-				let _ = socket.emit("backups-files", message);
-			}
-		});
+		self.broadcast_sse(SseEvent::BackupsFiles(message));
 	}
 
     pub async fn set_backup_status(&self, status: BackupProcessStatus) -> RsResult<()> {

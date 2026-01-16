@@ -54,7 +54,6 @@ tokio-util = { version = "0.7.11", features = ["compat", "io", "io-util"] }
 time = "0.3.34"
 tokio-stream = { version = "0.1.14", features = ["io-util"] }
 async-stream = "0.3"
-socketioxide = { version = "0.13.1", features = ["extensions","state", "v4"] }
 async-trait = "0.1.77"
 mime_guess = "2.0.4"
 

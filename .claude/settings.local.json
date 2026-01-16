@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(cargo publish:*)",
-      "Bash(cargo build:*)"
+      "Bash(cargo build:*)",
+      "Bash(grep:*)"
     ]
   }
 }

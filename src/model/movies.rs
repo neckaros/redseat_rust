@@ -238,13 +238,7 @@ impl ModelController {
 
 
 	pub fn send_movie(&self, message: MoviesMessage) {
-		self.broadcast_sse(SseEvent::Movies(message.clone()));
-		self.for_connected_users(&message, |user, socket, message| {
-            let r = user.check_library_role(&message.library, LibraryRole::Read);
-			if r.is_ok() {
-				let _ = socket.emit("movies", message);
-			}
-		});
+		self.broadcast_sse(SseEvent::Movies(message));
 	}
 
 

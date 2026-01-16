@@ -30,48 +30,21 @@ impl ModelController {
 	pub async fn send_media_progress(&self, message: MediasProgressMessage) {
         let mapping: Vec<crate::domain::library::UserMapping> = self.get_library_mapped_users(&message.library).await.ok().unwrap_or_default();
 
-        // Broadcast via SSE
-        self.broadcast_sse(SseEvent::MediaProgress(message.clone()));
-
-		self.for_connected_users(&message, |user, socket, message| {
-
-			if let Ok(user_id) = user.user_id() {
-                if user_id == message.progress.user_ref {
-				    let _ = socket.emit("media_progress", message);
-                }
-			}
-		});
-
-        for map in mapping.clone() {
+        for map in &mapping {
             if message.progress.user_ref == map.to {
-                let mut message = message.clone();
-                message.progress.user_ref = map.from.clone();
-                // Broadcast mapped SSE event
-                self.broadcast_sse(SseEvent::MediaProgress(message.clone()));
-                self.for_connected_users(&message, |user, socket, message| {
-
-                    if let Ok(user_id) = user.user_id() {
-                        if user_id == message.progress.user_ref {
-                            let _ = socket.emit("media_progress", message);
-                        }
-                    }
-                });
+                let mut mapped = message.clone();
+                mapped.progress.user_ref = map.from.clone();
+                self.broadcast_sse(SseEvent::MediaProgress(mapped));
             }
             if message.progress.user_ref == map.from {
-                let mut message = message.clone();
-                message.progress.user_ref = map.to;
-                // Broadcast mapped SSE event
-                self.broadcast_sse(SseEvent::MediaProgress(message.clone()));
-                self.for_connected_users(&message, |user, socket, message| {
-
-                    if let Ok(user_id) = user.user_id() {
-                        if user_id == message.progress.user_ref {
-                            let _ = socket.emit("media_progress", message);
-                        }
-                    }
-                });
+                let mut mapped = message.clone();
+                mapped.progress.user_ref = map.to.clone();
+                self.broadcast_sse(SseEvent::MediaProgress(mapped));
             }
         }
+
+        // Broadcast original message last (consumes message)
+        self.broadcast_sse(SseEvent::MediaProgress(message));
 	}
 
 	pub async fn get_medias_progresses(&self, library_id: &str, query: MediaProgressesQuery, requesting_user: &ConnectedUser) -> RsResult<Vec<RsMediaProgress>> {

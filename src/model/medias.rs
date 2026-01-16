@@ -373,33 +373,15 @@ impl ModelController {
 
 
 	pub fn send_media(&self, message: MediasMessage) {
-		self.broadcast_sse(SseEvent::Medias(message.clone()));
-		self.for_connected_users(&message, |user, socket, message| {
-            let r = user.check_library_role(&message.library, LibraryRole::Read);
-			if r.is_ok() {
-				let _ = socket.emit("medias", message);
-			}
-		});
+		self.broadcast_sse(SseEvent::Medias(message));
 	}
 
 	pub fn send_upload_progress(&self, message: UploadProgressMessage) {
-		self.broadcast_sse(SseEvent::UploadProgress(message.clone()));
-		self.for_connected_users(&message, |user, socket, message| {
-            let r = user.check_library_role(&message.library, LibraryRole::Read);
-			if r.is_ok() {
-				let _ = socket.emit("upload_progress", message);
-			}
-		});
+		self.broadcast_sse(SseEvent::UploadProgress(message));
 	}
 
     pub fn send_convert_progress(&self, message: ConvertMessage) {
-		self.broadcast_sse(SseEvent::ConvertProgress(message.clone()));
-		self.for_connected_users(&message, |user, socket, message| {
-            let r = user.check_library_role(&message.library, LibraryRole::Read);
-			if r.is_ok() {
-				let _ = socket.emit("convert_progress", message);
-			}
-		});
+		self.broadcast_sse(SseEvent::ConvertProgress(message));
 	}
 
 

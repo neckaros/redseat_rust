@@ -207,13 +207,7 @@ impl ModelController {
 
 
 	pub fn send_serie(&self, message: SeriesMessage) {
-		self.broadcast_sse(SseEvent::Series(message.clone()));
-		self.for_connected_users(&message, |user, socket, message| {
-            let r = user.check_library_role(&message.library, LibraryRole::Read);
-			if r.is_ok() {
-				let _ = socket.emit("series", message);
-			}
-		});
+		self.broadcast_sse(SseEvent::Series(message));
 	}
 
 

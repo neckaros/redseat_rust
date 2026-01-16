@@ -9,7 +9,6 @@ pub mod libraries;
 pub mod users;
 pub mod mw_auth;
 pub mod mw_range;
-pub mod socket;
 pub mod sse;
 pub mod credentials;
 pub mod backups;

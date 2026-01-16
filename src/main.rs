@@ -23,7 +23,6 @@ use tools::{auth::{sign_local, Claims}, image_tools::has_image_magick, log::{log
 use tower::ServiceBuilder;
 use tower_http::{cors::{Any, CorsLayer}, trace::TraceLayer};
 use crate::{server::{get_config, update_ip, ServerIpInfo}, tools::{auth::{get_or_init_keys, verify_local, ClaimsLocal}, log::log_info}};
-use socketioxide::{extract::{SocketRef, TryData}, SocketIo};
 pub use self::error::{Result, Error};
 
 
@@ -143,14 +142,6 @@ async fn app() -> Result<Router> {
     // allow requests from any origin
 
     .allow_origin(origins);
-    let (iolayer, io) = SocketIo::builder().with_state(mc.clone()).build_layer();
-    //io.ns("/", routes::socket::on_connect);
-    mc.set_socket(io.clone());
-
-    let mc_forsocket = mc.clone();
-    io.ns("/", {
-        |socket: SocketRef, TryData(data): TryData<AuthMessage>| async move { routes::socket::on_connect(socket, mc_forsocket, data).await }
-      });
 
     let server_id = get_server_id().await;
     let admin_users = mc.get_users(&model::users::ConnectedUser::ServerAdmin).await?.into_iter().filter(|u| u.is_admin()).collect::<Vec<_>>();
@@ -178,10 +169,6 @@ async fn app() -> Result<Router> {
         //.layer(middleware::map_response(main_response_mapper))
         .layer(middleware::from_fn_with_state(mc.clone(), mw_auth::mw_token_resolver))
         .layer(DefaultBodyLimit::disable())
-        .layer(
-            ServiceBuilder::new()
-                .layer(iolayer),
-        )
         .layer(
         ServiceBuilder::new()
             .layer(cors)

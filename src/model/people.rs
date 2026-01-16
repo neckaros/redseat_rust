@@ -274,13 +274,7 @@ impl ModelController {
     }
 
     pub fn send_people(&self, message: PeopleMessage) {
-        self.broadcast_sse(SseEvent::People(message.clone()));
-        self.for_connected_users(&message, |user, socket, message| {
-            let r = user.check_library_role(&message.library, LibraryRole::Read);
-            if r.is_ok() {
-                let _ = socket.emit("people", message);
-            }
-        });
+        self.broadcast_sse(SseEvent::People(message));
     }
 
     pub async fn add_pesron(

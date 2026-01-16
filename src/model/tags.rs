@@ -257,13 +257,7 @@ impl ModelController {
 
 
 	pub fn send_tags(&self, message: TagMessage) {
-		self.broadcast_sse(SseEvent::Tags(message.clone()));
-		self.for_connected_users(&message, |user, socket, message| {
-            let r = user.check_library_role(&message.library, LibraryRole::Read);
-			if r.is_ok() {
-				let _ = socket.emit("tags", message);
-			}
-		});
+		self.broadcast_sse(SseEvent::Tags(message));
 	}
 
 

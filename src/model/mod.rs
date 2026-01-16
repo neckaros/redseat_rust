@@ -67,7 +67,6 @@ use self::{
     users::{ConnectedUser, ServerUser, UserRole},
 };
 use error::{Error, Result};
-use socketioxide::{extract::SocketRef, SocketIo};
 use tokio::{
     fs::{self, remove_file, File},
     io::{copy, AsyncRead, BufReader},
@@ -120,7 +119,6 @@ impl VideoConvertQueueElement {
 #[derive(Clone)]
 pub struct ModelController {
     store: Arc<SqliteStore>,
-    pub io: Arc<StdRwLock<Option<SocketIo>>>,
     pub plugin_manager: Arc<PluginManager>,
     pub trakt: Arc<TraktContext>,
     pub tmdb: Arc<TmdbContext>,
@@ -150,7 +148,6 @@ impl ModelController {
 
         let mc = Self {
             store: Arc::new(store),
-            io: Arc::new(StdRwLock::new(None)),
             plugin_manager: Arc::new(plugin_manager),
             trakt: Arc::new(TraktContext::new(
                 "455f81b3409a8dd140a941e9250ff22b2ed92d68003491c3976363fe752a9024".to_string(),
@@ -527,54 +524,16 @@ impl ModelController {
 }
 
 impl ModelController {
-    pub fn set_socket(&mut self, io: SocketIo) {
-        let mut w = self.io.write().unwrap();
-        *w = Some(io);
-    }
-
-    fn for_connected_users<T: Clone>(
-        &self,
-        message: &T,
-        action: fn(user: &ConnectedUser, socket: &SocketRef, message: T) -> (),
-    ) {
-        let io = {
-            let guard = self.io.read().unwrap();
-            guard.clone()
-        };
-        if let Some(ref io) = io {
-            if let Ok(sockets) = io.sockets() {
-                for socket in sockets {
-                    if let Some(user) = socket.extensions.get::<ConnectedUser>() {
-                        action(&user, &socket, message.clone())
-                    }
-                }
-            }
-        }
-    }
-
     /// Broadcasts an event to all SSE subscribers
     pub fn broadcast_sse(&self, event: SseEvent) {
         let _ = self.sse_tx.send(event);
     }
 
     pub fn send_library(&self, message: LibraryMessage) {
-        self.broadcast_sse(SseEvent::Library(message.clone()));
-        self.for_connected_users(&message, |user, socket, message| {
-            if let Some(message) = message.for_socket(user) {
-                let _ = socket.emit("library", message);
-            }
-        });
+        self.broadcast_sse(SseEvent::Library(message));
     }
 
     pub fn send_library_status(&self, message: LibraryStatusMessage) {
-        self.broadcast_sse(SseEvent::LibraryStatus(message.clone()));
-        self.for_connected_users(&message, |user, socket, message| {
-            if user
-                .check_library_role(&message.library, LibraryRole::Admin)
-                .is_ok()
-            {
-                let _ = socket.emit("library-status", message);
-            }
-        });
+        self.broadcast_sse(SseEvent::LibraryStatus(message));
     }
 }
