@@ -30,7 +30,7 @@ Example: `/sse?libraries=lib1,lib2` will only receive events for those libraries
 | `library` | Library created/updated/deleted | Library read access |
 | `library-status` | Library status changes | Library admin |
 | `medias` | Media items created/updated/deleted | Library read access |
-| `medias_progress` | Media processing progress | Library read access |
+| `upload_progress` | Upload progress | Library read access |
 | `convert_progress` | Video conversion progress | Library read access |
 | `episodes` | Episodes created/updated/deleted | Library read access |
 | `series` | Series created/updated/deleted | Library read access |
@@ -39,6 +39,9 @@ Example: `/sse?libraries=lib1,lib2` will only receive events for those libraries
 | `tags` | Tags created/updated/deleted | Library read access |
 | `backups` | Backup job events | Library admin or server admin |
 | `backups-files` | Backup file progress | Server admin only |
+| `media_progress` | Playback position tracking | User-specific (only progress owner) |
+| `media_rating` | Media rating changes | User-specific (only rating owner) |
+| `players-list` | Connected player devices | User-specific (only player owner) |
 
 ## TypeScript Client Examples
 
@@ -93,7 +96,7 @@ interface MediaWithAction {
   media: Media;
 }
 
-interface ProgressMessage {
+interface UploadProgressMessage {
   library: string;
   mediaId: string;
   progress: number;
@@ -144,12 +147,50 @@ interface BackupFileProgress {
   progress: number;
 }
 
+// Media progress (user-specific)
+interface MediaProgress {
+  userRef: string;
+  mediaRef: string;
+  progress: number;
+  modified: number;
+}
+
+interface MediasProgressMessage {
+  library: string;
+  progress: MediaProgress;
+}
+
+// Media rating events (user-specific)
+interface MediaRating {
+  userRef: string;
+  mediaRef: string;
+  rating: number;
+  modified: number;
+}
+
+interface MediasRatingMessage {
+  library: string;
+  rating: MediaRating;
+}
+
+// Players events (user-specific)
+interface PlayerEvent {
+  id: string;
+  name: string;
+  player: string;
+}
+
+interface PlayersMessage {
+  userRef: string;
+  players: PlayerEvent[];
+}
+
 // Wrapper type matching the SSE event structure
 type SseEvent =
   | { Library: LibraryMessage }
   | { LibraryStatus: LibraryStatusMessage }
   | { Medias: MediasMessage }
-  | { MediasProgress: ProgressMessage }
+  | { UploadProgress: UploadProgressMessage }
   | { ConvertProgress: ConvertMessage }
   | { Episodes: EpisodesMessage }
   | { Series: SeriesMessage }
@@ -157,7 +198,10 @@ type SseEvent =
   | { People: PeopleMessage }
   | { Tags: TagMessage }
   | { Backups: BackupMessage }
-  | { BackupsFiles: BackupFileProgress };
+  | { BackupsFiles: BackupFileProgress }
+  | { MediaProgress: MediasProgressMessage }
+  | { MediaRating: MediasRatingMessage }
+  | { Players: PlayersMessage };
 ```
 
 ### Listening to Events
@@ -199,6 +243,14 @@ eventSource.addEventListener('convert_progress', (event) => {
   if ('ConvertProgress' in data) {
     const { mediaId, progress, status } = data.ConvertProgress;
     console.log(`Converting ${mediaId}: ${progress}% - ${status}`);
+  }
+});
+
+eventSource.addEventListener('media_progress', (event) => {
+  const data: SseEvent = JSON.parse(event.data);
+  if ('MediaProgress' in data) {
+    const { library, progress } = data.MediaProgress;
+    console.log(`Progress update in ${library}: ${progress.mediaRef} at ${progress.progress}ms`);
   }
 });
 ```
@@ -264,9 +316,10 @@ class SseClient {
     if (!this.eventSource) return;
 
     const events = [
-      'library', 'library-status', 'medias', 'medias_progress',
+      'library', 'library-status', 'medias', 'upload_progress',
       'convert_progress', 'episodes', 'series', 'movies',
-      'people', 'tags', 'backups', 'backups-files'
+      'people', 'tags', 'backups', 'backups-files', 'media_progress',
+      'media_rating', 'players-list'
     ];
 
     events.forEach(eventName => {
@@ -329,9 +382,10 @@ function useSse(options: UseSseOptions = {}) {
 
     // Subscribe to all event types
     const eventTypes = [
-      'library', 'library-status', 'medias', 'medias_progress',
+      'library', 'library-status', 'medias', 'upload_progress',
       'convert_progress', 'episodes', 'series', 'movies',
-      'people', 'tags', 'backups', 'backups-files'
+      'people', 'tags', 'backups', 'backups-files', 'media_progress',
+      'media_rating', 'players-list'
     ];
 
     eventTypes.forEach(eventName => {

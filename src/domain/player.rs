@@ -40,6 +40,13 @@ impl From<RsPlayerAvailable> for RsPlayerEvent {
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayersMessage {
+    pub user_ref: String,
+    pub players: Vec<RsPlayerEvent>,
+}
+
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, PartialOrd, Default)]
 #[serde(rename_all = "camelCase")]

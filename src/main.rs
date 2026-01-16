@@ -11,7 +11,7 @@ use axum_server::tls_rustls::RustlsConfig;
 use domain::ffmpeg;
 use error::RsError;
 use http::{StatusCode, Uri};
-use hyper::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, REFERRER_POLICY, REFERER};
+use hyper::header::{ACCEPT, AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, REFERRER_POLICY, REFERER};
 use model::{server::AuthMessage, store::SqliteStore, ModelController};
 use plugins::{medias::{imdb::ImdbContext, tmdb::{tmdb_configuration::TmdbConfiguration, TmdbContext}, trakt::TraktContext}, PluginManager};
 use routes::{mw_auth, mw_range};
@@ -139,7 +139,7 @@ async fn app() -> Result<Router> {
     let cors: CorsLayer = CorsLayer::new()
     // allow `GET` and `POST` when accessing the resource
     .allow_methods(vec![Method::GET, Method::PATCH, Method::DELETE, Method::HEAD, Method::OPTIONS, Method::POST])
-    .allow_headers([AUTHORIZATION, ACCEPT, CONTENT_TYPE,REFERRER_POLICY,REFERER])
+    .allow_headers([AUTHORIZATION, ACCEPT, CACHE_CONTROL, CONTENT_TYPE, REFERRER_POLICY, REFERER])
     // allow requests from any origin
 
     .allow_origin(origins);

@@ -1,7 +1,7 @@
 use rs_plugin_common_interfaces::ElementType;
 use serde::{Deserialize, Serialize};
 
-use crate::{domain::{deleted::RsDeleted, episode::Episode, library::LibraryRole, media_rating::RsMediaRating}, error::{RsError, RsResult}, Error};
+use crate::{domain::{deleted::RsDeleted, episode::Episode, library::LibraryRole, media_rating::RsMediaRating}, error::{RsError, RsResult}, routes::sse::SseEvent, Error};
 
 use super::{store::sql::SqlOrder, users::ConnectedUser, ModelController};
 
@@ -32,6 +32,9 @@ impl ModelController {
     pub async fn send_media_rating(&self, message: MediasRatingMessage) {
         let mapping: Vec<crate::domain::library::UserMapping> = self.get_library_mapped_users(&message.library).await.ok().unwrap_or_default();
 
+        // Broadcast via SSE
+        self.broadcast_sse(SseEvent::MediaRating(message.clone()));
+
 		self.for_connected_users(&message, |user, socket, message| {
 
 			if let Ok(user_id) = user.user_id() {
@@ -45,6 +48,8 @@ impl ModelController {
             if message.rating.user_ref == map.to {
                 let mut message = message.clone();
                 message.rating.user_ref = map.from.clone();
+                // Broadcast via SSE for mapped user
+                self.broadcast_sse(SseEvent::MediaRating(message.clone()));
                 self.for_connected_users(&message, |user, socket, message| {
 
                     if let Ok(user_id) = user.user_id() {
@@ -58,6 +63,8 @@ impl ModelController {
             if message.rating.user_ref == map.from {
                 let mut message = message.clone();
                 message.rating.user_ref = map.to;
+                // Broadcast via SSE for mapped user
+                self.broadcast_sse(SseEvent::MediaRating(message.clone()));
                 self.for_connected_users(&message, |user, socket, message| {
 
                     if let Ok(user_id) = user.user_id() {

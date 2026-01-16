@@ -1,6 +1,8 @@
+use std::collections::HashMap;
+
 use socketioxide::{extract::SocketRef, socket::Socket};
 
-use crate::{domain::player::{RsPlayer, RsPlayerActionRequest, RsPlayerAvailable, RsPlayerEvent, RsPlayerPlayRequest}, error::RsResult, tools::log::{log_error, LogServiceType}};
+use crate::{domain::player::{PlayersMessage, RsPlayer, RsPlayerActionRequest, RsPlayerAvailable, RsPlayerEvent, RsPlayerPlayRequest}, error::RsResult, routes::sse::SseEvent, tools::log::{log_error, LogServiceType}};
 
 use super::{users::ConnectedUser, ModelController};
 
@@ -19,6 +21,23 @@ impl ModelController {
 	}
 
     pub async fn send_players(&self, players: Vec<RsPlayerAvailable>) {
+        // Group players by user ID for SSE broadcast
+        let mut players_by_user: HashMap<String, Vec<RsPlayerEvent>> = HashMap::new();
+        for player in players.iter() {
+            players_by_user
+                .entry(player.uid.clone())
+                .or_default()
+                .push(RsPlayerEvent::from(player.clone()));
+        }
+
+        // Broadcast via SSE for each user
+        for (user_ref, user_players) in players_by_user {
+            self.broadcast_sse(SseEvent::Players(PlayersMessage {
+                user_ref,
+                players: user_players,
+            }));
+        }
+
         let message = players.into_iter().map(RsPlayerEvent::from).collect::<Vec<_>>();
         self.for_connected_users(&message, |user, socket, message| {
             let r = user.check_role(&super::users::UserRole::Read);

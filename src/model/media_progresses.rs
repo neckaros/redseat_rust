@@ -1,7 +1,7 @@
 use rs_plugin_common_interfaces::ElementType;
 use serde::{Deserialize, Serialize};
 
-use crate::{domain::{deleted::RsDeleted, episode::Episode, library::LibraryRole, media_progress::RsMediaProgress, media_rating::RsMediaRating, progress}, error::{RsError, RsResult}, Error};
+use crate::{domain::{deleted::RsDeleted, episode::Episode, library::LibraryRole, media_progress::RsMediaProgress, media_rating::RsMediaRating, progress}, error::{RsError, RsResult}, routes::sse::SseEvent, Error};
 
 use super::{store::sql::SqlOrder, users::ConnectedUser, ModelController};
 
@@ -30,6 +30,9 @@ impl ModelController {
 	pub async fn send_media_progress(&self, message: MediasProgressMessage) {
         let mapping: Vec<crate::domain::library::UserMapping> = self.get_library_mapped_users(&message.library).await.ok().unwrap_or_default();
 
+        // Broadcast via SSE
+        self.broadcast_sse(SseEvent::MediaProgress(message.clone()));
+
 		self.for_connected_users(&message, |user, socket, message| {
 
 			if let Ok(user_id) = user.user_id() {
@@ -43,6 +46,8 @@ impl ModelController {
             if message.progress.user_ref == map.to {
                 let mut message = message.clone();
                 message.progress.user_ref = map.from.clone();
+                // Broadcast mapped SSE event
+                self.broadcast_sse(SseEvent::MediaProgress(message.clone()));
                 self.for_connected_users(&message, |user, socket, message| {
 
                     if let Ok(user_id) = user.user_id() {
@@ -55,6 +60,8 @@ impl ModelController {
             if message.progress.user_ref == map.from {
                 let mut message = message.clone();
                 message.progress.user_ref = map.to;
+                // Broadcast mapped SSE event
+                self.broadcast_sse(SseEvent::MediaProgress(message.clone()));
                 self.for_connected_users(&message, |user, socket, message| {
 
                     if let Ok(user_id) = user.user_id() {

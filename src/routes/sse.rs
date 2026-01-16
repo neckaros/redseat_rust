@@ -14,13 +14,14 @@ use crate::{
         backup::{BackupFileProgress, BackupMessage},
         episode::EpisodesMessage,
         library::{LibraryMessage, LibraryRole, LibraryStatusMessage},
-        media::{ConvertMessage, MediasMessage, ProgressMessage},
+        media::{ConvertMessage, MediasMessage, UploadProgressMessage},
         movie::MoviesMessage,
         people::PeopleMessage,
+        player::PlayersMessage,
         serie::SeriesMessage,
         tag::TagMessage,
     },
-    model::{users::ConnectedUser, ModelController},
+    model::{media_progresses::MediasProgressMessage, media_ratings::MediasRatingMessage, users::ConnectedUser, ModelController},
 };
 
 /// Unified SSE event that wraps all possible event types
@@ -30,7 +31,7 @@ pub enum SseEvent {
     Library(LibraryMessage),
     LibraryStatus(LibraryStatusMessage),
     Medias(MediasMessage),
-    MediasProgress(ProgressMessage),
+    UploadProgress(UploadProgressMessage),
     ConvertProgress(ConvertMessage),
     Episodes(EpisodesMessage),
     Series(SeriesMessage),
@@ -39,6 +40,9 @@ pub enum SseEvent {
     Tags(TagMessage),
     Backups(BackupMessage),
     BackupsFiles(BackupFileProgress),
+    MediaProgress(MediasProgressMessage),
+    MediaRating(MediasRatingMessage),
+    Players(PlayersMessage),
 }
 
 impl SseEvent {
@@ -48,7 +52,7 @@ impl SseEvent {
             SseEvent::Library(_) => "library",
             SseEvent::LibraryStatus(_) => "library-status",
             SseEvent::Medias(_) => "medias",
-            SseEvent::MediasProgress(_) => "medias_progress",
+            SseEvent::UploadProgress(_) => "upload_progress",
             SseEvent::ConvertProgress(_) => "convert_progress",
             SseEvent::Episodes(_) => "episodes",
             SseEvent::Series(_) => "series",
@@ -57,6 +61,9 @@ impl SseEvent {
             SseEvent::Tags(_) => "tags",
             SseEvent::Backups(_) => "backups",
             SseEvent::BackupsFiles(_) => "backups-files",
+            SseEvent::MediaProgress(_) => "media_progress",
+            SseEvent::MediaRating(_) => "media_rating",
+            SseEvent::Players(_) => "players-list",
         }
     }
 
@@ -66,7 +73,7 @@ impl SseEvent {
             SseEvent::Library(m) => Some(&m.library.id),
             SseEvent::LibraryStatus(m) => Some(&m.library),
             SseEvent::Medias(m) => Some(&m.library),
-            SseEvent::MediasProgress(m) => Some(&m.library),
+            SseEvent::UploadProgress(m) => Some(&m.library),
             SseEvent::ConvertProgress(m) => Some(&m.library),
             SseEvent::Episodes(m) => Some(&m.library),
             SseEvent::Series(m) => Some(&m.library),
@@ -75,6 +82,9 @@ impl SseEvent {
             SseEvent::Tags(m) => Some(&m.library),
             SseEvent::Backups(m) => m.backup.backup.library.as_deref(),
             SseEvent::BackupsFiles(m) => m.library.as_deref(),
+            SseEvent::MediaProgress(m) => Some(&m.library),
+            SseEvent::MediaRating(m) => Some(&m.library),
+            SseEvent::Players(_) => None, // Players are user-scoped, not library-scoped
         }
     }
 
@@ -97,6 +107,27 @@ impl SseEvent {
                 } else {
                     user.check_role(&UserRole::Admin).is_ok()
                 }
+            }
+
+            // User-specific events: only send to the user whose progress this is
+            SseEvent::MediaProgress(m) => {
+                user.user_id()
+                    .map(|uid| uid == m.progress.user_ref)
+                    .unwrap_or(false)
+            }
+
+            // User-specific events: only send to the user whose rating this is
+            SseEvent::MediaRating(m) => {
+                user.user_id()
+                    .map(|uid| uid == m.rating.user_ref)
+                    .unwrap_or(false)
+            }
+
+            // User-specific events: only send players to the player owner
+            SseEvent::Players(m) => {
+                user.user_id()
+                    .map(|uid| uid == m.user_ref)
+                    .unwrap_or(false)
             }
 
             // Library-scoped events (read access required)

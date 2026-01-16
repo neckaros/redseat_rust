@@ -39,6 +39,7 @@ redseat-rust/
 | Config/env variables | `src/server.rs` | `REDSEAT_*` env vars |
 | Encryption | `src/tools/encryption.rs` | AES-256-CBC streaming |
 | Scheduled tasks | `src/tools/scheduler/` | 15s tick loop |
+| SSE and events | `docs/SSE.md` | don't forget to update the SSE.md file if you do modification or add events |
 
 ## ARCHITECTURE
 
