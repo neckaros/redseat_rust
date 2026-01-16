@@ -25,7 +25,6 @@ pub mod media_progress;
 pub mod media_rating;
 
 pub mod progress;
-pub mod player;
 
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

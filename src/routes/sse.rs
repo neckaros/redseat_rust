@@ -17,7 +17,6 @@ use crate::{
         media::{ConvertMessage, MediasMessage, UploadProgressMessage},
         movie::MoviesMessage,
         people::PeopleMessage,
-        player::PlayersMessage,
         serie::SeriesMessage,
         tag::TagMessage,
     },
@@ -42,7 +41,6 @@ pub enum SseEvent {
     BackupsFiles(BackupFileProgress),
     MediaProgress(MediasProgressMessage),
     MediaRating(MediasRatingMessage),
-    Players(PlayersMessage),
 }
 
 impl SseEvent {
@@ -63,7 +61,6 @@ impl SseEvent {
             SseEvent::BackupsFiles(_) => "backups-files",
             SseEvent::MediaProgress(_) => "media_progress",
             SseEvent::MediaRating(_) => "media_rating",
-            SseEvent::Players(_) => "players-list",
         }
     }
 
@@ -84,7 +81,6 @@ impl SseEvent {
             SseEvent::BackupsFiles(m) => m.library.as_deref(),
             SseEvent::MediaProgress(m) => Some(&m.library),
             SseEvent::MediaRating(m) => Some(&m.library),
-            SseEvent::Players(_) => None, // Players are user-scoped, not library-scoped
         }
     }
 
@@ -120,13 +116,6 @@ impl SseEvent {
             SseEvent::MediaRating(m) => {
                 user.user_id()
                     .map(|uid| uid == m.rating.user_ref)
-                    .unwrap_or(false)
-            }
-
-            // User-specific events: only send players to the player owner
-            SseEvent::Players(m) => {
-                user.user_id()
-                    .map(|uid| uid == m.user_ref)
                     .unwrap_or(false)
             }
 

@@ -14,7 +14,6 @@ pub mod media_ratings;
 pub mod medias;
 pub mod movies;
 pub mod people;
-pub mod player;
 pub mod series;
 pub mod tags;
 
@@ -23,7 +22,6 @@ use crate::{
         backup::BackupProcessStatus,
         library::{LibraryMessage, LibraryRole, LibraryStatusMessage, ServerLibrary},
         media::ConvertProgress,
-        player::RsPlayerAvailable,
     },
     error::{RsError, RsResult},
     plugins::{
@@ -130,8 +128,6 @@ pub struct ModelController {
     pub imdb: Arc<ImdbContext>,
     pub scheduler: Arc<RsScheduler>,
 
-    pub players: Arc<RwLock<Vec<RsPlayerAvailable>>>,
-
     pub convert_queue: Arc<RwLock<VecDeque<VideoConvertQueueElement>>>,
     pub convert_current: Arc<RwLock<bool>>,
     pub convert_current_process: Arc<RwLock<Option<JoinHandle<()>>>>,
@@ -164,7 +160,6 @@ impl ModelController {
             imdb: Arc::new(ImdbContext::new()),
             scheduler: Arc::new(scheduler),
             chache_libraries: Arc::new(RwLock::new(HashMap::new())),
-            players: Arc::new(RwLock::new(vec![])),
             convert_queue: Arc::new(RwLock::new(VecDeque::new())),
             convert_current: Arc::new(RwLock::new(false)),
             convert_current_process: Arc::new(RwLock::new(None)),

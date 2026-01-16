@@ -41,7 +41,6 @@ Example: `/sse?libraries=lib1,lib2` will only receive events for those libraries
 | `backups-files` | Backup file progress | Server admin only |
 | `media_progress` | Playback position tracking | User-specific (only progress owner) |
 | `media_rating` | Media rating changes | User-specific (only rating owner) |
-| `players-list` | Connected player devices | User-specific (only player owner) |
 
 ## TypeScript Client Examples
 
@@ -173,18 +172,6 @@ interface MediasRatingMessage {
   rating: MediaRating;
 }
 
-// Players events (user-specific)
-interface PlayerEvent {
-  id: string;
-  name: string;
-  player: string;
-}
-
-interface PlayersMessage {
-  userRef: string;
-  players: PlayerEvent[];
-}
-
 // Wrapper type matching the SSE event structure
 type SseEvent =
   | { Library: LibraryMessage }
@@ -200,8 +187,7 @@ type SseEvent =
   | { Backups: BackupMessage }
   | { BackupsFiles: BackupFileProgress }
   | { MediaProgress: MediasProgressMessage }
-  | { MediaRating: MediasRatingMessage }
-  | { Players: PlayersMessage };
+  | { MediaRating: MediasRatingMessage };
 ```
 
 ### Listening to Events
@@ -319,7 +305,7 @@ class SseClient {
       'library', 'library-status', 'medias', 'upload_progress',
       'convert_progress', 'episodes', 'series', 'movies',
       'people', 'tags', 'backups', 'backups-files', 'media_progress',
-      'media_rating', 'players-list'
+      'media_rating'
     ];
 
     events.forEach(eventName => {
@@ -385,7 +371,7 @@ function useSse(options: UseSseOptions = {}) {
       'library', 'library-status', 'medias', 'upload_progress',
       'convert_progress', 'episodes', 'series', 'movies',
       'people', 'tags', 'backups', 'backups-files', 'media_progress',
-      'media_rating', 'players-list'
+      'media_rating'
     ];
 
     eventTypes.forEach(eventName => {
