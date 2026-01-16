@@ -109,6 +109,10 @@ impl From<ServerLibrary> for ServerLibraryForRead {
     }
 }
 impl ServerLibraryForRead {
+    pub fn is_virtual(&self) -> bool {
+        self.source.as_deref() == Some("virtual")
+    }
+
     fn into_with_role(lib: ServerLibrary, roles: &Vec<LibraryRole>) -> Self {
         ServerLibraryForRead {
             id: lib.id,

@@ -4,7 +4,7 @@ use std::io::Cursor;
 use crate::{domain::{episode::{self, Episode}, media::{FileEpisode, Media, MediaForUpdate}, progress, view_progress::{ViewProgressForAdd, ViewProgressLigh}, watched::{WatchedForAdd, WatchedLight}}, error::RsError, model::{episodes::{EpisodeForUpdate, EpisodeQuery}, medias::MediaQuery, users::{ConnectedUser, HistoryQuery}, ModelController}, plugins::sources::error::SourcesError, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
 use futures::TryStreamExt;
-use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, lookup::{RsLookupEpisode, RsLookupQuery}, request::RsRequest, ImageType, MediaType};
+use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, lookup::{RsLookupEpisode, RsLookupQuery}, request::{RsGroupDownload, RsRequest}, ImageType, MediaType};
 use serde_json::{json, ser, Value};
 use tokio::io::AsyncRead;
 use tokio_util::io::{ReaderStream, StreamReader};
@@ -115,19 +115,20 @@ async fn handler_lookup(Path((library_id, serie_id, season, number)): Path<(Stri
 	Ok(body)
 }
 
-async fn handler_lookup_add(Path((library_id, serie_id, season, number)): Path<(String, String, u32, u32)>, State(mc): State<ModelController>, user: ConnectedUser, Json(request): Json<RsRequest>) -> Result<Json<Value>> {
-	let infos = MediaForUpdate {
-		add_series: Some(vec![FileEpisode {
-			id: serie_id,
-			season: Some(season),
-			episode: Some(number),
-			episode_to: None
-		}]),
+async fn handler_lookup_add(Path((library_id, serie_id, season, number)): Path<(String, String, u32, u32)>, State(mc): State<ModelController>, user: ConnectedUser, Json(mut request): Json<RsRequest>) -> Result<Json<Value>> {
+	// Set series info directly on the request
+	request.albums = Some(vec![serie_id]);
+	request.season = Some(season);
+	request.episode = Some(number);
+
+	let group = RsGroupDownload {
+		requests: vec![request],
+		group: false,
 		..Default::default()
 	};
-	let added = mc.medias_add_request(&library_id,  request, Some(infos), &user).await.expect("Unable to download");
+	let added = mc.download_library_url(&library_id, group, &user).await?;
+	let added = added.into_iter().next().ok_or(Error::Error("No media added".to_string()))?;
 
-	
 	Ok(Json(json!(added)))
 }
 

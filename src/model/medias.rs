@@ -680,10 +680,60 @@ impl ModelController {
     pub async fn download_library_url(&self, library_id: &str, files: RsGroupDownload, requesting_user: &ConnectedUser) -> RsResult<Vec<Media>> {
 
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+
+        let library = self.get_library(library_id, &ConnectedUser::ServerAdmin).await?.ok_or(Error::LibraryNotFound(library_id.to_owned()))?;
+        let store = self.store.get_library_store(library_id)?;
+
+        // Virtual library: store URL references instead of downloading
+        if library.is_virtual() {
+            let mut medias: Vec<Media> = vec![];
+
+            for request in files.requests {
+                let processed_request = if request.status == RsRequestStatus::Unprocessed {
+                    self.exec_request(request.clone(), Some(library_id.to_string()), true, None, &requesting_user).await?
+                } else {
+                    SourceRead::Request(request.clone())
+                };
+
+                let infos: MediaForUpdate = request.clone().into();
+                let final_infos: MediaForUpdate = (&processed_request).into();
+
+                let mut new_file = MediaForAdd::default();
+                new_file.name = final_infos.name.or(infos.name.clone()).unwrap_or(nanoid!());
+                new_file.source = if let Some(selected) = request.selected_file.clone() {
+                    Some(format!("{}|{}", request.url, selected))
+                } else {
+                    Some(request.url.clone())
+                };
+                new_file.mimetype = final_infos.mimetype.or(infos.mimetype.clone()).unwrap_or(DEFAULT_MIME.to_owned());
+                new_file.size = final_infos.size.or(infos.size);
+                new_file.created = Some(infos.created.unwrap_or_else(|| Utc::now().timestamp_millis()));
+                new_file.kind = file_type_from_mime(&new_file.mimetype);
+
+                let id = nanoid!();
+                store.add_media(MediaForInsert { id: id.clone(), media: new_file }).await?;
+
+                // Apply infos (includes add_series and movie from RsRequest conversion)
+                self.update_media(library_id, id.clone(), infos, false, requesting_user).await?;
+
+                // Generate thumb and process
+                if !library.crypt.unwrap_or_default() {
+                    let _ = self.generate_thumb(&library_id, &id, &requesting_user).await;
+                    self.process_media_spawn(library_id.to_string(), id.clone(), true, library.kind == LibraryType::Photos, requesting_user.clone());
+                }
+
+                let media = store.get_media(&id, requesting_user.user_id().ok()).await?.ok_or(Error::MediaNotFound(id.to_owned()))?;
+                self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media: media.clone(), action: ElementAction::Added}] });
+                medias.push(media);
+            }
+
+            return Ok(medias);
+        }
+
+        // For non-virtual libraries, check not crypted and continue with existing download logic
         self.cache_check_library_notcrypt(library_id).await?;
 
         let m = self.source_for_library(library_id).await?;
-        let store = self.store.get_library_store(library_id)?;
         let mut medias: Vec<Media> = vec![];
 
         // Get group-level info from the first request
@@ -1013,51 +1063,6 @@ impl ModelController {
         tx_progress
     }
     
-    pub async fn medias_add_request(&self, library_id: &str, request: RsRequest, additional_infos: Option<MediaForUpdate>, requesting_user: &ConnectedUser) -> RsResult<Media> {
-        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
-     
-        let processed_request = if request.status == RsRequestStatus::Unprocessed {
-            self.exec_request(request.clone(), Some(library_id.to_string()), true, None, &requesting_user).await?
-        } else {
-            SourceRead::Request(request.clone())
-        };
-
-        let infos: MediaForUpdate = request.clone().into();
-
-        let final_infos: MediaForUpdate = (&processed_request).into();
-
-
-     
-        let mut new_file = MediaForAdd::default();
-        new_file.name = final_infos.name.or(infos.name).unwrap_or(nanoid!());
-        new_file.source = if let Some(selected) = request.selected_file { Some(format!("{}|{}",request.url, selected)) } else { Some(request.url) };
-        new_file.mimetype = final_infos.mimetype.or(infos.mimetype).unwrap_or(DEFAULT_MIME.to_owned());
-        new_file.size = final_infos.size.or(infos.size);
-        new_file.created = Some(infos.created.unwrap_or_else(|| Utc::now().timestamp_millis()));
-        
-        new_file.kind = file_type_from_mime(&new_file.mimetype);
-        
-
-        let store = self.store.get_library_store(library_id)?;
-        let id = nanoid!();
-        store.add_media(MediaForInsert { id: id.clone(), media: new_file }).await?;
-        
-        if let Some(update) = additional_infos {
-            self.update_media(library_id, id.clone(), update, false, requesting_user).await?;
-        }
-        let library = self.get_library(library_id, &ConnectedUser::ServerAdmin).await?.ok_or(Error::LibraryNotFound(library_id.to_owned()))?;
-        if !library.crypt.unwrap_or_default() {
-            let _ = self.generate_thumb(&library_id, &id, &requesting_user).await;
-            self.process_media_spawn(library_id.to_string(), id.clone(), true, library.kind == LibraryType::Photos, requesting_user.clone());
-        }
-
-        let media = store.get_media(&id, requesting_user.user_id().ok()).await?.ok_or(Error::MediaNotFound(id.to_owned()))?;
-        self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media: media.clone(), action: ElementAction::Added}] });
-
-        Ok(media)
-	}
-
-
     pub async fn generate_thumb(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> crate::error::Result<()> {
         self.cache_check_library_notcrypt(library_id).await?;
 

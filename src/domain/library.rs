@@ -24,6 +24,12 @@ pub struct ServerLibrary {
     pub hidden: bool,
 }
 
+impl ServerLibrary {
+    pub fn is_virtual(&self) -> bool {
+        self.source == "virtual"
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, EnumString, Default)]
 #[serde(rename_all = "camelCase")]
 #[strum(serialize_all = "camelCase")]

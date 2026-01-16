@@ -484,6 +484,24 @@ impl From<Media> for MediaForUpdate {
 
 impl From<RsRequest> for MediaForUpdate {
     fn from(value: RsRequest) -> Self {
+        // Build add_series from albums (first entry) + season + episode if albums are provided
+        let (add_series, season, episode) = if let Some(albums) = &value.albums {
+            if let Some(serie_id) = albums.first() {
+                // Have direct serie ID - use add_series, don't need season/episode at top level
+                (Some(vec![FileEpisode {
+                    id: serie_id.clone(),
+                    season: value.season,
+                    episode: value.episode,
+                    episode_to: None,
+                }]), None, None)
+            } else {
+                (None, value.season, value.episode)
+            }
+        } else {
+            // No direct album IDs - keep season/episode for series_lookup pairing
+            (None, value.season, value.episode)
+        };
+
         MediaForUpdate {
             name: value.filename_or_extract_from_url(),
             description: value.description,
@@ -493,8 +511,10 @@ impl From<RsRequest> for MediaForUpdate {
             people_lookup: value.people_lookup,
             tags_lookup: value.tags_lookup,
             series_lookup: value.albums_lookup,
-            season: value.season,
-            episode: value.episode,
+            add_series,
+            movie: value.movie,
+            season,
+            episode,
             ..Default::default()
         }
     }

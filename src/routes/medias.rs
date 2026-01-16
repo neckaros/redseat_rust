@@ -584,10 +584,15 @@ async fn handler_add_request(
     user: ConnectedUser,
     Json(request): Json<RsRequest>,
 ) -> Result<Json<Value>> {
+    let group = RsGroupDownload {
+        requests: vec![request],
+        group: false,
+        ..Default::default()
+    };
     let added = mc
-        .medias_add_request(&library_id, request, None, &user)
-        .await
-        .expect("Unable to download");
+        .download_library_url(&library_id, group, &user)
+        .await?;
+    let added = added.into_iter().next().ok_or(Error::Error("No media added".to_string()))?;
 
     Ok(Json(json!(added)))
 }

@@ -4,7 +4,7 @@ use std::io::Cursor;
 use crate::{domain::{media::MediaForUpdate, movie::{Movie, MovieForUpdate}, view_progress::{ViewProgressForAdd, ViewProgressLigh}, watched::{WatchedForAdd, WatchedLight}}, error::RsError, model::{episodes::EpisodeQuery, medias::MediaQuery, movies::{MovieQuery, RsMovieSort}, store::sql::SqlOrder, users::{ConnectedUser, HistoryQuery}, ModelController}, tools::clock::now, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post, put}, Json, Router};
 use futures::TryStreamExt;
-use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, lookup::{RsLookupMovie, RsLookupQuery}, ExternalImage, ImageType, MediaType, RsRequest};
+use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, lookup::{RsLookupMovie, RsLookupQuery}, request::RsGroupDownload, ExternalImage, ImageType, MediaType, RsRequest};
 use serde_json::{json, Value};
 use tokio::io::AsyncRead;
 use tokio_util::io::{ReaderStream, StreamReader};
@@ -98,14 +98,18 @@ async fn handler_lookup(Path((library_id, movie_id)): Path<(String, String)>, St
 	Ok(body)
 }
 
-async fn handler_lookup_add(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(request): Json<RsRequest>) -> Result<Json<Value>> {
-	let infos = MediaForUpdate {
-		movie: Some(movie_id),
+async fn handler_lookup_add(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(mut request): Json<RsRequest>) -> Result<Json<Value>> {
+	// Set movie info directly on the request
+	request.movie = Some(movie_id);
+
+	let group = RsGroupDownload {
+		requests: vec![request],
+		group: false,
 		..Default::default()
 	};
-	let added = mc.medias_add_request(&library_id,  request, Some(infos), &user).await.expect("Unable to download");
+	let added = mc.download_library_url(&library_id, group, &user).await?;
+	let added = added.into_iter().next().ok_or(Error::Error("No media added".to_string()))?;
 
-	
 	Ok(Json(json!(added)))
 }
 
