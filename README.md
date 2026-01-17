@@ -103,3 +103,62 @@ SYSTEM_DEPS_DAV1D_BUILD_INTERNAL=auto
 
 ## run with watch
 cargo watch -c -w src -x "run --bin redseat-rust"
+
+# Plugin Settings
+
+## Parameter Definitions
+
+Plugins can define configurable parameters via the `params` field in `PluginInformation`. These parameter definitions are exposed through the `GET /plugins` endpoint.
+
+Each parameter includes:
+- `name`: Parameter identifier
+- `param`: Type and default value (one of: `text`, `url`, `integer`, `uInteger`, `float`)
+- `description`: Human-readable description
+- `required`: Whether the parameter must be set
+
+Example response from `GET /plugins`:
+```json
+{
+  "id": "jackett_lookup",
+  "name": "jackett_lookup",
+  "params": [
+    {
+      "name": "base_url",
+      "param": { "url": "http://localhost:9117" },
+      "description": "Jackett server base URL",
+      "required": false
+    }
+  ],
+  "credentialType": { "type": "token" },
+  ...
+}
+```
+
+## Credentials and User Settings
+
+User-configured values for plugin parameters are stored in the `Credential` object, not in the plugin itself.
+
+The relationship works as follows:
+1. `Plugin.params` → Parameter **definitions** (schema, types, defaults)
+2. `Plugin.credential` → ID reference to a `Credential`
+3. `Credential.settings` → User-configured **values** (JSON object)
+
+To get a plugin's configured values:
+1. Fetch the plugin via `GET /plugins/:id` to get the `credential` ID
+2. Fetch the credential via `GET /credentials/:id` to get the `settings` values
+
+Example credential with user settings:
+```json
+{
+  "id": "cred_abc123",
+  "name": "My Jackett",
+  "source": "jackett_lookup",
+  "type": "token",
+  "settings": {
+    "base_url": "http://192.168.1.100:9117"
+  },
+  ...
+}
+```
+
+The `settings` field contains the user's values for the parameters defined in `Plugin.params`.

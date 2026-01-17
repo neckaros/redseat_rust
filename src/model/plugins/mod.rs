@@ -36,6 +36,7 @@ impl ModelController {
             if let Some(existing) = existing {
                 existing.description = plugin.infos.description.clone();
                 existing.credential_type = plugin.infos.credential_kind.clone();
+                existing.params = plugin.infos.settings.clone();
             } else {
                 installed_plugins.push(plugin.into());
                 
