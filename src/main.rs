@@ -164,6 +164,7 @@ async fn app() -> Result<Router> {
         .nest("/backups", routes::backups::routes(mc.clone()))
         .nest("/plugins", routes::plugins::routes(mc.clone()))
         .nest("/sse", routes::sse::routes(mc.clone()))
+        .route("/socket.io/", axum::routing::any(socket_io_fallback))
         .fallback(fallback)
         .layer(middleware::from_fn(mw_range::mw_range))
         //.layer(middleware::map_response(main_response_mapper))
@@ -182,6 +183,11 @@ async fn app() -> Result<Router> {
 async fn fallback(uri: Uri) -> (StatusCode, &'static str) {
     log_info(LogServiceType::Other, format!("Route not found: {}", uri));
     (StatusCode::NOT_FOUND, "Not Found")
+}
+
+/// Silent 404 for deprecated socket.io endpoint (old clients still call it)
+async fn socket_io_fallback() -> StatusCode {
+    StatusCode::NOT_FOUND
 }
 struct RegisterInfo {
     cert_paths: Option<(PathBuf, PathBuf)>,
