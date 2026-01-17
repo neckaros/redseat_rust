@@ -225,7 +225,8 @@ impl PluginManager {
                     let wrapped_query = RsLookupWrapper {
                         query: query.clone(),
                         credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
-                        params: None,
+                        params: plugin_with_cred.credential.as_ref()
+                            .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
                     };
                     let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<RsLookupSourceResult>>("lookup", Json(wrapped_query));
                     if let Ok(Json(res)) = res {
