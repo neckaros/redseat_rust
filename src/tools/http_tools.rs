@@ -4,6 +4,7 @@ use mime_guess::MimeGuess;
 use nanoid::nanoid;
 use reqwest::Client;
 use serde::Deserialize;
+use serde_json;
 use tokio::{fs::{self, File}, io::AsyncWriteExt};
 
 use crate::{error::RsResult, tools::file_tools::get_extension_from_mime};
@@ -47,6 +48,11 @@ pub struct GithubRelease {
 }
 
 #[derive(Deserialize, Debug)]
+pub struct GithubError {
+    message: String,
+}
+
+#[derive(Deserialize, Debug)]
 pub struct GithubAsset {
     name: String,
     browser_download_url: String,
@@ -78,13 +84,24 @@ pub async fn download_latest_wasm(repo_url: &str, download_dir: &str, filename: 
         .user_agent("RedseatRustApp/1.0")  // Required by GitHub API
         .build()?;
     let api_url = format!("https://api.github.com/repos/{}/{}/releases/latest", owner, repo);
-    let release: GithubRelease = client
+    let response = client
         .get(&api_url)
         .header("Accept", "application/vnd.github.v3+json")
         .send()
-        .await?
-        .json()
         .await?;
+
+    let status = response.status();
+    let body = response.text().await?;
+
+    if !status.is_success() {
+        let error_msg = serde_json::from_str::<GithubError>(&body)
+            .map(|e| e.message)
+            .unwrap_or_else(|_| body.clone());
+        return Err(crate::error::Error::Error(format!("GitHub API error ({}): {}", status, error_msg)));
+    }
+
+    let release: GithubRelease = serde_json::from_str(&body)
+        .map_err(|e| crate::error::Error::Error(format!("Failed to parse GitHub release: {}. The repository may not have any releases.", e)))?;
 
     // Step 2: Find first .wasm asset
     let wasm_asset = release.assets.iter()
