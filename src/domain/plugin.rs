@@ -2,7 +2,7 @@ use std::{path::PathBuf, sync::Mutex};
 
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
-use rs_plugin_common_interfaces::{CredentialType, PluginInformation, PluginType};
+use rs_plugin_common_interfaces::{CredentialType, CustomParam, PluginInformation, PluginType};
 use extism::Plugin as ExtismPlugin;
 use super::{credential::Credential, ElementAction};
 
@@ -41,6 +41,8 @@ pub struct Plugin {
     pub version: u16,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credential_type: Option<CredentialType>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub params: Vec<CustomParam>,
 }
 
 impl From<&PluginWasm> for Plugin {
@@ -59,7 +61,8 @@ impl From<&PluginWasm> for Plugin {
             publisher: Some(value.infos.publisher.clone()),
             version: value.infos.version,
             description: value.infos.description.clone(),
-            credential_type: value.infos.credential_kind.clone()
+            credential_type: value.infos.credential_kind.clone(),
+            params: value.infos.settings.clone(),
         }
     }
 }

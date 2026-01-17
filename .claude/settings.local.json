@@ -3,7 +3,8 @@
     "allow": [
       "Bash(cargo publish:*)",
       "Bash(cargo build:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(cargo check:*)"
     ]
   }
 }
