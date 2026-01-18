@@ -73,7 +73,7 @@ sha256 = "1.5.0"
 axum-extra = { version = "0.9.2", features = ["query"] }
 http = "1.1.0"
 extism = "1.10.0"
-rs-plugin-common-interfaces = { version = "0.20.5", features = ["rusqlite",] }
+rs-plugin-common-interfaces = { version = "0.20.7", features = ["rusqlite",] }
 async-recursion = "1.1.0"
 async-compression = { version = "0.4.6", features = ["tokio"] }
 youtube_dl = { version = "0.10.0", features = ["tokio", "downloader-rustls-tls"] }

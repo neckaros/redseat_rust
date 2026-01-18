@@ -125,6 +125,8 @@ impl PluginManager {
                     let req = RsRequestPluginRequest {
                         request: request.clone(),
                         credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
+                        params: plugin_with_cred.credential.as_ref()
+                            .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
                     };
                     
                     //println!("call plugin request {:?}: {}", plugin.path, request.url);
@@ -186,6 +188,8 @@ impl PluginManager {
                         let req = RsRequestPluginRequest {
                             request: request.clone(),
                             credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
+                            params: plugin_with_cred.credential.as_ref()
+                                .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
                         };
                         println!("call plugin request permanent  {:?}", plugin.infos.name);
                         println!("{:?}", req);

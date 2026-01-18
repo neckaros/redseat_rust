@@ -20,7 +20,9 @@ impl PluginManager {
             if plugin.infos.capabilities.contains(&PluginType::Provider) {
                 let call_object: RsPluginRequest<RsProviderPath> = RsPluginRequest {
                     request: path.clone(),
-                    plugin_settings: json!({}),
+                    plugin_settings: plugin_with_creds.credential.as_ref()
+                        .map(|c| c.settings.clone())
+                        .unwrap_or(json!({})),
                     credential: plugin_with_creds.credential.clone().map(|c| c.into())
                 };
                 let res = plugin_m.call_get_error_code::<Json<RsPluginRequest<RsProviderPath>>, Json<RsRequest>>("download_request", Json(call_object));
@@ -108,7 +110,9 @@ impl PluginManager {
             if plugin.infos.capabilities.contains(&PluginType::Provider) {
                 let call_object: RsPluginRequest<RsProviderPath> = RsPluginRequest {
                     request: path,
-                    plugin_settings: json!({}),
+                    plugin_settings: plugin_with_creds.credential.as_ref()
+                        .map(|c| c.settings.clone())
+                        .unwrap_or(json!({})),
                     credential: plugin_with_creds.credential.clone().map(|c| c.into())
                 };
                 let res = plugin_m.call_get_error_code::<Json<RsPluginRequest<RsProviderPath>>, ()>("remove_file", Json(call_object));
@@ -138,7 +142,9 @@ impl PluginManager {
             if plugin.infos.capabilities.contains(&PluginType::Provider) {
                 let call_object: RsPluginRequest<RsProviderPath> = RsPluginRequest {
                     request: path,
-                    plugin_settings: json!({}),
+                    plugin_settings: plugin_with_creds.credential.as_ref()
+                        .map(|c| c.settings.clone())
+                        .unwrap_or(json!({})),
                     credential: plugin_with_creds.credential.clone().map(|c| c.into())
                 };
                 let res = plugin_m.call_get_error_code::<Json<RsPluginRequest<RsProviderPath>>, Json<RsProviderEntry>>("file_info", Json(call_object));
