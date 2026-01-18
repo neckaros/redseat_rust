@@ -18,6 +18,7 @@ pub mod media_ratings;
 pub mod medias;
 pub mod movie;
 pub mod people;
+pub mod request_processing;
 pub mod series;
 pub mod tags;
 
@@ -163,6 +164,19 @@ impl SqliteLibraryStore {
                     ));
                     conn.execute_batch(&initial)?;
                     version = 38;
+                    conn.pragma_update(None, "user_version", version)?;
+                    log_info(
+                        LogServiceType::Database,
+                        format!("Update Library Database to version: {}", version),
+                    );
+                }
+
+                if version < 39 {
+                    let initial = String::from_utf8_lossy(include_bytes!(
+                        "039 - REQUEST PROCESSING.sql"
+                    ));
+                    conn.execute_batch(&initial)?;
+                    version = 39;
                     conn.pragma_update(None, "user_version", version)?;
                     log_info(
                         LogServiceType::Database,

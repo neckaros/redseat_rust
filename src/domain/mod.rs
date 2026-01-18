@@ -23,6 +23,7 @@ pub mod deleted;
 pub mod view_progress;
 pub mod media_progress;
 pub mod media_rating;
+pub mod request_processing;
 
 pub mod progress;
 

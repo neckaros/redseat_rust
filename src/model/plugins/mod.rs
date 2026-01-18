@@ -4,14 +4,14 @@
 use std::collections::HashMap;
 
 use nanoid::nanoid;
-use rs_plugin_common_interfaces::{lookup::{RsLookupQuery, RsLookupSourceResult}, request::RsRequest, url::{RsLink, RsLinkType}, PluginCredential, PluginInformation, PluginType, RsPluginRequest};
+use rs_plugin_common_interfaces::{lookup::{RsLookupQuery, RsLookupSourceResult}, request::{RsProcessingStatus, RsRequest}, url::{RsLink, RsLinkType}, PluginCredential, PluginInformation, PluginType, RsPluginRequest};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::{fs::{self, File}, io::{copy, BufWriter}, sync::mpsc::Sender};
 
 
-use crate::{domain::{backup::Backup, library::LibraryRole, plugin::{Plugin, PluginForAdd, PluginForInsert, PluginForInstall, PluginForUpdate, PluginWasm, PluginWithCredential}, progress::{RsProgress, RsProgressCallback}}, error::{RsError, RsResult}, plugins::{get_plugin_fodler, sources::{error::SourcesError, AsyncReadPinBox, SourceRead}, url}, tools::{file_tools::extract_zip, http_tools::download_latest_wasm, video_tools::ytdl::YydlContext}};
+use crate::{domain::{backup::Backup, library::LibraryRole, plugin::{Plugin, PluginForAdd, PluginForInsert, PluginForInstall, PluginForUpdate, PluginWasm, PluginWithCredential}, progress::{RsProgress, RsProgressCallback}, request_processing::{RsRequestProcessing, RsRequestProcessingForInsert, RsRequestProcessingForUpdate}}, error::{RsError, RsResult}, plugins::{get_plugin_fodler, sources::{error::SourcesError, AsyncReadPinBox, SourceRead}, url}, tools::{file_tools::extract_zip, http_tools::download_latest_wasm, video_tools::ytdl::YydlContext}};
 
 use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
 
@@ -277,11 +277,11 @@ impl ModelController {
 
         requesting_user.check_role(&UserRole::Admin)?;
 
-        
+
         let mut path = get_plugin_fodler().await?;
         if filename.ends_with(".wasm") {
             let name = format!("plugin_{}.wasm", nanoid!());
-            path.push(name);        
+            path.push(name);
 
             let mut file = BufWriter::new(File::create(&path).await?);
             tokio::io::copy(reader, &mut file).await?;
@@ -297,4 +297,140 @@ impl ModelController {
         Ok(())
 
 	}
+
+    // ============== Request Processing Methods ==============
+
+    /// Check if request can be played instantly without adding to service
+    pub async fn exec_check_instant(&self, request: RsRequest, library_id: &str, requesting_user: &ConnectedUser) -> RsResult<bool> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        let plugins = self.get_plugins_with_credential(PluginQuery {
+            kind: Some(PluginType::Request),
+            ..Default::default()
+        }).await?;
+
+        let result = self.plugin_manager.check_instant(request.clone(), plugins).await?;
+        Ok(result.unwrap_or(request.instant.unwrap_or(false)))
+    }
+
+    /// Add a request for processing (for RequireAdd status)
+    pub async fn exec_request_add(&self, request: RsRequest, library_id: &str, media_ref: Option<String>, requesting_user: &ConnectedUser) -> RsResult<RsRequestProcessing> {
+        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+
+        let plugins: Vec<PluginWithCredential> = self.get_plugins_with_credential(PluginQuery {
+            kind: Some(PluginType::Request),
+            ..Default::default()
+        }).await?.collect();
+
+        let result = self.plugin_manager.request_add(request.clone(), plugins).await?
+            .ok_or(Error::NotFound("No plugin handled request_add".to_string()))?;
+
+        let (plugin_id, add_response) = result;
+        let id = nanoid!();
+
+        let insert = RsRequestProcessingForInsert {
+            id: id.clone(),
+            processing_id: add_response.processing_id,
+            plugin_id,
+            eta: add_response.eta,
+            media_ref,
+            original_request: Some(request),
+        };
+
+        let library_store = self.store.get_library_store(library_id)?;
+        library_store.add_request_processing(insert).await?;
+
+        library_store.get_request_processing(&id).await?
+            .ok_or(Error::NotFound(format!("Request processing {} not found after insert", id)).into())
+    }
+
+    /// List all active request processings for a library
+    pub async fn list_request_processings(&self, library_id: &str, requesting_user: &ConnectedUser) -> RsResult<Vec<RsRequestProcessing>> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+
+        let library_store = self.store.get_library_store(library_id)?;
+        let processings = library_store.get_all_active_request_processings().await?;
+        Ok(processings)
+    }
+
+    /// Get a specific request processing
+    pub async fn get_request_processing(&self, library_id: &str, processing_id: &str, requesting_user: &ConnectedUser) -> RsResult<RsRequestProcessing> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+
+        let library_store = self.store.get_library_store(library_id)?;
+        library_store.get_request_processing(processing_id).await?
+            .ok_or(Error::NotFound(format!("Processing {} not found", processing_id)).into())
+    }
+
+    /// Get progress of a processing task and update DB
+    pub async fn get_processing_progress(&self, library_id: &str, processing_nanoid: &str, requesting_user: &ConnectedUser) -> RsResult<RsRequestProcessing> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+
+        let library_store = self.store.get_library_store(library_id)?;
+        let processing = library_store.get_request_processing(processing_nanoid).await?
+            .ok_or(Error::NotFound(format!("Processing {} not found", processing_nanoid)))?;
+
+        let plugin_with_cred = self.get_plugin_with_credential(&processing.plugin_id).await?;
+
+        let progress = self.plugin_manager.get_processing_progress(
+            &processing.processing_id,
+            &plugin_with_cred,
+        ).await?;
+
+        let update = RsRequestProcessingForUpdate {
+            progress: Some(progress.progress),
+            status: Some(progress.status),
+            error: progress.error,
+            eta: progress.eta,
+        };
+        library_store.update_request_processing(processing_nanoid, update).await?;
+
+        library_store.get_request_processing(processing_nanoid).await?
+            .ok_or(Error::NotFound(format!("Processing {} not found", processing_nanoid)).into())
+    }
+
+    /// Pause a processing task
+    pub async fn pause_processing(&self, library_id: &str, processing_nanoid: &str, requesting_user: &ConnectedUser) -> RsResult<RsRequestProcessing> {
+        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+
+        let library_store = self.store.get_library_store(library_id)?;
+        let processing = library_store.get_request_processing(processing_nanoid).await?
+            .ok_or(Error::NotFound(format!("Processing {} not found", processing_nanoid)))?;
+
+        let plugin_with_cred = self.get_plugin_with_credential(&processing.plugin_id).await?;
+
+        self.plugin_manager.pause_processing(
+            &processing.processing_id,
+            &plugin_with_cred,
+        ).await?;
+
+        let update = RsRequestProcessingForUpdate {
+            progress: None,
+            status: Some(RsProcessingStatus::Paused),
+            error: None,
+            eta: None,
+        };
+        library_store.update_request_processing(processing_nanoid, update).await?;
+
+        library_store.get_request_processing(processing_nanoid).await?
+            .ok_or(Error::NotFound(format!("Processing {} not found", processing_nanoid)).into())
+    }
+
+    /// Remove/cancel a processing task
+    pub async fn remove_processing(&self, library_id: &str, processing_nanoid: &str, requesting_user: &ConnectedUser) -> RsResult<()> {
+        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+
+        let library_store = self.store.get_library_store(library_id)?;
+        let processing = library_store.get_request_processing(processing_nanoid).await?
+            .ok_or(Error::NotFound(format!("Processing {} not found", processing_nanoid)))?;
+
+        let plugin_with_cred = self.get_plugin_with_credential(&processing.plugin_id).await?;
+
+        self.plugin_manager.remove_processing(
+            &processing.processing_id,
+            &plugin_with_cred,
+        ).await?;
+
+        library_store.remove_request_processing(processing_nanoid).await?;
+        Ok(())
+    }
 }

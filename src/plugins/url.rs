@@ -4,7 +4,7 @@ use async_recursion::async_recursion;
 use extism::convert::Json;
 use futures::future::ok;
 use http::header::{CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE};
-use rs_plugin_common_interfaces::{lookup::{RsLookupQuery, RsLookupSourceResult, RsLookupWrapper}, request::{RsRequest, RsRequestPluginRequest, RsRequestStatus}, url::RsLink, PluginCredential, PluginType};
+use rs_plugin_common_interfaces::{lookup::{RsLookupQuery, RsLookupSourceResult, RsLookupWrapper}, request::{RsProcessingActionRequest, RsProcessingProgress, RsRequest, RsRequestAddResponse, RsRequestPluginRequest, RsRequestStatus}, url::RsLink, PluginCredential, PluginType};
 
 use crate::{domain::{plugin::PluginWithCredential, progress::RsProgressCallback}, error::RsResult, plugins::sources::{AsyncReadPinBox, FileStreamResult}, tools::{array_tools::AddOrSetArray, file_tools::{filename_from_path, get_mime_from_filename}, http_tools::{extract_header, guess_filename, parse_content_disposition}, log::log_error, video_tools::ytdl::YydlContext}, Error};
 
@@ -223,7 +223,7 @@ impl PluginManager {
         for plugin_with_cred in plugins {
             if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
                 let mut plugin_m = plugin.plugin.lock().unwrap();
-                
+
                 println!("PLUGIN {}", plugin_with_cred.plugin.name);
                 if plugin.infos.capabilities.contains(&PluginType::Lookup) {
                     let wrapped_query = RsLookupWrapper {
@@ -235,7 +235,7 @@ impl PluginManager {
                     let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<RsLookupSourceResult>>("lookup", Json(wrapped_query));
                     if let Ok(Json(res)) = res {
                         println!("ok pl");
-                        if let RsLookupSourceResult::Requests(mut request) = res {  
+                        if let RsLookupSourceResult::Requests(mut request) = res {
                             println!("ok request");
                             results.append(&mut request)
                         }
@@ -244,10 +244,123 @@ impl PluginManager {
                             log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request lookup {} {:?}", code, error))
                         }
                     }
-                    
+
                 }
             }
         }
         Ok(results)
+    }
+
+    /// Check if a request can be played/downloaded instantly without needing to add to service first
+    pub async fn check_instant(&self, request: RsRequest, plugins: impl Iterator<Item = PluginWithCredential>) -> RsResult<Option<bool>> {
+        for plugin_with_cred in plugins {
+            if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
+                let mut plugin_m = plugin.plugin.lock().unwrap();
+                if plugin.infos.capabilities.contains(&PluginType::Request) {
+                    let req = RsRequestPluginRequest {
+                        request: request.clone(),
+                        credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
+                        params: plugin_with_cred.credential.as_ref()
+                            .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
+                    };
+                    let res = plugin_m.call_get_error_code::<Json<RsRequestPluginRequest>, Json<bool>>("check_instant", Json(req));
+                    if let Ok(Json(instant)) = res {
+                        return Ok(Some(instant));
+                    } else if let Err((error, code)) = res {
+                        if code != 404 {
+                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error check_instant: {} {:?}", code, error));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Add a request for processing (RequireAdd status)
+    /// Returns the plugin_id and the response from the plugin
+    pub async fn request_add(&self, request: RsRequest, plugins: Vec<PluginWithCredential>) -> RsResult<Option<(String, RsRequestAddResponse)>> {
+        for plugin_with_cred in plugins.iter() {
+            if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
+                let mut plugin_m = plugin.plugin.lock().unwrap();
+                if plugin.infos.capabilities.contains(&PluginType::Request) {
+                    let req = RsRequestPluginRequest {
+                        request: request.clone(),
+                        credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
+                        params: plugin_with_cred.credential.as_ref()
+                            .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
+                    };
+                    let res = plugin_m.call_get_error_code::<Json<RsRequestPluginRequest>, Json<RsRequestAddResponse>>("request_add", Json(req));
+                    if let Ok(Json(response)) = res {
+                        return Ok(Some((plugin_with_cred.plugin.id.clone(), response)));
+                    } else if let Err((error, code)) = res {
+                        if code != 404 {
+                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request_add: {} {:?}", code, error));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Get progress of a processing task
+    pub async fn get_processing_progress(&self, processing_id: &str, plugin_with_cred: &PluginWithCredential) -> RsResult<RsProcessingProgress> {
+        if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
+            let mut plugin_m = plugin.plugin.lock().unwrap();
+            let req = RsProcessingActionRequest {
+                processing_id: processing_id.to_string(),
+                credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
+                params: plugin_with_cred.credential.as_ref()
+                    .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
+            };
+            let res = plugin_m.call_get_error_code::<Json<RsProcessingActionRequest>, Json<RsProcessingProgress>>("get_progress", Json(req));
+            match res {
+                Ok(Json(progress)) => Ok(progress),
+                Err((error, code)) => Err(Error::Error(format!("Plugin error {}: {}", code, error))),
+            }
+        } else {
+            Err(Error::NotFound(format!("Plugin not found: {}", plugin_with_cred.plugin.path)))
+        }
+    }
+
+    /// Pause a processing task
+    pub async fn pause_processing(&self, processing_id: &str, plugin_with_cred: &PluginWithCredential) -> RsResult<()> {
+        if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
+            let mut plugin_m = plugin.plugin.lock().unwrap();
+            let req = RsProcessingActionRequest {
+                processing_id: processing_id.to_string(),
+                credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
+                params: plugin_with_cred.credential.as_ref()
+                    .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
+            };
+            let res = plugin_m.call_get_error_code::<Json<RsProcessingActionRequest>, ()>("pause", Json(req));
+            match res {
+                Ok(()) => Ok(()),
+                Err((error, code)) => Err(Error::Error(format!("Plugin error {}: {}", code, error))),
+            }
+        } else {
+            Err(Error::NotFound(format!("Plugin not found: {}", plugin_with_cred.plugin.path)))
+        }
+    }
+
+    /// Remove/cancel a processing task
+    pub async fn remove_processing(&self, processing_id: &str, plugin_with_cred: &PluginWithCredential) -> RsResult<()> {
+        if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
+            let mut plugin_m = plugin.plugin.lock().unwrap();
+            let req = RsProcessingActionRequest {
+                processing_id: processing_id.to_string(),
+                credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
+                params: plugin_with_cred.credential.as_ref()
+                    .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
+            };
+            let res = plugin_m.call_get_error_code::<Json<RsProcessingActionRequest>, ()>("remove", Json(req));
+            match res {
+                Ok(()) => Ok(()),
+                Err((error, code)) => Err(Error::Error(format!("Plugin error {}: {}", code, error))),
+            }
+        } else {
+            Err(Error::NotFound(format!("Plugin not found: {}", plugin_with_cred.plugin.path)))
+        }
     }
 }

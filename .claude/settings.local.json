@@ -4,7 +4,8 @@
       "Bash(cargo publish:*)",
       "Bash(cargo build:*)",
       "Bash(grep:*)",
-      "Bash(cargo check:*)"
+      "Bash(cargo check:*)",
+      "Bash(find:*)"
     ]
   }
 }

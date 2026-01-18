@@ -1,5 +1,5 @@
 
-use crate::{domain::plugin::{PluginForAdd, PluginForInstall, PluginForUpdate}, model::{plugins::PluginQuery, users::ConnectedUser}, ModelController, Result};
+use crate::{domain::{library::LibraryRole, plugin::{PluginForAdd, PluginForInstall, PluginForUpdate}}, model::{plugins::PluginQuery, users::ConnectedUser}, ModelController, Result};
 use axum::{extract::{Path, Query, State}, response::Response, routing::{delete, get, patch, post}, Json, Router};
 use rs_plugin_common_interfaces::{request::RsRequest, url::RsLink, video::RsVideoCapabilities, PluginType};
 use serde::{Deserialize, Serialize};
@@ -22,12 +22,20 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/requests/url/stream", get(handler_request_url_stream))
 		.route("/requests/url/sharetoken", get(handler_request_url_sharetoken))
 
-		
+		// Request processing routes
+		.route("/requests/check-instant", post(handler_check_instant))
+		.route("/requests/add", post(handler_request_add))
+		.route("/requests/processing", get(handler_list_processing))
+		.route("/requests/processing/:id", get(handler_get_processing))
+		.route("/requests/processing/:id/progress", get(handler_get_processing_progress))
+		.route("/requests/processing/:id/pause", post(handler_pause_processing))
+		.route("/requests/processing/:id", delete(handler_remove_processing))
+
 		.route("/videoconvert", get(handler_list_video_convert))
 		.route("/videoconvert/:plugin_id/capabilities", get(handler_video_convert_caps))
 
 		.with_state(mc)
-        
+
 }
 
 
@@ -139,4 +147,48 @@ async fn handler_video_convert_status(Path((library_id, plugin_id, encode_id)): 
 	let status = mc.plugin_manager.convert_status(wasm, &encode_id).await?;
 	let body = Json(json!(status));
 	Ok(body)
+}
+
+// ============== Request Processing Handlers ==============
+
+async fn handler_check_instant(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Json(request): Json<RsRequest>) -> Result<Json<Value>> {
+	let result = mc.exec_check_instant(request, &library_id, &user).await?;
+	Ok(Json(json!({ "instant": result })))
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RequestAddBody {
+	request: RsRequest,
+	media_ref: Option<String>,
+}
+
+async fn handler_request_add(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Json(body): Json<RequestAddBody>) -> Result<Json<Value>> {
+	let result = mc.exec_request_add(body.request, &library_id, body.media_ref, &user).await?;
+	Ok(Json(json!(result)))
+}
+
+async fn handler_list_processing(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	let processings = mc.list_request_processings(&library_id, &user).await?;
+	Ok(Json(json!(processings)))
+}
+
+async fn handler_get_processing(Path((library_id, id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	let processing = mc.get_request_processing(&library_id, &id, &user).await?;
+	Ok(Json(json!(processing)))
+}
+
+async fn handler_get_processing_progress(Path((library_id, id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	let result = mc.get_processing_progress(&library_id, &id, &user).await?;
+	Ok(Json(json!(result)))
+}
+
+async fn handler_pause_processing(Path((library_id, id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	let result = mc.pause_processing(&library_id, &id, &user).await?;
+	Ok(Json(json!(result)))
+}
+
+async fn handler_remove_processing(Path((library_id, id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	mc.remove_processing(&library_id, &id, &user).await?;
+	Ok(Json(json!({"status": "ok"})))
 }
