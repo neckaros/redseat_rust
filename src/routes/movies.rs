@@ -1,7 +1,7 @@
 
 use std::io::Cursor;
 
-use crate::{domain::{media::MediaForUpdate, movie::{Movie, MovieForUpdate}, view_progress::{ViewProgressForAdd, ViewProgressLigh}, watched::{WatchedForAdd, WatchedLight}}, error::RsError, model::{episodes::EpisodeQuery, medias::MediaQuery, movies::{MovieQuery, RsMovieSort}, store::sql::SqlOrder, users::{ConnectedUser, HistoryQuery}, ModelController}, tools::clock::now, Error, Result};
+use crate::{domain::{media::MediaForUpdate, movie::{Movie, MovieForUpdate}, view_progress::{ViewProgressForAdd, ViewProgressLigh}, watched::{WatchedForAdd, WatchedForDelete, WatchedLight}, RsIdsExt}, error::RsError, model::{episodes::EpisodeQuery, medias::MediaQuery, movies::{MovieQuery, RsMovieSort}, store::sql::SqlOrder, users::{ConnectedUser, HistoryQuery}, ModelController}, tools::clock::now, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post, put}, Json, Router};
 use futures::TryStreamExt;
 use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, lookup::{RsLookupMovie, RsLookupQuery}, request::RsGroupDownload, ExternalImage, ImageType, MediaType, RsRequest};
@@ -38,6 +38,7 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/:id/progress", post(handler_progress_set))
 		.route("/:id/watched", get(handler_watched_get))
 		.route("/:id/watched", post(handler_watched_set))
+		.route("/:id/watched", delete(handler_watched_delete))
 		.with_state(mc.clone())
         
 }
@@ -170,6 +171,16 @@ async fn handler_watched_set(Path((library_id, movie_id)): Path<(String, String)
 	let id = RsIds::from(movie).into_best_external().ok_or(Error::NotFound("Unable to get best external id for movie".to_string()))?;
 	let watched = WatchedForAdd { kind: MediaType::Movie, id, date: watched.date };
 	mc.add_watched(watched, &user, Some(library_id)).await?;
+
+	Ok(())
+}
+
+async fn handler_watched_delete(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<()> {
+	let movie = mc.get_movie(&library_id, movie_id, &user).await?;
+	let rs_ids = RsIds::from(movie);
+	let ids = rs_ids.into_all_external();
+	let watched = WatchedForDelete { kind: MediaType::Movie, ids };
+	mc.remove_watched(watched, &user, Some(library_id)).await?;
 
 	Ok(())
 }

@@ -19,6 +19,7 @@ use crate::{
         people::PeopleMessage,
         serie::SeriesMessage,
         tag::TagMessage,
+        watched::{Unwatched, Watched},
     },
     model::{media_progresses::MediasProgressMessage, media_ratings::MediasRatingMessage, users::ConnectedUser, ModelController},
 };
@@ -41,6 +42,8 @@ pub enum SseEvent {
     BackupsFiles(BackupFileProgress),
     MediaProgress(MediasProgressMessage),
     MediaRating(MediasRatingMessage),
+    Watched(Watched),
+    Unwatched(Unwatched),
 }
 
 impl SseEvent {
@@ -61,6 +64,8 @@ impl SseEvent {
             SseEvent::BackupsFiles(_) => "backups-files",
             SseEvent::MediaProgress(_) => "media_progress",
             SseEvent::MediaRating(_) => "media_rating",
+            SseEvent::Watched(_) => "watched",
+            SseEvent::Unwatched(_) => "unwatched",
         }
     }
 
@@ -81,6 +86,8 @@ impl SseEvent {
             SseEvent::BackupsFiles(m) => m.library.as_deref(),
             SseEvent::MediaProgress(m) => Some(&m.library),
             SseEvent::MediaRating(m) => Some(&m.library),
+            SseEvent::Watched(_) => None,
+            SseEvent::Unwatched(_) => None,
         }
     }
 
@@ -116,6 +123,24 @@ impl SseEvent {
             SseEvent::MediaRating(m) => {
                 user.user_id()
                     .map(|uid| uid == m.rating.user_ref)
+                    .unwrap_or(false)
+            }
+
+            // User-specific events: only send to the user who marked content as watched
+            SseEvent::Watched(w) => {
+                user.user_id()
+                    .ok()
+                    .zip(w.user_ref.as_ref())
+                    .map(|(uid, wr)| uid == *wr)
+                    .unwrap_or(false)
+            }
+
+            // User-specific events: only send to the user who unmarked content as watched
+            SseEvent::Unwatched(w) => {
+                user.user_id()
+                    .ok()
+                    .zip(w.user_ref.as_ref())
+                    .map(|(uid, wr)| uid == *wr)
                     .unwrap_or(false)
             }
 

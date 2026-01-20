@@ -2,6 +2,8 @@ use rs_plugin_common_interfaces::domain::rs_ids::RsIds;
 use rusqlite::{params, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, Row, ToSql};
 use serde::{Deserialize, Serialize};
 
+use rs_plugin_common_interfaces::MediaType;
+
 use crate::{domain::{library::LibraryLimits, view_progress::{ViewProgress, ViewProgressForAdd}, watched::{Watched, WatchedForAdd}}, model::{store::{from_comma_separated, sql::library, SqliteStore}, users::{HistoryQuery, ServerUser, ServerUserForUpdate, ServerUserLibrariesRights, ServerUserLibrariesRightsWithUser, ServerUserPreferences, UploadKey, UserRole, ViewProgressQuery}}, plugins::sources::error::SourcesError};
 
 use super::{super::Error, deserialize_from_row, OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType};
@@ -258,8 +260,14 @@ impl SqliteStore {
     }
 
     pub async fn get_watched(&self, query: HistoryQuery, user_id: String, other_users: Vec<String>) -> Result<Vec<Watched>> {
-        let row = self.server_store.call( move |conn| { 
+        let row = self.server_store.call( move |conn| {
             let mut where_query = RsQueryBuilder::new();
+
+            // Filter out deleted (date = 0) items unless include_deleted is true
+            if !query.include_deleted {
+                where_query.add_where(SqlWhereType::After("date".to_owned(), Box::new(0i64)));
+            }
+
             if let Some(q) = query.after {
                 where_query.add_where(SqlWhereType::After("modified".to_owned(), Box::new(q)));
             }
@@ -304,7 +312,7 @@ impl SqliteStore {
 
 
     pub async fn add_watched(&self, watched: WatchedForAdd, user_id: String) -> Result<()> {
-        self.server_store.call( move |conn| { 
+        self.server_store.call( move |conn| {
 
             conn.execute("INSERT OR REPLACE INTO Watched (type, id, user_ref, date)
             VALUES (?, ? ,?, ?)", params![
@@ -319,13 +327,36 @@ impl SqliteStore {
                 watched.id,
                 user_id,
             ])?;
-            
+
             Ok(())
         }).await?;
         Ok(())
     }
 
+    /// Marks watched entries as deleted by setting date=0
+    /// This allows clients to sync deletions via the history API with ?includeDeleted=true
+    /// Returns the list of IDs that were actually marked as deleted
+    pub async fn delete_watched(&self, kind: MediaType, ids: Vec<String>, user_ref: String) -> Result<Vec<String>> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
 
+        let deleted_ids = self.server_store.call(move |conn| {
+            let mut deleted_ids = Vec::new();
+            for id in ids {
+                let rows_affected = conn.execute(
+                    "UPDATE Watched SET date = 0, modified = ? WHERE type = ? AND id = ? AND user_ref = ? AND date != 0",
+                    params![now, kind, &id, &user_ref]
+                )?;
+                if rows_affected > 0 {
+                    deleted_ids.push(id);
+                }
+            }
+            Ok(deleted_ids)
+        }).await?;
+        Ok(deleted_ids)
+    }
 }
 
 

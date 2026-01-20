@@ -8,7 +8,7 @@ use rusqlite::{
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
 
-use crate::{domain::{library::{LibraryLimits, LibraryRole, LibraryType}, view_progress::{ViewProgress, ViewProgressForAdd}, watched::{Watched, WatchedForAdd}}, error::RsResult, tools::auth::{ClaimsLocal, ClaimsLocalType}};
+use crate::{domain::{library::{LibraryLimits, LibraryRole, LibraryType}, view_progress::{ViewProgress, ViewProgressForAdd}, watched::{Unwatched, Watched, WatchedForAdd, WatchedForDelete}}, error::RsResult, routes::sse::SseEvent, tools::{auth::{ClaimsLocal, ClaimsLocalType}, clock::now}};
 
 use super::{error::{Error, Result}, libraries::ServerLibraryForRead, medias::RsSort, store::sql::{users::WatchedQuery, SqlOrder}, ModelController};
 
@@ -373,9 +373,9 @@ pub struct ServerUserForUpdate {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")] 
+#[serde(rename_all = "camelCase")]
 pub struct HistoryQuery {
-    
+
     #[serde(default)]
     pub sort: RsSort,
     #[serde(default)]
@@ -387,8 +387,14 @@ pub struct HistoryQuery {
     pub types: Vec<MediaType>,
 
     pub id: Option<RsIds>,
-    
+
     pub page_key: Option<u64>,
+
+    /// Include items with date=0 (unwatched/deleted).
+    /// When true, returns all items including soft-deleted ones for sync purposes.
+    /// Clients can use this with `after` parameter to sync deletions that occurred while offline.
+    #[serde(default)]
+    pub include_deleted: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -421,17 +427,72 @@ impl ModelController {
         Ok(watcheds)       
     }
 
+    pub fn send_watched(&self, watched: Watched) {
+        self.broadcast_sse(SseEvent::Watched(watched));
+    }
+
     pub async fn add_watched(&self, watched: WatchedForAdd, user: &ConnectedUser, library_id: Option<String>) -> RsResult<()> {
         user.check_role(&UserRole::Read)?;
 
         let user_id = user.user_id()?;
+        let modified = now().timestamp_millis() as u64;
+
         if let Some(library_id) = library_id {
             let all_ids = self.get_library_progress_merged_users(&library_id, user_id).await?;
             for id in all_ids {
-                self.store.add_watched(watched.clone(), id).await?;
+                self.store.add_watched(watched.clone(), id.clone()).await?;
+                self.send_watched(Watched {
+                    kind: watched.kind.clone(),
+                    id: watched.id.clone(),
+                    user_ref: Some(id),
+                    date: watched.date,
+                    modified,
+                });
             }
         } else {
-            self.store.add_watched(watched.clone(), user_id).await?;
+            self.store.add_watched(watched.clone(), user_id.clone()).await?;
+            self.send_watched(Watched {
+                kind: watched.kind.clone(),
+                id: watched.id.clone(),
+                user_ref: Some(user_id),
+                date: watched.date,
+                modified,
+            });
+        }
+        Ok(())
+    }
+
+    pub fn send_unwatched(&self, unwatched: Unwatched) {
+        self.broadcast_sse(SseEvent::Unwatched(unwatched));
+    }
+
+    /// Removes watched entries. Tries all provided IDs and emits a single SSE event with all IDs.
+    pub async fn remove_watched(&self, watched: WatchedForDelete, user: &ConnectedUser, library_id: Option<String>) -> RsResult<()> {
+        user.check_role(&UserRole::Read)?;
+        let user_id = user.user_id()?;
+        let modified = now().timestamp_millis() as u64;
+
+        if let Some(library_id) = library_id {
+            let all_user_ids = self.get_library_progress_merged_users(&library_id, user_id).await?;
+            for uid in all_user_ids {
+                self.store.delete_watched(watched.kind.clone(), watched.ids.clone(), uid.clone()).await?;
+                // Emit single SSE with all IDs for client matching
+                self.send_unwatched(Unwatched {
+                    kind: watched.kind.clone(),
+                    ids: watched.ids.clone(),
+                    user_ref: Some(uid.clone()),
+                    modified,
+                });
+            }
+        } else {
+            self.store.delete_watched(watched.kind.clone(), watched.ids.clone(), user_id.clone()).await?;
+            // Emit single SSE with all IDs for client matching
+            self.send_unwatched(Unwatched {
+                kind: watched.kind.clone(),
+                ids: watched.ids.clone(),
+                user_ref: Some(user_id.clone()),
+                modified,
+            });
         }
         Ok(())
     }

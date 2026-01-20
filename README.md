@@ -162,3 +162,65 @@ Example credential with user settings:
 ```
 
 The `settings` field contains the user's values for the parameters defined in `Plugin.params`.
+
+# Watch History API
+
+## ID Format
+
+Watch history entries use **external IDs** (from providers like IMDb, Trakt, TMDb) rather than local database IDs. This enables cross-server portability and external service synchronization.
+
+**Format**: `provider:value`
+
+Examples:
+- `imdb:tt1234567` (IMDb ID)
+- `trakt:123456` (Trakt ID)
+- `tmdb:550` (TMDb ID)
+- `redseat:abc123` (Local fallback for episodes without external IDs)
+
+## Endpoints
+
+### Mark Content as Watched
+
+**Movie**: `POST /libraries/:libraryId/movies/:id/watched`
+```json
+{ "date": 1705766400000 }
+```
+
+**Episode**: `POST /libraries/:libraryId/series/:serieId/seasons/:season/episodes/:number/watched`
+```json
+{ "date": 1705766400000 }
+```
+
+**Direct (requires external ID)**: `POST /users/me/history`
+```json
+{ "type": "movie", "id": "imdb:tt1234567", "date": 1705766400000 }
+```
+
+### Remove from Watch History
+
+**Movie**: `DELETE /libraries/:libraryId/movies/:id/watched`
+
+**Episode**: `DELETE /libraries/:libraryId/series/:serieId/seasons/:season/episodes/:number/watched`
+
+**Direct (with multiple possible IDs)**: `DELETE /users/me/history`
+```json
+{ "type": "movie", "ids": ["imdb:tt1234567", "trakt:12345", "tmdb:550"] }
+```
+
+The delete endpoint accepts multiple IDs because the watched entry could have been created with any available external ID. The server tries to delete entries matching any of the provided IDs.
+
+### Get Watch History
+
+**All history**: `GET /users/me/history`
+
+**Movie watched status**: `GET /libraries/:libraryId/movies/:id/watched`
+
+**Episode watched status**: `GET /libraries/:libraryId/series/:serieId/seasons/:season/episodes/:number/watched`
+
+### SSE Events
+
+Real-time watch state changes are broadcast via SSE:
+- `watched` - Content marked as watched
+- `unwatched` - Content removed from watch history
+
+See [docs/SSE.md](docs/SSE.md) for detailed SSE documentation.

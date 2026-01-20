@@ -6,6 +6,45 @@ use crate::error::RsResult;
 
 use self::{episode::Episode, media::Media, movie::Movie, serie::Serie};
 
+/// Extension trait for RsIds to get all possible external IDs
+pub trait RsIdsExt {
+    /// Returns all non-None external IDs as formatted strings
+    fn into_all_external(self) -> Vec<String>;
+    /// Returns all non-None external IDs plus local redseat ID
+    fn into_all_external_or_local(self) -> Vec<String>;
+}
+
+impl RsIdsExt for RsIds {
+    fn into_all_external(self) -> Vec<String> {
+        let mut ids = Vec::new();
+        if let Some(imdb) = self.imdb {
+            ids.push(format!("imdb:{}", imdb));
+        }
+        if let Some(trakt) = self.trakt {
+            ids.push(format!("trakt:{}", trakt));
+        }
+        if let Some(tmdb) = self.tmdb {
+            ids.push(format!("tmdb:{}", tmdb));
+        }
+        if let Some(tvdb) = self.tvdb {
+            ids.push(format!("tvdb:{}", tvdb));
+        }
+        if let Some(slug) = self.slug {
+            ids.push(format!("slug:{}", slug));
+        }
+        ids
+    }
+
+    fn into_all_external_or_local(self) -> Vec<String> {
+        let redseat = self.redseat.clone();
+        let mut ids = self.into_all_external();
+        if let Some(redseat) = redseat {
+            ids.push(format!("redseat:{}", redseat));
+        }
+        ids
+    }
+}
+
 pub mod media;
 pub mod library;
 pub mod ffmpeg;

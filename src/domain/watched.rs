@@ -28,7 +28,27 @@ pub struct WatchedForAdd {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
-#[serde(rename_all = "camelCase")] 
+#[serde(rename_all = "camelCase")]
 pub struct WatchedLight {
     pub date: i64
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct WatchedForDelete {
+    #[serde(rename = "type")]
+    pub kind: MediaType,
+    /// Multiple possible IDs to try (imdb, trakt, tmdb, local, etc.)
+    pub ids: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Unwatched {
+    #[serde(rename = "type")]
+    pub kind: MediaType,
+    /// All possible IDs for this content (imdb, trakt, tmdb, local, etc.)
+    pub ids: Vec<String>,
+    pub user_ref: Option<String>,
+    pub modified: u64,
 }

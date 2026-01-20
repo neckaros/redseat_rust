@@ -1,5 +1,5 @@
-use crate::{domain::{view_progress::ViewProgressForAdd, watched::{Watched, WatchedForAdd}}, model::{users::{ConnectedUser, HistoryQuery, InvitationRedeemer, UserRole, ViewProgressQuery}, ModelController}, Result};
-use axum::{extract::{Path, State}, middleware, routing::{get, post}, Json, Router};
+use crate::{domain::{view_progress::ViewProgressForAdd, watched::{Watched, WatchedForAdd, WatchedForDelete}}, model::{users::{ConnectedUser, HistoryQuery, InvitationRedeemer, UserRole, ViewProgressQuery}, ModelController}, Result};
+use axum::{extract::{Path, State}, middleware, routing::{delete, get, post}, Json, Router};
 use axum_extra::extract::Query;
 use serde_json::{json, Value};
 use tower_http::trace::TraceLayer;
@@ -23,6 +23,7 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/admin/history/import", post(handler_add_all_history))
 		.route("/me/history", get(handler_list_history))
 		.route("/me/history", post(handler_add_history))
+		.route("/me/history", delete(handler_delete_history))
 		.route("/me/history/progress/:id", get(handler_get_progress))
 		.route("/me/history/progress", post(handler_add_progress))
 
@@ -80,6 +81,13 @@ async fn handler_add_all_history(State(mc): State<ModelController>, user: Connec
 
 async fn handler_add_history(State(mc): State<ModelController>, user: ConnectedUser, Json(watched): Json<WatchedForAdd>) -> Result<Json<Value>> {
 	mc.add_watched(watched, &user, None).await?;
+	let body = Json(json!({"ok": true}));
+
+	Ok(body)
+}
+
+async fn handler_delete_history(State(mc): State<ModelController>, user: ConnectedUser, Json(watched): Json<WatchedForDelete>) -> Result<Json<Value>> {
+	mc.remove_watched(watched, &user, None).await?;
 	let body = Json(json!({"ok": true}));
 
 	Ok(body)

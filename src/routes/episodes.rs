@@ -1,7 +1,7 @@
 
 use std::io::Cursor;
 
-use crate::{domain::{episode::{self, Episode}, media::{FileEpisode, Media, MediaForUpdate}, progress, view_progress::{ViewProgressForAdd, ViewProgressLigh}, watched::{WatchedForAdd, WatchedLight}}, error::RsError, model::{episodes::{EpisodeForUpdate, EpisodeQuery}, medias::MediaQuery, users::{ConnectedUser, HistoryQuery}, ModelController}, plugins::sources::error::SourcesError, Error, Result};
+use crate::{domain::{episode::{self, Episode}, media::{FileEpisode, Media, MediaForUpdate}, progress, view_progress::{ViewProgressForAdd, ViewProgressLigh}, watched::{WatchedForAdd, WatchedForDelete, WatchedLight}, RsIdsExt}, error::RsError, model::{episodes::{EpisodeForUpdate, EpisodeQuery}, medias::MediaQuery, users::{ConnectedUser, HistoryQuery}, ModelController}, plugins::sources::error::SourcesError, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
 use futures::TryStreamExt;
 use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, lookup::{RsLookupEpisode, RsLookupQuery}, request::{RsGroupDownload, RsRequest}, ImageType, MediaType};
@@ -32,6 +32,7 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/seasons/:season/episodes/:number/progress", post(handler_progress_set))
 		.route("/seasons/:season/episodes/:number/watched", get(handler_watched_get))
 		.route("/seasons/:season/episodes/:number/watched", post(handler_watched_set))
+		.route("/seasons/:season/episodes/:number/watched", delete(handler_watched_delete))
 		.route("/:id/image", post(handler_post_image))
 		.with_state(mc)
         
@@ -180,6 +181,16 @@ async fn handler_watched_set(Path((library_id, serie_id, season, number)): Path<
 	let id = RsIds::from(episode).into_best_external_or_local().ok_or(Error::NotFound(format!("Unable to get best external for handler_watched_set")))?;
 	let watched = WatchedForAdd { kind: MediaType::Episode, id, date: watched.date };
 	mc.add_watched(watched, &user, Some(library_id)).await?;
+
+	Ok(())
+}
+
+async fn handler_watched_delete(Path((library_id, serie_id, season, number)): Path<(String, String, u32, u32)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<()> {
+	let episode = mc.get_episode(&library_id, serie_id.clone(), season, number, &user).await?;
+	let rs_ids = RsIds::from(episode);
+	let ids = rs_ids.into_all_external_or_local();
+	let watched = WatchedForDelete { kind: MediaType::Episode, ids };
+	mc.remove_watched(watched, &user, Some(library_id)).await?;
 
 	Ok(())
 }

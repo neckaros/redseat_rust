@@ -41,6 +41,8 @@ Example: `/sse?libraries=lib1,lib2` will only receive events for those libraries
 | `backups-files` | Backup file progress | Server admin only |
 | `media_progress` | Playback position tracking | User-specific (only progress owner) |
 | `media_rating` | Media rating changes | User-specific (only rating owner) |
+| `watched` | Content marked as watched | User-specific (only watched owner) |
+| `unwatched` | Content unmarked as watched | User-specific (only watched owner) |
 
 ## TypeScript Client Examples
 
@@ -172,6 +174,28 @@ interface MediasRatingMessage {
   rating: MediaRating;
 }
 
+// Watched events (user-specific)
+// IMPORTANT: The `id` field uses external IDs, NOT local database IDs.
+// Format: "provider:id" (e.g., "imdb:tt1234567", "trakt:123456", "tmdb:550")
+// For movies: Uses the best available external ID (priority: imdb > trakt > tmdb > tvdb > slug)
+// For episodes: Uses external IDs or falls back to local "redseat:{id}" if no external IDs exist
+interface Watched {
+  type: string;  // MediaType: "movie", "episode", etc.
+  id: string;    // External ID in format "provider:value" (e.g., "imdb:tt1234567")
+  userRef?: string;
+  date: number;  // Timestamp when content was watched
+  modified: number;
+}
+
+// Unwatched events (user-specific)
+// NOTE: Different structure from Watched - contains ALL possible IDs for client matching
+interface Unwatched {
+  type: string;     // MediaType: "movie", "episode", etc.
+  ids: string[];    // All possible IDs in format "provider:value" (e.g., ["imdb:tt1234567", "trakt:12345", "tmdb:550"])
+  userRef?: string;
+  modified: number;
+}
+
 // Wrapper type matching the SSE event structure
 type SseEvent =
   | { Library: LibraryMessage }
@@ -187,7 +211,9 @@ type SseEvent =
   | { Backups: BackupMessage }
   | { BackupsFiles: BackupFileProgress }
   | { MediaProgress: MediasProgressMessage }
-  | { MediaRating: MediasRatingMessage };
+  | { MediaRating: MediasRatingMessage }
+  | { Watched: Watched }
+  | { Unwatched: Unwatched };  // Note: different structure than Watched
 ```
 
 ### Listening to Events
@@ -237,6 +263,23 @@ eventSource.addEventListener('media_progress', (event) => {
   if ('MediaProgress' in data) {
     const { library, progress } = data.MediaProgress;
     console.log(`Progress update in ${library}: ${progress.mediaRef} at ${progress.progress}ms`);
+  }
+});
+
+eventSource.addEventListener('watched', (event) => {
+  const data: SseEvent = JSON.parse(event.data);
+  if ('Watched' in data) {
+    const watched = data.Watched;
+    console.log(`Marked as watched: ${watched.type} ${watched.id} on ${new Date(watched.date)}`);
+  }
+});
+
+eventSource.addEventListener('unwatched', (event) => {
+  const data: SseEvent = JSON.parse(event.data);
+  if ('Unwatched' in data) {
+    const unwatched = data.Unwatched;
+    // Unwatched events contain ALL possible IDs for the content
+    console.log(`Unmarked as watched: ${unwatched.type} with IDs: ${unwatched.ids.join(', ')}`);
   }
 });
 ```
@@ -305,7 +348,7 @@ class SseClient {
       'library', 'library-status', 'medias', 'upload_progress',
       'convert_progress', 'episodes', 'series', 'movies',
       'people', 'tags', 'backups', 'backups-files', 'media_progress',
-      'media_rating'
+      'media_rating', 'watched', 'unwatched'
     ];
 
     events.forEach(eventName => {
@@ -371,7 +414,7 @@ function useSse(options: UseSseOptions = {}) {
       'library', 'library-status', 'medias', 'upload_progress',
       'convert_progress', 'episodes', 'series', 'movies',
       'people', 'tags', 'backups', 'backups-files', 'media_progress',
-      'media_rating'
+      'media_rating', 'watched', 'unwatched'
     ];
 
     eventTypes.forEach(eventName => {
@@ -435,3 +478,199 @@ The server sends a keepalive ping every 30 seconds to prevent connection timeout
 ## Error Handling
 
 When a client falls behind and misses events (lag), the server will skip the missed events and continue with new ones. Consider implementing periodic full-sync if you need guaranteed delivery of all events.
+
+## Watched/Unwatched Events
+
+### Understanding the ID Format
+
+The `watched` and `unwatched` events use **external IDs** (from providers like IMDb, Trakt, TMDb) rather than local database IDs. This allows watch history to be portable across different servers and sync with external services.
+
+**ID Format**: `provider:value`
+
+| Provider | Example | Content Types |
+|----------|---------|---------------|
+| `imdb` | `imdb:tt1234567` | Movies, Episodes |
+| `trakt` | `trakt:123456` | Movies, Episodes, Series |
+| `tmdb` | `tmdb:550` | Movies, Episodes, Series |
+| `tvdb` | `tvdb:78901` | Episodes, Series |
+| `slug` | `slug:the-matrix` | Movies, Series |
+| `redseat` | `redseat:abc123` | Local fallback (episodes only) |
+
+**ID Selection Priority**:
+- **Movies**: Uses the best external ID (priority: imdb > trakt > tmdb > slug)
+- **Episodes**: Uses external IDs, or falls back to local `redseat:` ID if no external IDs exist
+
+### REST API Endpoints
+
+#### Mark as Watched
+
+**Movies**: `POST /libraries/:libraryId/movies/:id/watched`
+```json
+{ "date": 1705766400000 }
+```
+
+**Episodes**: `POST /libraries/:libraryId/series/:serieId/seasons/:season/episodes/:number/watched`
+```json
+{ "date": 1705766400000 }
+```
+
+**Direct History** (requires knowing the external ID): `POST /users/me/history`
+```json
+{
+  "type": "movie",
+  "id": "imdb:tt1234567",
+  "date": 1705766400000
+}
+```
+
+#### Unmark as Watched (Remove from History)
+
+**Movies**: `DELETE /libraries/:libraryId/movies/:id/watched`
+
+**Episodes**: `DELETE /libraries/:libraryId/series/:serieId/seasons/:season/episodes/:number/watched`
+
+**Direct History** (with multiple possible IDs): `DELETE /users/me/history`
+```json
+{
+  "type": "movie",
+  "ids": ["imdb:tt1234567", "trakt:12345", "tmdb:550"]
+}
+```
+
+The delete endpoints accept multiple IDs because the watched entry could have been created with any of the available external IDs. The server will try to delete entries matching any of the provided IDs.
+
+### Example: Handling Watch State Changes
+
+```typescript
+// Track local watch state
+const watchedItems = new Map<string, boolean>();
+
+eventSource.addEventListener('watched', (event) => {
+  const data = JSON.parse(event.data);
+  if ('Watched' in data) {
+    const { type, id, date } = data.Watched;
+    console.log(`Marked as watched: ${type} ${id} on ${new Date(date)}`);
+    watchedItems.set(id, true);
+    // Update UI to show as watched
+  }
+});
+
+eventSource.addEventListener('unwatched', (event) => {
+  const data = JSON.parse(event.data);
+  if ('Unwatched' in data) {
+    const { type, ids } = data.Unwatched;
+    console.log(`Unmarked as watched: ${type} with IDs: ${ids.join(', ')}`);
+    // Remove all matching IDs from watched state
+    ids.forEach(id => watchedItems.delete(id));
+    // Update UI to show as unwatched
+  }
+});
+```
+
+### Matching SSE Events to Local Content
+
+Since SSE events use external IDs, you need to match them against your local content's external IDs:
+
+```typescript
+interface LocalMovie {
+  id: string;        // Local database ID
+  imdb?: string;     // "tt1234567"
+  trakt?: number;    // 12345
+  tmdb?: number;     // 550
+}
+
+// For Watched events (single ID)
+function isMatchingWatchedEvent(movie: LocalMovie, eventId: string): boolean {
+  const [provider, value] = eventId.split(':');
+  switch (provider) {
+    case 'imdb': return movie.imdb === value;
+    case 'trakt': return movie.trakt?.toString() === value;
+    case 'tmdb': return movie.tmdb?.toString() === value;
+    default: return false;
+  }
+}
+
+// For Unwatched events (array of IDs)
+function isMatchingUnwatchedEvent(movie: LocalMovie, eventIds: string[]): boolean {
+  return eventIds.some(eventId => isMatchingWatchedEvent(movie, eventId));
+}
+```
+
+## Offline Sync for Watch History
+
+When clients are offline or disconnected from SSE, they can miss `unwatched` events. The REST API provides a mechanism to sync these missed deletions.
+
+### How It Works
+
+- **`date > 0`**: Item is actively watched (timestamp indicates when it was watched)
+- **`date = 0`**: Item was unwatched/deleted (soft-deleted, kept for sync purposes)
+
+When content is marked as unwatched, instead of being deleted from the database, the `date` field is set to `0` and the `modified` timestamp is updated. This allows clients to fetch all changes (including deletions) via the history API.
+
+### Client Sync Flow
+
+```typescript
+// 1. Store last sync timestamp locally
+let lastSyncTimestamp = localStorage.getItem('lastHistorySync') || '0';
+
+// 2. Fetch all history changes since last sync, including deleted items
+async function syncHistory() {
+  const response = await fetch(
+    `/users/me/history?after=${lastSyncTimestamp}&includeDeleted=true`
+  );
+  const items: Watched[] = await response.json();
+
+  for (const item of items) {
+    if (item.date > 0) {
+      // Active watched item - add or update in local state
+      addToLocalWatched(item);
+    } else {
+      // Deleted item (date = 0) - remove from local state
+      removeFromLocalWatched(item.type, item.id);
+    }
+
+    // Track highest modified timestamp for next sync
+    if (item.modified > parseInt(lastSyncTimestamp)) {
+      lastSyncTimestamp = item.modified.toString();
+    }
+  }
+
+  localStorage.setItem('lastHistorySync', lastSyncTimestamp);
+}
+
+// 3. Call on app startup and periodically while online
+syncHistory();
+```
+
+### API Query Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `after` | number | Only return items modified after this timestamp (milliseconds) |
+| `includeDeleted` | boolean | Include items with `date=0` (unwatched). Default: `false` |
+| `types` | string[] | Filter by content types (e.g., `movie`, `episode`) |
+
+### Example Response with Deleted Items
+
+```json
+[
+  {
+    "type": "movie",
+    "id": "imdb:tt1234567",
+    "userRef": "user123",
+    "date": 1705766400000,
+    "modified": 1705852800000
+  },
+  {
+    "type": "movie",
+    "id": "trakt:98765",
+    "userRef": "user123",
+    "date": 0,
+    "modified": 1705939200000
+  }
+]
+```
+
+In this response:
+- First item: Movie was watched at timestamp `1705766400000`
+- Second item: Movie was unwatched (`date=0`), client should remove it from local state
