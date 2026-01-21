@@ -6,7 +6,7 @@ use futures::future::ok;
 use http::header::{CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE};
 use rs_plugin_common_interfaces::{lookup::{RsLookupQuery, RsLookupSourceResult, RsLookupWrapper}, request::{RsProcessingActionRequest, RsProcessingProgress, RsRequest, RsRequestAddResponse, RsRequestPluginRequest, RsRequestStatus}, url::RsLink, PluginCredential, PluginType};
 
-use crate::{domain::{plugin::PluginWithCredential, progress::RsProgressCallback}, error::RsResult, plugins::sources::{AsyncReadPinBox, FileStreamResult}, tools::{array_tools::AddOrSetArray, file_tools::{filename_from_path, get_mime_from_filename}, http_tools::{extract_header, guess_filename, parse_content_disposition}, log::log_error, video_tools::ytdl::YydlContext}, Error};
+use crate::{Error, domain::{plugin::PluginWithCredential, progress::RsProgressCallback}, error::RsResult, plugins::sources::{AsyncReadPinBox, FileStreamResult}, tools::{array_tools::AddOrSetArray, file_tools::{filename_from_path, get_mime_from_filename}, http_tools::{extract_header, guess_filename, parse_content_disposition}, log::{self, log_error, log_info}, video_tools::ytdl::YydlContext}};
 
 use super::{sources::{RsRequestHeader, SourceRead}, PluginManager};
 
@@ -133,6 +133,9 @@ impl PluginManager {
                     let res = plugin_m.call_get_error_code::<Json<RsRequestPluginRequest>, Json<RsRequest>>("process", Json(req));
                     //println!("called plugin request {:?}", plugin.path);
                     if let Ok(Json(mut res)) = res {
+                        log_info(crate::tools::log::LogServiceType::Plugin, format!("Request processed by plugin {}", plugin_with_cred.plugin.name));
+                        res.plugin_id = Some(plugin_with_cred.plugin.id.clone());
+                        res.plugin_name = Some(plugin_with_cred.plugin.name.clone());
                         if res.mime.is_none() {
                             res.mime = get_mime_from_filename(&res.url);
                         }
@@ -141,7 +144,7 @@ impl PluginManager {
                         }
                         if res.status == RsRequestStatus::FinalPublic {
                             println!("ok request: {:?}", res);
-                            return Ok(SourceRead::Request(res)); 
+                            return Ok(SourceRead::Request(res));
                          }
                         processed_request = Some(res);
                     } else if let Err((error, code)) = res {
@@ -191,11 +194,12 @@ impl PluginManager {
                             params: plugin_with_cred.credential.as_ref()
                                 .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
                         };
-                        println!("call plugin request permanent  {:?}", plugin.infos.name);
-                        println!("{:?}", req);
+                        log_info(crate::tools::log::LogServiceType::Plugin, format!("call plugin request permanent  {:?}", plugin.infos.name));
                         let res = plugin_m.call_get_error_code::<Json<RsRequestPluginRequest>, Json<RsRequest>>("request_permanent", Json(req));
-                        println!("called plugin request permanent");
                         if let Ok(Json(mut res)) = res {
+                            log_info(crate::tools::log::LogServiceType::Plugin, format!("got plugin request permanent  {:?}", plugin.infos.name));
+                            res.plugin_id = Some(plugin_with_cred.plugin.id.clone());
+                            res.plugin_name = Some(plugin_with_cred.plugin.name.clone());
                             if res.mime.is_none() {
                                 res.mime = get_mime_from_filename(&res.url);
                             }
@@ -233,10 +237,12 @@ impl PluginManager {
                             .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
                     };
                     let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<RsLookupSourceResult>>("lookup", Json(wrapped_query));
-                    if let Ok(Json(res)) = res {
-                        println!("ok pl");
-                        if let RsLookupSourceResult::Requests(mut request) = res {
-                            println!("ok request");
+                    if let Ok(Json(res)) = res {                        if let RsLookupSourceResult::Requests(mut request) = res {
+                            log_info(crate::tools::log::LogServiceType::Plugin, format!("Lookup result from plugin {}", plugin_with_cred.plugin.name));
+                            for req in &mut request {
+                                req.plugin_id = Some(plugin_with_cred.plugin.id.clone());
+                                req.plugin_name = Some(plugin_with_cred.plugin.name.clone());
+                            }
                             results.append(&mut request)
                         }
                     } else if let Err((error, code)) = res {
