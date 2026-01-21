@@ -40,7 +40,7 @@ use crate::{
         log::log_info,
         scheduler::{
             self, face_recognition::FaceRecognitionTask, ip::RefreshIpTask, refresh::RefreshTask,
-            RsScheduler, RsTaskType,
+            request_progress::RequestProgressTask, RsScheduler, RsTaskType,
         },
     },
 };
@@ -189,6 +189,13 @@ impl ModelController {
                 RsTaskType::Ip,
                 scheduler::RsSchedulerWhen::Every(SECONDS_IN_HOUR / 2),
                 RefreshIpTask {},
+            )
+            .await?;
+        scheduler
+            .add(
+                RsTaskType::RequestProgress,
+                scheduler::RsSchedulerWhen::Every(30),
+                RequestProgressTask::new(),
             )
             .await?;
         //scheduler.add(RsTaskType::Face, scheduler::RsSchedulerWhen::Every(SECONDS_IN_HOUR * 3), FaceRecognitionTask {specific_library:None} ).await?;

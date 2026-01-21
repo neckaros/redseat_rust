@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
-use self::{ip::RefreshIpTask, refresh::RefreshTask, series::SerieTask, face_recognition::FaceRecognitionTask};
+use self::{ip::RefreshIpTask, refresh::RefreshTask, series::SerieTask, face_recognition::FaceRecognitionTask, request_progress::RequestProgressTask};
 
 use super::{get_time, log::{log_error, log_info}};
 
@@ -14,6 +14,7 @@ pub mod refresh;
 pub mod ip;
 pub mod backup;
 pub mod face_recognition;
+pub mod request_progress;
 
 #[derive(Debug, Clone)]
 pub struct RsScheduler {
@@ -161,7 +162,8 @@ pub enum RsSchedulerWhen {
 pub enum RsTaskType {
     Refresh,
     Ip,
-    Face
+    Face,
+    RequestProgress,
 }
 
 
@@ -184,6 +186,10 @@ impl RsSchedulerItem {
             },
             RsTaskType::Face => {
                 let deserialized: FaceRecognitionTask = serde_json::from_str(&self.task)?;
+                Ok(Box::pin(deserialized))
+            },
+            RsTaskType::RequestProgress => {
+                let deserialized: RequestProgressTask = serde_json::from_str(&self.task)?;
                 Ok(Box::pin(deserialized))
             },
         }

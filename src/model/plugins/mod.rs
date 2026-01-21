@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use nanoid::nanoid;
-use rs_plugin_common_interfaces::{lookup::{RsLookupQuery, RsLookupSourceResult}, request::{RsProcessingStatus, RsRequest}, url::{RsLink, RsLinkType}, PluginCredential, PluginInformation, PluginType, RsPluginRequest};
+use rs_plugin_common_interfaces::{lookup::{RsLookupQuery, RsLookupSourceResult}, request::{RsGroupDownload, RsProcessingStatus, RsRequest}, url::{RsLink, RsLinkType}, PluginCredential, PluginInformation, PluginType, RsPluginRequest};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -361,29 +361,12 @@ impl ModelController {
             .ok_or(Error::NotFound(format!("Processing {} not found", processing_id)).into())
     }
 
-    /// Get progress of a processing task and update DB
+    /// Get progress of a processing task (returns cached DB value)
+    /// Progress is updated by the scheduled RequestProgressTask every 30 seconds
     pub async fn get_processing_progress(&self, library_id: &str, processing_nanoid: &str, requesting_user: &ConnectedUser) -> RsResult<RsRequestProcessing> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
 
         let library_store = self.store.get_library_store(library_id)?;
-        let processing = library_store.get_request_processing(processing_nanoid).await?
-            .ok_or(Error::NotFound(format!("Processing {} not found", processing_nanoid)))?;
-
-        let plugin_with_cred = self.get_plugin_with_credential(&processing.plugin_id).await?;
-
-        let progress = self.plugin_manager.get_processing_progress(
-            &processing.processing_id,
-            &plugin_with_cred,
-        ).await?;
-
-        let update = RsRequestProcessingForUpdate {
-            progress: Some(progress.progress),
-            status: Some(progress.status),
-            error: progress.error,
-            eta: progress.eta,
-        };
-        library_store.update_request_processing(processing_nanoid, update).await?;
-
         library_store.get_request_processing(processing_nanoid).await?
             .ok_or(Error::NotFound(format!("Processing {} not found", processing_nanoid)).into())
     }
@@ -432,5 +415,141 @@ impl ModelController {
 
         library_store.remove_request_processing(processing_nanoid).await?;
         Ok(())
+    }
+
+    /// Process all active request processings for a library
+    /// Polls plugin for progress, updates DB, and triggers download when finished
+    /// Returns the number of processings that were checked
+    pub async fn process_active_requests(&self, library_id: &str) -> RsResult<usize> {
+        let library_store = self.store.get_library_store(library_id)?;
+        let processings = library_store.get_all_active_request_processings().await?;
+
+        let count = processings.len();
+
+        for processing in processings {
+            // Get the plugin with credentials
+            let plugin_with_cred = match self.get_plugin_with_credential(&processing.plugin_id).await {
+                Ok(p) => p,
+                Err(e) => {
+                    crate::tools::log::log_error(
+                        crate::tools::log::LogServiceType::Scheduler,
+                        format!("Failed to get plugin {} for processing {}: {:#}", processing.plugin_id, processing.id, e),
+                    );
+                    // Mark as error if plugin not found
+                    let update = RsRequestProcessingForUpdate {
+                        progress: None,
+                        status: Some(RsProcessingStatus::Error),
+                        error: Some(format!("Plugin not found: {}", e)),
+                        eta: None,
+                    };
+                    let _ = library_store.update_request_processing(&processing.id, update).await;
+                    continue;
+                }
+            };
+
+            // Poll plugin for progress
+            let progress = match self.plugin_manager.get_processing_progress(
+                &processing.processing_id,
+                &plugin_with_cred,
+            ).await {
+                Ok(p) => p,
+                Err(e) => {
+                    crate::tools::log::log_error(
+                        crate::tools::log::LogServiceType::Scheduler,
+                        format!("Failed to get progress for processing {}: {:#}", processing.id, e),
+                    );
+                    // Skip this one - may be a temporary communication error
+                    continue;
+                }
+            };
+
+            // Update DB with new progress
+            let update = RsRequestProcessingForUpdate {
+                progress: Some(progress.progress),
+                status: Some(progress.status.clone()),
+                error: progress.error.clone(),
+                eta: progress.eta,
+            };
+
+            if let Err(e) = library_store.update_request_processing(&processing.id, update).await {
+                crate::tools::log::log_error(
+                    crate::tools::log::LogServiceType::Scheduler,
+                    format!("Failed to update processing {} in DB: {:#}", processing.id, e),
+                );
+                continue;
+            }
+
+            // If finished, trigger download
+            if progress.status == RsProcessingStatus::Finished {
+                // Get the final request - either from progress response or original
+                let final_request = if let Some(req) = progress.request {
+                    *req
+                } else if let Some(req) = processing.original_request.clone() {
+                    req
+                } else {
+                    crate::tools::log::log_error(
+                        crate::tools::log::LogServiceType::Scheduler,
+                        format!("No request available for finished processing {}", processing.id),
+                    );
+                    continue;
+                };
+
+                // Build group download with single request
+                let group_download = RsGroupDownload {
+                    group: false,
+                    group_thumbnail_url: None,
+                    group_filename: None,
+                    group_mime: None,
+                    requests: vec![final_request],
+                };
+
+                // Trigger download
+                let connected_user = super::users::ConnectedUser::ServerAdmin;
+                match self.download_library_url(library_id, group_download, &connected_user).await {
+                    Ok(medias) => {
+                        crate::tools::log::log_info(
+                            crate::tools::log::LogServiceType::Scheduler,
+                            format!(
+                                "Successfully downloaded {} media(s) for processing {}",
+                                medias.len(),
+                                processing.id
+                            ),
+                        );
+                        // Remove the processing record on success
+                        if let Err(e) = library_store.remove_request_processing(&processing.id).await {
+                            crate::tools::log::log_error(
+                                crate::tools::log::LogServiceType::Scheduler,
+                                format!("Failed to remove completed processing {}: {:#}", processing.id, e),
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        crate::tools::log::log_error(
+                            crate::tools::log::LogServiceType::Scheduler,
+                            format!("Failed to download media for processing {}: {:#}", processing.id, e),
+                        );
+                        // Mark as error
+                        let update = RsRequestProcessingForUpdate {
+                            progress: None,
+                            status: Some(RsProcessingStatus::Error),
+                            error: Some(format!("Download failed: {}", e)),
+                            eta: None,
+                        };
+                        let _ = library_store.update_request_processing(&processing.id, update).await;
+                    }
+                }
+            } else if progress.status == RsProcessingStatus::Error {
+                crate::tools::log::log_error(
+                    crate::tools::log::LogServiceType::Scheduler,
+                    format!(
+                        "Processing {} failed with error: {:?}",
+                        processing.id,
+                        progress.error
+                    ),
+                );
+            }
+        }
+
+        Ok(count)
     }
 }
