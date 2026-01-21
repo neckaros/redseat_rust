@@ -94,7 +94,7 @@ async fn handler_lookup(Path((library_id, movie_id)): Path<(String, String)>, St
 		name,
 		ids: Some(ids),
 	});
-	let library = mc.exec_lookup(query, Some(library_id), &user).await?;
+	let library = mc.exec_lookup(query, Some(library_id), &user, None).await?;
 	let body = Json(json!(library));
 	Ok(body)
 }

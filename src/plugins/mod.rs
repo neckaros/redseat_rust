@@ -16,6 +16,7 @@ pub mod error;
 pub mod medias;
 pub mod token;
 
+pub use url::PluginTarget;
 
 pub struct PluginManager {
     pub plugins: RwLock<Vec<PluginWasm>>

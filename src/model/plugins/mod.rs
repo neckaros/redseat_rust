@@ -11,7 +11,7 @@ use serde_json::Value;
 use tokio::{fs::{self, File}, io::{copy, BufWriter}, sync::mpsc::Sender};
 
 
-use crate::{domain::{backup::Backup, library::LibraryRole, plugin::{Plugin, PluginForAdd, PluginForInsert, PluginForInstall, PluginForUpdate, PluginWasm, PluginWithCredential}, progress::{RsProgress, RsProgressCallback}, request_processing::{RsRequestProcessing, RsRequestProcessingForInsert, RsRequestProcessingForUpdate}}, error::{RsError, RsResult}, plugins::{get_plugin_fodler, sources::{error::SourcesError, AsyncReadPinBox, SourceRead}, url}, tools::{file_tools::extract_zip, http_tools::download_latest_wasm, video_tools::ytdl::YydlContext}};
+use crate::{domain::{backup::Backup, library::LibraryRole, plugin::{Plugin, PluginForAdd, PluginForInsert, PluginForInstall, PluginForUpdate, PluginWasm, PluginWithCredential}, progress::{RsProgress, RsProgressCallback}, request_processing::{RsRequestProcessing, RsRequestProcessingForInsert, RsRequestProcessingForUpdate}}, error::{RsError, RsResult}, plugins::{get_plugin_fodler, sources::{error::SourcesError, AsyncReadPinBox, SourceRead}, url::{self, PluginTarget}}, tools::{file_tools::extract_zip, http_tools::download_latest_wasm, video_tools::ytdl::YydlContext}};
 
 use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
 
@@ -178,8 +178,8 @@ impl ModelController {
 
 
 
-    pub async fn exec_request(&self, request: RsRequest, library_id: Option<String>, savable: bool, progress: Option<Sender<RsProgress>>, requesting_user: &ConnectedUser) -> RsResult<SourceRead> {
-       
+    pub async fn exec_request(&self, request: RsRequest, library_id: Option<String>, savable: bool, progress: Option<Sender<RsProgress>>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<SourceRead> {
+
         if let Some(library_id) = library_id {
             requesting_user.check_request_role(&library_id, &request)?;
 
@@ -187,8 +187,8 @@ impl ModelController {
             requesting_user.check_role(&UserRole::Admin)?;
         }
         let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::Request), ..Default::default() }).await?.collect();
-        self.plugin_manager.request(request, savable, plugins, progress).await
-        
+        self.plugin_manager.request(request, savable, plugins, progress, target).await
+
     }
 
     pub async fn parse_request(&self, request: RsRequest, progress: RsProgressCallback) -> RsResult<SourceRead> {
@@ -198,29 +198,29 @@ impl ModelController {
         return Ok(result);
     }
 
-    pub async fn exec_permanent(&self, request: RsRequest, library_id: Option<String>, progress: Option<Sender<RsProgress>>, requesting_user: &ConnectedUser) -> RsResult<RsRequest> {
-       
+    pub async fn exec_permanent(&self, request: RsRequest, library_id: Option<String>, progress: Option<Sender<RsProgress>>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<RsRequest> {
+
         if let Some(library_id) = library_id {
             requesting_user.check_library_role(&library_id, crate::domain::library::LibraryRole::Read)?;
 
         } else {
             requesting_user.check_role(&UserRole::Admin)?;
         }
-        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::Request), ..Default::default() }).await?;
-        self.plugin_manager.request_permanent(request, plugins, progress).await?.ok_or(crate::Error::NotFound("Unable to get permanent link".to_string()))
-        
+        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::Request), ..Default::default() }).await?.collect();
+        self.plugin_manager.request_permanent(request, plugins, progress, target).await?.ok_or(crate::Error::NotFound("Unable to get permanent link".to_string()))
+
     }
 
-    pub async fn exec_lookup(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser) -> RsResult<Vec<RsRequest>> {
+    pub async fn exec_lookup(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<Vec<RsRequest>> {
         if let Some(library_id) = library_id {
             requesting_user.check_library_role(&library_id, crate::domain::library::LibraryRole::Read)?;
         } else {
             requesting_user.check_role(&UserRole::Admin)?;
         }
-        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::Lookup), ..Default::default() }).await?;
+        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::Lookup), ..Default::default() }).await?.collect();
 
-        self.plugin_manager.lookup(query, plugins).await
-        
+        self.plugin_manager.lookup(query, plugins, target).await
+
     }
 
 
@@ -301,19 +301,19 @@ impl ModelController {
     // ============== Request Processing Methods ==============
 
     /// Check if request can be played instantly without adding to service
-    pub async fn exec_check_instant(&self, request: RsRequest, library_id: &str, requesting_user: &ConnectedUser) -> RsResult<bool> {
+    pub async fn exec_check_instant(&self, request: RsRequest, library_id: &str, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<bool> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let plugins = self.get_plugins_with_credential(PluginQuery {
             kind: Some(PluginType::Request),
             ..Default::default()
-        }).await?;
+        }).await?.collect();
 
-        let result = self.plugin_manager.check_instant(request.clone(), plugins).await?;
+        let result = self.plugin_manager.check_instant(request.clone(), plugins, target).await?;
         Ok(result.unwrap_or(request.instant.unwrap_or(false)))
     }
 
     /// Add a request for processing (for RequireAdd status)
-    pub async fn exec_request_add(&self, request: RsRequest, library_id: &str, media_ref: Option<String>, requesting_user: &ConnectedUser) -> RsResult<RsRequestProcessing> {
+    pub async fn exec_request_add(&self, request: RsRequest, library_id: &str, media_ref: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<RsRequestProcessing> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
 
         let plugins: Vec<PluginWithCredential> = self.get_plugins_with_credential(PluginQuery {
@@ -321,7 +321,7 @@ impl ModelController {
             ..Default::default()
         }).await?.collect();
 
-        let result = self.plugin_manager.request_add(request.clone(), plugins).await?
+        let result = self.plugin_manager.request_add(request.clone(), plugins, target).await?
             .ok_or(Error::NotFound("No plugin handled request_add".to_string()))?;
 
         let (plugin_id, add_response) = result;

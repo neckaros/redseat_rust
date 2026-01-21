@@ -797,7 +797,7 @@ impl ModelController {
 
         for request in files.requests {
             let processed_request = if request.status == RsRequestStatus::Unprocessed {
-                self.exec_request(request.clone(), Some(library_id.to_string()), true, None, requesting_user).await?
+                self.exec_request(request.clone(), Some(library_id.to_string()), true, None, requesting_user, None).await?
             } else {
                 SourceRead::Request(request.clone())
             };

@@ -109,7 +109,7 @@ async fn handler_urlrequest(State(mc): State<ModelController>, user: ConnectedUs
 		url: query.url,
 		..Default::default()
 	};
-	let wasm = mc.exec_request(request, None, false, None, &user).await?;
+	let wasm = mc.exec_request(request, None, false, None, &user, None).await?;
 	let body = match wasm {
 		crate::plugins::sources::SourceRead::Stream(_) => Json(json!({"stream": true})),
 		crate::plugins::sources::SourceRead::Request(r) => Json(json!(r)),

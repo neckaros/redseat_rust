@@ -10,8 +10,61 @@ use crate::{Error, domain::{plugin::PluginWithCredential, progress::RsProgressCa
 
 use super::{sources::{RsRequestHeader, SourceRead}, PluginManager};
 
+/// Optional targeting for specific plugin by ID or name
+#[derive(Debug, Clone, Default)]
+pub struct PluginTarget {
+    pub plugin_id: Option<String>,
+    pub plugin_name: Option<String>,
+}
 
 impl PluginManager {
+
+    /// Filter plugins based on target specification
+    /// Priority: target.plugin_id > target.plugin_name > request.plugin_id > request.plugin_name > all plugins
+    fn filter_plugins_by_target(
+        plugins: Vec<PluginWithCredential>,
+        target: &Option<PluginTarget>,
+        request: Option<&RsRequest>,
+    ) -> crate::Result<Vec<PluginWithCredential>> {
+        // Priority 1: target argument plugin_id
+        if let Some(ref t) = target {
+            if let Some(ref id) = t.plugin_id {
+                return Self::find_plugin_by_id(plugins, id);
+            }
+            if let Some(ref name) = t.plugin_name {
+                return Self::find_plugin_by_name(plugins, name);
+            }
+        }
+
+        // Priority 2: request's plugin_id/plugin_name (fallback)
+        if let Some(req) = request {
+            if let Some(ref id) = req.plugin_id {
+                return Self::find_plugin_by_id(plugins, id);
+            }
+            if let Some(ref name) = req.plugin_name {
+                return Self::find_plugin_by_name(plugins, name);
+            }
+        }
+
+        // No filter specified → return all plugins
+        Ok(plugins)
+    }
+
+    fn find_plugin_by_id(plugins: Vec<PluginWithCredential>, id: &str) -> crate::Result<Vec<PluginWithCredential>> {
+        if let Some(plugin) = plugins.into_iter().find(|p| p.plugin.id == id) {
+            Ok(vec![plugin])
+        } else {
+            Err(Error::NotFound(format!("Plugin with id '{}' not found", id)))
+        }
+    }
+
+    fn find_plugin_by_name(plugins: Vec<PluginWithCredential>, name: &str) -> crate::Result<Vec<PluginWithCredential>> {
+        if let Some(plugin) = plugins.into_iter().find(|p| p.plugin.name == name) {
+            Ok(vec![plugin])
+        } else {
+            Err(Error::NotFound(format!("Plugin with name '{}' not found", name)))
+        }
+    }
 
     pub async fn parse(&self, url: String, plugins: impl Iterator<Item = PluginWithCredential>) -> Option<RsLink>{
         for plugin_with_cred in plugins {
@@ -94,7 +147,8 @@ impl PluginManager {
     }
 
     #[async_recursion]
-    pub async fn request(&self, mut request: RsRequest, _savable: bool, plugins: Vec<PluginWithCredential>, _progress: RsProgressCallback) -> RsResult<SourceRead> {
+    pub async fn request(&self, mut request: RsRequest, _savable: bool, plugins: Vec<PluginWithCredential>, _progress: RsProgressCallback, target: Option<PluginTarget>) -> RsResult<SourceRead> {
+        let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
         let initial_request = request.clone();
         
         let client = reqwest::Client::new();
@@ -160,7 +214,7 @@ impl PluginManager {
 
             if processed.status == RsRequestStatus::Intermediate && processed != initial_request {
                 println!("recurse request");
-                let recursed = self.request(processed, false, plugins, _progress).await?;
+                let recursed = self.request(processed, false, plugins, _progress, target).await?;
                 return Ok(recursed);
             } else if processed.status == RsRequestStatus::Unprocessed {
                 return Err(Error::NotFound("Unable to process request".to_string()));
@@ -180,10 +234,11 @@ impl PluginManager {
         
     }
 
-    pub async fn request_permanent(&self, request: RsRequest, plugins: impl Iterator<Item = PluginWithCredential>, _progress: RsProgressCallback) -> RsResult<Option<RsRequest>> {
+    pub async fn request_permanent(&self, request: RsRequest, plugins: Vec<PluginWithCredential>, _progress: RsProgressCallback, target: Option<PluginTarget>) -> RsResult<Option<RsRequest>> {
         if request.permanent {
             Ok(Some(request))
         } else {
+            let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
             for plugin_with_cred in plugins {
                 if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
                     let mut plugin_m = plugin.plugin.lock().unwrap();
@@ -222,7 +277,8 @@ impl PluginManager {
         }
     }
 
-    pub async fn lookup(&self, query: RsLookupQuery, plugins: impl Iterator<Item = PluginWithCredential>) -> RsResult<Vec<RsRequest>> {
+    pub async fn lookup(&self, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<Vec<RsRequest>> {
+        let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
         let mut results = vec![];
         for plugin_with_cred in plugins {
             if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
@@ -258,7 +314,8 @@ impl PluginManager {
     }
 
     /// Check if a request can be played/downloaded instantly without needing to add to service first
-    pub async fn check_instant(&self, request: RsRequest, plugins: impl Iterator<Item = PluginWithCredential>) -> RsResult<Option<bool>> {
+    pub async fn check_instant(&self, request: RsRequest, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<Option<bool>> {
+        let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
         for plugin_with_cred in plugins {
             if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
                 let mut plugin_m = plugin.plugin.lock().unwrap();
@@ -285,7 +342,8 @@ impl PluginManager {
 
     /// Add a request for processing (RequireAdd status)
     /// Returns the plugin_id and the response from the plugin
-    pub async fn request_add(&self, request: RsRequest, plugins: Vec<PluginWithCredential>) -> RsResult<Option<(String, RsRequestAddResponse)>> {
+    pub async fn request_add(&self, request: RsRequest, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<Option<(String, RsRequestAddResponse)>> {
+        let plugins = Self::filter_plugins_by_target(plugins, &target, Some(&request))?;
         for plugin_with_cred in plugins.iter() {
             if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
                 let mut plugin_m = plugin.plugin.lock().unwrap();

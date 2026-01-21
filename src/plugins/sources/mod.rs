@@ -231,7 +231,7 @@ impl SourceRead {
                     RsRequestStatus::Unprocessed => {
                         if let Some((mc, user)) = mc {
                             if let Some(library_id_string) = &library_id {
-                                let new_request = mc.exec_request(request.clone(), Some(library_id_string.to_string()), false, progress.clone(), user).await?;
+                                let new_request = mc.exec_request(request.clone(), Some(library_id_string.to_string()), false, progress.clone(), user, None).await?;
                                 new_request.into_reader(library_id, range.clone(), progress.clone(), Some((mc, user)), None).await
                             } else {
                                 Err(Error::RequestNeedsLibraryIdForResolution(request).into())
@@ -334,7 +334,7 @@ impl SourceRead {
                 match request.status {
                     RsRequestStatus::Unprocessed | RsRequestStatus::NeedParsing => {
                         if let Some((mc, user)) = mc {
-                            let new_request = mc.exec_request(request.clone(), Some(library_id.to_string()), false, progress, user).await?;
+                            let new_request = mc.exec_request(request.clone(), Some(library_id.to_string()), false, progress, user, None).await?;
 
                             new_request.into_response(library_id, range.clone(), None, Some((mc, user))).await
                         } else {

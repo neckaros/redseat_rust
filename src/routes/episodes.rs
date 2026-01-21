@@ -61,7 +61,7 @@ async fn handler_lookup_season(Path((library_id, serie_id, season)): Path<(Strin
 	number: None
 	};
 	let query = RsLookupQuery::Episode(query_episode);
-	let library = mc.exec_lookup(query, Some(library_id), &user).await?;
+	let library = mc.exec_lookup(query, Some(library_id), &user, None).await?;
 	let body = Json(json!(library));
 	Ok(body)
 }
@@ -111,7 +111,7 @@ async fn handler_lookup(Path((library_id, serie_id, season, number)): Path<(Stri
     number: Some(episode.number),
 	};
 	let query = RsLookupQuery::Episode(query_episode);
-	let library = mc.exec_lookup(query, Some(library_id), &user).await?;
+	let library = mc.exec_lookup(query, Some(library_id), &user, None).await?;
 	let body = Json(json!(library));
 	Ok(body)
 }

@@ -71,7 +71,7 @@ async fn handler_request_url(Path(library_id): Path<String>, State(mc): State<Mo
 		url: query.url,
 		..Default::default()
 	};
-	let wasm = mc.exec_request(request, Some(library_id), false, None, &user).await?;
+	let wasm = mc.exec_request(request, Some(library_id), false, None, &user, None).await?;
 	let body = match wasm {
 		crate::plugins::sources::SourceRead::Stream(_) => return Err(crate::Error::Error("Request processing returned a stream instead of request info".to_string())),
 		crate::plugins::sources::SourceRead::Request(r) => Json(json!(r)),
@@ -81,7 +81,7 @@ async fn handler_request_url(Path(library_id): Path<String>, State(mc): State<Mo
 
 async fn handler_request_url_stream(Path(library_id): Path<String>, range: Option<RangeDefinition>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ExpandQuery>) -> Result<Response> {
 	let request = RsRequest { url: query.url, ..Default::default()};
-	let wasm = mc.exec_request(request, Some(library_id.clone()), false, None, &user).await?;
+	let wasm = mc.exec_request(request, Some(library_id.clone()), false, None, &user, None).await?;
 	wasm.into_response(&library_id, range, None, Some((mc.clone(), &user))).await
 }
 
@@ -92,7 +92,7 @@ async fn handler_request_url_sharetoken(Path(library_id): Path<String>, State(mc
 }
 
 async fn handler_request_process(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Json(request): Json<RsRequest>) -> Result<Json<Value>> {
-	let wasm = mc.exec_request(request, Some(library_id), false, None, &user).await?;
+	let wasm = mc.exec_request(request, Some(library_id), false, None, &user, None).await?;
 	let body = match wasm {
 		crate::plugins::sources::SourceRead::Stream(_) => return Err(crate::Error::Error("Request processing returned a stream instead of request info".to_string())),
 		crate::plugins::sources::SourceRead::Request(r) => Json(json!(r)),
@@ -101,13 +101,13 @@ async fn handler_request_process(Path(library_id): Path<String>, State(mc): Stat
 }
 
 async fn handler_request_process_stream(Path(library_id): Path<String>, range: Option<RangeDefinition>, State(mc): State<ModelController>, user: ConnectedUser, Json(request): Json<RsRequest>) -> Result<Response> {
-	let wasm = mc.exec_request(request, Some(library_id.clone()), false, None, &user).await?;
+	let wasm = mc.exec_request(request, Some(library_id.clone()), false, None, &user, None).await?;
 	wasm.into_response(&library_id, range, None, Some((mc.clone(), &user))).await
 }
 
 
 async fn handler_request_permanent(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Json(request): Json<RsRequest>) -> Result<Json<Value>> {
-	let request = mc.exec_permanent(request, Some(library_id), None, &user).await?;
+	let request = mc.exec_permanent(request, Some(library_id), None, &user, None).await?;
 	let body = Json(json!(request));
 	Ok(body)
 }
@@ -152,7 +152,7 @@ async fn handler_video_convert_status(Path((library_id, plugin_id, encode_id)): 
 // ============== Request Processing Handlers ==============
 
 async fn handler_check_instant(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Json(request): Json<RsRequest>) -> Result<Json<Value>> {
-	let result = mc.exec_check_instant(request, &library_id, &user).await?;
+	let result = mc.exec_check_instant(request, &library_id, &user, None).await?;
 	Ok(Json(json!({ "instant": result })))
 }
 
@@ -164,7 +164,7 @@ struct RequestAddBody {
 }
 
 async fn handler_request_add(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Json(body): Json<RequestAddBody>) -> Result<Json<Value>> {
-	let result = mc.exec_request_add(body.request, &library_id, body.media_ref, &user).await?;
+	let result = mc.exec_request_add(body.request, &library_id, body.media_ref, &user, None).await?;
 	Ok(Json(json!(result)))
 }
 
