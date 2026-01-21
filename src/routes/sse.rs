@@ -17,6 +17,7 @@ use crate::{
         media::{ConvertMessage, MediasMessage, UploadProgressMessage},
         movie::MoviesMessage,
         people::PeopleMessage,
+        request_processing::RequestProcessingMessage,
         serie::SeriesMessage,
         tag::TagMessage,
         watched::{Unwatched, Watched},
@@ -44,6 +45,7 @@ pub enum SseEvent {
     MediaRating(MediasRatingMessage),
     Watched(Watched),
     Unwatched(Unwatched),
+    RequestProcessing(RequestProcessingMessage),
 }
 
 impl SseEvent {
@@ -66,6 +68,7 @@ impl SseEvent {
             SseEvent::MediaRating(_) => "media_rating",
             SseEvent::Watched(_) => "watched",
             SseEvent::Unwatched(_) => "unwatched",
+            SseEvent::RequestProcessing(_) => "request_processing",
         }
     }
 
@@ -88,6 +91,7 @@ impl SseEvent {
             SseEvent::MediaRating(m) => Some(&m.library),
             SseEvent::Watched(_) => None,
             SseEvent::Unwatched(_) => None,
+            SseEvent::RequestProcessing(m) => Some(&m.library),
         }
     }
 

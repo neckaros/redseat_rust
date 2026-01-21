@@ -43,6 +43,7 @@ Example: `/sse?libraries=lib1,lib2` will only receive events for those libraries
 | `media_rating` | Media rating changes | User-specific (only rating owner) |
 | `watched` | Content marked as watched | User-specific (only watched owner) |
 | `unwatched` | Content unmarked as watched | User-specific (only watched owner) |
+| `request_processing` | Request processing status updates | Library read access |
 
 ## TypeScript Client Examples
 
@@ -196,6 +197,31 @@ interface Unwatched {
   modified: number;
 }
 
+// Request processing events
+interface RequestProcessingMessage {
+  library: string;
+  processings: RequestProcessingWithAction[];
+}
+
+interface RequestProcessingWithAction {
+  action: ElementAction;
+  processing: RsRequestProcessing;
+}
+
+interface RsRequestProcessing {
+  id: string;           // Internal nanoid for this processing record
+  processingId: string; // Plugin's processing ID
+  pluginId: string;     // ID of the plugin handling this request
+  progress: number;     // 0-100 progress percentage
+  status: string;       // "pending", "processing", "paused", "finished", "error"
+  error?: string;       // Error message if status is "error"
+  eta?: number;         // UTC timestamp (ms) for estimated completion
+  mediaRef?: string;    // Optional reference to the media this processing is for
+  originalRequest?: RsRequest; // The original request that started this processing
+  modified: number;     // Last modified timestamp
+  added: number;        // Creation timestamp
+}
+
 // Wrapper type matching the SSE event structure
 type SseEvent =
   | { Library: LibraryMessage }
@@ -213,7 +239,8 @@ type SseEvent =
   | { MediaProgress: MediasProgressMessage }
   | { MediaRating: MediasRatingMessage }
   | { Watched: Watched }
-  | { Unwatched: Unwatched };  // Note: different structure than Watched
+  | { Unwatched: Unwatched }   // Note: different structure than Watched
+  | { RequestProcessing: RequestProcessingMessage };
 ```
 
 ### Listening to Events
@@ -348,7 +375,7 @@ class SseClient {
       'library', 'library-status', 'medias', 'upload_progress',
       'convert_progress', 'episodes', 'series', 'movies',
       'people', 'tags', 'backups', 'backups-files', 'media_progress',
-      'media_rating', 'watched', 'unwatched'
+      'media_rating', 'watched', 'unwatched', 'request_processing'
     ];
 
     events.forEach(eventName => {
@@ -414,7 +441,7 @@ function useSse(options: UseSseOptions = {}) {
       'library', 'library-status', 'medias', 'upload_progress',
       'convert_progress', 'episodes', 'series', 'movies',
       'people', 'tags', 'backups', 'backups-files', 'media_progress',
-      'media_rating', 'watched', 'unwatched'
+      'media_rating', 'watched', 'unwatched', 'request_processing'
     ];
 
     eventTypes.forEach(eventName => {

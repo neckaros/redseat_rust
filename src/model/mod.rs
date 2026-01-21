@@ -543,4 +543,8 @@ impl ModelController {
     pub fn send_library_status(&self, message: LibraryStatusMessage) {
         self.broadcast_sse(SseEvent::LibraryStatus(message));
     }
+
+    pub fn send_request_processing(&self, message: crate::domain::request_processing::RequestProcessingMessage) {
+        self.broadcast_sse(SseEvent::RequestProcessing(message));
+    }
 }

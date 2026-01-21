@@ -1,6 +1,8 @@
 use rs_plugin_common_interfaces::request::{RsProcessingStatus, RsRequest};
 use serde::{Deserialize, Serialize};
 
+use super::ElementAction;
+
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct RsRequestProcessing {
@@ -45,4 +47,19 @@ pub struct RsRequestProcessingForUpdate {
     pub status: Option<RsProcessingStatus>,
     pub error: Option<String>,
     pub eta: Option<i64>,
+}
+
+/// SSE message for request processing events
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestProcessingMessage {
+    pub library: String,
+    pub processings: Vec<RequestProcessingWithAction>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestProcessingWithAction {
+    pub action: ElementAction,
+    pub processing: RsRequestProcessing,
 }

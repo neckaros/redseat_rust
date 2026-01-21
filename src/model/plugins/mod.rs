@@ -11,7 +11,7 @@ use serde_json::Value;
 use tokio::{fs::{self, File}, io::{copy, BufWriter}, sync::mpsc::Sender};
 
 
-use crate::{domain::{backup::Backup, library::LibraryRole, plugin::{Plugin, PluginForAdd, PluginForInsert, PluginForInstall, PluginForUpdate, PluginWasm, PluginWithCredential}, progress::{RsProgress, RsProgressCallback}, request_processing::{RsRequestProcessing, RsRequestProcessingForInsert, RsRequestProcessingForUpdate}}, error::{RsError, RsResult}, plugins::{get_plugin_fodler, sources::{error::SourcesError, AsyncReadPinBox, SourceRead}, url::{self, PluginTarget}}, tools::{file_tools::extract_zip, http_tools::download_latest_wasm, video_tools::ytdl::YydlContext}};
+use crate::{domain::{backup::Backup, library::LibraryRole, plugin::{Plugin, PluginForAdd, PluginForInsert, PluginForInstall, PluginForUpdate, PluginWasm, PluginWithCredential}, progress::{RsProgress, RsProgressCallback}, request_processing::{RequestProcessingMessage, RequestProcessingWithAction, RsRequestProcessing, RsRequestProcessingForInsert, RsRequestProcessingForUpdate}, ElementAction}, error::{RsError, RsResult}, plugins::{get_plugin_fodler, sources::{error::SourcesError, AsyncReadPinBox, SourceRead}, url::{self, PluginTarget}}, tools::{file_tools::extract_zip, http_tools::download_latest_wasm, video_tools::ytdl::YydlContext}};
 
 use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
 
@@ -339,8 +339,19 @@ impl ModelController {
         let library_store = self.store.get_library_store(library_id)?;
         library_store.add_request_processing(insert).await?;
 
-        library_store.get_request_processing(&id).await?
-            .ok_or(Error::NotFound(format!("Request processing {} not found after insert", id)).into())
+        let processing = library_store.get_request_processing(&id).await?
+            .ok_or(Error::NotFound(format!("Request processing {} not found after insert", id)))?;
+
+        // Broadcast SSE event for new processing
+        self.send_request_processing(RequestProcessingMessage {
+            library: library_id.to_string(),
+            processings: vec![RequestProcessingWithAction {
+                action: ElementAction::Added,
+                processing: processing.clone(),
+            }],
+        });
+
+        Ok(processing)
     }
 
     /// List all active request processings for a library
@@ -471,12 +482,29 @@ impl ModelController {
                 eta: progress.eta,
             };
 
+            // Check if there was a meaningful change (status or progress)
+            let has_change = progress.status != processing.status
+                || progress.progress != processing.progress;
+
             if let Err(e) = library_store.update_request_processing(&processing.id, update).await {
                 crate::tools::log::log_error(
                     crate::tools::log::LogServiceType::Scheduler,
                     format!("Failed to update processing {} in DB: {:#}", processing.id, e),
                 );
                 continue;
+            }
+
+            // Emit SSE event if there was a change
+            if has_change {
+                if let Ok(Some(updated)) = library_store.get_request_processing(&processing.id).await {
+                    self.send_request_processing(RequestProcessingMessage {
+                        library: library_id.to_string(),
+                        processings: vec![RequestProcessingWithAction {
+                            action: ElementAction::Updated,
+                            processing: updated,
+                        }],
+                    });
+                }
             }
 
             // If finished, trigger download
@@ -521,6 +549,15 @@ impl ModelController {
                                 crate::tools::log::LogServiceType::Scheduler,
                                 format!("Failed to remove completed processing {}: {:#}", processing.id, e),
                             );
+                        } else {
+                            // Emit SSE event for deleted processing
+                            self.send_request_processing(RequestProcessingMessage {
+                                library: library_id.to_string(),
+                                processings: vec![RequestProcessingWithAction {
+                                    action: ElementAction::Deleted,
+                                    processing: processing.clone(),
+                                }],
+                            });
                         }
                     }
                     Err(e) => {
