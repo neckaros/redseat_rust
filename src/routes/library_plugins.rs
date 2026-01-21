@@ -73,7 +73,7 @@ async fn handler_request_url(Path(library_id): Path<String>, State(mc): State<Mo
 	};
 	let wasm = mc.exec_request(request, Some(library_id), false, None, &user).await?;
 	let body = match wasm {
-		crate::plugins::sources::SourceRead::Stream(_) => Json(json!({"stream": true})),
+		crate::plugins::sources::SourceRead::Stream(_) => return Err(crate::Error::Error("Request processing returned a stream instead of request info".to_string())),
 		crate::plugins::sources::SourceRead::Request(r) => Json(json!(r)),
 	};
 	Ok(body)
@@ -94,7 +94,7 @@ async fn handler_request_url_sharetoken(Path(library_id): Path<String>, State(mc
 async fn handler_request_process(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Json(request): Json<RsRequest>) -> Result<Json<Value>> {
 	let wasm = mc.exec_request(request, Some(library_id), false, None, &user).await?;
 	let body = match wasm {
-		crate::plugins::sources::SourceRead::Stream(_) => Json(json!({"stream": true})),
+		crate::plugins::sources::SourceRead::Stream(_) => return Err(crate::Error::Error("Request processing returned a stream instead of request info".to_string())),
 		crate::plugins::sources::SourceRead::Request(r) => Json(json!(r)),
 	};
 	Ok(body)
