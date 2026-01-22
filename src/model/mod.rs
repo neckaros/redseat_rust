@@ -150,7 +150,7 @@ impl ModelController {
             store: Arc::new(store),
             plugin_manager: Arc::new(plugin_manager),
             trakt: Arc::new(TraktContext::new(
-                "455f81b3409a8dd140a941e9250ff22b2ed92d68003491c3976363fe752a9024".to_string(),
+                "fcb0d3a87a808a5a0897291350e23cddbbef14502ccb91f1f7bf9c339cb93bcb".to_string(),
             )),
             tmdb: Arc::new(tmdb),
             fanart: Arc::new(fanart),
