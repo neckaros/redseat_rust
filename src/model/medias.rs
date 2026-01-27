@@ -861,6 +861,8 @@ impl ModelController {
             ignore_origin_duplicate: first_request.map(|r| r.ignore_origin_duplicate).unwrap_or_default(),
             season: first_request.and_then(|r| r.season),
             episode: first_request.and_then(|r| r.episode),
+            description: first_request.and_then(|r| r.description.clone()),
+            movie: first_request.and_then(|r| r.movie.clone()),
             origin: origin.clone(),
             ..Default::default()
         };

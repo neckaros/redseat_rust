@@ -355,7 +355,15 @@ impl PluginManager {
                             .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
                     };
                     let res = plugin_m.call_get_error_code::<Json<RsRequestPluginRequest>, Json<RsRequestAddResponse>>("request_add", Json(req));
-                    if let Ok(Json(response)) = res {
+                    if let Ok(Json(mut response)) = res {
+                        // Convert relative ETA (ms) to absolute UTC timestamp (ms)
+                        if let Some(relative_eta) = response.eta {
+                            let now_ms = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_millis() as i64)
+                                .unwrap_or(0);
+                            response.eta = Some(now_ms + relative_eta);
+                        }
                         return Ok(Some((plugin_with_cred.plugin.id.clone(), response)));
                     } else if let Err((error, code)) = res {
                         if code != 404 {
@@ -380,7 +388,17 @@ impl PluginManager {
             };
             let res = plugin_m.call_get_error_code::<Json<RsProcessingActionRequest>, Json<RsProcessingProgress>>("get_progress", Json(req));
             match res {
-                Ok(Json(progress)) => Ok(progress),
+                Ok(Json(mut progress)) => {
+                    // Convert relative ETA (ms) to absolute UTC timestamp (ms)
+                    if let Some(relative_eta) = progress.eta {
+                        let now_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as i64)
+                            .unwrap_or(0);
+                        progress.eta = Some(now_ms + relative_eta);
+                    }
+                    Ok(progress)
+                },
                 Err((error, code)) => Err(Error::Error(format!("Plugin error {}: {}", code, error))),
             }
         } else {

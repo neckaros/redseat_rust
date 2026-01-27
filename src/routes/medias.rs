@@ -584,10 +584,16 @@ async fn handler_add_request(
     user: ConnectedUser,
     Json(request): Json<RsRequest>,
 ) -> Result<Json<Value>> {
+    let group_thumbnail_url = request.thumbnail_url.clone();
+    let group_filename = request.filename.clone();
+    let group_mime = request.mime.clone();
+
     let group = RsGroupDownload {
         requests: vec![request],
         group: false,
-        ..Default::default()
+        group_thumbnail_url,
+        group_filename,
+        group_mime,
     };
     let added = mc
         .download_library_url(&library_id, group, &user)

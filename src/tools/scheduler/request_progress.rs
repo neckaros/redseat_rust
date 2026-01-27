@@ -21,11 +21,6 @@ impl RequestProgressTask {
 #[async_trait]
 impl RsSchedulerTask for RequestProgressTask {
     async fn execute(&self, mc: ModelController) -> RsResult<()> {
-        log_info(
-            LogServiceType::Scheduler,
-            "Starting request progress check".to_string(),
-        );
-
         let connected_user = &ConnectedUser::ServerAdmin;
         let libraries = mc.get_libraries(connected_user).await?;
 
@@ -53,11 +48,6 @@ impl RsSchedulerTask for RequestProgressTask {
                 }
             }
         }
-
-        log_info(
-            LogServiceType::Scheduler,
-            "Request progress check completed".to_string(),
-        );
 
         Ok(())
     }

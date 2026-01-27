@@ -89,9 +89,7 @@ impl RsScheduler {
                     
                     let task = {
                         let mut running = scheduler.running.lock().await;
-                        let token = CancellationToken::new();                
-                        log_info(super::log::LogServiceType::Scheduler, format!("Starting task {:?}", item));
-                        
+                        let token = CancellationToken::new();
                         let task = item.to_task().unwrap();
                         running.insert(item.clone(), RsRunningTask {
                             token,
