@@ -22,6 +22,7 @@ pub struct PluginProvider {
     plugin: PluginWithCredential,
     plugin_manager: Arc<PluginManager>,
     root: String,
+    data_path: Option<String>,
 }
 
 
@@ -38,6 +39,7 @@ impl Source for PluginProvider {
         Ok(Self {
             id: library.id.clone(),
             root: library.root.clone().unwrap_or("/".to_string()),
+            data_path: library.settings.data_path.clone(),
             plugin: plugin_with_credentials,
             plugin_manager: controller.plugin_manager.clone()
         })
@@ -53,13 +55,14 @@ impl Source for PluginProvider {
         Ok(PluginProvider {
                 id: backup.id.clone(),
                 root: backup.path,
+                data_path: None,
                 plugin: plugin_with_credentials,
                 plugin_manager: controller.plugin_manager.clone()
            })
    }
 
     async fn init(&self) -> SourcesResult<()> {
-        let local = local_provider(&self.id, "PluginProvider", &Some(self.root.clone())).await.map_err(|_| SourcesError::Other("Unable to init library".to_string()))?; 
+        let local = local_provider(&self.id, "PluginProvider", &Some(self.root.clone()), &self.data_path).await.map_err(|_| SourcesError::Other("Unable to init library".to_string()))?;
 
        local.init().await?;
         Ok(())
@@ -117,7 +120,7 @@ impl Source for PluginProvider {
         let content_length = length.clone();
         let mime = mime.unwrap_or("application/octet-stream".to_string()).to_string();
         let plugin = self.plugin.clone();
-        let local = local_provider(&self.id, "PluginProvider", &Some(self.root.clone())).await?; 
+        let local = local_provider(&self.id, "PluginProvider", &Some(self.root.clone()), &self.data_path).await?;
         let filename = name.to_string();
         let plugin_manager = self.plugin_manager.clone();
         let source = tokio::spawn(async move {

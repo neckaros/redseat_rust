@@ -437,12 +437,14 @@ pub trait LocalSource: Send {
 }
 
 pub async fn local_provider_for_library(library: &ServerLibrary) -> RsResult<PathProvider> {
-
-    local_provider(&library.id, &library.source, &library.root).await
-    
+    local_provider(&library.id, &library.source, &library.root, &library.settings.data_path).await
 }
 
-pub async fn local_provider(id: &str, source_type: &str, root: &Option<String>) -> RsResult<PathProvider> {
+pub async fn local_provider(id: &str, source_type: &str, root: &Option<String>, data_path: &Option<String>) -> RsResult<PathProvider> {
+    if let Some(custom_path) = data_path {
+        let path = PathBuf::from(custom_path);
+        return Ok(PathProvider::new_for_local(path));
+    }
 
     let path = if source_type == "PathProvider" {
         if let Some(existing) = &root {

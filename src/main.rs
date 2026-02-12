@@ -139,9 +139,8 @@ async fn app() -> Result<Router> {
     // allow `GET` and `POST` when accessing the resource
     .allow_methods(vec![Method::GET, Method::PATCH, Method::DELETE, Method::HEAD, Method::OPTIONS, Method::POST])
     .allow_headers([AUTHORIZATION, ACCEPT, CACHE_CONTROL, CONTENT_TYPE, REFERRER_POLICY, REFERER])
-    // allow requests from any origin
-
-    .allow_origin(origins);
+    .allow_origin(origins)
+    .allow_credentials(true);
 
     let server_id = get_server_id().await;
     let admin_users = mc.get_users(&model::users::ConnectedUser::ServerAdmin).await?.into_iter().filter(|u| u.is_admin()).collect::<Vec<_>>();
