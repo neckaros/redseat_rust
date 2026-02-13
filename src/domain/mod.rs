@@ -78,24 +78,24 @@ pub enum ElementAction {
 
 impl From<Serie> for RsIds {
     fn from(value: Serie) -> Self {
-        RsIds { redseat: Some(value.id), trakt: value.trakt, slug: value.slug, tvdb: value.tvdb, imdb: value.imdb, tmdb: value.tmdb, tvrage: None, other_ids: None }
+        RsIds { redseat: Some(value.id), trakt: value.trakt, slug: value.slug, tvdb: value.tvdb, imdb: value.imdb, tmdb: value.tmdb, tvrage: None, other_ids: None, ..Default::default() }
     }
 }
 impl From<Episode> for RsIds {
     fn from(value: Episode) -> Self {
-        RsIds { redseat: Some(value.id()), trakt: value.trakt, slug: value.slug, tvdb: value.tvdb, imdb: value.imdb, tmdb: value.tmdb, tvrage: None, other_ids: None }
+        RsIds { redseat: Some(value.id()), trakt: value.trakt, slug: value.slug, tvdb: value.tvdb, imdb: value.imdb, tmdb: value.tmdb, tvrage: None, other_ids: None, ..Default::default() }
     }
 }
 
 
 impl From<Movie> for RsIds {
     fn from(value: Movie) -> Self {
-        RsIds { redseat: Some(value.id), trakt: value.trakt, slug: value.slug, tvdb: None, imdb: value.imdb, tmdb: value.tmdb, tvrage: None, other_ids: None }
+        RsIds { redseat: Some(value.id), trakt: value.trakt, slug: value.slug, tvdb: None, imdb: value.imdb, tmdb: value.tmdb, tvrage: None, other_ids: None, ..Default::default() }
     }
 }
 impl From<Person> for RsIds {
     fn from(value: Person) -> Self {
-        RsIds { redseat: Some(value.id), trakt: value.trakt, slug: value.slug, tvdb: None, imdb: value.imdb, tmdb: value.tmdb, tvrage: None, other_ids: None }
+        RsIds { redseat: Some(value.id), trakt: value.trakt, slug: value.slug, tvdb: None, imdb: value.imdb, tmdb: value.tmdb, tvrage: None, other_ids: None, ..Default::default() }
     }
 }
 
