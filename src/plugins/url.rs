@@ -4,7 +4,7 @@ use async_recursion::async_recursion;
 use extism::convert::Json;
 use futures::future::ok;
 use http::header::{CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE};
-use rs_plugin_common_interfaces::{lookup::{RsLookupQuery, RsLookupSourceResult, RsLookupWrapper}, request::{RsProcessingActionRequest, RsProcessingProgress, RsRequest, RsRequestAddResponse, RsRequestPluginRequest, RsRequestStatus}, url::RsLink, PluginCredential, PluginType};
+use rs_plugin_common_interfaces::{lookup::{RsLookupMetadataResultWithImages, RsLookupQuery, RsLookupSourceResult, RsLookupWrapper}, request::{RsProcessingActionRequest, RsProcessingProgress, RsRequest, RsRequestAddResponse, RsRequestPluginRequest, RsRequestStatus}, url::RsLink, PluginCredential, PluginType};
 
 use crate::{Error, domain::{plugin::PluginWithCredential, progress::RsProgressCallback}, error::RsResult, plugins::sources::{AsyncReadPinBox, FileStreamResult}, tools::{array_tools::AddOrSetArray, file_tools::{filename_from_path, get_mime_from_filename}, http_tools::{extract_header, guess_filename, parse_content_disposition}, log::{self, log_error, log_info}, video_tools::ytdl::YydlContext}};
 
@@ -311,6 +311,82 @@ impl PluginManager {
             }
         }
         Ok(results)
+    }
+
+    pub async fn lookup_metadata(&self, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<Vec<RsLookupMetadataResultWithImages>> {
+        let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
+        let mut results = vec![];
+        for plugin_with_cred in plugins {
+            if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
+                let mut plugin_m = plugin.plugin.lock().unwrap();
+
+                if plugin.infos.capabilities.contains(&PluginType::LookupMetadata) {
+                    let wrapped_query = RsLookupWrapper {
+                        query: query.clone(),
+                        credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
+                        params: plugin_with_cred.credential.as_ref()
+                            .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
+                    };
+                    let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<RsLookupMetadataResultWithImages>>>("lookup_metadata", Json(wrapped_query));
+                    if let Ok(Json(mut res)) = res {
+                        log_info(crate::tools::log::LogServiceType::Plugin, format!("Lookup metadata result from plugin {}", plugin_with_cred.plugin.name));
+                        results.append(&mut res);
+                    } else if let Err((error, code)) = res {
+                        if code != 404 {
+                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request lookup_metadata {} {:?}", code, error))
+                        }
+                    }
+                }
+            }
+        }
+        Ok(results)
+    }
+
+    pub async fn lookup_metadata_stream(self: &std::sync::Arc<Self>, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<tokio::sync::mpsc::Receiver<Vec<RsLookupMetadataResultWithImages>>> {
+        let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        let manager = self.clone();
+        tokio::spawn(async move {
+            for plugin_with_cred in plugins {
+                let call_result = {
+                    let plugins_guard = manager.plugins.read().await;
+                    if let Some(plugin) = plugins_guard.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
+                        if plugin.infos.capabilities.contains(&PluginType::LookupMetadata) {
+                            let mut plugin_m = plugin.plugin.lock().unwrap();
+                            let wrapped_query = RsLookupWrapper {
+                                query: query.clone(),
+                                credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
+                                params: plugin_with_cred.credential.as_ref()
+                                    .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
+                            };
+                            let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<RsLookupMetadataResultWithImages>>>("lookup_metadata", Json(wrapped_query));
+                            match res {
+                                Ok(Json(res)) => {
+                                    log_info(crate::tools::log::LogServiceType::Plugin, format!("Lookup metadata stream result from plugin {}", plugin_with_cred.plugin.name));
+                                    Some(Ok(res))
+                                }
+                                Err((error, code)) => {
+                                    if code != 404 {
+                                        log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request lookup_metadata {} {:?}", code, error))
+                                    }
+                                    Some(Err(()))
+                                }
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                };
+                if let Some(Ok(res)) = call_result {
+                    if tx.send(res).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+        Ok(rx)
     }
 
     /// Check if a request can be played/downloaded instantly without needing to add to service first

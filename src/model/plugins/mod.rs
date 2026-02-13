@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use nanoid::nanoid;
-use rs_plugin_common_interfaces::{lookup::{RsLookupQuery, RsLookupSourceResult}, request::{RsGroupDownload, RsProcessingStatus, RsRequest}, url::{RsLink, RsLinkType}, PluginCredential, PluginInformation, PluginType, RsPluginRequest};
+use rs_plugin_common_interfaces::{lookup::{RsLookupMetadataResultWithImages, RsLookupQuery, RsLookupSourceResult}, request::{RsGroupDownload, RsProcessingStatus, RsRequest}, url::{RsLink, RsLinkType}, PluginCredential, PluginInformation, PluginType, RsPluginRequest};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -224,6 +224,28 @@ impl ModelController {
     }
 
 
+
+    pub async fn exec_lookup_metadata(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<Vec<RsLookupMetadataResultWithImages>> {
+        if let Some(library_id) = library_id {
+            requesting_user.check_library_role(&library_id, crate::domain::library::LibraryRole::Read)?;
+        } else {
+            requesting_user.check_role(&UserRole::Admin)?;
+        }
+        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::LookupMetadata), ..Default::default() }).await?.collect();
+
+        self.plugin_manager.lookup_metadata(query, plugins, target).await
+    }
+
+    pub async fn exec_lookup_metadata_stream(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<tokio::sync::mpsc::Receiver<Vec<RsLookupMetadataResultWithImages>>> {
+        if let Some(library_id) = library_id {
+            requesting_user.check_library_role(&library_id, crate::domain::library::LibraryRole::Read)?;
+        } else {
+            requesting_user.check_role(&UserRole::Admin)?;
+        }
+        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::LookupMetadata), ..Default::default() }).await?.collect();
+
+        self.plugin_manager.lookup_metadata_stream(query, plugins, target).await
+    }
 
     pub async fn exec_token_exchange(&self, plugin_id: &str, request: HashMap<String, String>, requesting_user: &ConnectedUser) -> RsResult<PluginCredential> {
 
