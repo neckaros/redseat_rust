@@ -12,6 +12,7 @@ use tokio::sync::broadcast;
 use crate::{
     domain::{
         backup::{BackupFileProgress, BackupMessage},
+        book::BooksMessage,
         episode::EpisodesMessage,
         library::{LibraryMessage, LibraryRole, LibraryStatusMessage},
         media::{ConvertMessage, MediasMessage, UploadProgressMessage},
@@ -22,7 +23,10 @@ use crate::{
         tag::TagMessage,
         watched::{Unwatched, Watched},
     },
-    model::{media_progresses::MediasProgressMessage, media_ratings::MediasRatingMessage, users::ConnectedUser, ModelController},
+    model::{
+        media_progresses::MediasProgressMessage, media_ratings::MediasRatingMessage,
+        users::ConnectedUser, ModelController,
+    },
 };
 
 /// Unified SSE event that wraps all possible event types
@@ -37,6 +41,7 @@ pub enum SseEvent {
     Episodes(EpisodesMessage),
     Series(SeriesMessage),
     Movies(MoviesMessage),
+    Books(BooksMessage),
     People(PeopleMessage),
     Tags(TagMessage),
     Backups(BackupMessage),
@@ -60,6 +65,7 @@ impl SseEvent {
             SseEvent::Episodes(_) => "episodes",
             SseEvent::Series(_) => "series",
             SseEvent::Movies(_) => "movies",
+            SseEvent::Books(_) => "books",
             SseEvent::People(_) => "people",
             SseEvent::Tags(_) => "tags",
             SseEvent::Backups(_) => "backups",
@@ -83,6 +89,7 @@ impl SseEvent {
             SseEvent::Episodes(m) => Some(&m.library),
             SseEvent::Series(m) => Some(&m.library),
             SseEvent::Movies(m) => Some(&m.library),
+            SseEvent::Books(m) => Some(&m.library),
             SseEvent::People(m) => Some(&m.library),
             SseEvent::Tags(m) => Some(&m.library),
             SseEvent::Backups(m) => m.backup.backup.library.as_deref(),
@@ -101,10 +108,9 @@ impl SseEvent {
 
         match self {
             // Admin-only events
-            SseEvent::LibraryStatus(m) => {
-                user.check_library_role(&m.library, LibraryRole::Admin)
-                    .is_ok()
-            }
+            SseEvent::LibraryStatus(m) => user
+                .check_library_role(&m.library, LibraryRole::Admin)
+                .is_ok(),
             SseEvent::BackupsFiles(_) => user.check_role(&UserRole::Admin).is_ok(),
 
             // Backup events: library admin or server admin
@@ -117,36 +123,32 @@ impl SseEvent {
             }
 
             // User-specific events: only send to the user whose progress this is
-            SseEvent::MediaProgress(m) => {
-                user.user_id()
-                    .map(|uid| uid == m.progress.user_ref)
-                    .unwrap_or(false)
-            }
+            SseEvent::MediaProgress(m) => user
+                .user_id()
+                .map(|uid| uid == m.progress.user_ref)
+                .unwrap_or(false),
 
             // User-specific events: only send to the user whose rating this is
-            SseEvent::MediaRating(m) => {
-                user.user_id()
-                    .map(|uid| uid == m.rating.user_ref)
-                    .unwrap_or(false)
-            }
+            SseEvent::MediaRating(m) => user
+                .user_id()
+                .map(|uid| uid == m.rating.user_ref)
+                .unwrap_or(false),
 
             // User-specific events: only send to the user who marked content as watched
-            SseEvent::Watched(w) => {
-                user.user_id()
-                    .ok()
-                    .zip(w.user_ref.as_ref())
-                    .map(|(uid, wr)| uid == *wr)
-                    .unwrap_or(false)
-            }
+            SseEvent::Watched(w) => user
+                .user_id()
+                .ok()
+                .zip(w.user_ref.as_ref())
+                .map(|(uid, wr)| uid == *wr)
+                .unwrap_or(false),
 
             // User-specific events: only send to the user who unmarked content as watched
-            SseEvent::Unwatched(w) => {
-                user.user_id()
-                    .ok()
-                    .zip(w.user_ref.as_ref())
-                    .map(|(uid, wr)| uid == *wr)
-                    .unwrap_or(false)
-            }
+            SseEvent::Unwatched(w) => user
+                .user_id()
+                .ok()
+                .zip(w.user_ref.as_ref())
+                .map(|(uid, wr)| uid == *wr)
+                .unwrap_or(false),
 
             // Library-scoped events (read access required)
             _ => {
@@ -167,9 +169,7 @@ pub struct SseQueryParams {
 }
 
 pub fn routes(mc: ModelController) -> Router {
-    Router::new()
-        .route("/", get(handler_sse))
-        .with_state(mc)
+    Router::new().route("/", get(handler_sse)).with_state(mc)
 }
 
 async fn handler_sse(
@@ -228,4 +228,33 @@ async fn handler_sse(
             .interval(Duration::from_secs(30))
             .text("ping"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SseEvent;
+    use crate::domain::{
+        book::{Book, BookWithAction, BooksMessage},
+        ElementAction,
+    };
+
+    #[test]
+    fn books_sse_event_name_library_and_serialization() {
+        let event = SseEvent::Books(BooksMessage {
+            library: "lib-books".to_string(),
+            books: vec![BookWithAction {
+                action: ElementAction::Added,
+                book: Book {
+                    id: "book-1".to_string(),
+                    name: "Book 1".to_string(),
+                    ..Default::default()
+                },
+            }],
+        });
+        assert_eq!(event.event_name(), "books");
+        assert_eq!(event.library_id(), Some("lib-books"));
+        let serialized = serde_json::to_string(&event).unwrap();
+        assert!(serialized.contains("\"books\""));
+        assert!(serialized.contains("\"library\":\"lib-books\""));
+    }
 }

@@ -2,31 +2,67 @@ use std::u64;
 
 use chrono::Utc;
 use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, url::RsLink};
-use rusqlite::{params, params_from_iter, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, Row, ToSql};
+use rusqlite::{
+    params, params_from_iter,
+    types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef},
+    OptionalExtension, Row, ToSql,
+};
 use serde::{Deserialize, Serialize};
 use stream_map_any::StreamMapAnyVariant;
 
-use crate::{domain::{library::LibraryLimits, media::{self, FileEpisode, FileType, Media, MediaForInsert, MediaForUpdate, MediaItemReference, RsGpsPosition}}, error::RsResult, model::{medias::{MediaQuery, MediaSource, RsSort}, people::PeopleQuery, series::SerieQuery, store::{from_comma_separated_optional, from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType}, to_comma_separated_optional, to_pipe_separated_optional}, tags::{TagForInsert, TagForUpdate, TagQuery}}, plugins::sources::error::SourcesError, tools::{array_tools::AddOrSetArray, file_tools::{file_type_from_mime, get_mime_from_filename}, log::{log_info, LogServiceType}, text_tools::{extract_people, extract_tags}}};
 use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
+use crate::{
+    domain::{
+        library::LibraryLimits,
+        media::{
+            self, FileEpisode, FileType, Media, MediaForInsert, MediaForUpdate, MediaItemReference,
+            RsGpsPosition,
+        },
+    },
+    error::RsResult,
+    model::{
+        medias::{MediaQuery, MediaSource, RsSort},
+        people::PeopleQuery,
+        series::SerieQuery,
+        store::{
+            from_comma_separated_optional, from_pipe_separated_optional,
+            sql::{
+                OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType,
+            },
+            to_comma_separated_optional, to_pipe_separated_optional,
+        },
+        tags::{TagForInsert, TagForUpdate, TagQuery},
+    },
+    plugins::sources::error::SourcesError,
+    tools::{
+        array_tools::AddOrSetArray,
+        file_tools::{file_type_from_mime, get_mime_from_filename},
+        log::{log_info, LogServiceType},
+        text_tools::{extract_people, extract_tags},
+    },
+};
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MediaBackup {
     pub id: String,
     pub name: String,
     pub size: Option<u64>,
-    pub hash: String
+    pub hash: String,
 }
 
 impl FromSql for RsGpsPosition {
     fn column_result(value: ValueRef) -> FromSqlResult<Self> {
         String::column_result(value).and_then(|as_string| {
             let mut splitted = as_string.split(",");
-            let lat = splitted.next().and_then(|f| f.parse::<f64>().ok()).ok_or(FromSqlError::InvalidType)?;
-            let long = splitted.next().and_then(|f| f.parse::<f64>().ok()).ok_or(FromSqlError::InvalidType)?;
-            Ok(RsGpsPosition {
-                lat,
-                long,
-            })
+            let lat = splitted
+                .next()
+                .and_then(|f| f.parse::<f64>().ok())
+                .ok_or(FromSqlError::InvalidType)?;
+            let long = splitted
+                .next()
+                .and_then(|f| f.parse::<f64>().ok())
+                .ok_or(FromSqlError::InvalidType)?;
+            Ok(RsGpsPosition { lat, long })
         })
     }
 }
@@ -55,17 +91,13 @@ impl RsSort {
     }
 }
 
-
-
-
-
 const MEDIA_QUERY: &str = "SELECT 
             m.id, m.source, m.name, m.description, m.type, m.mimetype, m.size,
             art.rating as rating,
             m.md5, m.params, 
             m.width, m.height, m.phash, m.thumbhash, m.focal, m.iso, m.colorSpace, m.sspeed, m.orientation, m.duration, 
             m.acodecs, m.achan, m.vcodecs, m.fps, m.bitrate, m.long, m.lat, m.model, m.pages, m.progress, 
-            m.thumb, m.thumbv, m.thumbsize, m.iv, m.origin, m.movie, m.lang, m.uploader, m.uploadkey, m.modified, 
+            m.thumb, m.thumbv, m.thumbsize, m.iv, m.origin, m.movie, m.book, m.lang, m.uploader, m.uploadkey, m.modified, 
             m.added, m.created
 			,(select GROUP_CONCAT(tag_ref || '|' || IFNULL(confidence, 100)) from media_tag_mapping where media_ref = m.id and (confidence != -1 or confidence IS NULL)) as tags
 			,(select GROUP_CONCAT(people_ref ) from media_people_mapping where media_ref = m.id) as people
@@ -73,9 +105,7 @@ const MEDIA_QUERY: &str = "SELECT
             m.fnumber, m.icc, m.mp,
 			m.progress as user_progress,
 			art.rating as user_rating,
-            m.originalhash, m.originalid, m.face_recognition_error,
-            m.isbn13, m.openlibrary_edition_id, m.openlibrary_work_id, m.google_books_volume_id,
-            m.anilist_manga_id, m.mangadex_manga_uuid, m.myanimelist_manga_id, m.asin
+            m.originalhash, m.originalid, m.face_recognition_error
 			
             FROM medias as m
             LEFT JOIN 
@@ -99,7 +129,7 @@ fn media_query(user_id: &Option<String>) -> String {
             m.md5, m.params, 
             m.width, m.height, m.phash, m.thumbhash, m.focal, m.iso, m.colorSpace, m.sspeed, m.orientation, m.duration, 
             m.acodecs, m.achan, m.vcodecs, m.fps, m.bitrate, m.long, m.lat, m.model, m.pages, m.progress, 
-            m.thumb, m.thumbv, m.thumbsize, m.iv, m.origin, m.movie, m.lang, m.uploader, m.uploadkey, m.modified, 
+            m.thumb, m.thumbv, m.thumbsize, m.iv, m.origin, m.movie, m.book, m.lang, m.uploader, m.uploadkey, m.modified, 
             m.added, m.created
 			,(select GROUP_CONCAT(tag_ref || '|' || IFNULL(confidence, 100)) from media_tag_mapping where media_ref = m.id and (confidence != -1 or confidence IS NULL)) as tags
 			,(select GROUP_CONCAT(people_ref ) from media_people_mapping where media_ref = m.id) as people
@@ -107,9 +137,7 @@ fn media_query(user_id: &Option<String>) -> String {
             m.fnumber, m.icc, m.mp,
 			mp.progress as user_progress,
 			rt.rating as user_rating,
-            m.originalhash, m.originalid, m.face_recognition_error,
-            m.isbn13, m.openlibrary_edition_id, m.openlibrary_work_id, m.google_books_volume_id,
-            m.anilist_manga_id, m.mangadex_manga_uuid, m.myanimelist_manga_id, m.asin
+            m.originalhash, m.originalid, m.face_recognition_error
 
             FROM medias as m
             LEFT JOIN 
@@ -134,13 +162,12 @@ fn media_query(user_id: &Option<String>) -> String {
                     
                     
                     ", user_id, user_id)
-                    
     } else {
         MEDIA_QUERY.to_string()
     }
 }
 
-    const MEDIA_BACKUP_QUERY: &str = "SELECT 
+const MEDIA_BACKUP_QUERY: &str = "SELECT 
             m.id, m.name, m.size, m.md5,
             (select avg(rating ) from ratings where media_ref = m.id) as rating
 			,(select GROUP_CONCAT(tag_ref || '|' || IFNULL(confidence, 100)) from media_tag_mapping where media_ref = m.id and (confidence != -1 or confidence IS NULL)) as tags
@@ -195,71 +222,58 @@ impl SqliteLibraryStore {
             fps: row.get(23)?,
             bitrate: row.get(24)?,
 
-
- 
-
             long: row.get(25)?,
             lat: row.get(26)?,
             model: row.get(27)?,
 
             pages: row.get(28)?,
 
-            progress: row.get(48)?,
+            progress: row.get(49)?,
             thumb: row.get(30)?,
             thumbv: row.get(31)?,
 
             thumbsize: row.get(32)?,
             iv: row.get(33)?,
 
-            
             origin: row.get(34)?,
             movie: row.get(35)?,
-            lang: row.get(36)?,
-            uploader: row.get(37)?,
-            uploadkey: row.get(38)?,
+            book: row.get(36)?,
+            lang: row.get(37)?,
+            uploader: row.get(38)?,
+            uploadkey: row.get(39)?,
 
+            modified: row.get(40)?,
+            added: row.get(41)?,
+            created: row.get(42)?,
 
-            modified: row.get(39)?,
-            added: row.get(40)?,
-            created: row.get(41)?,
-
-         
-            tags: from_comma_separated_optional(row.get(42)?),
-            people: from_comma_separated_optional(row.get(43)?),
-            series: from_comma_separated_optional(row.get(44)?),
+            tags: from_comma_separated_optional(row.get(43)?),
+            people: from_comma_separated_optional(row.get(44)?),
+            series: from_comma_separated_optional(row.get(45)?),
             faces: None,
             backups: None,
 
-            
-            f_number: row.get(45)?,
-            icc: row.get(46)?,
-            mp: row.get(47)?,
+            f_number: row.get(46)?,
+            icc: row.get(47)?,
+            mp: row.get(48)?,
 
-            rating: row.get(49)?,
-            
+            rating: row.get(50)?,
 
-            original_hash: row.get(50)?,
-            original_id: row.get(51)?,
-            face_recognition_error: row.get(52)?,
-            isbn13: row.get(53)?,
-            openlibrary_edition_id: row.get(54)?,
-            openlibrary_work_id: row.get(55)?,
-            google_books_volume_id: row.get(56)?,
-            anilist_manga_id: row.get(57)?,
-            mangadex_manga_uuid: row.get(58)?,
-            myanimelist_manga_id: row.get(59)?,
-            asin: row.get(60)?,
+            original_hash: row.get(51)?,
+            original_id: row.get(52)?,
+            face_recognition_error: row.get(53)?,
             //series: None,
         })
     }
-
 
     fn build_media_query(mut query: MediaQuery, limits: LibraryLimits) -> RsQueryBuilder {
         let mut where_query = RsQueryBuilder::new();
 
         if let Some(text) = query.text {
             let text = format!("%{}%", text);
-            where_query.add_where(SqlWhereType::Or(vec![SqlWhereType::Like("name".to_owned(), Box::new(text.clone())), SqlWhereType::Like("description".to_owned(), Box::new(text.clone()))]));
+            where_query.add_where(SqlWhereType::Or(vec![
+                SqlWhereType::Like("name".to_owned(), Box::new(text.clone())),
+                SqlWhereType::Like("description".to_owned(), Box::new(text.clone())),
+            ]));
         }
         let sort = query.sort.to_media_query();
 
@@ -267,29 +281,33 @@ impl SqliteLibraryStore {
 
         if let Some(page_key_str) = query.page_key {
             //println!("page key {}", page_key_str);
-        // Try to split the key into [primary_cursor, id_cursor]
+            // Try to split the key into [primary_cursor, id_cursor]
             if let Some((primary, secondary)) = page_key_str.split_once('|') {
                 // 1. Process Primary Cursor (Standard behavior)
                 if let Ok(primary_val) = primary.parse::<i64>() {
                     // Determine operator based on sort order
-                    let op = if query.order == SqlOrder::DESC { "<" } else { ">" };
-                    
+                    let op = if query.order == SqlOrder::DESC {
+                        "<"
+                    } else {
+                        ">"
+                    };
+
                     // Construct Tuple Comparison: (sort < val) OR (sort = val AND id < sec_val)
                     // We inject `primary_val` directly (safe as it is an integer)
                     // We bind `secondary` via the parameter (?)
                     let sql = format!(
-                        "({col} {op} {val} OR ({col} = {val} AND m.id {op} ?))", 
-                        col = sort, 
-                        op = op, 
+                        "({col} {op} {val} OR ({col} = {val} AND m.id {op} ?))",
+                        col = sort,
+                        op = op,
                         val = primary_val
                     );
-                    
-                    where_query.add_where(SqlWhereType::Custom(sql, Box::new(secondary.to_string())));
-                    
+
+                    where_query
+                        .add_where(SqlWhereType::Custom(sql, Box::new(secondary.to_string())));
+
                     pagination_handled = true;
                 }
-                    // Mark that we need the secondary sort
-                
+                // Mark that we need the secondary sort
             } else {
                 // Fallback: No separator, use original logic (single integer)
                 if let Ok(val) = page_key_str.parse::<i64>() {
@@ -303,19 +321,24 @@ impl SqliteLibraryStore {
         }
 
         if let Some(q) = query.after {
-            if query.sort == RsSort::Added || query.sort == RsSort::Modified || query.sort == RsSort::Created {
+            if query.sort == RsSort::Added
+                || query.sort == RsSort::Modified
+                || query.sort == RsSort::Created
+            {
                 where_query.add_where(SqlWhereType::After(sort.clone(), Box::new(q)));
             } else {
                 where_query.add_where(SqlWhereType::After("m.modified".to_owned(), Box::new(q)));
             }
         } else if let Some(q) = query.before {
-            if query.sort == RsSort::Added || query.sort == RsSort::Modified || query.sort == RsSort::Created {
+            if query.sort == RsSort::Added
+                || query.sort == RsSort::Modified
+                || query.sort == RsSort::Created
+            {
                 where_query.add_where(SqlWhereType::Before(sort.clone(), Box::new(q)));
             } else {
                 where_query.add_where(SqlWhereType::Before("m.modified".to_owned(), Box::new(q)));
             }
         }
-
 
         let limit = if let Some(minutes) = limits.delay {
             Some(Utc::now().timestamp_millis() - (minutes * 60000))
@@ -336,29 +359,44 @@ impl SqliteLibraryStore {
             where_query.add_where(SqlWhereType::After("m.added".to_owned(), Box::new(added)));
         }
 
-        
         if let Some(added) = query.created_before {
-            where_query.add_where(SqlWhereType::Before("m.created".to_owned(), Box::new(added)));
+            where_query.add_where(SqlWhereType::Before(
+                "m.created".to_owned(),
+                Box::new(added),
+            ));
         }
         if let Some(added) = query.created_after {
             where_query.add_where(SqlWhereType::After("m.created".to_owned(), Box::new(added)));
         }
 
         if let Some(added) = query.modified_before {
-            where_query.add_where(SqlWhereType::Before("m.modified".to_owned(), Box::new(added)));
+            where_query.add_where(SqlWhereType::Before(
+                "m.modified".to_owned(),
+                Box::new(added),
+            ));
         }
         if let Some(added) = query.modified_after {
-            where_query.add_where(SqlWhereType::After("m.modified".to_owned(), Box::new(added)));
+            where_query.add_where(SqlWhereType::After(
+                "m.modified".to_owned(),
+                Box::new(added),
+            ));
         }
 
-        
         if let Some(long) = query.long {
             let distance = query.distance.map(|d| d * 0.008).unwrap_or(0.1);
-            where_query.add_where(SqlWhereType::Between("long".to_owned(), Box::new(long - distance), Box::new(long + distance)));
-        }      
+            where_query.add_where(SqlWhereType::Between(
+                "long".to_owned(),
+                Box::new(long - distance),
+                Box::new(long + distance),
+            ));
+        }
         if let Some(lat) = query.lat {
             let distance = query.distance.map(|d| d * 0.008).unwrap_or(0.1);
-            where_query.add_where(SqlWhereType::Between("lat".to_owned(), Box::new(lat - distance), Box::new(lat + distance)));
+            where_query.add_where(SqlWhereType::Between(
+                "lat".to_owned(),
+                Box::new(lat - distance),
+                Box::new(lat + distance),
+            ));
         }
 
         if query.gps_square.len() == 4 {
@@ -366,12 +404,18 @@ impl SqliteLibraryStore {
             let latb = query.gps_square.get(1).unwrap().to_owned();
             let longt = query.gps_square.get(2).unwrap().to_owned();
             let latt = query.gps_square.get(3).unwrap().to_owned();
-            where_query.add_where(SqlWhereType::Between("lat".to_owned(), Box::new(latb), Box::new(latt)));
-            where_query.add_where(SqlWhereType::Between("long".to_owned(), Box::new(longb), Box::new(longt)));
+            where_query.add_where(SqlWhereType::Between(
+                "lat".to_owned(),
+                Box::new(latb),
+                Box::new(latt),
+            ));
+            where_query.add_where(SqlWhereType::Between(
+                "long".to_owned(),
+                Box::new(longb),
+                Box::new(longt),
+            ));
             println!("{} {} {} {}", latb, latt, longb, longt);
         }
-
-
 
         if !query.types.is_empty() {
             let mut types = vec![];
@@ -382,107 +426,149 @@ impl SqliteLibraryStore {
         }
 
         for person in query.people {
-            where_query.add_where(SqlWhereType::InStringList("people".to_owned(), ",".to_owned(), Box::new(person)));
+            where_query.add_where(SqlWhereType::InStringList(
+                "people".to_owned(),
+                ",".to_owned(),
+                Box::new(person),
+            ));
         }
 
         //let series_formated = &query.series.iter().map(|s| format!("{}|", s)).collect::<Vec<String>>();
         for serie in query.series {
             if serie.contains('|') {
-                where_query.add_where(SqlWhereType::Custom("series like '%' || ? || '%'".to_owned(), Box::new(serie)));
+                where_query.add_where(SqlWhereType::Custom(
+                    "series like '%' || ? || '%'".to_owned(),
+                    Box::new(serie),
+                ));
             } else {
-                where_query.add_where(SqlWhereType::Custom("(',' || series || ',' LIKE '%,' || ? || '|%')".to_owned(), Box::new(serie)));
+                where_query.add_where(SqlWhereType::Custom(
+                    "(',' || series || ',' LIKE '%,' || ? || '|%')".to_owned(),
+                    Box::new(serie),
+                ));
             }
-            
         }
 
         if let Some(movie) = query.movie {
             where_query.add_where(SqlWhereType::Equal("movie".to_string(), Box::new(movie)));
         }
-        
+        if let Some(book) = query.book {
+            where_query.add_where(SqlWhereType::Equal("book".to_string(), Box::new(book)));
+        }
+
         if let Some(duration) = query.min_duration {
-            where_query.add_where(SqlWhereType::After("duration".to_string(), Box::new(duration)));
+            where_query.add_where(SqlWhereType::After(
+                "duration".to_string(),
+                Box::new(duration),
+            ));
         }
         if let Some(duration) = query.max_duration {
-            where_query.add_where(SqlWhereType::Before("duration".to_string(), Box::new(duration)));
+            where_query.add_where(SqlWhereType::Before(
+                "duration".to_string(),
+                Box::new(duration),
+            ));
         }
-        
+
         if let Some(size) = query.min_size {
-            where_query.add_where(SqlWhereType::GreaterOrEqual("size".to_string(), Box::new(size)));
+            where_query.add_where(SqlWhereType::GreaterOrEqual(
+                "size".to_string(),
+                Box::new(size),
+            ));
         }
         if let Some(size) = query.max_size {
-            where_query.add_where(SqlWhereType::SmallerOrEqual("size".to_string(), Box::new(size)));
+            where_query.add_where(SqlWhereType::SmallerOrEqual(
+                "size".to_string(),
+                Box::new(size),
+            ));
         }
-        
+
         if let Some(rating) = query.min_rating {
-            where_query.add_where(SqlWhereType::GreaterOrEqual("rating".to_string(), Box::new(rating)));
+            where_query.add_where(SqlWhereType::GreaterOrEqual(
+                "rating".to_string(),
+                Box::new(rating),
+            ));
         }
         if let Some(rating) = query.max_rating {
-            where_query.add_where(SqlWhereType::SmallerOrEqual("rating".to_string(), Box::new(rating)));
+            where_query.add_where(SqlWhereType::SmallerOrEqual(
+                "rating".to_string(),
+                Box::new(rating),
+            ));
         }
 
-        
         if let Some(codec) = query.vcodec {
-            where_query.add_where(SqlWhereType::SeparatedContain("vcodecs".to_string(), ",".to_string(), Box::new(codec)));
+            where_query.add_where(SqlWhereType::SeparatedContain(
+                "vcodecs".to_string(),
+                ",".to_string(),
+                Box::new(codec),
+            ));
         }
 
-        
         where_query.add_oder(OrderBuilder::new(sort.to_owned(), query.order.clone()));
         if sort == "rating" {
-            where_query.add_oder(OrderBuilder::new("m.added".to_owned(), SqlOrder::DESC));  
+            where_query.add_oder(OrderBuilder::new("m.added".to_owned(), SqlOrder::DESC));
         }
 
         where_query.add_oder(OrderBuilder::new("m.id".to_owned(), query.order));
-        
-    
 
-
-        let tag_filter = query.tags_confidence.map(|conf| format!(" and (IFNULL(confidence, 100) >= {conf})"));
+        let tag_filter = query
+            .tags_confidence
+            .map(|conf| format!(" and (IFNULL(confidence, 100) >= {conf})"));
         for tag in query.tags {
-            where_query.add_recursive("tags".to_owned(), "media_tag_mapping".to_owned(), "media_ref".to_owned(), "tag_ref".to_owned(), Box::new(tag), tag_filter.clone());
+            where_query.add_recursive(
+                "tags".to_owned(),
+                "media_tag_mapping".to_owned(),
+                "media_ref".to_owned(),
+                "tag_ref".to_owned(),
+                Box::new(tag),
+                tag_filter.clone(),
+            );
         }
-        
+
         where_query
     }
 
     pub async fn get_medias(&self, query: MediaQuery, limits: LibraryLimits) -> Result<Vec<Media>> {
-        let row = self.connection.call( move |conn| { 
-            let media_raw_query = media_query(&limits.user_id);
-            
-            let limit = query.limit.unwrap_or(200);
-            let mut where_query = Self::build_media_query(query, limits);
+        let row = self
+            .connection
+            .call(move |conn| {
+                let media_raw_query = media_query(&limits.user_id);
 
+                let limit = query.limit.unwrap_or(200);
+                let mut where_query = Self::build_media_query(query, limits);
 
-            let mut query = conn.prepare(&format!("
+                let mut query = conn.prepare(&format!(
+                    "
             {}
             {}
             {}
             {}
-             LIMIT {}", 
-             where_query.format_recursive(), 
-             media_raw_query, 
-             where_query.format(), 
-             where_query.format_order(), limit))?;
+             LIMIT {}",
+                    where_query.format_recursive(),
+                    media_raw_query,
+                    where_query.format(),
+                    where_query.format_order(),
+                    limit
+                ))?;
 
-            //println!("query {:?}", query.expanded_sql());
+                //println!("query {:?}", query.expanded_sql());
 
-            let rows = query.query_map(
-            where_query.values(), Self::row_to_media,
-            )?;
-            let backups:Vec<Media> = rows.collect::<std::result::Result<Vec<Media>, rusqlite::Error>>()?; 
-            Ok(backups)
-        }).await?;
+                let rows = query.query_map(where_query.values(), Self::row_to_media)?;
+                let backups: Vec<Media> =
+                    rows.collect::<std::result::Result<Vec<Media>, rusqlite::Error>>()?;
+                Ok(backups)
+            })
+            .await?;
         Ok(row)
     }
 
-    
     pub async fn count_medias(&self, query: MediaQuery, limits: LibraryLimits) -> Result<u64> {
-        let row = self.connection.call( move |conn| { 
+        let row = self
+            .connection
+            .call(move |conn| {
+                let limit = query.limit.unwrap_or(200);
+                let mut where_query = Self::build_media_query(query, limits);
 
-            let limit = query.limit.unwrap_or(200);
-            let mut where_query = Self::build_media_query(query, limits);
-
-
-            let mut query = conn.prepare(&format!("
+                let mut query = conn.prepare(&format!(
+                    "
             {}
             SELECT 
             count(m.id)
@@ -490,39 +576,62 @@ impl SqliteLibraryStore {
             FROM medias as m
              {}
                           {}
-             LIMIT {}", where_query.format_recursive(), where_query.format(), where_query.format_order(), limit))?;
+             LIMIT {}",
+                    where_query.format_recursive(),
+                    where_query.format(),
+                    where_query.format_order(),
+                    limit
+                ))?;
 
-            //println!("query {:?}", query.expanded_sql());
+                //println!("query {:?}", query.expanded_sql());
 
+                let row: u64 = query.query_row(where_query.values(), |row| row.get(0))?;
 
-            let row: u64 = query.query_row(
-            where_query.values(), |row| row.get(0),
-            )?;
-            
-            Ok(row)
-        }).await?;
+                Ok(row)
+            })
+            .await?;
         Ok(row)
     }
-    
-    pub async fn get_media(&self, media_id: &str, user_id: Option<String>) -> Result<Option<Media>> {
+
+    pub async fn get_media(
+        &self,
+        media_id: &str,
+        user_id: Option<String>,
+    ) -> Result<Option<Media>> {
         let media_id = media_id.to_string();
-        let row = self.connection.call( move |conn| { 
-            let media_raw_query = media_query(&user_id);
-            let mut query = conn.prepare(&format!("{} WHERE id = ?", media_raw_query))?;
-            let row = query.query_row(
-            [media_id],Self::row_to_media).optional()?;
-            Ok(row)
-        }).await?;
+        let row = self
+            .connection
+            .call(move |conn| {
+                let media_raw_query = media_query(&user_id);
+                let mut query = conn.prepare(&format!("{} WHERE id = ?", media_raw_query))?;
+                let row = query.query_row([media_id], Self::row_to_media).optional()?;
+                Ok(row)
+            })
+            .await?;
         Ok(row)
     }
 
     pub async fn get_media_by_hash(&self, hash: String, check_original: bool) -> Option<Media> {
-        let row = self.connection.call( move |conn| { 
-            let media_raw_query = media_query(&None);
-            let mut query = if check_original { conn.prepare(&format!("{} WHERE md5 = ? or originalhash = ?", media_raw_query))? } else { conn.prepare(&format!("{} WHERE md5 = ?", media_raw_query))? };
-            let row = if check_original { query.query_row(params![hash, hash],Self::row_to_media)? } else { query.query_row(params![hash],Self::row_to_media)? };
-            Ok(row)
-        }).await;
+        let row = self
+            .connection
+            .call(move |conn| {
+                let media_raw_query = media_query(&None);
+                let mut query = if check_original {
+                    conn.prepare(&format!(
+                        "{} WHERE md5 = ? or originalhash = ?",
+                        media_raw_query
+                    ))?
+                } else {
+                    conn.prepare(&format!("{} WHERE md5 = ?", media_raw_query))?
+                };
+                let row = if check_original {
+                    query.query_row(params![hash, hash], Self::row_to_media)?
+                } else {
+                    query.query_row(params![hash], Self::row_to_media)?
+                };
+                Ok(row)
+            })
+            .await;
         row.ok()
     }
 
@@ -545,34 +654,40 @@ impl SqliteLibraryStore {
         row.ok()
     }
 
-
     pub async fn get_media_source(&self, media_id: &str) -> Result<Option<MediaSource>> {
         let media_id = media_id.to_string();
-        let row = self.connection.call( move |conn| { 
-            let mut query = conn.prepare("SELECT 
+        let row = self
+            .connection
+            .call(move |conn| {
+                let mut query = conn.prepare(
+                    "SELECT 
             id, source, type, thumbsize, size, mimetype
             FROM medias
-            WHERE id = ?")?;
-            let row = query.query_row(
-            [media_id],Self::row_to_mediasource).optional()?;
-            Ok(row)
-        }).await?;
+            WHERE id = ?",
+                )?;
+                let row = query
+                    .query_row([media_id], Self::row_to_mediasource)
+                    .optional()?;
+                Ok(row)
+            })
+            .await?;
         Ok(row)
     }
-    
 
     pub async fn get_all_sources(&self) -> Result<Vec<String>> {
-        let rows = self.connection.call( move |conn| { 
-
-            let mut query = conn.prepare("SELECT distinct(source) as sourcs from medias")?;
-            let rows = query.query_map(
-            params![],|row| {
-                let s: String =  row.get(0)?;
-                Ok(s)
-            })?;
-            let rows:Vec<String> = rows.collect::<std::result::Result<Vec<String>, rusqlite::Error>>()?; 
-            Ok(rows)
-        }).await?;
+        let rows = self
+            .connection
+            .call(move |conn| {
+                let mut query = conn.prepare("SELECT distinct(source) as sourcs from medias")?;
+                let rows = query.query_map(params![], |row| {
+                    let s: String = row.get(0)?;
+                    Ok(s)
+                })?;
+                let rows: Vec<String> =
+                    rows.collect::<std::result::Result<Vec<String>, rusqlite::Error>>()?;
+                Ok(rows)
+            })
+            .await?;
         Ok(rows)
     }
 
@@ -591,19 +706,29 @@ impl SqliteLibraryStore {
         Ok(rows)
     }
 
-    pub async fn get_all_medias_to_backup(&self, after: i64, query: MediaQuery) -> Result<Vec<MediaBackup>> {
-
+    pub async fn get_all_medias_to_backup(
+        &self,
+        after: i64,
+        query: MediaQuery,
+    ) -> Result<Vec<MediaBackup>> {
         //println!("mediaquery: {:?}", query);
-        let rows = self.connection.call( move |conn| { 
-            let mut where_query = Self::build_media_query(query, LibraryLimits::default());
-            where_query.add_where(SqlWhereType::After("(
+        let rows = self
+            .connection
+            .call(move |conn| {
+                let mut where_query = Self::build_media_query(query, LibraryLimits::default());
+                where_query.add_where(SqlWhereType::After(
+                    "(
                     CASE
                         WHEN added >= created AND added >= modified THEN added
                         WHEN created >= modified THEN created
                         ELSE modified
                     END
-                )".to_string(), Box::new(after)));
-            let mut query = conn.prepare(&format!("
+                )"
+                    .to_string(),
+                    Box::new(after),
+                ));
+                let mut query = conn.prepare(&format!(
+                    "
         {}
         {}
         {}
@@ -614,39 +739,58 @@ impl SqliteLibraryStore {
                     ELSE modified
                 END
             ) ASC",
-            where_query.format_recursive(), 
-            MEDIA_BACKUP_QUERY, 
-            where_query.format()
-    ))?;
-    //format!("query: {:?}", query.expanded_sql());
-            let rows = query.query_map(
-                where_query.values(),|row| {
-                let s: MediaBackup =  MediaBackup {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    size: row.get(2)?,
-                    hash: row.get(3)?
-                };
-                Ok(s)
-            })?;
-            let rows:Vec<MediaBackup> = rows.collect::<std::result::Result<Vec<MediaBackup>, rusqlite::Error>>()?; 
-            Ok(rows)
-        }).await?;
+                    where_query.format_recursive(),
+                    MEDIA_BACKUP_QUERY,
+                    where_query.format()
+                ))?;
+                //format!("query: {:?}", query.expanded_sql());
+                let rows = query.query_map(where_query.values(), |row| {
+                    let s: MediaBackup = MediaBackup {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        size: row.get(2)?,
+                        hash: row.get(3)?,
+                    };
+                    Ok(s)
+                })?;
+                let rows: Vec<MediaBackup> =
+                    rows.collect::<std::result::Result<Vec<MediaBackup>, rusqlite::Error>>()?;
+                Ok(rows)
+            })
+            .await?;
         Ok(rows)
     }
 
     pub async fn update_media_thumb(&self, media_id: String) -> Result<()> {
-        self.connection.call( move |conn| { 
-            conn.execute("update medias set thumbv = ifnull(thumbv, 0) + 1 WHERE id = ?", params![media_id])?;
-            Ok(())
-        }).await?;
+        self.connection
+            .call(move |conn| {
+                conn.execute(
+                    "update medias set thumbv = ifnull(thumbv, 0) + 1 WHERE id = ?",
+                    params![media_id],
+                )?;
+                Ok(())
+            })
+            .await?;
         Ok(())
     }
 
-    pub async fn update_media(&self, media_id: &str, mut update: MediaForUpdate, user_id: Option<String>) -> Result<()> {
+    pub async fn update_media(
+        &self,
+        media_id: &str,
+        mut update: MediaForUpdate,
+        user_id: Option<String>,
+    ) -> Result<()> {
         let id = media_id.to_string();
-        let existing = self.get_media(media_id, user_id.clone()).await?.ok_or_else( || SourcesError::UnableToFindMedia("store".to_string() ,media_id.to_string(), "update_media".to_string()))?;
-
+        let existing = self
+            .get_media(media_id, user_id.clone())
+            .await?
+            .ok_or_else(|| {
+                SourcesError::UnableToFindMedia(
+                    "store".to_string(),
+                    media_id.to_string(),
+                    "update_media".to_string(),
+                )
+            })?;
 
         if let Some(rename) = &update.name {
             if let Some(mime) = get_mime_from_filename(&rename) {
@@ -658,13 +802,25 @@ impl SqliteLibraryStore {
 
         if let Some(gps) = &update.gps {
             let splited: Vec<&str> = gps.split(',').map(|t| t.trim()).collect();
-            let lat = splited.first().and_then(|s| s.parse::<f64>().ok()).ok_or(Error::ServiceError("updating media".to_owned(), Some(format!("invalid latitude: {}", gps))))?;
-            let long = splited.get(1).and_then(|s| s.parse::<f64>().ok()).ok_or(Error::ServiceError("updating media".to_owned(), Some(format!("invalid longitude: {}", gps))))?;
+            let lat =
+                splited
+                    .first()
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .ok_or(Error::ServiceError(
+                        "updating media".to_owned(),
+                        Some(format!("invalid latitude: {}", gps)),
+                    ))?;
+            let long =
+                splited
+                    .get(1)
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .ok_or(Error::ServiceError(
+                        "updating media".to_owned(),
+                        Some(format!("invalid longitude: {}", gps)),
+                    ))?;
             update.lat = Some(lat);
             update.long = Some(long);
         }
-        
-
 
         //add tags in description to lookups
         if let Some(description) = &update.description {
@@ -680,7 +836,7 @@ impl SqliteLibraryStore {
                 update.people_lookup.add_or_set(parsed_people);
             }
         }
-        // Find tags with lookup 
+        // Find tags with lookup
         if let Some(mut lookup_tags) = update.tags_lookup.clone() {
             if let Some(people) = &update.people_lookup {
                 for person in people {
@@ -695,15 +851,31 @@ impl SqliteLibraryStore {
             let mut found_tags: Vec<MediaItemReference> = vec![];
             //println!("lookup tags: {:?}", lookup_tags);
             for lookup_tag in lookup_tags {
-                let found = self.get_tags(TagQuery::new_with_name(&lookup_tag.replace('#', ""))).await?;
+                let found = self
+                    .get_tags(TagQuery::new_with_name(&lookup_tag.replace('#', "")))
+                    .await?;
                 if let Some(tag) = found.first() {
-                    found_tags.push(MediaItemReference { id: tag.id.clone(), conf: Some(100) });
+                    found_tags.push(MediaItemReference {
+                        id: tag.id.clone(),
+                        conf: Some(100),
+                    });
                 } else {
-                    let tag = self.get_or_create_path( vec!["imported", &lookup_tag.replace('#', "")], TagForUpdate { generated: Some(true), ..Default::default()}).await?;
-                    found_tags.push(MediaItemReference { id: tag.id.clone(), conf: Some(100) });
+                    let tag = self
+                        .get_or_create_path(
+                            vec!["imported", &lookup_tag.replace('#', "")],
+                            TagForUpdate {
+                                generated: Some(true),
+                                ..Default::default()
+                            },
+                        )
+                        .await?;
+                    found_tags.push(MediaItemReference {
+                        id: tag.id.clone(),
+                        conf: Some(100),
+                    });
                 }
             }
-            
+
             //println!("found tags: {:?}", found_tags);
             if found_tags.len() > 0 {
                 update.add_tags.add_or_set(found_tags);
@@ -711,20 +883,21 @@ impl SqliteLibraryStore {
         }
 
         if let Some(user) = update.origin.as_ref().and_then(|o| o.user.clone()) {
-
             let mut ppl = update.people_lookup.unwrap_or_default();
             ppl.push(user.to_owned());
             update.people_lookup = Some(ppl);
-
         }
-        
-        // Find people with lookup 
+
+        // Find people with lookup
         if let Some(lookup_people) = update.people_lookup {
             let mut found_people: Vec<MediaItemReference> = vec![];
             for lookup_tag in lookup_people {
                 let found = self.get_people(PeopleQuery::from_name(&lookup_tag)).await?;
                 if let Some(person) = found.first() {
-                    found_people.push(MediaItemReference { id: person.id.clone(), conf: Some(100) });
+                    found_people.push(MediaItemReference {
+                        id: person.id.clone(),
+                        conf: Some(100),
+                    });
                 }
             }
             if !found_people.is_empty() {
@@ -732,15 +905,24 @@ impl SqliteLibraryStore {
             }
         }
 
-        // Find serie with lookup 
+        // Find serie with lookup
         if let Some(lookup_series) = update.series_lookup {
             println!("looking for series {:?}", lookup_series);
             let mut found_series: Vec<FileEpisode> = vec![];
             for lookup_serie in lookup_series {
-                let found = self.get_series(SerieQuery { name: Some(lookup_serie), ..Default::default()}).await?;
+                let found = self
+                    .get_series(SerieQuery {
+                        name: Some(lookup_serie),
+                        ..Default::default()
+                    })
+                    .await?;
                 if let Some(serie) = found.first() {
-                    
-                    found_series.push(FileEpisode { id: serie.id.to_string(), season: update.season, episode: update.episode, episode_to: None });
+                    found_series.push(FileEpisode {
+                        id: serie.id.to_string(),
+                        season: update.season,
+                        episode: update.episode,
+                        episode_to: None,
+                    });
                 }
             }
             println!("Found Series {:?}", found_series);
@@ -748,7 +930,7 @@ impl SqliteLibraryStore {
                 update.add_series.add_or_set(found_series);
             }
         }
-       
+
         self.connection.call( move |conn| { 
             let mut where_query = QueryBuilder::new();
             
@@ -792,14 +974,7 @@ impl SqliteLibraryStore {
 
             where_query.add_update(&update.origin, "origin");
             where_query.add_update(&update.movie, "movie");
-            where_query.add_update(&update.isbn13, "isbn13");
-            where_query.add_update(&update.openlibrary_edition_id, "openlibrary_edition_id");
-            where_query.add_update(&update.openlibrary_work_id, "openlibrary_work_id");
-            where_query.add_update(&update.google_books_volume_id, "google_books_volume_id");
-            where_query.add_update(&update.anilist_manga_id, "anilist_manga_id");
-            where_query.add_update(&update.mangadex_manga_uuid, "mangadex_manga_uuid");
-            where_query.add_update(&update.myanimelist_manga_id, "myanimelist_manga_id");
-            where_query.add_update(&update.asin, "asin");
+            where_query.add_update(&update.book, "book");
 
             where_query.add_update(&update.lang, "lang");
 
@@ -916,15 +1091,12 @@ impl SqliteLibraryStore {
             id, source, name, description, type, mimetype, size, md5, params, width, 
             height, phash, thumbhash, focal, iso, colorSpace, icc, mp, sspeed, fnumber, orientation, duration, acodecs, 
             achan, vcodecs, fps, bitrate, long, lat, model, pages, progress, thumb, 
-            thumbv, thumbsize, iv, origin, movie, lang, uploader, uploadkey, originalhash, originalid,
-            isbn13, openlibrary_edition_id, openlibrary_work_id, google_books_volume_id,
-            anilist_manga_id, mangadex_manga_uuid, myanimelist_manga_id, asin
-
+            thumbv, thumbsize, iv, origin, movie, book, lang, uploader, uploadkey, originalhash, originalid
             )
             VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, 
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params![
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params![
                 insert.id,
                 insert.media.source,
                 insert.media.name,
@@ -966,20 +1138,13 @@ impl SqliteLibraryStore {
                 insert.media.iv,
                 insert.media.origin,
                 insert.media.movie,
+                insert.media.book,
                 insert.media.lang,
                 insert.media.uploader,
                 insert.media.uploadkey,
 
                 insert.media.original_hash,
-                insert.media.original_id,
-                insert.media.isbn13,
-                insert.media.openlibrary_edition_id,
-                insert.media.openlibrary_work_id,
-                insert.media.google_books_volume_id,
-                insert.media.anilist_manga_id,
-                insert.media.mangadex_manga_uuid,
-                insert.media.myanimelist_manga_id,
-                insert.media.asin
+                insert.media.original_id
             ])?;
             
             Ok(())
@@ -988,18 +1153,35 @@ impl SqliteLibraryStore {
     }
 
     pub async fn remove_media(&self, media_id: String) -> Result<()> {
-        self.connection.call( move |conn| { 
-            conn.execute("DELETE FROM ratings WHERE media_ref = ?", params![media_id])?;
-            conn.execute("DELETE FROM media_tag_mapping WHERE media_ref = ?", params![media_id])?;
-            conn.execute("DELETE FROM media_serie_mapping WHERE media_ref = ?", params![media_id])?;
-            conn.execute("DELETE FROM media_people_mapping WHERE media_ref = ?", params![media_id])?;
-            conn.execute("DELETE FROM shares WHERE media_ref = ?", params![media_id])?;
-            conn.execute("DELETE FROM unassigned_faces WHERE media_ref = ?", params![media_id])?;
-            conn.execute("DELETE FROM people_faces WHERE media_ref = ?", params![media_id])?;
-            conn.execute("DELETE FROM medias WHERE id = ?", params![media_id])?;
+        self.connection
+            .call(move |conn| {
+                conn.execute("DELETE FROM ratings WHERE media_ref = ?", params![media_id])?;
+                conn.execute(
+                    "DELETE FROM media_tag_mapping WHERE media_ref = ?",
+                    params![media_id],
+                )?;
+                conn.execute(
+                    "DELETE FROM media_serie_mapping WHERE media_ref = ?",
+                    params![media_id],
+                )?;
+                conn.execute(
+                    "DELETE FROM media_people_mapping WHERE media_ref = ?",
+                    params![media_id],
+                )?;
+                conn.execute("DELETE FROM shares WHERE media_ref = ?", params![media_id])?;
+                conn.execute(
+                    "DELETE FROM unassigned_faces WHERE media_ref = ?",
+                    params![media_id],
+                )?;
+                conn.execute(
+                    "DELETE FROM people_faces WHERE media_ref = ?",
+                    params![media_id],
+                )?;
+                conn.execute("DELETE FROM medias WHERE id = ?", params![media_id])?;
 
-            Ok(())
-        }).await?;
+                Ok(())
+            })
+            .await?;
         Ok(())
     }
 }
@@ -1007,63 +1189,45 @@ impl SqliteLibraryStore {
 #[cfg(test)]
 mod tests {
     use super::SqliteLibraryStore;
-    use crate::domain::media::{FileType, MediaForAdd, MediaForUpdate};
+    use crate::domain::media::{FileType, MediaForAdd};
+    use crate::model::{medias::MediaQuery, store::sql::SqlOrder};
 
     #[tokio::test]
-    async fn media_book_ids_insert_and_update_roundtrip() {
+    async fn media_book_column_and_filter_roundtrip() {
         let connection = tokio_rusqlite::Connection::open_in_memory().await.unwrap();
         let store = SqliteLibraryStore::new(connection).await.unwrap();
-        let media_id = "media-book-id-test".to_string();
-
-        let media = MediaForAdd {
-            name: "book.cbz".to_string(),
-            kind: FileType::Archive,
-            mimetype: "application/vnd.comicbook+zip".to_string(),
-            isbn13: Some("9783161484100".to_string()),
-            openlibrary_edition_id: Some("OL7353617M".to_string()),
-            openlibrary_work_id: Some("OL45883W".to_string()),
-            google_books_volume_id: Some("zyTCAlFPjgYC".to_string()),
-            anilist_manga_id: Some(30001),
-            mangadex_manga_uuid: Some("a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string()),
-            myanimelist_manga_id: Some(1706),
-            asin: Some("B00TESTASIN".to_string()),
-            ..Default::default()
-        };
+        let media_id = "media-book-link-test".to_string();
 
         store
-            .add_media(media.into_insert_with_id(media_id.clone()))
+            .add_media(
+                MediaForAdd {
+                    name: "chapter.cbz".to_string(),
+                    kind: FileType::Archive,
+                    mimetype: "application/vnd.comicbook+zip".to_string(),
+                    book: Some("book-42".to_string()),
+                    ..Default::default()
+                }
+                .into_insert_with_id(media_id.clone()),
+            )
             .await
             .unwrap();
 
-        let inserted = store.get_media(&media_id, None).await.unwrap().unwrap();
-        assert_eq!(inserted.isbn13.as_deref(), Some("9783161484100"));
-        assert_eq!(inserted.openlibrary_edition_id.as_deref(), Some("OL7353617M"));
-        assert_eq!(inserted.openlibrary_work_id.as_deref(), Some("OL45883W"));
-        assert_eq!(
-            inserted.google_books_volume_id.as_deref(),
-            Some("zyTCAlFPjgYC")
-        );
-        assert_eq!(inserted.anilist_manga_id, Some(30001));
-        assert_eq!(
-            inserted.mangadex_manga_uuid.as_deref(),
-            Some("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
-        );
-        assert_eq!(inserted.myanimelist_manga_id, Some(1706));
-        assert_eq!(inserted.asin.as_deref(), Some("B00TESTASIN"));
+        let media = store.get_media(&media_id, None).await.unwrap().unwrap();
+        assert_eq!(media.book.as_deref(), Some("book-42"));
 
-        let update = MediaForUpdate {
-            isbn13: Some("9781234567897".to_string()),
-            myanimelist_manga_id: Some(9999),
-            asin: Some("B00UPDATEDASIN".to_string()),
-            ..Default::default()
-        };
-
-        store.update_media(&media_id, update, None).await.unwrap();
-
-        let updated = store.get_media(&media_id, None).await.unwrap().unwrap();
-        assert_eq!(updated.isbn13.as_deref(), Some("9781234567897"));
-        assert_eq!(updated.myanimelist_manga_id, Some(9999));
-        assert_eq!(updated.asin.as_deref(), Some("B00UPDATEDASIN"));
-        assert_eq!(updated.openlibrary_edition_id.as_deref(), Some("OL7353617M"));
+        let by_book = store
+            .get_medias(
+                MediaQuery {
+                    book: Some("book-42".to_string()),
+                    sort: crate::model::medias::RsSort::Added,
+                    order: SqlOrder::ASC,
+                    ..Default::default()
+                },
+                crate::domain::library::LibraryLimits::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(by_book.len(), 1);
+        assert_eq!(by_book[0].id, media_id);
     }
 }

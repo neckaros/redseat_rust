@@ -1,8 +1,10 @@
-
-
-
-use std::{io::{self, Cursor, Read}, path::PathBuf, pin::Pin, result, str::FromStr};
-
+use std::{
+    io::{self, Cursor, Read},
+    path::PathBuf,
+    pin::Pin,
+    result,
+    str::FromStr,
+};
 
 use async_zip::{tokio::write::ZipFileWriter, Compression, ZipEntryBuilder};
 use chrono::{Datelike, Utc};
@@ -13,28 +15,99 @@ use mime_guess::get_mime_extensions_str;
 use nanoid::nanoid;
 use query_external_ip::SourceError;
 use regex::Regex;
-use rs_plugin_common_interfaces::{request::{RsGroupDownload, RsRequest, RsRequestStatus}, url::{RsLink, RsLinkType}, video::{RsVideoTranscodeJob, RsVideoTranscodeJobPluginRequest, RsVideoTranscodeStatus, VideoConvertRequest, VideoOverlayType}, PluginType, RsCookie};
-use rusqlite::{types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, ToSql};
+use rs_plugin_common_interfaces::{
+    request::{RsGroupDownload, RsRequest, RsRequestStatus},
+    url::{RsLink, RsLinkType},
+    video::{
+        RsVideoTranscodeJob, RsVideoTranscodeJobPluginRequest, RsVideoTranscodeStatus,
+        VideoConvertRequest, VideoOverlayType,
+    },
+    PluginType, RsCookie,
+};
+use rusqlite::{
+    types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef},
+    ToSql,
+};
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
-use tokio::{fs::File, io::{copy, AsyncRead, AsyncReadExt, AsyncWriteExt}, sync::mpsc, time::sleep, time::Duration};
+use tokio::{
+    fs::File,
+    io::{copy, AsyncRead, AsyncReadExt, AsyncWriteExt},
+    sync::mpsc,
+    time::sleep,
+    time::Duration,
+};
 use tokio_stream::StreamExt;
-use tokio_util::{compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt}, io::{ReaderStream, StreamReader, SyncIoBridge}};
+use tokio_util::{
+    compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt},
+    io::{ReaderStream, StreamReader, SyncIoBridge},
+};
 use zip::ZipWriter;
 
-use crate::{domain::{MediaElement, deleted::RsDeleted, library::LibraryType, media::{self, ConvertMessage, ConvertProgress, DEFAULT_MIME, RsGpsPosition}, plugin}, error::RsError, model::store::sql::SqlOrder, plugins::sources::{Source, path_provider::PathProvider}, routes::infos, server::get_config, tools::{file_tools::{filename_from_path, remove_extension}, image_tools::{IMAGES_MIME_FULL_BROWSER_SUPPORT, convert_image_reader, image_infos}, recognition, video_tools::VideoCommandBuilder}};
+use crate::{
+    domain::{
+        deleted::RsDeleted,
+        library::LibraryType,
+        media::{self, ConvertMessage, ConvertProgress, RsGpsPosition, DEFAULT_MIME},
+        plugin, MediaElement,
+    },
+    error::RsError,
+    model::store::sql::SqlOrder,
+    plugins::sources::{path_provider::PathProvider, Source},
+    routes::infos,
+    server::get_config,
+    tools::{
+        file_tools::{filename_from_path, remove_extension},
+        image_tools::{convert_image_reader, image_infos, IMAGES_MIME_FULL_BROWSER_SUPPORT},
+        recognition,
+        video_tools::VideoCommandBuilder,
+    },
+};
 
-use crate::{domain::{library::LibraryRole, media::{FileType, Media, MediaForAdd, MediaForInsert, MediaForUpdate, MediaItemReference, MediaWithAction, MediasMessage, UploadProgressMessage}, progress::{RsProgress, RsProgressType}, ElementAction}, error::RsResult, plugins::{get_plugin_fodler, sources::{async_reader_progress::ProgressReader, error::SourcesError, AsyncReadPinBox, FileStreamResult, SourceRead}}, routes::mw_range::RangeDefinition, server::get_server_port, tools::{auth::{sign_local, ClaimsLocal}, file_tools::{file_type_from_mime, get_extension_from_mime}, image_tools::{self, resize_image_reader, ImageSize}, log::{log_error, log_warn, log_info, LogServiceType}, prediction::{predict_net, preload_model, PredictionTagResult}, video_tools::{self, probe_video, VideoTime}}};
+use crate::{
+    domain::{
+        library::LibraryRole,
+        media::{
+            FileType, Media, MediaForAdd, MediaForInsert, MediaForUpdate, MediaItemReference,
+            MediaWithAction, MediasMessage, UploadProgressMessage,
+        },
+        progress::{RsProgress, RsProgressType},
+        ElementAction,
+    },
+    error::RsResult,
+    plugins::{
+        get_plugin_fodler,
+        sources::{
+            async_reader_progress::ProgressReader, error::SourcesError, AsyncReadPinBox,
+            FileStreamResult, SourceRead,
+        },
+    },
+    routes::mw_range::RangeDefinition,
+    server::get_server_port,
+    tools::{
+        auth::{sign_local, ClaimsLocal},
+        file_tools::{file_type_from_mime, get_extension_from_mime},
+        image_tools::{self, resize_image_reader, ImageSize},
+        log::{log_error, log_info, log_warn, LogServiceType},
+        prediction::{predict_net, preload_model, PredictionTagResult},
+        video_tools::{self, probe_video, VideoTime},
+    },
+};
 
-use super::{error::{Error, Result}, plugins::PluginQuery, store::{self, sql::library::medias::MediaBackup}, users::ConnectedUser, ModelController, VideoConvertQueueElement};
+use super::{
+    error::{Error, Result},
+    plugins::PluginQuery,
+    store::{self, sql::library::medias::MediaBackup},
+    users::ConnectedUser,
+    ModelController, VideoConvertQueueElement,
+};
 use crate::routes::sse::SseEvent;
 
 pub const CRYPTO_HEADER_SIZE: u64 = 16 + 4 + 4 + 32 + 256;
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")] 
+#[serde(rename_all = "camelCase")]
 pub struct MediaQuery {
-    
     #[serde(default)]
     pub sort: RsSort,
     #[serde(default)]
@@ -60,11 +133,11 @@ pub struct MediaQuery {
     #[serde(default)]
     pub series: Vec<String>,
     pub movie: Option<String>,
+    pub book: Option<String>,
     pub limit: Option<usize>,
     #[serde(default)]
     pub types: Vec<FileType>,
 
-    
     pub text: Option<String>,
 
     pub long: Option<f64>,
@@ -72,7 +145,7 @@ pub struct MediaQuery {
     pub distance: Option<f64>,
     #[serde(default)]
     pub gps_square: Vec<f64>,
-    
+
     pub min_duration: Option<u64>,
     pub max_duration: Option<u64>,
 
@@ -82,10 +155,8 @@ pub struct MediaQuery {
     pub min_size: Option<u64>,
     pub max_size: Option<u64>,
 
-    
     pub vcodec: Option<String>,
-    
-    
+
     pub page_key: Option<String>,
 
     /// For legacy if user put serialized query in filter field
@@ -95,8 +166,8 @@ pub struct MediaQuery {
 impl FromSql for MediaQuery {
     fn column_result(value: ValueRef) -> FromSqlResult<Self> {
         String::column_result(value).and_then(|as_string| {
-
-            let r = serde_json::from_str::<MediaQuery>(&as_string).map_err(|_| FromSqlError::InvalidType)?;
+            let r = serde_json::from_str::<MediaQuery>(&as_string)
+                .map_err(|_| FromSqlError::InvalidType)?;
 
             Ok(r)
         })
@@ -105,24 +176,27 @@ impl FromSql for MediaQuery {
 
 impl ToSql for MediaQuery {
     fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
-        let r = serde_json::to_string(&self).map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?;
+        let r = serde_json::to_string(&self)
+            .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?;
         Ok(ToSqlOutput::from(r))
     }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")] 
+#[serde(rename_all = "camelCase")]
 pub struct MediaFileQuery {
     #[serde(default)]
     pub unsupported_mime: Vec<String>,
-    
+
     pub page: Option<u32>,
 
     #[serde(default)]
     pub raw: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, strum_macros::Display,EnumString, Default)]
+#[derive(
+    Debug, Serialize, Deserialize, Clone, PartialEq, strum_macros::Display, EnumString, Default,
+)]
 #[strum(serialize_all = "camelCase")]
 #[serde(rename_all = "camelCase")]
 pub enum RsSort {
@@ -133,24 +207,27 @@ pub enum RsSort {
     Rating,
     Name,
     Size,
-    
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct  RsSortOrder {
+pub struct RsSortOrder {
     pub order: SqlOrder,
-    pub sort: RsSort
+    pub sort: RsSort,
 }
-
-
 
 impl MediaQuery {
     pub fn new_empty() -> MediaQuery {
-        MediaQuery { tags: vec![], ..Default::default() }
+        MediaQuery {
+            tags: vec![],
+            ..Default::default()
+        }
     }
     pub fn from_after(after: i64) -> MediaQuery {
-        MediaQuery { after: Some(after), ..Default::default() }
+        MediaQuery {
+            after: Some(after),
+            ..Default::default()
+        }
     }
 }
 
@@ -160,13 +237,15 @@ pub struct MediaSource {
     pub kind: FileType,
     pub thumb_size: Option<u64>,
     pub size: Option<u64>,
-    
+
     pub mime: String,
 }
 impl TryFrom<Media> for MediaSource {
     type Error = crate::model::error::Error;
     fn try_from(value: Media) -> std::prelude::v1::Result<Self, Self::Error> {
-        let source = value.source.ok_or(crate::model::error::Error::NoSourceForMedia)?;
+        let source = value
+            .source
+            .ok_or(crate::model::error::Error::NoSourceForMedia)?;
         Ok(MediaSource {
             id: value.id,
             source,
@@ -179,7 +258,6 @@ impl TryFrom<Media> for MediaSource {
 }
 
 impl ModelController {
-
     /// Helper to aggregate lookup fields from multiple requests into a single deduplicated list
     fn aggregate_lookup_field<F>(requests: &[RsRequest], getter: F) -> Option<Vec<String>>
     where
@@ -216,15 +294,21 @@ impl ModelController {
         if !ignore_duplicate {
             if let Some(existing) = store.get_media_by_origin(origin.clone()).await {
                 if let Some(tx) = tx_progress {
-                    let _ = tx.send(RsProgress {
-                        id: upload_id.to_string(),
-                        total: existing.size,
-                        current: existing.size,
-                        kind: RsProgressType::Duplicate(existing.id.clone()),
-                        filename: Some(existing.name.to_owned()),
-                    }).await;
+                    let _ = tx
+                        .send(RsProgress {
+                            id: upload_id.to_string(),
+                            total: existing.size,
+                            current: existing.size,
+                            kind: RsProgressType::Duplicate(existing.id.clone()),
+                            filename: Some(existing.name.to_owned()),
+                        })
+                        .await;
                 }
-                return Err(Error::Duplicate(existing.id.to_owned(), MediaElement::Media(existing)).into());
+                return Err(Error::Duplicate(
+                    existing.id.to_owned(),
+                    MediaElement::Media(existing),
+                )
+                .into());
             }
         }
         Ok(())
@@ -244,15 +328,19 @@ impl ModelController {
             let m = self.source_for_library(library_id).await?;
             m.remove(source_path).await?;
             if let Some(tx) = tx_progress {
-                let _ = tx.send(RsProgress {
-                    id: upload_id.to_string(),
-                    total: existing.size,
-                    current: existing.size,
-                    kind: RsProgressType::Duplicate(existing.id.clone()),
-                    filename: Some(existing.name.to_owned()),
-                }).await;
+                let _ = tx
+                    .send(RsProgress {
+                        id: upload_id.to_string(),
+                        total: existing.size,
+                        current: existing.size,
+                        kind: RsProgressType::Duplicate(existing.id.clone()),
+                        filename: Some(existing.name.to_owned()),
+                    })
+                    .await;
             }
-            return Err(Error::Duplicate(existing.id.to_owned(), MediaElement::Media(existing)).into());
+            return Err(
+                Error::Duplicate(existing.id.to_owned(), MediaElement::Media(existing)).into(),
+            );
         }
         Ok(())
     }
@@ -281,11 +369,24 @@ impl ModelController {
         };
 
         let thumb_reader = SourceRead::Request(request)
-            .into_reader(Some(library_id), None, None, Some((self.clone(), &ConnectedUser::ServerAdmin)), None)
+            .into_reader(
+                Some(library_id),
+                None,
+                None,
+                Some((self.clone(), &ConnectedUser::ServerAdmin)),
+                None,
+            )
             .await;
 
         if let Ok(reader) = thumb_reader {
-            let r = self.update_media_image(library_id, media_id, reader.stream, &ConnectedUser::ServerAdmin).await;
+            let r = self
+                .update_media_image(
+                    library_id,
+                    media_id,
+                    reader.stream,
+                    &ConnectedUser::ServerAdmin,
+                )
+                .await;
             if r.is_ok() {
                 println!("Loaded thumb from request");
                 return true;
@@ -294,194 +395,361 @@ impl ModelController {
         false
     }
 
-	pub async fn get_medias(&self, library_id: &str, query: MediaQuery, requesting_user: &ConnectedUser) -> RsResult<Vec<Media>> {
-        let progress_user = self.get_library_mapped_user(library_id, requesting_user.user_id()?).await.ok();
+    pub async fn get_medias(
+        &self,
+        library_id: &str,
+        query: MediaQuery,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Vec<Media>> {
+        let progress_user = self
+            .get_library_mapped_user(library_id, requesting_user.user_id()?)
+            .await
+            .ok();
         let mut limits = requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         limits.user_id = progress_user;
         let store = self.store.get_library_store(library_id)?;
-		let people = store.get_medias(query, limits).await?;
-		Ok(people)
-	}
+        let people = store.get_medias(query, limits).await?;
+        Ok(people)
+    }
 
-	pub async fn count_medias(&self, library_id: &str, query: MediaQuery, requesting_user: &ConnectedUser) -> RsResult<u64> {
+    pub async fn count_medias(
+        &self,
+        library_id: &str,
+        query: MediaQuery,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<u64> {
         let limits = requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id)?;
-		let count = store.count_medias(query, limits).await?;
-		Ok(count)
-	}
-    pub async fn get_locs(&self, library_id: &str, precision: Option<u32>, requesting_user: &ConnectedUser) -> RsResult<Vec<RsGpsPosition>> {
+        let count = store.count_medias(query, limits).await?;
+        Ok(count)
+    }
+    pub async fn get_locs(
+        &self,
+        library_id: &str,
+        precision: Option<u32>,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Vec<RsGpsPosition>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id)?;
-		let locs = store.get_medias_locs(precision.unwrap_or(2)).await?;
-		Ok(locs)
-	}
+        let locs = store.get_medias_locs(precision.unwrap_or(2)).await?;
+        Ok(locs)
+    }
 
-    pub async fn get_medias_to_backup(&self, library_id: &str, after: i64, query: MediaQuery, requesting_user: &ConnectedUser) -> RsResult<Vec<MediaBackup>> {
+    pub async fn get_medias_to_backup(
+        &self,
+        library_id: &str,
+        after: i64,
+        query: MediaQuery,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Vec<MediaBackup>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id)?;
-		let medias = store.get_all_medias_to_backup(after, query).await?;
-		Ok(medias)
-	}
+        let medias = store.get_all_medias_to_backup(after, query).await?;
+        Ok(medias)
+    }
 
-
-    pub async fn get_media(&self, library_id: &str, media_id: String, requesting_user: &ConnectedUser) -> RsResult<Option<Media>> {
+    pub async fn get_media(
+        &self,
+        library_id: &str,
+        media_id: String,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Option<Media>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id)?;
-		let mut media = store.get_media(&media_id, requesting_user.user_id().ok()).await?;
+        let mut media = store
+            .get_media(&media_id, requesting_user.user_id().ok())
+            .await?;
         if let Some(ref mut media) = media {
             if !requesting_user.is_admin() {
                 media.source = None;
             }
         }
-		Ok(media)
-	}
+        Ok(media)
+    }
 
-    pub async fn get_media_by_hash(&self, library_id: &str, hash: String, check_original: bool, requesting_user: &ConnectedUser) -> RsResult<Option<Media>> {
+    pub async fn get_media_by_hash(
+        &self,
+        library_id: &str,
+        hash: String,
+        check_original: bool,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Option<Media>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id)?;
-		let mut media = store.get_media_by_hash(hash, check_original).await;
-        
+        let mut media = store.get_media_by_hash(hash, check_original).await;
+
         if let Some(media) = &mut media {
             if requesting_user.is_admin() {
                 media.source = None;
             }
         }
-		Ok(media)
-	}
+        Ok(media)
+    }
 
-    pub async fn update_media(&self, library_id: &str, media_id: String, mut update: MediaForUpdate, notif: bool, requesting_user: &ConnectedUser) -> RsResult<Media> {
+    pub async fn update_media(
+        &self,
+        library_id: &str,
+        media_id: String,
+        mut update: MediaForUpdate,
+        notif: bool,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Media> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         let store = self.store.get_library_store(library_id)?;
         if let Some(origin) = &update.origin_url {
-            update.origin = Some(self.exec_parse(Some(library_id.to_owned()), origin.to_owned(), requesting_user).await?)
+            update.origin = Some(
+                self.exec_parse(
+                    Some(library_id.to_owned()),
+                    origin.to_owned(),
+                    requesting_user,
+                )
+                .await?,
+            )
         }
 
         if let Some(rating) = update.rating.clone() {
-            self.set_media_rating(library_id, media_id.clone(), rating as f64, requesting_user).await?;
+            self.set_media_rating(library_id, media_id.clone(), rating as f64, requesting_user)
+                .await?;
         }
         if let Some(progress) = update.progress.clone() {
-            self.set_media_progress(library_id, media_id.clone(), progress as u64, requesting_user).await?;
+            self.set_media_progress(
+                library_id,
+                media_id.clone(),
+                progress as u64,
+                requesting_user,
+            )
+            .await?;
         }
 
-		store.update_media(&media_id, update, requesting_user.user_id().ok()).await?;
-        let media = store.get_media(&media_id, requesting_user.user_id().ok()).await?.ok_or(SourcesError::UnableToFindMedia(library_id.to_string(), media_id.to_string(), "update_media".to_string()))?;
+        store
+            .update_media(&media_id, update, requesting_user.user_id().ok())
+            .await?;
+        let media = store
+            .get_media(&media_id, requesting_user.user_id().ok())
+            .await?
+            .ok_or(SourcesError::UnableToFindMedia(
+                library_id.to_string(),
+                media_id.to_string(),
+                "update_media".to_string(),
+            ))?;
         if notif {
-            self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media: media.clone(), action: ElementAction::Updated}] });
+            self.send_media(MediasMessage {
+                library: library_id.to_string(),
+                medias: vec![MediaWithAction {
+                    media: media.clone(),
+                    action: ElementAction::Updated,
+                }],
+            });
         }
         Ok(media)
-	}
+    }
 
+    pub fn send_media(&self, message: MediasMessage) {
+        self.broadcast_sse(SseEvent::Medias(message));
+    }
 
-	pub fn send_media(&self, message: MediasMessage) {
-		self.broadcast_sse(SseEvent::Medias(message));
-	}
-
-	pub fn send_upload_progress(&self, message: UploadProgressMessage) {
-		self.broadcast_sse(SseEvent::UploadProgress(message));
-	}
+    pub fn send_upload_progress(&self, message: UploadProgressMessage) {
+        self.broadcast_sse(SseEvent::UploadProgress(message));
+    }
 
     pub fn send_convert_progress(&self, message: ConvertMessage) {
-		self.broadcast_sse(SseEvent::ConvertProgress(message));
-	}
+        self.broadcast_sse(SseEvent::ConvertProgress(message));
+    }
 
-
-
-    pub async fn add_media(&self, library_id: &str, new_media: MediaForAdd, notif: bool, requesting_user: &ConnectedUser) -> RsResult<Media> {
+    pub async fn add_media(
+        &self,
+        library_id: &str,
+        new_media: MediaForAdd,
+        notif: bool,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Media> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         let store = self.store.get_library_store(library_id)?;
         let media: MediaForInsert = new_media.into_insert();
-		store.add_media(media.clone()).await?;
-        let new_file = self.get_media(library_id, media.id.clone(), requesting_user).await?.ok_or(SourcesError::UnableToFindMedia(library_id.to_string(), media.id.to_string(), "add_media".to_string()))?;
-        if notif { 
-            self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media: new_file.clone(), action: ElementAction::Added}] });
+        store.add_media(media.clone()).await?;
+        let new_file = self
+            .get_media(library_id, media.id.clone(), requesting_user)
+            .await?
+            .ok_or(SourcesError::UnableToFindMedia(
+                library_id.to_string(),
+                media.id.to_string(),
+                "add_media".to_string(),
+            ))?;
+        if notif {
+            self.send_media(MediasMessage {
+                library: library_id.to_string(),
+                medias: vec![MediaWithAction {
+                    media: new_file.clone(),
+                    action: ElementAction::Added,
+                }],
+            });
         }
-		Ok(new_file)
-	}
+        Ok(new_file)
+    }
 
-    pub async fn remove_media(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> RsResult<Media> {
+    pub async fn remove_media(
+        &self,
+        library_id: &str,
+        media_id: &str,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Media> {
         requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
         let store = self.store.get_library_store(library_id)?;
-        let existing = store.get_media(media_id, requesting_user.user_id().ok()).await?;
-        if let Some(existing) = existing { 
-            self.remove_library_file(library_id, media_id, requesting_user).await?;
-            self.add_deleted(library_id, RsDeleted::media(media_id.to_owned()), requesting_user).await?;
-            self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media: existing.clone(), action: ElementAction::Deleted}] });
+        let existing = store
+            .get_media(media_id, requesting_user.user_id().ok())
+            .await?;
+        if let Some(existing) = existing {
+            self.remove_library_file(library_id, media_id, requesting_user)
+                .await?;
+            self.add_deleted(
+                library_id,
+                RsDeleted::media(media_id.to_owned()),
+                requesting_user,
+            )
+            .await?;
+            self.send_media(MediasMessage {
+                library: library_id.to_string(),
+                medias: vec![MediaWithAction {
+                    media: existing.clone(),
+                    action: ElementAction::Deleted,
+                }],
+            });
             Ok(existing)
         } else {
             Err(Error::MediaNotFound(media_id.to_string()).into())
         }
-	}
+    }
 
-	pub async fn media_image(&self, library_id: &str, media_id: &str, size: Option<ImageSize>, requesting_user: &ConnectedUser) -> RsResult<FileStreamResult<AsyncReadPinBox>> {
-
-		if self.cache_get_library_crypt(library_id).await {
-			let store = self.store.get_library_store(library_id)?;
-			let media_source = store.get_media_source(media_id).await?.ok_or(SourcesError::UnableToFindMedia(library_id.to_string(), media_id.to_string(), "media_image".to_string()))?;
-			//headerSize(), end: headerSize() + fileInfo.thumbsize - 1 }
-            let range = RangeDefinition { start: Some(CRYPTO_HEADER_SIZE), end: Some(CRYPTO_HEADER_SIZE + media_source.thumb_size.unwrap_or(0)) };
-			let source = self.source_for_library(library_id).await?;
-			let reader = source.get_file(&media_source.source, Some(range)).await?;
-			if let SourceRead::Stream(mut reader) = reader {
+    pub async fn media_image(
+        &self,
+        library_id: &str,
+        media_id: &str,
+        size: Option<ImageSize>,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<FileStreamResult<AsyncReadPinBox>> {
+        if self.cache_get_library_crypt(library_id).await {
+            let store = self.store.get_library_store(library_id)?;
+            let media_source =
+                store
+                    .get_media_source(media_id)
+                    .await?
+                    .ok_or(SourcesError::UnableToFindMedia(
+                        library_id.to_string(),
+                        media_id.to_string(),
+                        "media_image".to_string(),
+                    ))?;
+            //headerSize(), end: headerSize() + fileInfo.thumbsize - 1 }
+            let range = RangeDefinition {
+                start: Some(CRYPTO_HEADER_SIZE),
+                end: Some(CRYPTO_HEADER_SIZE + media_source.thumb_size.unwrap_or(0)),
+            };
+            let source = self.source_for_library(library_id).await?;
+            let reader = source.get_file(&media_source.source, Some(range)).await?;
+            if let SourceRead::Stream(mut reader) = reader {
                 reader.range = None;
                 reader.size = media_source.thumb_size;
-				return Ok(reader);
-			} else {
-				return Err(SourcesError::UnableToFindSource(library_id.to_string(), media_id.to_string(), media_source.source, "media_image".to_string()).into());
-			}
-            
-		}
-
+                return Ok(reader);
+            } else {
+                return Err(SourcesError::UnableToFindSource(
+                    library_id.to_string(),
+                    media_id.to_string(),
+                    media_source.source,
+                    "media_image".to_string(),
+                )
+                .into());
+            }
+        }
 
         let size = size.filter(|s| !(s == &ImageSize::Large || s == &ImageSize::Small));
 
-        let result = self.library_image(library_id, ".thumbs", media_id, None, None, requesting_user).await;
+        let result = self
+            .library_image(library_id, ".thumbs", media_id, None, None, requesting_user)
+            .await;
         if let Err(error) = result {
             if let crate::Error::Source(SourcesError::NotFound(_)) = &error {
-                self.generate_thumb(library_id, media_id, requesting_user).await?;
-                self.library_image(library_id, ".thumbs", media_id, None, None, requesting_user).await
-
+                self.generate_thumb(library_id, media_id, requesting_user)
+                    .await?;
+                self.library_image(library_id, ".thumbs", media_id, None, None, requesting_user)
+                    .await
             } else if let crate::Error::CorruptedImage = &error {
-                self.generate_thumb(library_id, media_id, requesting_user).await?;
-                self.library_image(library_id, ".thumbs", media_id, None, None, requesting_user).await
-
+                self.generate_thumb(library_id, media_id, requesting_user)
+                    .await?;
+                self.library_image(library_id, ".thumbs", media_id, None, None, requesting_user)
+                    .await
             } else {
                 Err(error)
             }
         } else {
             result
         }
-        
-	}
+    }
 
-    pub async fn split_media(&self, library_id: &str, media_id: String, from: u32, to: u32, requesting_user: &ConnectedUser) -> RsResult<Media> {
+    pub async fn split_media(
+        &self,
+        library_id: &str,
+        media_id: String,
+        from: u32,
+        to: u32,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Media> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         let store = self.store.get_library_store(library_id)?;
-		let media = store.get_media(&media_id, requesting_user.user_id().ok()).await?.ok_or(SourcesError::UnableToFindMedia(library_id.to_string(), media_id.to_string(), "split_media".to_string()))?;
+        let media = store
+            .get_media(&media_id, requesting_user.user_id().ok())
+            .await?
+            .ok_or(SourcesError::UnableToFindMedia(
+                library_id.to_string(),
+                media_id.to_string(),
+                "split_media".to_string(),
+            ))?;
         let mut infos: MediaForUpdate = media.clone().into();
         if media.kind != FileType::Album {
-            return Err(Error::ServiceError("SPLIT".to_string(), Some(format!("{} media is not an album", media_id))).into());
+            return Err(Error::ServiceError(
+                "SPLIT".to_string(),
+                Some(format!("{} media is not an album", media_id)),
+            )
+            .into());
         }
-        let filename = format!("{}-{}-{}.zip", media.name.replace(".zip", "").replace(".cbz", ""), from, to);
+        let filename = format!(
+            "{}-{}-{}.zip",
+            media.name.replace(".zip", "").replace(".cbz", ""),
+            from,
+            to
+        );
         println!("Zip name: {}", filename);
-        
+
         let m = self.source_for_library(&library_id).await?;
         let (source, mut file) = m.writerseek(&filename).await?;
         //let file = file.compat_write();
-        
-        
 
         //let mut file = Box::pin(File::create("D:\\System\\backup\\2024\\7\\foo.zip").await?);
         let mut zip_writer = ZipFileWriter::with_tokio(&mut file);
-        
+
         let mut pages = 0usize;
         let mut total_size = 0u64;
         for n in from..=to {
-            
-            
-            let file = self.library_file(library_id, &media_id, 
-                None, MediaFileQuery { page: Some(n) , ..Default::default()}, requesting_user).await?;
+            let file = self
+                .library_file(
+                    library_id,
+                    &media_id,
+                    None,
+                    MediaFileQuery {
+                        page: Some(n),
+                        ..Default::default()
+                    },
+                    requesting_user,
+                )
+                .await?;
             let filename = file.filename().unwrap_or(nanoid!());
-            let mut reader = file.into_reader(Some(library_id), None, None, Some((self.clone(), requesting_user)), None).await?;
+            let mut reader = file
+                .into_reader(
+                    Some(library_id),
+                    None,
+                    None,
+                    Some((self.clone(), requesting_user)),
+                    None,
+                )
+                .await?;
 
             let mut buffer = vec![];
             reader.stream.read_to_end(&mut buffer).await?;
@@ -489,13 +757,17 @@ impl ModelController {
             total_size += buffer.len() as u64;
 
             let builder = ZipEntryBuilder::new(filename.into(), Compression::Deflate);
-            zip_writer.write_entry_whole(builder, &buffer).await.map_err(|_| Error::ServiceError("Unable to save zip entry".to_string(), None))?;
+            zip_writer
+                .write_entry_whole(builder, &buffer)
+                .await
+                .map_err(|_| Error::ServiceError("Unable to save zip entry".to_string(), None))?;
             pages += 1;
-
-
         }
 
-        zip_writer.close().await.map_err(|_| Error::ServiceError("Unable to close zip file".to_string(), None))?;
+        zip_writer
+            .close()
+            .await
+            .map_err(|_| Error::ServiceError("Unable to close zip file".to_string(), None))?;
         file.flush().await?;
         println!("CLOSED");
 
@@ -506,7 +778,9 @@ impl ModelController {
             if let Some(existing) = existing {
                 m.remove(&source).await?;
                 //let _ = tx_progress.send(RsProgress { id: upload_id.clone(), total: existing.size, current: existing.size, kind: RsProgressType::Duplicate(existing.id.clone()), filename: Some(existing.name.to_owned()) }).await;
-                return Err(Error::Duplicate(existing.id.to_owned(), MediaElement::Media(existing)).into())
+                return Err(
+                    Error::Duplicate(existing.id.to_owned(), MediaElement::Media(existing)).into(),
+                );
             }
         }
 
@@ -514,7 +788,11 @@ impl ModelController {
         new_file.name = filename.to_string();
         new_file.source = Some(source.to_string());
         new_file.mimetype = infos.mimetype.clone().unwrap_or(DEFAULT_MIME.to_owned());
-        new_file.created = Some(infos.created.unwrap_or_else(|| Utc::now().timestamp_millis()));
+        new_file.created = Some(
+            infos
+                .created
+                .unwrap_or_else(|| Utc::now().timestamp_millis()),
+        );
         new_file.pages = Some(pages);
 
         new_file.kind = FileType::Album;
@@ -524,50 +802,131 @@ impl ModelController {
         infos.created = None;
         infos.pages = Some(pages);
 
-
         let id = nanoid!();
-        
-        log_info(crate::tools::log::LogServiceType::Source, format!("New files {:?}", new_file));
-        log_info(crate::tools::log::LogServiceType::Source, format!("update {:?}", infos));
-        store.add_media(MediaForInsert { id: id.clone(), media: new_file }).await?;
-        self.update_media(library_id, id.to_owned(), infos, false, requesting_user).await?;
-        let r = self.generate_thumb(&library_id, &id, &ConnectedUser::ServerAdmin).await;
+
+        log_info(
+            crate::tools::log::LogServiceType::Source,
+            format!("New files {:?}", new_file),
+        );
+        log_info(
+            crate::tools::log::LogServiceType::Source,
+            format!("update {:?}", infos),
+        );
+        store
+            .add_media(MediaForInsert {
+                id: id.clone(),
+                media: new_file,
+            })
+            .await?;
+        self.update_media(library_id, id.to_owned(), infos, false, requesting_user)
+            .await?;
+        let r = self
+            .generate_thumb(&library_id, &id, &ConnectedUser::ServerAdmin)
+            .await;
         if let Err(r) = r {
-            log_error(crate::tools::log::LogServiceType::Source, format!("Unable to generate thumb {:#}", r));
+            log_error(
+                crate::tools::log::LogServiceType::Source,
+                format!("Unable to generate thumb {:#}", r),
+            );
         }
 
-        let media = store.get_media(&id, requesting_user.user_id().ok()).await?.ok_or(SourcesError::UnableToFindMedia(library_id.to_string(), id.to_string(), "split_media".to_string()))?;
+        let media = store
+            .get_media(&id, requesting_user.user_id().ok())
+            .await?
+            .ok_or(SourcesError::UnableToFindMedia(
+                library_id.to_string(),
+                id.to_string(),
+                "split_media".to_string(),
+            ))?;
 
-        log_info(crate::tools::log::LogServiceType::Source, format!("splitted {:?}", media));
-        self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media: media.clone(), action: ElementAction::Added}] });
+        log_info(
+            crate::tools::log::LogServiceType::Source,
+            format!("splitted {:?}", media),
+        );
+        self.send_media(MediasMessage {
+            library: library_id.to_string(),
+            medias: vec![MediaWithAction {
+                media: media.clone(),
+                action: ElementAction::Added,
+            }],
+        });
 
         Ok(media)
-	}
+    }
 
-    pub async fn update_media_image(&self, library_id: &str, media_id: &str, mut reader: AsyncReadPinBox, requesting_user: &ConnectedUser) -> RsResult<()> {
+    pub async fn update_media_image(
+        &self,
+        library_id: &str,
+        media_id: &str,
+        mut reader: AsyncReadPinBox,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<()> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
 
-		let converted = resize_image_reader(reader, 512, image::ImageFormat::Avif, Some(50), false).await?;
+        let converted =
+            resize_image_reader(reader, 512, image::ImageFormat::Avif, Some(50), false).await?;
         let reader = Cursor::new(converted);
-        self.update_library_image(library_id, ".thumbs", media_id, &None, &None, reader, requesting_user).await?;
+        self.update_library_image(
+            library_id,
+            ".thumbs",
+            media_id,
+            &None,
+            &None,
+            reader,
+            requesting_user,
+        )
+        .await?;
         let store = self.store.get_library_store(library_id)?;
         store.update_media_thumb(media_id.to_owned()).await?;
-        let media = self.get_media(library_id, media_id.to_owned(), requesting_user).await?.ok_or(SourcesError::UnableToFindMedia(library_id.to_string(), media_id.to_string(), "update_media_image".to_string()))?;
-        self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media, action: ElementAction::Updated}] });
+        let media = self
+            .get_media(library_id, media_id.to_owned(), requesting_user)
+            .await?
+            .ok_or(SourcesError::UnableToFindMedia(
+                library_id.to_string(),
+                media_id.to_string(),
+                "update_media_image".to_string(),
+            ))?;
+        self.send_media(MediasMessage {
+            library: library_id.to_string(),
+            medias: vec![MediaWithAction {
+                media,
+                action: ElementAction::Updated,
+            }],
+        });
         Ok(())
+    }
 
-	}
-
-    
-	pub async fn library_file(&self, library_id: &str, media_id: &str, mut range: Option<RangeDefinition>, query: MediaFileQuery, requesting_user: &ConnectedUser) -> RsResult<SourceRead> {
+    pub async fn library_file(
+        &self,
+        library_id: &str,
+        media_id: &str,
+        mut range: Option<RangeDefinition>,
+        query: MediaFileQuery,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<SourceRead> {
         requesting_user.check_file_role(library_id, media_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id)?;
-        let existing = store.get_media_source(&media_id).await?.ok_or(SourcesError::UnableToFindMedia(library_id.to_string(), media_id.to_string(), "library_file".to_string()))?;
-        let crypted = self.cache_get_library(library_id).await.and_then(|l| l.crypt).unwrap_or(false);
-    
+        let existing =
+            store
+                .get_media_source(&media_id)
+                .await?
+                .ok_or(SourcesError::UnableToFindMedia(
+                    library_id.to_string(),
+                    media_id.to_string(),
+                    "library_file".to_string(),
+                ))?;
+        let crypted = self
+            .cache_get_library(library_id)
+            .await
+            .and_then(|l| l.crypt)
+            .unwrap_or(false);
+
         let m = self.source_for_library(library_id).await?;
         if crypted && !query.raw {
-            range = Some(RangeDefinition { start: Some(CRYPTO_HEADER_SIZE + existing.thumb_size.unwrap_or(0)), end: None })
+            range = Some(RangeDefinition {
+                start: Some(CRYPTO_HEADER_SIZE + existing.thumb_size.unwrap_or(0)),
+                end: None,
+            })
         }
         let mut reader_response = m.get_file(&existing.source, range.clone()).await?;
 
@@ -576,25 +935,37 @@ impl ModelController {
             if let Some(local_path) = local_path {
                 let archive = std::fs::File::open(local_path)?;
                 let buffreader = std::io::BufReader::new(archive);
-                let mut archive = zip::ZipArchive::new(buffreader).map_err(|_| RsError::Error(format!("Unable to open zip file")))?;
+                let mut archive = zip::ZipArchive::new(buffreader)
+                    .map_err(|_| RsError::Error(format!("Unable to open zip file")))?;
                 let pages = archive.len();
-                let mut file = archive.by_index(query.page.unwrap_or(1) as usize - 1).map_err(|_| RsError::Error(format!("Unable to get file at page {:?}. Files in zip: {}", query.page, pages)))?;
+                let mut file = archive
+                    .by_index(query.page.unwrap_or(1) as usize - 1)
+                    .map_err(|_| {
+                        RsError::Error(format!(
+                            "Unable to get file at page {:?}. Files in zip: {}",
+                            query.page, pages
+                        ))
+                    })?;
 
                 let mut data = Vec::new();
                 file.read_to_end(&mut data)?;
-                
+
                 let async_reader: AsyncReadPinBox = Box::pin(std::io::Cursor::new(data));
-                let source_reader = SourceRead::Stream(FileStreamResult { stream: async_reader, size: Some(file.size()), accept_range: false, range: None, mime: None, name: file.enclosed_name().map(|s| s.to_str().unwrap_or_default().to_string()), cleanup: None });
+                let source_reader = SourceRead::Stream(FileStreamResult {
+                    stream: async_reader,
+                    size: Some(file.size()),
+                    accept_range: false,
+                    range: None,
+                    mime: None,
+                    name: file
+                        .enclosed_name()
+                        .map(|s| s.to_str().unwrap_or_default().to_string()),
+                    cleanup: None,
+                });
 
                 return Ok(source_reader);
-                
-                
             }
-            
-
-
         }
-
 
         if crypted {
             if let SourceRead::Stream(reader) = &mut reader_response {
@@ -604,9 +975,23 @@ impl ModelController {
         }
 
         if !query.unsupported_mime.is_empty() && !query.raw {
-            if existing.kind == FileType::Photo && !IMAGES_MIME_FULL_BROWSER_SUPPORT.contains(&existing.mime.as_str()) && (query.unsupported_mime.contains(&existing.mime) || query.unsupported_mime.contains(&"all".to_owned())) {
-                let mut data = reader_response.into_reader(Some(library_id), range, None, Some((self.clone(), &requesting_user)), None).await?; 
-                let resized = convert_image_reader(data.stream, image::ImageFormat::WebP, Some(80), true).await?;
+            if existing.kind == FileType::Photo
+                && !IMAGES_MIME_FULL_BROWSER_SUPPORT.contains(&existing.mime.as_str())
+                && (query.unsupported_mime.contains(&existing.mime)
+                    || query.unsupported_mime.contains(&"all".to_owned()))
+            {
+                let mut data = reader_response
+                    .into_reader(
+                        Some(library_id),
+                        range,
+                        None,
+                        Some((self.clone(), &requesting_user)),
+                        None,
+                    )
+                    .await?;
+                let resized =
+                    convert_image_reader(data.stream, image::ImageFormat::WebP, Some(80), true)
+                        .await?;
                 let len = resized.len();
                 let resized = Cursor::new(resized);
                 Ok(SourceRead::Stream(FileStreamResult {
@@ -624,65 +1009,140 @@ impl ModelController {
         } else {
             Ok(reader_response)
         }
-       
-	}
-    pub fn process_media_spawn(&self, library_id: String, media_id: String, thumb: bool, predict: bool, requesting_user: ConnectedUser){
+    }
+    pub fn process_media_spawn(
+        &self,
+        library_id: String,
+        media_id: String,
+        thumb: bool,
+        predict: bool,
+        requesting_user: ConnectedUser,
+    ) {
         let mc = self.clone();
         tokio::spawn(async move {
-            let r = mc.process_media(&library_id, &media_id, thumb, predict, &requesting_user).await;
+            let r = mc
+                .process_media(&library_id, &media_id, thumb, predict, &requesting_user)
+                .await;
             if let Err(error) = r {
-                log_error(crate::tools::log::LogServiceType::Source, format!("Unable to process media {} for predictions: {:?}", media_id, error));
+                log_error(
+                    crate::tools::log::LogServiceType::Source,
+                    format!(
+                        "Unable to process media {} for predictions: {:?}",
+                        media_id, error
+                    ),
+                );
             }
         });
     }
-    pub async fn process_media(&self, library_id: &str, media_id: &str, thumb: bool, predict: bool, requesting_user: &ConnectedUser) -> RsResult<()>{
+    pub async fn process_media(
+        &self,
+        library_id: &str,
+        media_id: &str,
+        thumb: bool,
+        predict: bool,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<()> {
         if thumb {
-            let _ = self.generate_thumb(library_id, media_id, requesting_user).await;
+            let _ = self
+                .generate_thumb(library_id, media_id, requesting_user)
+                .await;
         }
         self.cache_check_library_notcrypt(library_id).await?;
 
-        let existing = self.get_media(library_id, media_id.to_owned(), requesting_user).await?.ok_or(SourcesError::UnableToFindMedia(library_id.to_string(), media_id.to_string(), "process_media".to_string()))?;
+        let existing = self
+            .get_media(library_id, media_id.to_owned(), requesting_user)
+            .await?
+            .ok_or(SourcesError::UnableToFindMedia(
+                library_id.to_string(),
+                media_id.to_string(),
+                "process_media".to_string(),
+            ))?;
 
-        
-        let r = self.process_media_faces(library_id, media_id, requesting_user, None).await;
+        let r = self
+            .process_media_faces(library_id, media_id, requesting_user, None)
+            .await;
         if let Err(e) = r {
-            log_error(LogServiceType::Source, format!("Face detection failed for {}: {:?}", media_id, e));
+            log_error(
+                LogServiceType::Source,
+                format!("Face detection failed for {}: {:?}", media_id, e),
+            );
         }
 
         if existing.kind == FileType::Video {
-            let r = self.update_video_infos(library_id, media_id, requesting_user, false).await;
+            let r = self
+                .update_video_infos(library_id, media_id, requesting_user, false)
+                .await;
             if let Err(r) = r {
-                log_error(LogServiceType::Source, format!("unable to get video infos for {}: {:?}", media_id, r));
+                log_error(
+                    LogServiceType::Source,
+                    format!("unable to get video infos for {}: {:?}", media_id, r),
+                );
             }
         } else if existing.kind == FileType::Photo {
-            let r = self.update_photo_infos(library_id, media_id, requesting_user, false).await;
+            let r = self
+                .update_photo_infos(library_id, media_id, requesting_user, false)
+                .await;
             if let Err(r) = r {
-                log_error(LogServiceType::Source, format!("unable to get photos infos for {}: {:?}", media_id, r));
+                log_error(
+                    LogServiceType::Source,
+                    format!("unable to get photos infos for {}: {:?}", media_id, r),
+                );
             }
         } else if existing.kind == FileType::Album {
-            let r = self.update_album_infos(library_id, media_id, requesting_user, false).await;
+            let r = self
+                .update_album_infos(library_id, media_id, requesting_user, false)
+                .await;
             if let Err(r) = r {
-                log_error(LogServiceType::Source, format!("unable to get album infos for {}: {:?}", media_id, r));
+                log_error(
+                    LogServiceType::Source,
+                    format!("unable to get album infos for {}: {:?}", media_id, r),
+                );
             }
         }
-    
+
         if predict {
-            let prediction_result = self.prediction(library_id, media_id, true, requesting_user, false).await;
+            let prediction_result = self
+                .prediction(library_id, media_id, true, requesting_user, false)
+                .await;
             match prediction_result {
                 Ok(_) => Ok(()),
-                Err(crate::Error::NoModelFound) => {log_info(LogServiceType::Source, format!("No prediction model found for library {}", library_id)); Ok(())},
+                Err(crate::Error::NoModelFound) => {
+                    log_info(
+                        LogServiceType::Source,
+                        format!("No prediction model found for library {}", library_id),
+                    );
+                    Ok(())
+                }
                 Err(e) => Err(e),
             }?;
         }
-        let existing = self.get_media(library_id, media_id.to_owned(), requesting_user).await?.ok_or(SourcesError::UnableToFindMedia(library_id.to_string(), media_id.to_string(), "process_media".to_string()))?;
-        self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media: existing, action: ElementAction::Updated}] });
-        
+        let existing = self
+            .get_media(library_id, media_id.to_owned(), requesting_user)
+            .await?
+            .ok_or(SourcesError::UnableToFindMedia(
+                library_id.to_string(),
+                media_id.to_string(),
+                "process_media".to_string(),
+            ))?;
+        self.send_media(MediasMessage {
+            library: library_id.to_string(),
+            medias: vec![MediaWithAction {
+                media: existing,
+                action: ElementAction::Updated,
+            }],
+        });
+
         Ok(())
     }
 
-
-    
-    pub async fn add_library_file<T: Sized + AsyncRead + Send + Unpin >(&self, library_id: &str, filename: &str, infos: Option<MediaForUpdate>, reader: T, requesting_user: &ConnectedUser) -> RsResult<Media> {
+    pub async fn add_library_file<T: Sized + AsyncRead + Send + Unpin>(
+        &self,
+        library_id: &str,
+        filename: &str,
+        infos: Option<MediaForUpdate>,
+        reader: T,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Media> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         let store = self.store.get_library_store(library_id)?;
         let mut infos = infos.unwrap_or_default();
@@ -690,12 +1150,24 @@ impl ModelController {
         let crypted = self.cache_get_library_crypt(library_id).await;
         let m = self.source_for_library(&library_id).await?;
 
-        let tx_progress = self.create_progress_sender(library_id.to_owned(), Some(upload_id.clone()));
+        let tx_progress =
+            self.create_progress_sender(library_id.to_owned(), Some(upload_id.clone()));
 
-        let mut progress_reader = ProgressReader::new(reader, RsProgress { id: upload_id.clone(), total: infos.size, current: Some(0), kind: RsProgressType::Transfert, filename: Some(filename.to_owned()) }, tx_progress.clone());
+        let mut progress_reader = ProgressReader::new(
+            reader,
+            RsProgress {
+                id: upload_id.clone(),
+                total: infos.size,
+                current: Some(0),
+                kind: RsProgressType::Transfert,
+                filename: Some(filename.to_owned()),
+            },
+            tx_progress.clone(),
+        );
 
-           
-        let (source, mut file) = m.writer(filename, infos.size, infos.mimetype.clone()).await?;
+        let (source, mut file) = m
+            .writer(filename, infos.size, infos.mimetype.clone())
+            .await?;
         copy(&mut progress_reader, &mut file).await?;
         file.flush().await?;
         file.shutdown().await?;
@@ -709,58 +1181,116 @@ impl ModelController {
             let existing = store.get_media_by_hash(hash.to_owned(), true).await;
             if let Some(existing) = existing {
                 m.remove(&source).await?;
-                let _ = tx_progress.send(RsProgress { id: upload_id.clone(), total: existing.size, current: existing.size, kind: RsProgressType::Duplicate(existing.id.clone()), filename: Some(existing.name.to_owned()) }).await;
-                return Err(Error::Duplicate(existing.id.to_owned(), MediaElement::Media(existing)).into())
+                let _ = tx_progress
+                    .send(RsProgress {
+                        id: upload_id.clone(),
+                        total: existing.size,
+                        current: existing.size,
+                        kind: RsProgressType::Duplicate(existing.id.clone()),
+                        filename: Some(existing.name.to_owned()),
+                    })
+                    .await;
+                return Err(
+                    Error::Duplicate(existing.id.to_owned(), MediaElement::Media(existing)).into(),
+                );
             }
         }
-        
+
         let mut new_file = MediaForAdd {
-            name: filename.to_string(), 
+            name: filename.to_string(),
             source: Some(source.to_string()),
             mimetype: infos.mimetype.clone().unwrap_or(DEFAULT_MIME.to_owned()),
-            created: Some(infos.created.unwrap_or_else(|| Utc::now().timestamp_millis())),
+            created: Some(
+                infos
+                    .created
+                    .unwrap_or_else(|| Utc::now().timestamp_millis()),
+            ),
             iv: infos.iv.clone(),
             thumbsize: infos.thumbsize,
             uploader: requesting_user.user_id().ok(),
-            ..Default::default() };
+            ..Default::default()
+        };
 
         let message = UploadProgressMessage {
             library: library_id.to_owned(),
-            progress: RsProgress { id: upload_id, total: infos.size, current: infos.size, kind: RsProgressType::Finished, filename: Some(new_file.name.clone()) },
+            progress: RsProgress {
+                id: upload_id,
+                total: infos.size,
+                current: infos.size,
+                kind: RsProgressType::Finished,
+                filename: Some(new_file.name.clone()),
+            },
             ..Default::default()
         };
         self.send_upload_progress(message);
-        
+
         new_file.kind = file_type_from_mime(&new_file.mimetype);
 
         let store = self.store.get_library_store(library_id)?;
         let id = nanoid!();
-        store.add_media(MediaForInsert { id: id.clone(), media: new_file }).await?;
-        self.update_media(library_id, id.to_owned(), infos, false, requesting_user).await?;
-        let library: crate::model::libraries::ServerLibraryForRead = self.get_library(library_id, &ConnectedUser::ServerAdmin).await?.ok_or(Error::LibraryNotFound(library_id.to_owned()))?;
+        store
+            .add_media(MediaForInsert {
+                id: id.clone(),
+                media: new_file,
+            })
+            .await?;
+        self.update_media(library_id, id.to_owned(), infos, false, requesting_user)
+            .await?;
+        let library: crate::model::libraries::ServerLibraryForRead = self
+            .get_library(library_id, &ConnectedUser::ServerAdmin)
+            .await?
+            .ok_or(Error::LibraryNotFound(library_id.to_owned()))?;
         if !crypted {
-            let _ = self.generate_thumb(&library_id, &id, &requesting_user).await;
-            self.process_media_spawn(library_id.to_string(), id.clone(), false, library.kind == LibraryType::Photos, requesting_user.clone());
+            let _ = self
+                .generate_thumb(&library_id, &id, &requesting_user)
+                .await;
+            self.process_media_spawn(
+                library_id.to_string(),
+                id.clone(),
+                false,
+                library.kind == LibraryType::Photos,
+                requesting_user.clone(),
+            );
         }
 
-
-        let media = store.get_media(&id, requesting_user.user_id().ok()).await?.ok_or(SourcesError::UnableToFindMedia(library_id.to_string(), id.to_string(), "add_library_file".to_string()))?;
-        self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media: media.clone(), action: ElementAction::Added}] });
+        let media = store
+            .get_media(&id, requesting_user.user_id().ok())
+            .await?
+            .ok_or(SourcesError::UnableToFindMedia(
+                library_id.to_string(),
+                id.to_string(),
+                "add_library_file".to_string(),
+            ))?;
+        self.send_media(MediasMessage {
+            library: library_id.to_string(),
+            medias: vec![MediaWithAction {
+                media: media.clone(),
+                action: ElementAction::Added,
+            }],
+        });
 
         Ok(media)
-	}
+    }
 
-
-    pub async fn download_library_url(&self, library_id: &str, files: RsGroupDownload, requesting_user: &ConnectedUser) -> RsResult<Vec<Media>> {
+    pub async fn download_library_url(
+        &self,
+        library_id: &str,
+        files: RsGroupDownload,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Vec<Media>> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
 
-        let library = self.get_library(library_id, &ConnectedUser::ServerAdmin).await?
+        let library = self
+            .get_library(library_id, &ConnectedUser::ServerAdmin)
+            .await?
             .ok_or(Error::LibraryNotFound(library_id.to_owned()))?;
         let store = self.store.get_library_store(library_id)?;
 
         // Virtual library: store URL references instead of downloading
         if library.is_virtual() {
-            return self.download_virtual_library(library_id, &library, files, &store, requesting_user).await;
+            return self
+                .download_virtual_library(library_id, &library, files, &store, requesting_user)
+                .await;
         }
 
         // Non-virtual libraries: check not crypted
@@ -770,17 +1300,34 @@ impl ModelController {
         let first_request = files.requests.first();
         let origin_url = first_request.and_then(|r| r.origin_url.clone());
         let origin = if let Some(url) = &origin_url {
-            Some(self.exec_parse(Some(library_id.to_owned()), url.to_owned(), requesting_user).await
-                .ok()
-                .unwrap_or(RsLink { platform: "link".to_owned(), kind: Some(RsLinkType::Post), id: url.to_owned(), ..Default::default() }))
+            Some(
+                self.exec_parse(Some(library_id.to_owned()), url.to_owned(), requesting_user)
+                    .await
+                    .ok()
+                    .unwrap_or(RsLink {
+                        platform: "link".to_owned(),
+                        kind: Some(RsLinkType::Post),
+                        id: url.to_owned(),
+                        ..Default::default()
+                    }),
+            )
         } else {
             None
         };
 
         if files.group {
-            self.download_grouped(library_id, files, origin, origin_url, &store, requesting_user).await
+            self.download_grouped(
+                library_id,
+                files,
+                origin,
+                origin_url,
+                &store,
+                requesting_user,
+            )
+            .await
         } else {
-            self.download_individual(library_id, &library, files, origin, &store, requesting_user).await
+            self.download_individual(library_id, &library, files, origin, &store, requesting_user)
+                .await
         }
     }
 
@@ -797,7 +1344,15 @@ impl ModelController {
 
         for request in files.requests {
             let processed_request = if request.status == RsRequestStatus::Unprocessed {
-                self.exec_request(request.clone(), Some(library_id.to_string()), true, None, requesting_user, None).await?
+                self.exec_request(
+                    request.clone(),
+                    Some(library_id.to_string()),
+                    true,
+                    None,
+                    requesting_user,
+                    None,
+                )
+                .await?
             } else {
                 SourceRead::Request(request.clone())
             };
@@ -805,7 +1360,10 @@ impl ModelController {
             let infos: MediaForUpdate = request.clone().into();
             let final_infos: MediaForUpdate = (&processed_request).into();
 
-            let mimetype = final_infos.mimetype.or(infos.mimetype.clone()).unwrap_or(DEFAULT_MIME.to_owned());
+            let mimetype = final_infos
+                .mimetype
+                .or(infos.mimetype.clone())
+                .unwrap_or(DEFAULT_MIME.to_owned());
             let new_file = MediaForAdd {
                 name: final_infos.name.or(infos.name.clone()).unwrap_or(nanoid!()),
                 source: if let Some(selected) = request.selected_file.clone() {
@@ -816,22 +1374,46 @@ impl ModelController {
                 kind: file_type_from_mime(&mimetype),
                 mimetype,
                 size: final_infos.size.or(infos.size),
-                created: Some(infos.created.unwrap_or_else(|| Utc::now().timestamp_millis())),
+                created: Some(
+                    infos
+                        .created
+                        .unwrap_or_else(|| Utc::now().timestamp_millis()),
+                ),
                 ..Default::default()
             };
 
             let id = nanoid!();
-            store.add_media(MediaForInsert { id: id.clone(), media: new_file }).await?;
-            self.update_media(library_id, id.clone(), infos, false, requesting_user).await?;
+            store
+                .add_media(MediaForInsert {
+                    id: id.clone(),
+                    media: new_file,
+                })
+                .await?;
+            self.update_media(library_id, id.clone(), infos, false, requesting_user)
+                .await?;
 
             if !library.crypt.unwrap_or_default() {
                 let _ = self.generate_thumb(library_id, &id, requesting_user).await;
-                self.process_media_spawn(library_id.to_string(), id.clone(), true, library.kind == LibraryType::Photos, requesting_user.clone());
+                self.process_media_spawn(
+                    library_id.to_string(),
+                    id.clone(),
+                    true,
+                    library.kind == LibraryType::Photos,
+                    requesting_user.clone(),
+                );
             }
 
-            let media = store.get_media(&id, requesting_user.user_id().ok()).await?
+            let media = store
+                .get_media(&id, requesting_user.user_id().ok())
+                .await?
                 .ok_or(Error::MediaNotFound(id.to_owned()))?;
-            self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media: media.clone(), action: ElementAction::Added }] });
+            self.send_media(MediasMessage {
+                library: library_id.to_string(),
+                medias: vec![MediaWithAction {
+                    media: media.clone(),
+                    action: ElementAction::Added,
+                }],
+            });
             medias.push(media);
         }
 
@@ -855,10 +1437,16 @@ impl ModelController {
         let mut infos = MediaForUpdate {
             name: files.group_filename.clone(),
             mimetype: files.group_mime.clone(),
-            people_lookup: Self::aggregate_lookup_field(&files.requests, |r| r.people_lookup.clone()),
+            people_lookup: Self::aggregate_lookup_field(&files.requests, |r| {
+                r.people_lookup.clone()
+            }),
             tags_lookup: Self::aggregate_lookup_field(&files.requests, |r| r.tags_lookup.clone()),
-            series_lookup: Self::aggregate_lookup_field(&files.requests, |r| r.albums_lookup.clone()),
-            ignore_origin_duplicate: first_request.map(|r| r.ignore_origin_duplicate).unwrap_or_default(),
+            series_lookup: Self::aggregate_lookup_field(&files.requests, |r| {
+                r.albums_lookup.clone()
+            }),
+            ignore_origin_duplicate: first_request
+                .map(|r| r.ignore_origin_duplicate)
+                .unwrap_or_default(),
             season: first_request.and_then(|r| r.season),
             episode: first_request.and_then(|r| r.episode),
             description: first_request.and_then(|r| r.description.clone()),
@@ -868,12 +1456,21 @@ impl ModelController {
         };
 
         let upload_id = nanoid!();
-        let tx_progress = self.create_progress_sender(library_id.to_owned(), Some(upload_id.clone()));
+        let tx_progress =
+            self.create_progress_sender(library_id.to_owned(), Some(upload_id.clone()));
 
         // Check for origin duplicate
         if let Some(origin) = &mut infos.origin {
             let origin_filename = origin_url.as_ref().and_then(|url| filename_from_path(url));
-            self.check_origin_duplicate(store, origin, origin_filename, infos.ignore_origin_duplicate, Some(&tx_progress), &upload_id).await?;
+            self.check_origin_duplicate(
+                store,
+                origin,
+                origin_filename,
+                infos.ignore_origin_duplicate,
+                Some(&tx_progress),
+                &upload_id,
+            )
+            .await?;
 
             if origin.user.is_none() {
                 if let Some(users) = &infos.people_lookup {
@@ -896,7 +1493,13 @@ impl ModelController {
 
         for request in &files.requests {
             let reader = SourceRead::Request(request.clone())
-                .into_reader(Some(library_id), None, None, Some((self.clone(), &ConnectedUser::ServerAdmin)), None)
+                .into_reader(
+                    Some(library_id),
+                    None,
+                    None,
+                    Some((self.clone(), &ConnectedUser::ServerAdmin)),
+                    None,
+                )
                 .await;
 
             if let Ok(mut reader) = reader {
@@ -905,28 +1508,43 @@ impl ModelController {
                 total_size += buffer.len() as u64;
 
                 let builder = ZipEntryBuilder::new(
-                    request.filename_or_extract_from_url().unwrap_or(nanoid!()).into(),
+                    request
+                        .filename_or_extract_from_url()
+                        .unwrap_or(nanoid!())
+                        .into(),
                     Compression::Deflate,
                 );
-                zip_writer.write_entry_whole(builder, &buffer).await
-                    .map_err(|_| Error::ServiceError("Unable to save zip entry".to_string(), None))?;
+                zip_writer
+                    .write_entry_whole(builder, &buffer)
+                    .await
+                    .map_err(|_| {
+                        Error::ServiceError("Unable to save zip entry".to_string(), None)
+                    })?;
 
                 pages += 1;
                 let estimated = total_size / pages as u64 * len;
-                let _ = tx_progress.send(RsProgress {
-                    id: upload_id.clone(),
-                    total: Some(estimated),
-                    current: Some(total_size),
-                    kind: RsProgressType::Download,
-                    filename: Some(filename.clone()),
-                }).await;
+                let _ = tx_progress
+                    .send(RsProgress {
+                        id: upload_id.clone(),
+                        total: Some(estimated),
+                        current: Some(total_size),
+                        kind: RsProgressType::Download,
+                        filename: Some(filename.clone()),
+                    })
+                    .await;
             } else {
-                log_error(LogServiceType::Source, format!("Error adding to zip: {}", request.url));
+                log_error(
+                    LogServiceType::Source,
+                    format!("Error adding to zip: {}", request.url),
+                );
                 println!("{:?}", reader);
             }
         }
 
-        zip_writer.close().await.map_err(|_| Error::ServiceError("Unable to close zip file".to_string(), None))?;
+        zip_writer
+            .close()
+            .await
+            .map_err(|_| Error::ServiceError("Unable to close zip file".to_string(), None))?;
         file.flush().await?;
         println!("CLOSED");
 
@@ -935,7 +1553,8 @@ impl ModelController {
 
         // Check for hash duplicate
         if let Some(hash) = &infos.md5 {
-            self.check_hash_duplicate(library_id, store, &source, hash, None, &upload_id).await?;
+            self.check_hash_duplicate(library_id, store, &source, hash, None, &upload_id)
+                .await?;
         }
 
         // Create media record
@@ -943,40 +1562,71 @@ impl ModelController {
             name: filename.to_string(),
             source: Some(source.to_string()),
             mimetype: infos.mimetype.clone().unwrap_or(DEFAULT_MIME.to_owned()),
-            created: Some(infos.created.unwrap_or_else(|| Utc::now().timestamp_millis())),
+            created: Some(
+                infos
+                    .created
+                    .unwrap_or_else(|| Utc::now().timestamp_millis()),
+            ),
             pages: Some(pages),
             kind: FileType::Album,
             ..Default::default()
         };
 
         let id = nanoid!();
-        store.add_media(MediaForInsert { id: id.clone(), media: new_file }).await?;
-        self.update_media(library_id, id.to_owned(), infos, false, requesting_user).await?;
+        store
+            .add_media(MediaForInsert {
+                id: id.clone(),
+                media: new_file,
+            })
+            .await?;
+        self.update_media(library_id, id.to_owned(), infos, false, requesting_user)
+            .await?;
 
         // Load thumbnail
         let loaded_thumb = if let Some(thumb_url) = thumbnail {
-            self.load_thumbnail_from_url(library_id, &id, &thumb_url, first_request).await
+            self.load_thumbnail_from_url(library_id, &id, &thumb_url, first_request)
+                .await
         } else {
             false
         };
 
         if !loaded_thumb {
-            if let Err(e) = self.generate_thumb(library_id, &id, &ConnectedUser::ServerAdmin).await {
-                log_error(crate::tools::log::LogServiceType::Source, format!("Unable to generate thumb {:#}", e));
+            if let Err(e) = self
+                .generate_thumb(library_id, &id, &ConnectedUser::ServerAdmin)
+                .await
+            {
+                log_error(
+                    crate::tools::log::LogServiceType::Source,
+                    format!("Unable to generate thumb {:#}", e),
+                );
             }
         }
 
-        let media = store.get_media(&id, requesting_user.user_id().ok()).await?
-            .ok_or(SourcesError::UnableToFindMedia(library_id.to_string(), id.to_string(), "download_grouped".to_string()))?;
-        let _ = tx_progress.send(RsProgress {
-            id: upload_id.clone(),
-            total: media.size,
-            current: media.size,
-            kind: RsProgressType::Finished,
-            filename: Some(media.name.to_owned()),
-        }).await;
+        let media = store
+            .get_media(&id, requesting_user.user_id().ok())
+            .await?
+            .ok_or(SourcesError::UnableToFindMedia(
+                library_id.to_string(),
+                id.to_string(),
+                "download_grouped".to_string(),
+            ))?;
+        let _ = tx_progress
+            .send(RsProgress {
+                id: upload_id.clone(),
+                total: media.size,
+                current: media.size,
+                kind: RsProgressType::Finished,
+                filename: Some(media.name.to_owned()),
+            })
+            .await;
 
-        self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media: media.clone(), action: ElementAction::Added }] });
+        self.send_media(MediasMessage {
+            library: library_id.to_string(),
+            medias: vec![MediaWithAction {
+                media: media.clone(),
+                action: ElementAction::Added,
+            }],
+        });
 
         Ok(vec![media])
     }
@@ -1001,17 +1651,32 @@ impl ModelController {
             let mut infos: MediaForUpdate = request.clone().into();
             infos.origin = origin.clone();
 
-            let tx_progress = self.create_progress_sender(library_id.to_owned(), Some(upload_id.clone()));
+            let tx_progress =
+                self.create_progress_sender(library_id.to_owned(), Some(upload_id.clone()));
 
             // Check for origin duplicate
             if let Some(origin) = &mut infos.origin {
                 let origin_filename = filename_from_path(&request.url);
-                self.check_origin_duplicate(store, origin, origin_filename, infos.ignore_origin_duplicate, Some(&tx_progress), &upload_id).await?;
+                self.check_origin_duplicate(
+                    store,
+                    origin,
+                    origin_filename,
+                    infos.ignore_origin_duplicate,
+                    Some(&tx_progress),
+                    &upload_id,
+                )
+                .await?;
             }
 
             // Download file
             let reader = SourceRead::Request(request)
-                .into_reader(Some(library_id), None, Some(tx_progress.clone()), Some((self.clone(), &ConnectedUser::ServerAdmin)), None)
+                .into_reader(
+                    Some(library_id),
+                    None,
+                    Some(tx_progress.clone()),
+                    Some((self.clone(), &ConnectedUser::ServerAdmin)),
+                    None,
+                )
                 .await?;
 
             if let Some(reader_name) = reader.name {
@@ -1023,7 +1688,11 @@ impl ModelController {
                 name.clone()
             } else if let Some(desc) = &infos.description {
                 let re = Regex::new(r"\.\w{2,4}$").unwrap();
-                if re.is_match(desc.trim()) { desc.clone() } else { nanoid!() }
+                if re.is_match(desc.trim()) {
+                    desc.clone()
+                } else {
+                    nanoid!()
+                }
             } else {
                 nanoid!()
             };
@@ -1042,7 +1711,13 @@ impl ModelController {
             // Write file
             let mut progress_reader = ProgressReader::new(
                 reader.stream,
-                RsProgress { id: upload_id.clone(), total: reader.size, current: Some(0), kind: RsProgressType::Transfert, filename: Some(filename.clone()) },
+                RsProgress {
+                    id: upload_id.clone(),
+                    total: reader.size,
+                    current: Some(0),
+                    kind: RsProgressType::Transfert,
+                    filename: Some(filename.clone()),
+                },
                 tx_progress.clone(),
             );
             let (source, mut file) = m.writerseek(&filename).await?;
@@ -1054,7 +1729,15 @@ impl ModelController {
 
             // Check for hash duplicate
             if let Some(hash) = &infos.md5 {
-                self.check_hash_duplicate(library_id, store, &source, hash, Some(&tx_progress), &upload_id).await?;
+                self.check_hash_duplicate(
+                    library_id,
+                    store,
+                    &source,
+                    hash,
+                    Some(&tx_progress),
+                    &upload_id,
+                )
+                .await?;
             }
 
             // Create media record
@@ -1062,56 +1745,103 @@ impl ModelController {
                 name: filename.to_string(),
                 source: Some(source.to_string()),
                 mimetype: infos.mimetype.clone().unwrap_or(DEFAULT_MIME.to_owned()),
-                created: Some(infos.created.unwrap_or_else(|| Utc::now().timestamp_millis())),
-                kind: file_type_from_mime(&infos.mimetype.clone().unwrap_or(DEFAULT_MIME.to_owned())),
+                created: Some(
+                    infos
+                        .created
+                        .unwrap_or_else(|| Utc::now().timestamp_millis()),
+                ),
+                kind: file_type_from_mime(
+                    &infos.mimetype.clone().unwrap_or(DEFAULT_MIME.to_owned()),
+                ),
                 ..Default::default()
             };
 
-            if let Err(error) = tx_progress.send(RsProgress {
-                id: upload_id.clone(),
-                total: infos.size,
-                current: infos.size,
-                kind: RsProgressType::Analysing,
-                filename: Some(filename.to_owned()),
-            }).await {
-                log_error(LogServiceType::Source, format!("Unable to send final progress message: {:?}", error));
+            if let Err(error) = tx_progress
+                .send(RsProgress {
+                    id: upload_id.clone(),
+                    total: infos.size,
+                    current: infos.size,
+                    kind: RsProgressType::Analysing,
+                    filename: Some(filename.to_owned()),
+                })
+                .await
+            {
+                log_error(
+                    LogServiceType::Source,
+                    format!("Unable to send final progress message: {:?}", error),
+                );
             }
 
             let id = nanoid!();
-            store.add_media(MediaForInsert { id: id.clone(), media: new_file }).await?;
-            self.update_media(library_id, id.to_owned(), infos, false, requesting_user).await?;
+            store
+                .add_media(MediaForInsert {
+                    id: id.clone(),
+                    media: new_file,
+                })
+                .await?;
+            self.update_media(library_id, id.to_owned(), infos, false, requesting_user)
+                .await?;
 
-            if let Err(e) = self.generate_thumb(library_id, &id, &ConnectedUser::ServerAdmin).await {
-                log_error(crate::tools::log::LogServiceType::Source, format!("Unable to generate thumb {:#}", e));
+            if let Err(e) = self
+                .generate_thumb(library_id, &id, &ConnectedUser::ServerAdmin)
+                .await
+            {
+                log_error(
+                    crate::tools::log::LogServiceType::Source,
+                    format!("Unable to generate thumb {:#}", e),
+                );
             }
-            self.process_media_spawn(library_id.to_string(), id.clone(), false, library.kind == LibraryType::Photos, ConnectedUser::ServerAdmin);
+            self.process_media_spawn(
+                library_id.to_string(),
+                id.clone(),
+                false,
+                library.kind == LibraryType::Photos,
+                ConnectedUser::ServerAdmin,
+            );
 
-            let media = store.get_media(&id, requesting_user.user_id().ok()).await?
-                .ok_or(SourcesError::UnableToFindMedia(library_id.to_string(), id.to_string(), "download_individual".to_string()))?;
-            let _ = tx_progress.send(RsProgress {
-                id: upload_id.clone(),
-                total: media.size,
-                current: media.size,
-                kind: RsProgressType::Finished,
-                filename: Some(media.name.to_owned()),
-            }).await;
+            let media = store
+                .get_media(&id, requesting_user.user_id().ok())
+                .await?
+                .ok_or(SourcesError::UnableToFindMedia(
+                    library_id.to_string(),
+                    id.to_string(),
+                    "download_individual".to_string(),
+                ))?;
+            let _ = tx_progress
+                .send(RsProgress {
+                    id: upload_id.clone(),
+                    total: media.size,
+                    current: media.size,
+                    kind: RsProgressType::Finished,
+                    filename: Some(media.name.to_owned()),
+                })
+                .await;
 
-            self.send_media(MediasMessage { library: library_id.to_string(), medias: vec![MediaWithAction { media: media.clone(), action: ElementAction::Added }] });
+            self.send_media(MediasMessage {
+                library: library_id.to_string(),
+                medias: vec![MediaWithAction {
+                    media: media.clone(),
+                    action: ElementAction::Added,
+                }],
+            });
             medias.push(media);
         }
 
         Ok(medias)
     }
 
-
-    pub fn create_progress_sender(&self, library_id: String, upload_id: Option<String>) -> mpsc::Sender<RsProgress> {
+    pub fn create_progress_sender(
+        &self,
+        library_id: String,
+        upload_id: Option<String>,
+    ) -> mpsc::Sender<RsProgress> {
         //Progress
         let mc_progress = self.clone();
         let (tx_progress, mut rx_progress) = mpsc::channel::<RsProgress>(100);
         tokio::spawn(async move {
             let mut last_send = 0;
             let mut last_type: Option<RsProgressType> = None;
-            
+
             let start_time = std::time::Instant::now();
 
             let mut remaining = None;
@@ -1123,7 +1853,7 @@ impl ModelController {
                         let duration_from_start = start_time.elapsed().as_secs_f32();
                         let remaining_time = duration_from_start / percent * (1f32 - percent);
                         //println!("FFMPEG remaining time: {}", remaining_time);
-                        
+
                         remaining = Some(remaining_time as u64);
                     }
                 }
@@ -1132,13 +1862,18 @@ impl ModelController {
                 if let Some(upload_id) = &upload_id {
                     progress.id = upload_id.clone();
                 }
-                if progress.current == progress.total || last_send == 0 || current < last_send || current - last_send  > 1000000 || Some(&progress.kind) != last_type.as_ref() {
+                if progress.current == progress.total
+                    || last_send == 0
+                    || current < last_send
+                    || current - last_send > 1000000
+                    || Some(&progress.kind) != last_type.as_ref()
+                {
                     last_type = Some(progress.kind.clone());
                     last_send = current;
                     let message = UploadProgressMessage {
                         library: library_id.clone(),
                         progress,
-                        remaining_secondes: remaining
+                        remaining_secondes: remaining,
                     };
                     mc_progress.send_upload_progress(message);
                 }
@@ -1146,47 +1881,136 @@ impl ModelController {
         });
         tx_progress
     }
-    
-    pub async fn generate_thumb(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> crate::error::Result<()> {
+
+    pub async fn generate_thumb(
+        &self,
+        library_id: &str,
+        media_id: &str,
+        requesting_user: &ConnectedUser,
+    ) -> crate::error::Result<()> {
         self.cache_check_library_notcrypt(library_id).await?;
 
-        let m = self.source_for_library(library_id).await?; 
+        let m = self.source_for_library(library_id).await?;
         let store = self.store.get_library_store(library_id)?;
-        let media = store.get_media(media_id, requesting_user.user_id().ok()).await?.ok_or(SourcesError::UnableToFindMedia(library_id.to_string(), media_id.to_string(), "generate_thumb".to_string()))?;
+        let media = store
+            .get_media(media_id, requesting_user.user_id().ok())
+            .await?
+            .ok_or(SourcesError::UnableToFindMedia(
+                library_id.to_string(),
+                media_id.to_string(),
+                "generate_thumb".to_string(),
+            ))?;
         //println!("GENERATE THUMB {:?}", media.kind);
         let thumb = match media.kind {
-            FileType::Photo => { 
+            FileType::Photo => {
                 let media_source: MediaSource = media.try_into()?;
                 let reader = m.get_file(&media_source.source, None).await?;
-                let mut reader = reader.into_reader(Some(library_id), None, None, Some((self.clone(), &requesting_user)), None).await?;
-                let image = resize_image_reader(reader.stream, 512, image::ImageFormat::Avif, Some(50), false).await?;
+                let mut reader = reader
+                    .into_reader(
+                        Some(library_id),
+                        None,
+                        None,
+                        Some((self.clone(), &requesting_user)),
+                        None,
+                    )
+                    .await?;
+                let image = resize_image_reader(
+                    reader.stream,
+                    512,
+                    image::ImageFormat::Avif,
+                    Some(50),
+                    false,
+                )
+                .await?;
                 Ok(image)
-            },
-            FileType::Album => { 
+            }
+            FileType::Album => {
                 let media_source: MediaSource = media.try_into()?;
-                let reader = self.library_file(library_id, media_id, None, MediaFileQuery {page: Some(1), unsupported_mime: vec![], raw: false }, requesting_user).await?;
-                let mut reader = reader.into_reader(Some(library_id), None, None, Some((self.clone(), &requesting_user)), None).await?;
-                let image = resize_image_reader(reader.stream, 512, image::ImageFormat::Avif, Some(50), false).await?;
+                let reader = self
+                    .library_file(
+                        library_id,
+                        media_id,
+                        None,
+                        MediaFileQuery {
+                            page: Some(1),
+                            unsupported_mime: vec![],
+                            raw: false,
+                        },
+                        requesting_user,
+                    )
+                    .await?;
+                let mut reader = reader
+                    .into_reader(
+                        Some(library_id),
+                        None,
+                        None,
+                        Some((self.clone(), &requesting_user)),
+                        None,
+                    )
+                    .await?;
+                let image = resize_image_reader(
+                    reader.stream,
+                    512,
+                    image::ImageFormat::Avif,
+                    Some(50),
+                    false,
+                )
+                .await?;
                 Ok(image)
-            },
-            FileType::Video => { 
-                let th = self.get_video_thumb(library_id, media_id, VideoTime::Percent(5), image::ImageFormat::Avif, Some(50), requesting_user).await?;
+            }
+            FileType::Video => {
+                let th = self
+                    .get_video_thumb(
+                        library_id,
+                        media_id,
+                        VideoTime::Percent(5),
+                        image::ImageFormat::Avif,
+                        Some(50),
+                        requesting_user,
+                    )
+                    .await?;
                 Ok(th)
-            },
+            }
             _ => Err(crate::model::error::Error::UnsupportedTypeForThumb),
         }?;
-        self.update_library_image(&library_id, ".thumbs", &media_id, &None, &None, thumb.as_slice(), requesting_user).await?;
+        self.update_library_image(
+            &library_id,
+            ".thumbs",
+            &media_id,
+            &None,
+            &None,
+            thumb.as_slice(),
+            requesting_user,
+        )
+        .await?;
 
         Ok(())
     }
 
-    pub async fn get_video_thumb(&self, library_id: &str, media_id: &str, time: VideoTime, format: image::ImageFormat, quality: Option<u16>, requesting_user: &ConnectedUser) -> crate::error::Result<Vec<u8>> {
+    pub async fn get_video_thumb(
+        &self,
+        library_id: &str,
+        media_id: &str,
+        time: VideoTime,
+        format: image::ImageFormat,
+        quality: Option<u16>,
+        requesting_user: &ConnectedUser,
+    ) -> crate::error::Result<Vec<u8>> {
         requesting_user.check_file_role(library_id, media_id, LibraryRole::Read)?;
 
         let store = self.store.get_library_store(library_id)?;
-        let source = store.get_media_source(&media_id).await?.ok_or(SourcesError::UnableToFindSource(library_id.to_string(), media_id.to_string(), format!("mediaid: {}", media_id), "get_video_thumb".to_string()))?;
+        let source =
+            store
+                .get_media_source(&media_id)
+                .await?
+                .ok_or(SourcesError::UnableToFindSource(
+                    library_id.to_string(),
+                    media_id.to_string(),
+                    format!("mediaid: {}", media_id),
+                    "get_video_thumb".to_string(),
+                ))?;
 
-        let m = self.source_for_library(&library_id).await?; 
+        let m = self.source_for_library(&library_id).await?;
         let local_path = m.local_path(&source.source);
         let uri = if let Some(local_path) = local_path {
             local_path.to_str().unwrap().to_string()
@@ -1199,78 +2023,172 @@ impl ModelController {
         Ok(thumb)
     }
 
-    pub async  fn get_temporary_local_read_url(library_id: &str, media_id: &str, delay: Option<u64>) -> Result<String> {
+    pub async fn get_temporary_local_read_url(
+        library_id: &str,
+        media_id: &str,
+        delay: Option<u64>,
+    ) -> Result<String> {
         let exp = ClaimsLocal::generate_seconds(delay.unwrap_or(240));
         let claims = ClaimsLocal {
             cr: "service::get_video_thumb".to_string(),
-            kind: crate::tools::auth::ClaimsLocalType::File(library_id.to_string(), media_id.to_string()),
+            kind: crate::tools::auth::ClaimsLocalType::File(
+                library_id.to_string(),
+                media_id.to_string(),
+            ),
             exp,
         };
-    
+
         let local_port = get_server_port().await;
-        let token = sign_local(claims).await.map_err(|_| Error::UnableToSignShareToken)?;
-        let uri = format!("http://localhost:{}/libraries/{}/medias/{}?sharetoken={}", local_port, library_id, media_id, token);
+        let token = sign_local(claims)
+            .await
+            .map_err(|_| Error::UnableToSignShareToken)?;
+        let uri = format!(
+            "http://localhost:{}/libraries/{}/medias/{}?sharetoken={}",
+            local_port, library_id, media_id, token
+        );
         Ok(uri)
     }
 
-    pub async  fn get_temporary_read_url(library_id: &str, media_id: &str, delay: Option<u64>) -> RsResult<String> {
+    pub async fn get_temporary_read_url(
+        library_id: &str,
+        media_id: &str,
+        delay: Option<u64>,
+    ) -> RsResult<String> {
         let config = get_config().await;
         let exp = ClaimsLocal::generate_seconds(delay.unwrap_or(240));
         let claims = ClaimsLocal {
             cr: "service::get_video_thumb".to_string(),
-            kind: crate::tools::auth::ClaimsLocalType::File(library_id.to_string(), media_id.to_string()),
+            kind: crate::tools::auth::ClaimsLocalType::File(
+                library_id.to_string(),
+                media_id.to_string(),
+            ),
             exp,
         };
-    
+
         let local_port = get_server_port().await;
-        let token = sign_local(claims).await.map_err(|_| Error::UnableToSignShareToken)?;
-        let uri = format!("{}/libraries/{}/medias/{}?sharetoken={}", config.get_server_base_url()?, library_id, media_id, token);
+        let token = sign_local(claims)
+            .await
+            .map_err(|_| Error::UnableToSignShareToken)?;
+        let uri = format!(
+            "{}/libraries/{}/medias/{}?sharetoken={}",
+            config.get_server_base_url()?,
+            library_id,
+            media_id,
+            token
+        );
         Ok(uri)
     }
 
-
-    pub async  fn get_file_share_token(&self, library_id: &str, media_id: &str, delay_in_seconds: u64, requesting_user: &ConnectedUser) -> Result<String> {
+    pub async fn get_file_share_token(
+        &self,
+        library_id: &str,
+        media_id: &str,
+        delay_in_seconds: u64,
+        requesting_user: &ConnectedUser,
+    ) -> Result<String> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let exp = ClaimsLocal::generate_seconds(delay_in_seconds);
         let claims = ClaimsLocal {
             cr: "service::share_media".to_string(),
-            kind: crate::tools::auth::ClaimsLocalType::File(library_id.to_string(), media_id.to_string()),
+            kind: crate::tools::auth::ClaimsLocalType::File(
+                library_id.to_string(),
+                media_id.to_string(),
+            ),
             exp,
         };
-        let token = sign_local(claims).await.map_err(|_| Error::UnableToSignShareToken)?;
+        let token = sign_local(claims)
+            .await
+            .map_err(|_| Error::UnableToSignShareToken)?;
         Ok(token)
     }
 
-    pub async fn prediction(&self, library_id: &str, media_id: &str, insert_tags: bool, requesting_user: &ConnectedUser, notif: bool) -> crate::Result<Vec<PredictionTagResult>> {
-        let plugins = self.get_plugins(PluginQuery { kind: Some(PluginType::ImageClassification), library: Some(library_id.to_string()), ..Default::default() }, &ConnectedUser::ServerAdmin).await?;
+    pub async fn prediction(
+        &self,
+        library_id: &str,
+        media_id: &str,
+        insert_tags: bool,
+        requesting_user: &ConnectedUser,
+        notif: bool,
+    ) -> crate::Result<Vec<PredictionTagResult>> {
+        let plugins = self
+            .get_plugins(
+                PluginQuery {
+                    kind: Some(PluginType::ImageClassification),
+                    library: Some(library_id.to_string()),
+                    ..Default::default()
+                },
+                &ConnectedUser::ServerAdmin,
+            )
+            .await?;
         if !plugins.is_empty() {
             let mut all_predictions: Vec<PredictionTagResult> = vec![];
-            let media = self.get_media(library_id, media_id.to_string(), requesting_user).await?.ok_or(SourcesError::UnableToFindMedia(library_id.to_string(), media_id.to_string(), "prediction".to_string()))?;
+            let media = self
+                .get_media(library_id, media_id.to_string(), requesting_user)
+                .await?
+                .ok_or(SourcesError::UnableToFindMedia(
+                    library_id.to_string(),
+                    media_id.to_string(),
+                    "prediction".to_string(),
+                ))?;
 
-            let mut reader_response = self.media_image(&library_id, &media_id, None, &requesting_user).await?;
-            let buffer = convert_image_reader(reader_response.stream, image::ImageFormat::Png, None, true).await?;
-            
+            let mut reader_response = self
+                .media_image(&library_id, &media_id, None, &requesting_user)
+                .await?;
+            let buffer =
+                convert_image_reader(reader_response.stream, image::ImageFormat::Png, None, true)
+                    .await?;
+
             let mut images = vec![buffer];
             if media.kind == FileType::Video {
                 let percents = vec![15, 30, 45, 60, 75, 95];
                 //let percents = vec![15];
                 for percent in percents {
-                    let thumb = self.get_video_thumb(library_id, media_id, VideoTime::Percent(percent), image::ImageFormat::Png, Some(70), requesting_user).await?;
+                    let thumb = self
+                        .get_video_thumb(
+                            library_id,
+                            media_id,
+                            VideoTime::Percent(percent),
+                            image::ImageFormat::Png,
+                            Some(70),
+                            requesting_user,
+                        )
+                        .await?;
                     images.push(thumb);
                 }
             }
             for plugin in plugins.clone() {
                 let mut path = get_plugin_fodler().await?;
-                    path.push(&plugin.path);
+                path.push(&plugin.path);
                 let mut model: ort::session::Session = preload_model(&path).await?;
                 for buffer in &images {
-                    
-                    let mut prediction = predict_net(path.clone(), plugin.settings.bgr.unwrap_or(false), plugin.settings.normalize.unwrap_or(false), buffer.clone(), Some(&mut model)).await?;
+                    let mut prediction = predict_net(
+                        path.clone(),
+                        plugin.settings.bgr.unwrap_or(false),
+                        plugin.settings.normalize.unwrap_or(false),
+                        buffer.clone(),
+                        Some(&mut model),
+                    )
+                    .await?;
                     prediction.sort_by(|a, b| b.probability.partial_cmp(&a.probability).unwrap());
                     if insert_tags {
                         for tag in &prediction {
-                            let db_tag = self.get_ai_tag(&library_id, tag.tag.clone(), &requesting_user).await?;
-                            self.update_media(&library_id, media_id.to_string(), MediaForUpdate { add_tags: Some(vec![MediaItemReference { id: db_tag.id, conf: Some(tag.probability as u16) }]), ..Default::default() }, notif, &requesting_user).await?;
+                            let db_tag = self
+                                .get_ai_tag(&library_id, tag.tag.clone(), &requesting_user)
+                                .await?;
+                            self.update_media(
+                                &library_id,
+                                media_id.to_string(),
+                                MediaForUpdate {
+                                    add_tags: Some(vec![MediaItemReference {
+                                        id: db_tag.id,
+                                        conf: Some(tag.probability as u16),
+                                    }]),
+                                    ..Default::default()
+                                },
+                                notif,
+                                &requesting_user,
+                            )
+                            .await?;
                         }
                     }
                     all_predictions.append(&mut prediction);
@@ -1283,27 +2201,47 @@ impl ModelController {
         }
     }
 
-
-    pub async fn convert(&self, library_id: &str, media_id: &str, request: VideoConvertRequest, plugin_id: Option<String>, requesting_user: &ConnectedUser) -> crate::Result<()> {
+    pub async fn convert(
+        &self,
+        library_id: &str,
+        media_id: &str,
+        request: VideoConvertRequest,
+        plugin_id: Option<String>,
+        requesting_user: &ConnectedUser,
+    ) -> crate::Result<()> {
         requesting_user.check_file_role(library_id, media_id, LibraryRole::Write)?;
         let store = self.store.get_library_store(library_id)?;
-        let media = store.get_media(media_id, requesting_user.user_id().ok()).await?.ok_or(SourcesError::UnableToFindMedia(library_id.to_string(), media_id.to_string(), "convert".to_string()))?;
-
+        let media = store
+            .get_media(media_id, requesting_user.user_id().ok())
+            .await?
+            .ok_or(SourcesError::UnableToFindMedia(
+                library_id.to_string(),
+                media_id.to_string(),
+                "convert".to_string(),
+            ))?;
 
         let filename = format!("{}.{}", remove_extension(&media.name), request.format);
-        let queue_element = VideoConvertQueueElement::new(library_id.to_string(), plugin_id.clone(), media_id.to_string(), filename.clone(), requesting_user.clone(), request.clone());
+        let queue_element = VideoConvertQueueElement::new(
+            library_id.to_string(),
+            plugin_id.clone(),
+            media_id.to_string(),
+            filename.clone(),
+            requesting_user.clone(),
+            request.clone(),
+        );
         let message = ConvertMessage {
             library: library_id.to_string(),
             progress: queue_element.status.clone(),
         };
         self.send_convert_progress(message);
 
-
         // If plugin convert is requested
         if let Some(plugin_id) = &plugin_id {
-            let status = self.convert_submit_media(library_id, media_id, request.clone(), &plugin_id).await?;
+            let status = self
+                .convert_submit_media(library_id, media_id, request.clone(), &plugin_id)
+                .await?;
             let job_id = status.id.clone();
-            
+
             // Clone what you need for the background task
             let plugin_id_owned = plugin_id.clone();
             let mc_progress = self.clone(); // or however you get your progress sender
@@ -1313,25 +2251,27 @@ impl ModelController {
             let media_progress: MediaForUpdate = media.into();
             // Spawn background task
             tokio::spawn(async move {
-    let mut poll_interval = Duration::from_secs(2);
-    
-    loop {
-        sleep(poll_interval).await;
-        
-        match mc_progress.convert_status(&job_id, &plugin_id_owned).await {
+                let mut poll_interval = Duration::from_secs(2);
+
+                loop {
+                    sleep(poll_interval).await;
+
+                    match mc_progress.convert_status(&job_id, &plugin_id_owned).await {
                         Ok(current_status) => {
-                            
-                            log_info(crate::tools::log::LogServiceType::Source, format!("Got convert status: {:?}", current_status));
+                            log_info(
+                                crate::tools::log::LogServiceType::Source,
+                                format!("Got convert status: {:?}", current_status),
+                            );
                             let is_terminal = matches!(
                                 current_status.status,
-                                RsVideoTranscodeStatus::Completed 
-                                | RsVideoTranscodeStatus::Failed 
-                                | RsVideoTranscodeStatus::Canceled
+                                RsVideoTranscodeStatus::Completed
+                                    | RsVideoTranscodeStatus::Failed
+                                    | RsVideoTranscodeStatus::Canceled
                             );
-                            
+
                             let done = is_terminal;
                             let percent = current_status.progress;
-                            
+
                             let message = ConvertMessage {
                                 library: lib_progress.clone(),
                                 progress: ConvertProgress {
@@ -1346,107 +2286,139 @@ impl ModelController {
                                 },
                             };
                             mc_progress.send_convert_progress(message);
-                            
+
                             if matches!(current_status.status, RsVideoTranscodeStatus::Completed) {
                                 // Handle all errors here instead of using ?
                                 match mc_progress.convert_link(&job_id, &plugin_id_owned).await {
                                     Ok(link) => {
-                                        log_info(crate::tools::log::LogServiceType::Source, format!("Got convert link result: {:?}", link));
-                                        
-                                        
-                                        
+                                        log_info(
+                                            crate::tools::log::LogServiceType::Source,
+                                            format!("Got convert link result: {:?}", link),
+                                        );
+
                                         let mut attempts = 0;
-                                        let max_attempts  = 3;
+                                        let max_attempts = 3;
                                         let media_result = loop {
                                             let source = SourceRead::Request(link.clone());
-                                            match source.into_reader(
-                                                Some(&lib_progress), 
-                                                None, 
-                                                None, 
-                                                Some((mc_progress.clone(), &ConnectedUser::ServerAdmin)), 
-                                                None
-                                            ).await {
+                                            match source
+                                                .into_reader(
+                                                    Some(&lib_progress),
+                                                    None,
+                                                    None,
+                                                    Some((
+                                                        mc_progress.clone(),
+                                                        &ConnectedUser::ServerAdmin,
+                                                    )),
+                                                    None,
+                                                )
+                                                .await
+                                            {
                                                 Ok(reader) => {
-                                                            attempts += 1;
-                                                            
-                                                            match mc_progress.add_library_file(
-                                                                &lib_progress, 
-                                                                &name_progress, 
-                                                                Some(media_progress.clone()), 
-                                                                reader.stream, 
-                                                                &ConnectedUser::ServerAdmin
-                                                            ).await {
-                                                                Ok(media) => break Ok(media),
-                                                                Err(e) if attempts >= max_attempts => {
-                                                                    log_error(crate::tools::log::LogServiceType::Source, 
+                                                    attempts += 1;
+
+                                                    match mc_progress
+                                                        .add_library_file(
+                                                            &lib_progress,
+                                                            &name_progress,
+                                                            Some(media_progress.clone()),
+                                                            reader.stream,
+                                                            &ConnectedUser::ServerAdmin,
+                                                        )
+                                                        .await
+                                                    {
+                                                        Ok(media) => break Ok(media),
+                                                        Err(e) if attempts >= max_attempts => {
+                                                            log_error(crate::tools::log::LogServiceType::Source, 
                                                                         format!("Failed to add library file after {} attempts: {:?}", max_attempts, e));
-                                                                    tracing::error!("Failed to add library file after {} attempts: {:?}", max_attempts, e);
-                                                                    break Err(e);
-                                                                }
-                                                                Err(e) => {
-                                                                    log_warn(crate::tools::log::LogServiceType::Source, 
-                                                                        format!("Attempt {}/{} failed: {:?}. Retrying...", attempts, max_attempts, e));
-                                                                    tracing::warn!("Attempt {}/{} failed: {:?}. Retrying...", attempts, max_attempts, e);
-                                                                    // Optional: add a delay between retries
-                                                                    // tokio::time::sleep(Duration::from_millis(100 * attempts as u64)).await;
-                                                                }
-                                                            }
-
-
-
+                                                            tracing::error!("Failed to add library file after {} attempts: {:?}", max_attempts, e);
+                                                            break Err(e);
                                                         }
                                                         Err(e) => {
-                                                            log_error(crate::tools::log::LogServiceType::Source, format!("Failed to create reader: {:?}", e));
-                                                            tracing::error!("Failed to create reader: {:?}", e);
+                                                            log_warn(crate::tools::log::LogServiceType::Source, 
+                                                                        format!("Attempt {}/{} failed: {:?}. Retrying...", attempts, max_attempts, e));
+                                                            tracing::warn!("Attempt {}/{} failed: {:?}. Retrying...", attempts, max_attempts, e);
+                                                            // Optional: add a delay between retries
+                                                            // tokio::time::sleep(Duration::from_millis(100 * attempts as u64)).await;
                                                         }
-
                                                     }
-                                                };
-    
-                                                // Note: Can't use self here, need to use mc_progress
-                                                match media_result {
-                                                    Ok(media) => {
-                                                        
-                                                        log_info(crate::tools::log::LogServiceType::Source, format!("Successfully added media: {:?}", media));
-                                                        match mc_progress.convert_clean(&job_id, &plugin_id_owned).await {
-                                                            Ok(status) => {
-                                                                log_info(crate::tools::log::LogServiceType::Source, format!("Successfully cleaned download files: {:?}", status));  
-                                                            }
-                                                            Err(e) => {
-                                                                
-                                                                log_error(crate::tools::log::LogServiceType::Source, format!("Failed to add library file: {:?}", e));
-                                                                tracing::error!("Failed to add library file: {:?}", e);
-                                                                // Send error progress update
-                                                            }
-                                                            
-                                                        }
-                                                        // Success - maybe send final progress update
-                                                        tracing::info!("Successfully added media: {:?}", media);
+                                                }
+                                                Err(e) => {
+                                                    log_error(
+                                                        crate::tools::log::LogServiceType::Source,
+                                                        format!("Failed to create reader: {:?}", e),
+                                                    );
+                                                    tracing::error!(
+                                                        "Failed to create reader: {:?}",
+                                                        e
+                                                    );
+                                                }
+                                            }
+                                        };
+
+                                        // Note: Can't use self here, need to use mc_progress
+                                        match media_result {
+                                            Ok(media) => {
+                                                log_info(
+                                                    crate::tools::log::LogServiceType::Source,
+                                                    format!(
+                                                        "Successfully added media: {:?}",
+                                                        media
+                                                    ),
+                                                );
+                                                match mc_progress
+                                                    .convert_clean(&job_id, &plugin_id_owned)
+                                                    .await
+                                                {
+                                                    Ok(status) => {
+                                                        log_info(crate::tools::log::LogServiceType::Source, format!("Successfully cleaned download files: {:?}", status));
                                                     }
                                                     Err(e) => {
-                                                        
                                                         log_error(crate::tools::log::LogServiceType::Source, format!("Failed to add library file: {:?}", e));
-                                                        tracing::error!("Failed to add library file: {:?}", e);
+                                                        tracing::error!(
+                                                            "Failed to add library file: {:?}",
+                                                            e
+                                                        );
                                                         // Send error progress update
                                                     }
                                                 }
-                                            
-                                        
+                                                // Success - maybe send final progress update
+                                                tracing::info!(
+                                                    "Successfully added media: {:?}",
+                                                    media
+                                                );
+                                            }
+                                            Err(e) => {
+                                                log_error(
+                                                    crate::tools::log::LogServiceType::Source,
+                                                    format!("Failed to add library file: {:?}", e),
+                                                );
+                                                tracing::error!(
+                                                    "Failed to add library file: {:?}",
+                                                    e
+                                                );
+                                                // Send error progress update
+                                            }
+                                        }
                                     }
                                     Err(e) => {
-                                        
-                                        log_error(crate::tools::log::LogServiceType::Source, format!("Got convert link error: {:?}", e));
+                                        log_error(
+                                            crate::tools::log::LogServiceType::Source,
+                                            format!("Got convert link error: {:?}", e),
+                                        );
                                         tracing::error!("Failed to get convert link: {:?}", e);
                                     }
                                 }
                             }
-                            
+
                             if is_terminal {
                                 break;
                             }
                         }
                         Err(e) => {
-                            log_error(crate::tools::log::LogServiceType::Source, format!("Got convert status error: {:?}", e));
+                            log_error(
+                                crate::tools::log::LogServiceType::Source,
+                                format!("Got convert status error: {:?}", e),
+                            );
                             tracing::error!("Error polling status: {:?}", e);
                             break;
                         }
@@ -1466,7 +2438,7 @@ impl ModelController {
             tokio::spawn(async move {
                 let mut converting = mc.convert_current.write().await;
                 *converting = true;
-                loop  {
+                loop {
                     let mut queue = mc.convert_queue.write().await;
                     let element = queue.pop_front();
                     drop(queue);
@@ -1483,25 +2455,50 @@ impl ModelController {
         }
 
         Ok(())
-
     }
 
-    pub async fn convert_element(&self, mut element: VideoConvertQueueElement) -> crate::Result<Media> {
-        element.user.check_file_role(&element.library, &element.media, LibraryRole::Write)?;
+    pub async fn convert_element(
+        &self,
+        mut element: VideoConvertQueueElement,
+    ) -> crate::Result<Media> {
+        element
+            .user
+            .check_file_role(&element.library, &element.media, LibraryRole::Write)?;
 
         let store = self.store.get_library_store(&element.library)?;
-        let media = store.get_media(&element.media, None).await?.ok_or(SourcesError::UnableToFindMedia(element.library.to_string(), element.media.to_string(), "convert_element".to_string()))?;
+        let media =
+            store
+                .get_media(&element.media, None)
+                .await?
+                .ok_or(SourcesError::UnableToFindMedia(
+                    element.library.to_string(),
+                    element.media.to_string(),
+                    "convert_element".to_string(),
+                ))?;
 
-        let m = self.source_for_library(&element.library).await?; 
-        let local = self.library_source_for_library(&element.library).await?; 
-        let path = m.local_path(media.source.as_ref().ok_or(Error::ServiceError("Convert".to_owned(), Some("Unable to convert video without source".to_owned())))?).ok_or(Error::ServiceError("Convert".to_owned(), Some("Unable to convert video that is not local".to_owned())))?;
- 
-        let path = path.to_str().ok_or(RsError::Error(format!("Unable to convert video path to string: {:?}", path)))?.to_string();
+        let m = self.source_for_library(&element.library).await?;
+        let local = self.library_source_for_library(&element.library).await?;
+        let path = m
+            .local_path(media.source.as_ref().ok_or(Error::ServiceError(
+                "Convert".to_owned(),
+                Some("Unable to convert video without source".to_owned()),
+            ))?)
+            .ok_or(Error::ServiceError(
+                "Convert".to_owned(),
+                Some("Unable to convert video that is not local".to_owned()),
+            ))?;
+
+        let path = path
+            .to_str()
+            .ok_or(RsError::Error(format!(
+                "Unable to convert video path to string: {:?}",
+                path
+            )))?
+            .to_string();
         let filename = element.status.filename;
         let dest_source = format!(".cache/{}", filename);
         let dest = local.get_full_path(&dest_source);
         PathProvider::ensure_filepath(&dest).await?;
-
 
         let mc_progress = self.clone();
         let lib_progress = element.library.to_string();
@@ -1509,21 +2506,17 @@ impl ModelController {
         let name_progress = filename.clone();
         let (tx_progress, mut rx_progress) = mpsc::channel::<f64>(100);
         tokio::spawn(async move {
-
             let start_time = std::time::Instant::now();
 
             let mut remaining = None;
-            while let Some(percent) = rx_progress.recv().await {     
-                
+            while let Some(percent) = rx_progress.recv().await {
                 if percent > 0.01f64 {
                     let duration_from_start = start_time.elapsed().as_secs_f64();
                     let remaining_time = duration_from_start / percent * (1f64 - percent);
                     //println!("FFMPEG remaining time: {}", remaining_time);
-                    
+
                     remaining = Some(remaining_time as u64);
                 }
-                
-
 
                 let message = ConvertMessage {
                     library: lib_progress.clone(),
@@ -1535,27 +2528,35 @@ impl ModelController {
                         status: RsVideoTranscodeStatus::Processing,
                         id: request_progress.id.clone(),
                         request: Some(request_progress.clone()),
-                        estimated_remaining_seconds: remaining
+                        estimated_remaining_seconds: remaining,
                     },
                 };
                 mc_progress.send_convert_progress(message);
-                
             }
         });
 
         let mut video_builder = VideoCommandBuilder::new(path).await;
         video_builder.set_progress(tx_progress);
 
-
         if let Some(overlay) = &mut element.request.overlay {
             match overlay.kind {
                 VideoOverlayType::Watermark => {
-                    let name = if overlay.path.is_empty() { ".watermark.png".to_owned() } else { format!(".watermark.{}.png", &overlay.path)};
-                    overlay.path = local.get_full_path(&name).to_str().ok_or(Error::ServiceError("Convert".to_owned(), Some("Invalid watermark path".to_owned())))?.to_string();
-                },
+                    let name = if overlay.path.is_empty() {
+                        ".watermark.png".to_owned()
+                    } else {
+                        format!(".watermark.{}.png", &overlay.path)
+                    };
+                    overlay.path = local
+                        .get_full_path(&name)
+                        .to_str()
+                        .ok_or(Error::ServiceError(
+                            "Convert".to_owned(),
+                            Some("Invalid watermark path".to_owned()),
+                        ))?
+                        .to_string();
+                }
                 VideoOverlayType::File => todo!(),
             }
-  
         }
         let progress_id = element.request.id.clone();
         video_builder.set_request(element.request.clone()).await?;
@@ -1576,18 +2577,37 @@ impl ModelController {
         self.send_convert_progress(message);
         let media_infos: MediaForUpdate = media.into();
         let reader = File::open(dest).await?;
-        let media = self.add_library_file(&element.library, &filename, Some(media_infos), reader, &element.user).await;
+        let media = self
+            .add_library_file(
+                &element.library,
+                &filename,
+                Some(media_infos),
+                reader,
+                &element.user,
+            )
+            .await;
 
-        
-        
         local.remove(&dest_source).await?;
         match media {
             Ok(media) => {
-                let existing_thumb = self.media_image(&element.library, &element.media, None, &ConnectedUser::ServerAdmin).await;
+                let existing_thumb = self
+                    .media_image(
+                        &element.library,
+                        &element.media,
+                        None,
+                        &ConnectedUser::ServerAdmin,
+                    )
+                    .await;
                 if let Ok(existing_thumb) = existing_thumb {
-                    self.update_media_image(&element.library, &media.id, existing_thumb.stream, &ConnectedUser::ServerAdmin).await?;
+                    self.update_media_image(
+                        &element.library,
+                        &media.id,
+                        existing_thumb.stream,
+                        &ConnectedUser::ServerAdmin,
+                    )
+                    .await?;
                 }
-        
+
                 let message = ConvertMessage {
                     library: element.library.to_string(),
                     progress: ConvertProgress {
@@ -1603,18 +2623,33 @@ impl ModelController {
                 };
                 self.send_convert_progress(message);
                 Ok(media)
-            },
+            }
             Err(err) => Err(err),
         }
     }
-    
-    pub async fn update_video_infos(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser, notif: bool) -> crate::Result<()> {
+
+    pub async fn update_video_infos(
+        &self,
+        library_id: &str,
+        media_id: &str,
+        requesting_user: &ConnectedUser,
+        notif: bool,
+    ) -> crate::Result<()> {
         requesting_user.check_file_role(library_id, media_id, LibraryRole::Read)?;
 
         let store = self.store.get_library_store(library_id)?;
-        let source = store.get_media_source(&media_id).await?.ok_or(SourcesError::UnableToFindSource(library_id.to_string(), media_id.to_string(), format!("mediaid: {}", media_id), "update_video_infos".to_string()))?;
+        let source =
+            store
+                .get_media_source(&media_id)
+                .await?
+                .ok_or(SourcesError::UnableToFindSource(
+                    library_id.to_string(),
+                    media_id.to_string(),
+                    format!("mediaid: {}", media_id),
+                    "update_video_infos".to_string(),
+                ))?;
 
-        let m = self.source_for_library(&library_id).await?; 
+        let m = self.source_for_library(&library_id).await?;
         let local_path = m.local_path(&source.source);
         let uri = if let Some(local_path) = local_path {
             local_path.to_str().unwrap().to_string()
@@ -1639,52 +2674,119 @@ impl ModelController {
             update.fps = video_stream.fps()
         }
 
-        self.update_media(library_id, media_id.to_owned(), update, notif, requesting_user).await?;
+        self.update_media(
+            library_id,
+            media_id.to_owned(),
+            update,
+            notif,
+            requesting_user,
+        )
+        .await?;
 
         //println!("videos infos {:?}", videos_infos);
         Ok(())
     }
 
-    pub async fn update_file_infos(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser, notif: bool) -> crate::Result<()> {
+    pub async fn update_file_infos(
+        &self,
+        library_id: &str,
+        media_id: &str,
+        requesting_user: &ConnectedUser,
+        notif: bool,
+    ) -> crate::Result<()> {
         requesting_user.check_file_role(library_id, media_id, LibraryRole::Write)?;
         self.cache_check_library_notcrypt(library_id).await?;
-        let media = self.get_media(library_id, media_id.to_owned(), requesting_user).await?.ok_or(crate::model::Error::MediaNotFound(media_id.to_string()))?;
+        let media = self
+            .get_media(library_id, media_id.to_owned(), requesting_user)
+            .await?
+            .ok_or(crate::model::Error::MediaNotFound(media_id.to_string()))?;
 
         let mut update = MediaForUpdate::default();
         let m = self.source_for_library(&library_id).await?;
-        m.fill_infos(&media.source.unwrap_or_default(), &mut update).await?;
-    
-        self.update_media(library_id, media_id.to_owned(), update, notif, requesting_user).await?;
-        
+        m.fill_infos(&media.source.unwrap_or_default(), &mut update)
+            .await?;
+
+        self.update_media(
+            library_id,
+            media_id.to_owned(),
+            update,
+            notif,
+            requesting_user,
+        )
+        .await?;
+
         Ok(())
     }
 
-    pub async fn update_photo_infos(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser, notif: bool) -> crate::Result<()> {
+    pub async fn update_photo_infos(
+        &self,
+        library_id: &str,
+        media_id: &str,
+        requesting_user: &ConnectedUser,
+        notif: bool,
+    ) -> crate::Result<()> {
         requesting_user.check_file_role(library_id, media_id, LibraryRole::Read)?;
         self.cache_check_library_notcrypt(library_id).await?;
 
-        let mut m = self.library_file(library_id, media_id, None, MediaFileQuery::default() , requesting_user).await?.into_reader(Some(library_id), None, None, Some((self.clone(), &requesting_user)), None).await?;
-
+        let mut m = self
+            .library_file(
+                library_id,
+                media_id,
+                None,
+                MediaFileQuery::default(),
+                requesting_user,
+            )
+            .await?
+            .into_reader(
+                Some(library_id),
+                None,
+                None,
+                Some((self.clone(), &requesting_user)),
+                None,
+            )
+            .await?;
 
         let update = image_infos(&mut m.stream).await?;
-        
-    
-        self.update_media(library_id, media_id.to_owned(), update, notif, requesting_user).await?;
-        
+
+        self.update_media(
+            library_id,
+            media_id.to_owned(),
+            update,
+            notif,
+            requesting_user,
+        )
+        .await?;
+
         Ok(())
     }
 
-    pub async fn update_album_infos(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser, notif: bool) -> crate::Result<()> {
+    pub async fn update_album_infos(
+        &self,
+        library_id: &str,
+        media_id: &str,
+        requesting_user: &ConnectedUser,
+        notif: bool,
+    ) -> crate::Result<()> {
         requesting_user.check_file_role(library_id, media_id, LibraryRole::Read)?;
         self.cache_check_library_notcrypt(library_id).await?;
         let m = self.source_for_library(library_id).await?;
-        let existing = self.get_media(library_id, media_id.to_string(), requesting_user).await?.ok_or(SourcesError::UnableToFindMedia(library_id.to_string(), media_id.to_string(), "update_album_infos".to_string()))?;
-        let source = existing.source.clone().ok_or(SourcesError::UnableToFindSource(
-            library_id.to_string(),
-            media_id.to_string(),
-            existing.source.clone().unwrap_or("unknown".to_string()),
-            "update_album_infos".to_string(),
-        ))?;
+        let existing = self
+            .get_media(library_id, media_id.to_string(), requesting_user)
+            .await?
+            .ok_or(SourcesError::UnableToFindMedia(
+                library_id.to_string(),
+                media_id.to_string(),
+                "update_album_infos".to_string(),
+            ))?;
+        let source = existing
+            .source
+            .clone()
+            .ok_or(SourcesError::UnableToFindSource(
+                library_id.to_string(),
+                media_id.to_string(),
+                existing.source.clone().unwrap_or("unknown".to_string()),
+                "update_album_infos".to_string(),
+            ))?;
         let local_path = m.local_path(&source);
         if let Some(local_path) = local_path {
             let mut update = MediaForUpdate::default();
@@ -1695,22 +2797,34 @@ impl ModelController {
 
             update.pages = Some(archive.len());
 
-            self.update_media(library_id, media_id.to_owned(), update, notif, requesting_user).await?;
+            self.update_media(
+                library_id,
+                media_id.to_owned(),
+                update,
+                notif,
+                requesting_user,
+            )
+            .await?;
         }
 
         Ok(())
-    
-          
-        
     }
 
-    pub async fn remove_library_file(&self, library_id: &str, media_id: &str, requesting_user: &ConnectedUser) -> RsResult<()> {
+    pub async fn remove_library_file(
+        &self,
+        library_id: &str,
+        media_id: &str,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<()> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         let store = self.store.get_library_store(library_id)?;
         let existing = store.get_media_source(&media_id).await?;
 
         // Get all face IDs associated with this media before deletion
-        let face_ids = match self.get_media_faces(library_id, media_id, requesting_user).await {
+        let face_ids = match self
+            .get_media_faces(library_id, media_id, requesting_user)
+            .await
+        {
             Ok(faces) => faces.iter().map(|f| f.id.clone()).collect::<Vec<String>>(),
             Err(_) => Vec::new(), // If we can't get faces, continue anyway (best effort)
         };
@@ -1719,20 +2833,43 @@ impl ModelController {
             let m = self.source_for_library(&library_id).await?;
             let r = m.remove(&existing.source).await;
             if r.is_ok() {
-				log_info(crate::tools::log::LogServiceType::Source, format!("Deleted file {}", existing.source));
-			}
+                log_info(
+                    crate::tools::log::LogServiceType::Source,
+                    format!("Deleted file {}", existing.source),
+                );
+            }
             store.remove_media(media_id.to_string()).await?;
         }
-        self.remove_library_image(library_id, ".thumbs", media_id, &None, &None, requesting_user).await?;
+        self.remove_library_image(
+            library_id,
+            ".thumbs",
+            media_id,
+            &None,
+            &None,
+            requesting_user,
+        )
+        .await?;
 
         // Delete cached face images (ignore errors - cache cleanup is best effort)
         for face_id in face_ids {
-            if let Err(e) = self.remove_library_image(library_id, ".faces", &face_id, &None, &None, requesting_user).await {
-                log_info(crate::tools::log::LogServiceType::Other, format!("Failed to delete cached face image {}: {}", face_id, e));
+            if let Err(e) = self
+                .remove_library_image(
+                    library_id,
+                    ".faces",
+                    &face_id,
+                    &None,
+                    &None,
+                    requesting_user,
+                )
+                .await
+            {
+                log_info(
+                    crate::tools::log::LogServiceType::Other,
+                    format!("Failed to delete cached face image {}: {}", face_id, e),
+                );
             }
         }
 
         Ok(())
-	}
-
+    }
 }

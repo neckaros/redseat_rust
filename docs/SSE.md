@@ -35,6 +35,7 @@ Example: `/sse?libraries=lib1,lib2` will only receive events for those libraries
 | `episodes` | Episodes created/updated/deleted | Library read access |
 | `series` | Series created/updated/deleted | Library read access |
 | `movies` | Movies created/updated/deleted | Library read access |
+| `books` | Books created/updated/deleted | Library read access |
 | `people` | People created/updated/deleted | Library read access |
 | `tags` | Tags created/updated/deleted | Library read access |
 | `backups` | Backup job events | Library admin or server admin |
@@ -126,6 +127,11 @@ interface SeriesMessage {
 interface MoviesMessage {
   library: string;
   movies: MovieWithAction[];
+}
+
+interface BooksMessage {
+  library: string;
+  books: BookWithAction[];
 }
 
 interface PeopleMessage {
@@ -232,6 +238,7 @@ type SseEvent =
   | { Episodes: EpisodesMessage }
   | { Series: SeriesMessage }
   | { Movies: MoviesMessage }
+  | { Books: BooksMessage }
   | { People: PeopleMessage }
   | { Tags: TagMessage }
   | { Backups: BackupMessage }
@@ -373,7 +380,7 @@ class SseClient {
 
     const events = [
       'library', 'library-status', 'medias', 'upload_progress',
-      'convert_progress', 'episodes', 'series', 'movies',
+      'convert_progress', 'episodes', 'series', 'movies', 'books',
       'people', 'tags', 'backups', 'backups-files', 'media_progress',
       'media_rating', 'watched', 'unwatched', 'request_processing'
     ];
@@ -439,7 +446,7 @@ function useSse(options: UseSseOptions = {}) {
     // Subscribe to all event types
     const eventTypes = [
       'library', 'library-status', 'medias', 'upload_progress',
-      'convert_progress', 'episodes', 'series', 'movies',
+      'convert_progress', 'episodes', 'series', 'movies', 'books',
       'people', 'tags', 'backups', 'backups-files', 'media_progress',
       'media_rating', 'watched', 'unwatched', 'request_processing'
     ];

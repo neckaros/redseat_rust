@@ -7,6 +7,7 @@ pub mod server;
 pub mod store;
 pub mod users;
 
+pub mod books;
 pub mod deleted;
 pub mod episodes;
 pub mod media_progresses;
@@ -544,7 +545,10 @@ impl ModelController {
         self.broadcast_sse(SseEvent::LibraryStatus(message));
     }
 
-    pub fn send_request_processing(&self, message: crate::domain::request_processing::RequestProcessingMessage) {
+    pub fn send_request_processing(
+        &self,
+        message: crate::domain::request_processing::RequestProcessingMessage,
+    ) {
         self.broadcast_sse(SseEvent::RequestProcessing(message));
     }
 }

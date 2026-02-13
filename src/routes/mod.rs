@@ -3,24 +3,25 @@ use serde::{Deserialize, Serialize};
 
 use crate::tools::image_tools::ImageSize;
 
-pub mod ping;
+pub mod backups;
+pub mod credentials;
 pub mod infos;
 pub mod libraries;
-pub mod users;
 pub mod mw_auth;
 pub mod mw_range;
-pub mod sse;
-pub mod credentials;
-pub mod backups;
+pub mod ping;
 pub mod plugins;
+pub mod sse;
+pub mod users;
 
-pub mod library_plugins;
-pub mod tags;
-pub mod people;
-pub mod movies;
-pub mod series;
+pub mod books;
 pub mod episodes;
+pub mod library_plugins;
 pub mod medias;
+pub mod movies;
+pub mod people;
+pub mod series;
+pub mod tags;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ImageRequestOptions {
@@ -28,13 +29,12 @@ pub struct ImageRequestOptions {
     #[serde(rename = "type")]
     kind: Option<ImageType>,
     #[serde(default)]
-    defaulting: bool
-
+    defaulting: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ImageUploadOptions {
     #[serde(rename = "type")]
-    kind: ImageType
+    kind: ImageType,
 }

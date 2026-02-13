@@ -19,18 +19,19 @@ pub enum SerieStatus {
     Released,
     Canceled,
     Pilot,
-    #[strum(default)] Other(String),
-    #[default] Unknown,
+    #[strum(default)]
+    Other(String),
+    #[default]
+    Unknown,
 }
 
 #[derive(Debug, Serialize, PartialEq, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Serie {
-
     #[serde(default)]
     pub id: String,
-    
-	pub name: String,
+
+    pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "type")]
     pub kind: Option<String>,
@@ -46,7 +47,15 @@ pub struct Serie {
     pub trakt: Option<u64>,
     pub tvdb: Option<u64>,
     pub otherids: Option<String>,
-    
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub openlibrary_work_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anilist_manga_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mangadex_manga_uuid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub myanimelist_manga_id: Option<u64>,
+
     #[serde(serialize_with = "rating_serializer")]
     pub imdb_rating: Option<f32>,
     pub imdb_votes: Option<u64>,
@@ -56,38 +65,33 @@ pub struct Serie {
 
     pub trailer: Option<String>,
 
-
     pub year: Option<u16>,
 
-    
     pub max_created: Option<i64>,
-
 
     #[serde(default)]
     pub modified: u64,
     #[serde(default)]
     pub added: u64,
 
-    
     #[serde(default)]
     pub posterv: u64,
     #[serde(default)]
     pub backgroundv: u64,
     #[serde(default)]
-    pub cardv: u64
+    pub cardv: u64,
 }
 
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")] 
+#[serde(rename_all = "camelCase")]
 pub struct SerieWithAction {
     pub action: ElementAction,
-    pub serie: Serie
+    pub serie: Serie,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")] 
+#[serde(rename_all = "camelCase")]
 pub struct SeriesMessage {
     pub library: String,
-    pub series: Vec<SerieWithAction>
+    pub series: Vec<SerieWithAction>,
 }
