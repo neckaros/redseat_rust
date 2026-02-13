@@ -226,6 +226,22 @@ pub struct Media {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub movie: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub isbn13: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub openlibrary_edition_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub openlibrary_work_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub google_books_volume_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anilist_manga_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mangadex_manga_uuid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub myanimelist_manga_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asin: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub lang: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uploader: Option<String>,
@@ -340,6 +356,14 @@ pub struct MediaForUpdate {
     pub ignore_origin_duplicate: bool,
 
     pub movie: Option<String>,
+    pub isbn13: Option<String>,
+    pub openlibrary_edition_id: Option<String>,
+    pub openlibrary_work_id: Option<String>,
+    pub google_books_volume_id: Option<String>,
+    pub anilist_manga_id: Option<i64>,
+    pub mangadex_manga_uuid: Option<String>,
+    pub myanimelist_manga_id: Option<i64>,
+    pub asin: Option<String>,
 
     pub lang: Option<String>,
 
@@ -409,6 +433,14 @@ pub struct MediaForAdd {
     pub iv: Option<String>,
     pub origin: Option<RsLink>,
     pub movie: Option<String>,
+    pub isbn13: Option<String>,
+    pub openlibrary_edition_id: Option<String>,
+    pub openlibrary_work_id: Option<String>,
+    pub google_books_volume_id: Option<String>,
+    pub anilist_manga_id: Option<i64>,
+    pub mangadex_manga_uuid: Option<String>,
+    pub myanimelist_manga_id: Option<i64>,
+    pub asin: Option<String>,
     pub lang: Option<String>,
     pub uploader: Option<String>,
     pub uploadkey: Option<String>,
@@ -458,6 +490,14 @@ impl From<Media> for MediaForAdd {
             series: value.series,
             original_hash: value.md5,
             original_id: Some(value.original_id.unwrap_or(value.id)),
+            isbn13: value.isbn13,
+            openlibrary_edition_id: value.openlibrary_edition_id,
+            openlibrary_work_id: value.openlibrary_work_id,
+            google_books_volume_id: value.google_books_volume_id,
+            anilist_manga_id: value.anilist_manga_id,
+            mangadex_manga_uuid: value.mangadex_manga_uuid,
+            myanimelist_manga_id: value.myanimelist_manga_id,
+            asin: value.asin,
             ..Default::default()
         }
     }
@@ -477,6 +517,14 @@ impl From<Media> for MediaForUpdate {
             pages: value.pages,
             original_hash: value.original_hash.or(value.md5),
             original_id: Some(value.original_id.unwrap_or(value.id)),
+            isbn13: value.isbn13,
+            openlibrary_edition_id: value.openlibrary_edition_id,
+            openlibrary_work_id: value.openlibrary_work_id,
+            google_books_volume_id: value.google_books_volume_id,
+            anilist_manga_id: value.anilist_manga_id,
+            mangadex_manga_uuid: value.mangadex_manga_uuid,
+            myanimelist_manga_id: value.myanimelist_manga_id,
+            asin: value.asin,
             ..Default::default()
         }
     }

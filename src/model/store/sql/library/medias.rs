@@ -73,7 +73,9 @@ const MEDIA_QUERY: &str = "SELECT
             m.fnumber, m.icc, m.mp,
 			m.progress as user_progress,
 			art.rating as user_rating,
-            m.originalhash, m.originalid, m.face_recognition_error
+            m.originalhash, m.originalid, m.face_recognition_error,
+            m.isbn13, m.openlibrary_edition_id, m.openlibrary_work_id, m.google_books_volume_id,
+            m.anilist_manga_id, m.mangadex_manga_uuid, m.myanimelist_manga_id, m.asin
 			
             FROM medias as m
             LEFT JOIN 
@@ -105,7 +107,9 @@ fn media_query(user_id: &Option<String>) -> String {
             m.fnumber, m.icc, m.mp,
 			mp.progress as user_progress,
 			rt.rating as user_rating,
-            m.originalhash, m.originalid, m.face_recognition_error
+            m.originalhash, m.originalid, m.face_recognition_error,
+            m.isbn13, m.openlibrary_edition_id, m.openlibrary_work_id, m.google_books_volume_id,
+            m.anilist_manga_id, m.mangadex_manga_uuid, m.myanimelist_manga_id, m.asin
 
             FROM medias as m
             LEFT JOIN 
@@ -237,6 +241,14 @@ impl SqliteLibraryStore {
             original_hash: row.get(50)?,
             original_id: row.get(51)?,
             face_recognition_error: row.get(52)?,
+            isbn13: row.get(53)?,
+            openlibrary_edition_id: row.get(54)?,
+            openlibrary_work_id: row.get(55)?,
+            google_books_volume_id: row.get(56)?,
+            anilist_manga_id: row.get(57)?,
+            mangadex_manga_uuid: row.get(58)?,
+            myanimelist_manga_id: row.get(59)?,
+            asin: row.get(60)?,
             //series: None,
         })
     }
@@ -780,6 +792,14 @@ impl SqliteLibraryStore {
 
             where_query.add_update(&update.origin, "origin");
             where_query.add_update(&update.movie, "movie");
+            where_query.add_update(&update.isbn13, "isbn13");
+            where_query.add_update(&update.openlibrary_edition_id, "openlibrary_edition_id");
+            where_query.add_update(&update.openlibrary_work_id, "openlibrary_work_id");
+            where_query.add_update(&update.google_books_volume_id, "google_books_volume_id");
+            where_query.add_update(&update.anilist_manga_id, "anilist_manga_id");
+            where_query.add_update(&update.mangadex_manga_uuid, "mangadex_manga_uuid");
+            where_query.add_update(&update.myanimelist_manga_id, "myanimelist_manga_id");
+            where_query.add_update(&update.asin, "asin");
 
             where_query.add_update(&update.lang, "lang");
 
@@ -896,13 +916,15 @@ impl SqliteLibraryStore {
             id, source, name, description, type, mimetype, size, md5, params, width, 
             height, phash, thumbhash, focal, iso, colorSpace, icc, mp, sspeed, fnumber, orientation, duration, acodecs, 
             achan, vcodecs, fps, bitrate, long, lat, model, pages, progress, thumb, 
-            thumbv, thumbsize, iv, origin, movie, lang, uploader, uploadkey, originalhash, originalid
+            thumbv, thumbsize, iv, origin, movie, lang, uploader, uploadkey, originalhash, originalid,
+            isbn13, openlibrary_edition_id, openlibrary_work_id, google_books_volume_id,
+            anilist_manga_id, mangadex_manga_uuid, myanimelist_manga_id, asin
 
             )
             VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, 
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params![
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params![
                 insert.id,
                 insert.media.source,
                 insert.media.name,
@@ -949,7 +971,15 @@ impl SqliteLibraryStore {
                 insert.media.uploadkey,
 
                 insert.media.original_hash,
-                insert.media.original_id
+                insert.media.original_id,
+                insert.media.isbn13,
+                insert.media.openlibrary_edition_id,
+                insert.media.openlibrary_work_id,
+                insert.media.google_books_volume_id,
+                insert.media.anilist_manga_id,
+                insert.media.mangadex_manga_uuid,
+                insert.media.myanimelist_manga_id,
+                insert.media.asin
             ])?;
             
             Ok(())
@@ -971,5 +1001,69 @@ impl SqliteLibraryStore {
             Ok(())
         }).await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SqliteLibraryStore;
+    use crate::domain::media::{FileType, MediaForAdd, MediaForUpdate};
+
+    #[tokio::test]
+    async fn media_book_ids_insert_and_update_roundtrip() {
+        let connection = tokio_rusqlite::Connection::open_in_memory().await.unwrap();
+        let store = SqliteLibraryStore::new(connection).await.unwrap();
+        let media_id = "media-book-id-test".to_string();
+
+        let media = MediaForAdd {
+            name: "book.cbz".to_string(),
+            kind: FileType::Archive,
+            mimetype: "application/vnd.comicbook+zip".to_string(),
+            isbn13: Some("9783161484100".to_string()),
+            openlibrary_edition_id: Some("OL7353617M".to_string()),
+            openlibrary_work_id: Some("OL45883W".to_string()),
+            google_books_volume_id: Some("zyTCAlFPjgYC".to_string()),
+            anilist_manga_id: Some(30001),
+            mangadex_manga_uuid: Some("a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string()),
+            myanimelist_manga_id: Some(1706),
+            asin: Some("B00TESTASIN".to_string()),
+            ..Default::default()
+        };
+
+        store
+            .add_media(media.into_insert_with_id(media_id.clone()))
+            .await
+            .unwrap();
+
+        let inserted = store.get_media(&media_id, None).await.unwrap().unwrap();
+        assert_eq!(inserted.isbn13.as_deref(), Some("9783161484100"));
+        assert_eq!(inserted.openlibrary_edition_id.as_deref(), Some("OL7353617M"));
+        assert_eq!(inserted.openlibrary_work_id.as_deref(), Some("OL45883W"));
+        assert_eq!(
+            inserted.google_books_volume_id.as_deref(),
+            Some("zyTCAlFPjgYC")
+        );
+        assert_eq!(inserted.anilist_manga_id, Some(30001));
+        assert_eq!(
+            inserted.mangadex_manga_uuid.as_deref(),
+            Some("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+        );
+        assert_eq!(inserted.myanimelist_manga_id, Some(1706));
+        assert_eq!(inserted.asin.as_deref(), Some("B00TESTASIN"));
+
+        let update = MediaForUpdate {
+            isbn13: Some("9781234567897".to_string()),
+            myanimelist_manga_id: Some(9999),
+            asin: Some("B00UPDATEDASIN".to_string()),
+            ..Default::default()
+        };
+
+        store.update_media(&media_id, update, None).await.unwrap();
+
+        let updated = store.get_media(&media_id, None).await.unwrap().unwrap();
+        assert_eq!(updated.isbn13.as_deref(), Some("9781234567897"));
+        assert_eq!(updated.myanimelist_manga_id, Some(9999));
+        assert_eq!(updated.asin.as_deref(), Some("B00UPDATEDASIN"));
+        assert_eq!(updated.openlibrary_edition_id.as_deref(), Some("OL7353617M"));
     }
 }

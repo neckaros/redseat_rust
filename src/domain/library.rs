@@ -87,6 +87,7 @@ pub enum LibraryType {
     Shows,
     Movies,
     Iptv,
+    Books,
     #[default]
     Other,
 }
@@ -125,4 +126,27 @@ pub struct LibraryMessage {
 pub struct LibraryStatusMessage {
     pub message: String,
     pub library: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use super::LibraryType;
+
+    #[test]
+    fn library_type_books_serde_roundtrip() {
+        let parsed: LibraryType = serde_json::from_str("\"books\"").unwrap();
+        assert_eq!(parsed, LibraryType::Books);
+
+        let serialized = serde_json::to_string(&LibraryType::Books).unwrap();
+        assert_eq!(serialized, "\"books\"");
+    }
+
+    #[test]
+    fn library_type_books_strum_roundtrip() {
+        let parsed = LibraryType::from_str("books").unwrap();
+        assert_eq!(parsed, LibraryType::Books);
+        assert_eq!(LibraryType::Books.to_string(), "books");
+    }
 }

@@ -248,6 +248,33 @@ impl SqliteStore {
     }
 
 
-    // endregion:    --- Libraries
-    
+	    // endregion:    --- Libraries
+	    
+	    }
+
+#[cfg(test)]
+mod tests {
+    use rusqlite::Connection;
+
+    use crate::domain::library::LibraryType;
+
+    #[test]
+    fn library_type_books_sql_roundtrip() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute("CREATE TABLE libs (kind TEXT NOT NULL)", [])
+            .unwrap();
+
+        conn.execute("INSERT INTO libs (kind) VALUES (?1)", [&LibraryType::Books])
+            .unwrap();
+
+        let raw: String = conn
+            .query_row("SELECT kind FROM libs", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(raw, "books");
+
+        let parsed: LibraryType = conn
+            .query_row("SELECT kind FROM libs", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(parsed, LibraryType::Books);
     }
+}
