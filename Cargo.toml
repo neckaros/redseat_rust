@@ -51,14 +51,14 @@ bytes = "1.5.0"
 derive_more = "0.99.17"
 strum_macros = "0.26.1"
 tokio-util = { version = "0.7.11", features = ["compat", "io", "io-util"] }
-time = "0.3.34"
+time = "0.3.47"
 tokio-stream = { version = "0.1.14", features = ["io-util"] }
 async-stream = "0.3"
 async-trait = "0.1.77"
 mime_guess = "2.0.4"
 
 image = { version = "0.25.5", features = ["nasm", "rayon", "avif-native"] }
-webp = "0.3.0"
+webp = "0.3.1"
 kamadak-exif = "0.6.1"
 
 which = "6.0.0"
@@ -82,7 +82,7 @@ human_bytes = "0.4.3"
 regex = "1.10.4"
 unidecode = "0.3.0"
 tracing = "0.1.40"
-tracing-subscriber = "0.3.18"
+tracing-subscriber = "0.3.22"
 zip = "2.3.0"
 async_zip = { version = "0.0.17", features = ["full"] }
 trash = "5.0.0"
