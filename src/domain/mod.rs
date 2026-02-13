@@ -4,7 +4,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::RsResult;
 
-use self::book::Book;
+
+pub use rs_plugin_common_interfaces::domain::MediaElement;
+
+use rs_plugin_common_interfaces::domain::book::Book;
 use self::{episode::Episode, media::Media, movie::Movie, serie::Serie};
 
 /// Extension trait for RsIds to get all possible external IDs
@@ -74,95 +77,4 @@ pub enum ElementAction {
     Deleted,
     Added,
     Updated,
-}
-
-impl From<Serie> for RsIds {
-    fn from(value: Serie) -> Self {
-        RsIds {
-            redseat: Some(value.id),
-            trakt: value.trakt,
-            slug: value.slug,
-            tvdb: value.tvdb,
-            imdb: value.imdb,
-            tmdb: value.tmdb,
-            anilist_manga_id: value.anilist_manga_id,
-            mangadex_manga_uuid: value.mangadex_manga_uuid,
-            myanimelist_manga_id: value.myanimelist_manga_id,
-            openlibrary_work_id: value.openlibrary_work_id,
-            tvrage: None,
-            other_ids: None,
-            ..Default::default()
-        }
-    }
-}
-impl From<Episode> for RsIds {
-    fn from(value: Episode) -> Self {
-        RsIds {
-            redseat: Some(value.id()),
-            trakt: value.trakt,
-            slug: value.slug,
-            tvdb: value.tvdb,
-            imdb: value.imdb,
-            tmdb: value.tmdb,
-            tvrage: None,
-            other_ids: None,
-            ..Default::default()
-        }
-    }
-}
-
-impl From<Movie> for RsIds {
-    fn from(value: Movie) -> Self {
-        RsIds {
-            redseat: Some(value.id),
-            trakt: value.trakt,
-            slug: value.slug,
-            tvdb: None,
-            imdb: value.imdb,
-            tmdb: value.tmdb,
-            tvrage: None,
-            other_ids: None,
-            ..Default::default()
-        }
-    }
-}
-impl From<Person> for RsIds {
-    fn from(value: Person) -> Self {
-        RsIds {
-            redseat: Some(value.id),
-            trakt: value.trakt,
-            slug: value.slug,
-            tvdb: None,
-            imdb: value.imdb,
-            tmdb: value.tmdb,
-            tvrage: None,
-            other_ids: None,
-            ..Default::default()
-        }
-    }
-}
-impl From<Book> for RsIds {
-    fn from(value: Book) -> Self {
-        RsIds {
-            redseat: Some(value.id),
-            isbn13: value.isbn13,
-            openlibrary_edition_id: value.openlibrary_edition_id,
-            openlibrary_work_id: value.openlibrary_work_id,
-            google_books_volume_id: value.google_books_volume_id,
-            asin: value.asin,
-            volume: value.volume,
-            chapter: value.chapter,
-            ..Default::default()
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub enum MediaElement {
-    Media(Media),
-    Movie(Movie),
-    Episode(Episode),
-    Serie(Serie),
-    Book(Book),
 }

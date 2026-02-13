@@ -2,7 +2,7 @@ use nanoid::nanoid;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use strum_macros::EnumString;
-
+pub use rs_plugin_common_interfaces::domain::backup::BackupFile;
 use crate::{error::RsError, model::medias::MediaQuery, tools::{clock::now, scheduler::backup}};
 
 use super::{library, media::Media, ElementAction};
@@ -26,26 +26,6 @@ pub struct Backup {
 }
 
 
-
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct BackupFile {
-    pub backup: String,
-	pub library: Option<String>,
-    pub file: String,
-    pub id: String,
-    pub path: String,
-    pub hash: String,
-    pub sourcehash: String,
-    pub size: u64,
-    pub modified: i64,
-    pub added: i64,
-    pub iv: Option<String>,
-    pub thumb_size: Option<u64>,
-    pub info_size: Option<u64>,
-    pub error: Option<String>,
-}
 
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

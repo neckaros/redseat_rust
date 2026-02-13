@@ -4,20 +4,6 @@ use rusqlite::{params, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput
 use super::{Result, SqliteLibraryStore};
 use crate::{domain::{movie::{Movie, MovieForUpdate, MovieStatus}}, model::{movies::MovieQuery, store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType}, to_pipe_separated_optional}, Error}, tools::{array_tools::replace_add_remove_from_array, clock::now}};
 
-impl FromSql for MovieStatus {
-    fn column_result(value: ValueRef) -> FromSqlResult<Self> {
-        String::column_result(value).and_then(|as_string| {
-            MovieStatus::try_from(&*as_string).map_err(|_| FromSqlError::InvalidType)
-        })
-    }
-}
-
-impl ToSql for MovieStatus {
-    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
-        Ok(ToSqlOutput::from(self.to_string()))
-    }
-}
-
 
 
 impl SqliteLibraryStore {

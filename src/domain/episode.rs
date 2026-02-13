@@ -1,71 +1,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::tools::serialization_tools::rating_serializer;
-
+use crate::{plugins::medias::imdb::ImdbContext, tools::serialization_tools::rating_serializer};
+pub use rs_plugin_common_interfaces::domain::episode::Episode;
 use super::ElementAction;
 
-
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")] 
-pub struct Episode {
-    pub serie: String,
-    pub season: u32,
-    pub number: u32,
-
-    
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub abs: Option<u32>,
-
-	pub name: Option<String>,
-	pub overview: Option<String>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub alt: Option<Vec<String>>,
-
-    
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub airdate: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub duration: Option<u64>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub params: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub imdb: Option<String>,
-    pub slug: Option<String>,
-    pub tmdb: Option<u64>,
-    pub trakt: Option<u64>,
-    pub tvdb: Option<u64>,
-    pub otherids: Option<String>,
-    
-    #[serde(serialize_with = "rating_serializer")]
-    pub imdb_rating: Option<f32>,
-    pub imdb_votes: Option<u64>,
-    #[serde(serialize_with = "rating_serializer")]
-    pub trakt_rating: Option<f32>,
-    pub trakt_votes: Option<u64>,
-
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub watched: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub progress: Option<u64>,
-       
-    #[serde(default)]
-    pub modified: u64,
-    #[serde(default)]
-    pub added: u64,
-    
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub serie_name: Option<String>
-}
-
-impl Episode {
-    pub fn id(&self) -> String {
-        format!("{}x{}x{}", self.serie, self.season, self.number)
-    }
-}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct EpisodeWithShow {
@@ -86,4 +25,22 @@ pub struct EpisodeWithAction {
 pub struct EpisodesMessage {
     pub library: String,
     pub episodes: Vec<EpisodeWithAction>
+}
+
+#[async_trait::async_trait]
+pub trait EpisodeExt {
+    async fn fill_imdb_ratings(&mut self, imdb_context: &ImdbContext);
+}
+
+#[async_trait::async_trait]
+impl EpisodeExt for Episode {
+    async fn fill_imdb_ratings(&mut self, imdb_context: &ImdbContext) {
+        if let Some(imdb) = &self.imdb {
+            let rating = imdb_context.get_rating(imdb).await.unwrap_or(None);
+            if let Some(rating) = rating {
+                self.imdb_rating = Some(rating.0);
+                self.imdb_votes = Some(rating.1);
+            }
+        }
+    } 
 }

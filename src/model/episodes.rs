@@ -14,7 +14,7 @@ use tokio::{fs::File, io::{AsyncRead, AsyncWriteExt, BufReader}};
 use tokio_util::io::StreamReader;
 
 
-use crate::{domain::{deleted::RsDeleted, episode::{self, Episode, EpisodeWithAction, EpisodeWithShow, EpisodesMessage}, library::LibraryRole, people::{PeopleMessage, Person}, serie::{self, Serie, SeriesMessage}, ElementAction}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{error::SourcesError, AsyncReadPinBox, FileStreamResult, Source}}, tools::{array_tools::Dedup, clock::now, image_tools::{resize_image_reader, ImageSize}, log::log_info}};
+use crate::{domain::{ElementAction, deleted::RsDeleted, episode::{self, Episode, EpisodeExt, EpisodeWithAction, EpisodeWithShow, EpisodesMessage}, library::LibraryRole, people::{PeopleMessage, Person}, serie::{self, Serie, SeriesMessage}}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{AsyncReadPinBox, FileStreamResult, Source, error::SourcesError}}, tools::{array_tools::Dedup, clock::now, image_tools::{ImageSize, resize_image_reader}, log::log_info}};
 
 use super::{error::{Error, Result}, medias::{RsSort, RsSortOrder}, store::sql::SqlOrder, users::{ConnectedUser, HistoryQuery}, ModelController};
 use crate::routes::sse::SseEvent;
@@ -83,17 +83,6 @@ pub struct EpisodeForUpdate {
     pub trakt_votes: Option<u64>,
 }
 
-impl Episode {
-    pub async fn fill_imdb_ratings(&mut self, imdb_context: &ImdbContext) {
-        if let Some(imdb) = &self.imdb {
-            let rating = imdb_context.get_rating(imdb).await.unwrap_or(None);
-            if let Some(rating) = rating {
-                self.imdb_rating = Some(rating.0);
-                self.imdb_votes = Some(rating.1);
-            }
-        }
-    } 
-}
 
 impl ModelController {
 

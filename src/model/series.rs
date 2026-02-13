@@ -7,7 +7,7 @@ use async_recursion::async_recursion;
 use futures::TryStreamExt;
 use nanoid::nanoid;
 use rs_plugin_common_interfaces::{
-    domain::rs_ids::RsIds, lookup::RsLookupMovie, ExternalImage, ImageType,
+    ExternalImage, ImageType, domain::{rs_ids::RsIds, serie::SerieStatus}, lookup::RsLookupMovie
 };
 use rusqlite::{
     types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef},
@@ -23,23 +23,18 @@ use tokio_util::io::StreamReader;
 
 use crate::{
     domain::{
-        deleted::RsDeleted,
-        library::LibraryRole,
-        people::{PeopleMessage, Person},
-        serie::{Serie, SerieStatus, SerieWithAction, SeriesMessage},
-        ElementAction, MediaElement,
+        ElementAction, MediaElement, deleted::RsDeleted, episode::EpisodeExt, library::LibraryRole, people::{PeopleMessage, Person}, serie::{Serie, SerieExt, SerieWithAction, SeriesMessage}
     },
     error::RsResult,
     plugins::{
         medias::imdb::ImdbContext,
         sources::{
-            error::SourcesError, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult,
-            Source,
+            AsyncReadPinBox, FileStreamResult, Source, error::SourcesError, path_provider::PathProvider
         },
     },
     server::get_server_folder_path_array,
     tools::{
-        image_tools::{convert_image_reader, resize_image_reader, ImageSize},
+        image_tools::{ImageSize, convert_image_reader, resize_image_reader},
         log::log_info,
     },
 };
@@ -54,19 +49,6 @@ use super::{
 };
 use crate::routes::sse::SseEvent;
 
-impl FromSql for SerieStatus {
-    fn column_result(value: ValueRef) -> FromSqlResult<Self> {
-        String::column_result(value).and_then(|as_string| {
-            SerieStatus::try_from(&*as_string).map_err(|_| FromSqlError::InvalidType)
-        })
-    }
-}
-
-impl ToSql for SerieStatus {
-    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
-        Ok(ToSqlOutput::from(self.to_string()))
-    }
-}
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct SerieQuery {
@@ -159,17 +141,6 @@ impl ExternalSerieImages {
     }
 }
 
-impl Serie {
-    pub async fn fill_imdb_ratings(&mut self, imdb_context: &ImdbContext) {
-        if let Some(imdb) = &self.imdb {
-            let rating = imdb_context.get_rating(imdb).await.unwrap_or(None);
-            if let Some(rating) = rating {
-                self.imdb_rating = Some(rating.0);
-                self.imdb_votes = Some(rating.1);
-            }
-        }
-    }
-}
 
 impl ModelController {
     pub async fn get_series(

@@ -50,37 +50,6 @@ pub struct MediaBackup {
     pub hash: String,
 }
 
-impl FromSql for RsGpsPosition {
-    fn column_result(value: ValueRef) -> FromSqlResult<Self> {
-        String::column_result(value).and_then(|as_string| {
-            let mut splitted = as_string.split(",");
-            let lat = splitted
-                .next()
-                .and_then(|f| f.parse::<f64>().ok())
-                .ok_or(FromSqlError::InvalidType)?;
-            let long = splitted
-                .next()
-                .and_then(|f| f.parse::<f64>().ok())
-                .ok_or(FromSqlError::InvalidType)?;
-            Ok(RsGpsPosition { lat, long })
-        })
-    }
-}
-
-impl FromSql for FileType {
-    fn column_result(value: ValueRef) -> FromSqlResult<Self> {
-        String::column_result(value).and_then(|as_string| {
-            let r = FileType::try_from(&*as_string).map_err(|_| FromSqlError::InvalidType);
-            r
-        })
-    }
-}
-
-impl ToSql for FileType {
-    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
-        Ok(ToSqlOutput::from(self.to_string()))
-    }
-}
 
 impl RsSort {
     pub fn to_media_query(&self) -> String {

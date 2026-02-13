@@ -14,7 +14,7 @@ use tokio::{fs::File, io::{AsyncRead, AsyncWriteExt, BufReader}};
 use tokio_util::io::StreamReader;
 
 
-use crate::{domain::{deleted::RsDeleted, library::LibraryRole, movie::{Movie, MovieForUpdate, MovieWithAction, MoviesMessage}, people::{PeopleMessage, Person}, ElementAction, MediaElement}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{error::SourcesError, path_provider::PathProvider, AsyncReadPinBox, FileStreamResult, Source}}, server::get_server_folder_path_array, tools::{image_tools::{convert_image_reader, resize_image_reader, ImageSize}, log::log_info}};
+use crate::{domain::{ElementAction, MediaElement, deleted::RsDeleted, library::LibraryRole, movie::{Movie, MovieExt, MovieForUpdate, MovieWithAction, MoviesMessage}, people::{PeopleMessage, Person}}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{AsyncReadPinBox, FileStreamResult, Source, error::SourcesError, path_provider::PathProvider}}, server::get_server_folder_path_array, tools::{image_tools::{ImageSize, convert_image_reader, resize_image_reader}, log::log_info}};
 
 use super::{error::{Error, Result}, store::sql::SqlOrder, users::{ConnectedUser, HistoryQuery}, ModelController};
 use crate::routes::sse::SseEvent;
@@ -81,18 +81,6 @@ impl ExternalMovieImages {
             ImageType::Custom(_) => None,
         }
     }
-}
-
-impl Movie {
-    pub async fn fill_imdb_ratings(&mut self, imdb_context: &ImdbContext) {
-        if let Some(imdb) = &self.imdb {
-            let rating = imdb_context.get_rating(imdb).await.unwrap_or(None);
-            if let Some(rating) = rating {
-                self.imdb_rating = Some(rating.0);
-                self.imdb_votes = Some(rating.1);
-            }
-        }
-    } 
 }
 
 
