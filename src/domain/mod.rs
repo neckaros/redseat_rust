@@ -150,6 +150,8 @@ impl From<Book> for RsIds {
             openlibrary_work_id: value.openlibrary_work_id,
             google_books_volume_id: value.google_books_volume_id,
             asin: value.asin,
+            volume: value.volume,
+            chapter: value.chapter,
             ..Default::default()
         }
     }

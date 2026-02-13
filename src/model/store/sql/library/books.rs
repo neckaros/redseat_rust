@@ -119,27 +119,79 @@ impl SqliteLibraryStore {
         let row = self
             .connection
             .call(move |conn| {
-                let mut statement = conn.prepare(
+                let mut direct_statement = conn.prepare(
                     "SELECT
                     id, name, type, serie_ref, volume, chapter, year, airdate, overview, pages, params, lang, original,
                     isbn13, openlibrary_edition_id, openlibrary_work_id, google_books_volume_id, asin, modified, added
                     FROM books
                     WHERE id = ? or isbn13 = ? or openlibrary_edition_id = ? or openlibrary_work_id = ? or google_books_volume_id = ? or asin = ?",
                 )?;
-                let row = statement
+                let direct_row = direct_statement
                     .query_row(
                         params![
-                            ids.redseat.unwrap_or("zz".to_string()),
-                            ids.isbn13.unwrap_or("zz".to_string()),
-                            ids.openlibrary_edition_id.unwrap_or("zz".to_string()),
-                            ids.openlibrary_work_id.unwrap_or("zz".to_string()),
-                            ids.google_books_volume_id.unwrap_or("zz".to_string()),
-                            ids.asin.unwrap_or("zz".to_string()),
+                            ids.redseat.clone().unwrap_or("zz".to_string()),
+                            ids.isbn13.clone().unwrap_or("zz".to_string()),
+                            ids.openlibrary_edition_id.clone().unwrap_or("zz".to_string()),
+                            ids.openlibrary_work_id.clone().unwrap_or("zz".to_string()),
+                            ids.google_books_volume_id.clone().unwrap_or("zz".to_string()),
+                            ids.asin.clone().unwrap_or("zz".to_string()),
                         ],
                         Self::row_to_book,
                     )
                     .optional()?;
-                Ok(row)
+
+                let volume_matches = |book: &Book| {
+                    ids.volume.map(|v| Some(v) == book.volume).unwrap_or(true)
+                        && ids.chapter.map(|c| Some(c) == book.chapter).unwrap_or(true)
+                };
+
+                if let Some(book) = direct_row {
+                    if volume_matches(&book) {
+                        return Ok(Some(book));
+                    }
+                }
+
+                let has_series_identity = ids.openlibrary_work_id.is_some()
+                    || ids.anilist_manga_id.is_some()
+                    || ids.mangadex_manga_uuid.is_some()
+                    || ids.myanimelist_manga_id.is_some();
+                if !has_series_identity {
+                    return Ok(None);
+                }
+
+                let mut by_series_statement = conn.prepare(
+                    "SELECT
+                    b.id, b.name, b.type, b.serie_ref, b.volume, b.chapter, b.year, b.airdate, b.overview, b.pages, b.params, b.lang, b.original,
+                    b.isbn13, b.openlibrary_edition_id, b.openlibrary_work_id, b.google_books_volume_id, b.asin, b.modified, b.added
+                    FROM books b
+                    INNER JOIN series s ON s.id = b.serie_ref
+                    WHERE (
+                        (?1 IS NOT NULL AND s.openlibrary_work_id = ?1)
+                        OR (?2 IS NOT NULL AND s.anilist_manga_id = ?2)
+                        OR (?3 IS NOT NULL AND s.mangadex_manga_uuid = ?3)
+                        OR (?4 IS NOT NULL AND s.myanimelist_manga_id = ?4)
+                    )
+                    AND (?5 IS NULL OR b.volume = ?5)
+                    AND (?6 IS NULL OR b.chapter = ?6)
+                    ORDER BY b.added DESC
+                    LIMIT 1",
+                )?;
+
+                let by_series_row = by_series_statement
+                    .query_row(
+                        params![
+                            ids.openlibrary_work_id.clone(),
+                            ids.anilist_manga_id,
+                            ids.mangadex_manga_uuid.clone(),
+                            ids.myanimelist_manga_id,
+                            ids.volume,
+                            ids.chapter,
+                        ],
+                        Self::row_to_book,
+                    )
+                    .optional()?;
+
+                Ok(by_series_row)
             })
             .await?;
         Ok(row)
@@ -242,6 +294,7 @@ mod tests {
     use super::SqliteLibraryStore;
     use crate::{
         domain::book::{Book, BookForUpdate},
+        domain::serie::Serie,
         model::books::BookQuery,
     };
     use rs_plugin_common_interfaces::domain::rs_ids::RsIds;
@@ -369,5 +422,56 @@ mod tests {
             .await
             .unwrap();
         assert!(not_found.is_none());
+    }
+
+    #[tokio::test]
+    async fn books_external_id_lookup_with_series_and_volume_chapter() {
+        let connection = tokio_rusqlite::Connection::open_in_memory().await.unwrap();
+        let store = SqliteLibraryStore::new(connection).await.unwrap();
+
+        store
+            .add_serie(Serie {
+                id: "serie-manga".to_string(),
+                name: "Manga".to_string(),
+                anilist_manga_id: Some(4242),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        store
+            .add_book(Book {
+                id: "book-manga-v1".to_string(),
+                name: "Vol 1".to_string(),
+                serie_ref: Some("serie-manga".to_string()),
+                volume: Some(1.0),
+                chapter: Some(1.0),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        store
+            .add_book(Book {
+                id: "book-manga-v2".to_string(),
+                name: "Vol 2".to_string(),
+                serie_ref: Some("serie-manga".to_string()),
+                volume: Some(2.0),
+                chapter: Some(10.0),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let found = store
+            .get_book_by_external_id(RsIds {
+                anilist_manga_id: Some(4242),
+                volume: Some(2.0),
+                chapter: Some(10.0),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(found.map(|b| b.id), Some("book-manga-v2".to_string()));
     }
 }
