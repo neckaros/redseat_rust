@@ -46,6 +46,15 @@ Example: `/sse?libraries=lib1,lib2` will only receive events for those libraries
 | `unwatched` | Content unmarked as watched | User-specific (only watched owner) |
 | `request_processing` | Request processing status updates | Library read access |
 
+`library-status` is also used for async library deletion lifecycle updates. Current messages include:
+- `delete-started`
+- `delete-removing-tracked-media`
+- `delete-media-progress:{current}/{total}`
+- `delete-cleaning-local-cache`
+- `delete-cleaning-database-files`
+- `delete-completed`
+- `delete-failed: ...`
+
 ## TypeScript Client Examples
 
 ### Basic Connection

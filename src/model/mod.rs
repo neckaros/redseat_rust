@@ -53,7 +53,7 @@ use rs_plugin_common_interfaces::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     io::Read,
     path::PathBuf,
     pin::Pin,
@@ -134,6 +134,7 @@ pub struct ModelController {
     pub backup_processes: Arc<RwLock<Vec<BackupProcessStatus>>>,
 
     pub chache_libraries: Arc<RwLock<HashMap<String, ServerLibrary>>>,
+    pub deleting_libraries: Arc<RwLock<HashSet<String>>>,
 
     /// Broadcast channel for SSE events
     pub sse_tx: broadcast::Sender<SseEvent>,
@@ -158,6 +159,7 @@ impl ModelController {
             imdb: Arc::new(ImdbContext::new()),
             scheduler: Arc::new(scheduler),
             chache_libraries: Arc::new(RwLock::new(HashMap::new())),
+            deleting_libraries: Arc::new(RwLock::new(HashSet::new())),
             convert_queue: Arc::new(RwLock::new(VecDeque::new())),
             convert_current: Arc::new(RwLock::new(false)),
             convert_current_process: Arc::new(RwLock::new(None)),
