@@ -1,18 +1,26 @@
-use std::{convert::Infallible, time::Duration};
+use std::{convert::Infallible, io::Cursor, time::Duration};
 
 use axum::{
+    body::Body,
+    debug_handler,
     extract::{Path, Query, State},
+    response::{IntoResponse, Response},
     response::sse::{Event, KeepAlive, Sse},
+    extract::Multipart,
     routing::{delete, get, patch, post},
     Json, Router,
 };
-use futures::Stream;
+use futures::{Stream, TryStreamExt};
 use rs_plugin_common_interfaces::lookup::{RsLookupBook, RsLookupQuery};
+use rs_plugin_common_interfaces::ImageType;
 use serde_json::{json, Value};
+use tokio_util::io::{ReaderStream, StreamReader};
 
 use crate::{
     domain::book::{Book, BookForUpdate},
     model::{books::BookQuery, medias::MediaQuery, users::ConnectedUser, ModelController},
+    routes::{ImageRequestOptions, ImageUploadOptions},
+    Error,
     Result,
 };
 
@@ -26,6 +34,8 @@ pub fn routes(mc: ModelController) -> Router {
         .route("/:id", patch(handler_patch))
         .route("/:id", delete(handler_delete))
         .route("/:id/medias", get(handler_medias))
+        .route("/:id/image", get(handler_image))
+        .route("/:id/image", post(handler_post_image))
         .with_state(mc)
 }
 
@@ -128,4 +138,60 @@ async fn handler_medias(
         )
         .await?;
     Ok(Json(json!(medias)))
+}
+
+async fn handler_image(
+    Path((library_id, book_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Query(query): Query<ImageRequestOptions>,
+) -> Result<Response> {
+    if query.kind.as_ref().is_some_and(|kind| kind != &ImageType::Poster) {
+        return Err(Error::NotFound("Only poster image type is supported for books".to_string()));
+    }
+
+    let reader_response = mc
+        .book_image(
+            &library_id,
+            &book_id,
+            Some(ImageType::Poster),
+            query.size,
+            &user,
+        )
+        .await?;
+    let headers = reader_response
+        .hearders()
+        .map_err(|_| Error::GenericRedseatError)?;
+    let stream = ReaderStream::new(reader_response.stream);
+    let body = Body::from_stream(stream);
+
+    Ok((headers, body).into_response())
+}
+
+#[debug_handler]
+async fn handler_post_image(
+    Path((library_id, book_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Query(query): Query<ImageUploadOptions>,
+    mut multipart: Multipart,
+) -> Result<Json<Value>> {
+    if query.kind != ImageType::Poster {
+        return Err(Error::NotFound("Only poster image type is supported for books".to_string()));
+    }
+
+    while let Some(field) = multipart.next_field().await.unwrap() {
+        let mut reader = StreamReader::new(field.map_err(|multipart_error| {
+            std::io::Error::new(std::io::ErrorKind::Other, multipart_error)
+        }));
+
+        let mut data = Vec::new();
+        tokio::io::copy(&mut reader, &mut data).await?;
+        let reader = Box::pin(Cursor::new(data));
+
+        mc.update_book_image(&library_id, &book_id, &query.kind, reader, &user)
+            .await?;
+    }
+
+    Ok(Json(json!({"data": "ok"})))
 }

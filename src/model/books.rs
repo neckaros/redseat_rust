@@ -1,5 +1,7 @@
+use std::io::Cursor;
+
 use nanoid::nanoid;
-use rs_plugin_common_interfaces::domain::rs_ids::RsIds;
+use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, ImageType};
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
 
@@ -11,8 +13,9 @@ use crate::{
         ElementAction, MediaElement,
     },
     error::RsResult,
-    plugins::sources::error::SourcesError,
+    plugins::sources::{error::SourcesError, AsyncReadPinBox},
     routes::sse::SseEvent,
+    tools::image_tools::{convert_image_reader, ImageSize},
 };
 
 use super::{
@@ -263,5 +266,90 @@ impl ModelController {
 
     pub fn send_book(&self, message: BooksMessage) {
         self.broadcast_sse(SseEvent::Books(message));
+    }
+
+    pub async fn book_image(
+        &self,
+        library_id: &str,
+        book_id: &str,
+        kind: Option<ImageType>,
+        size: Option<ImageSize>,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<crate::plugins::sources::FileStreamResult<AsyncReadPinBox>> {
+        let target_kind = kind.unwrap_or(ImageType::Poster);
+        if target_kind != ImageType::Poster {
+            return Err(
+                Error::NotFound("Only poster image type is supported for books".to_string())
+                    .into(),
+            );
+        }
+
+        let resolved_book_id = if RsIds::is_id(book_id) {
+            self.get_book(library_id, book_id.to_string(), requesting_user)
+                .await?
+                .id
+        } else {
+            book_id.to_string()
+        };
+
+        self.library_image(
+            library_id,
+            ".books",
+            &resolved_book_id,
+            Some(ImageType::Poster),
+            size,
+            requesting_user,
+        )
+        .await
+    }
+
+    pub async fn update_book_image(
+        &self,
+        library_id: &str,
+        book_id: &str,
+        kind: &ImageType,
+        reader: AsyncReadPinBox,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<()> {
+        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        if *kind != ImageType::Poster {
+            return Err(
+                Error::NotFound("Only poster image type is supported for books".to_string())
+                    .into(),
+            );
+        }
+        if RsIds::is_id(book_id) {
+            return Err(
+                Error::InvalidIdForAction("udpate book image".to_string(), book_id.to_string())
+                    .into(),
+            );
+        }
+
+        let converted = convert_image_reader(reader, image::ImageFormat::Avif, Some(60), false)
+            .await?;
+        let converted_reader = Cursor::new(converted);
+
+        self.update_library_image(
+            library_id,
+            ".books",
+            book_id,
+            &Some(ImageType::Poster),
+            &None,
+            converted_reader,
+            requesting_user,
+        )
+        .await?;
+
+        let book = self
+            .get_book(library_id, book_id.to_string(), requesting_user)
+            .await?;
+        self.send_book(BooksMessage {
+            library: library_id.to_string(),
+            books: vec![BookWithAction {
+                action: ElementAction::Updated,
+                book,
+            }],
+        });
+        Ok(())
     }
 }
