@@ -7,7 +7,10 @@ use async_recursion::async_recursion;
 use futures::TryStreamExt;
 use nanoid::nanoid;
 use rs_plugin_common_interfaces::{
-    ExternalImage, ImageType, domain::{rs_ids::RsIds, serie::SerieStatus}, lookup::RsLookupMovie
+    ExternalImage,
+    ImageType,
+    domain::{rs_ids::RsIds, serie::SerieStatus},
+    lookup::{RsLookupMetadataResult, RsLookupMovie, RsLookupQuery, RsLookupSerie},
 };
 use rusqlite::{
     types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef},
@@ -232,7 +235,26 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> RsResult<Vec<Serie>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
-        let searched = self.trakt.search_show(&query).await?;
+        let mut searched = self.trakt.search_show(&query).await?;
+
+        let lookup_query = RsLookupQuery::Serie(RsLookupSerie {
+            name: query.name,
+            ids: query.ids,
+        });
+        let plugin_results = self
+            .exec_lookup_metadata(
+                lookup_query,
+                Some(library_id.to_string()),
+                requesting_user,
+                None,
+            )
+            .await?;
+
+        searched.extend(plugin_results.into_iter().filter_map(|result| match result.metadata {
+            RsLookupMetadataResult::Serie(serie) => Some(serie),
+            _ => None,
+        }));
+
         Ok(searched)
     }
 
