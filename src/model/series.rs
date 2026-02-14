@@ -26,7 +26,13 @@ use tokio_util::io::StreamReader;
 
 use crate::{
     domain::{
-        ElementAction, MediaElement, deleted::RsDeleted, episode::EpisodeExt, library::LibraryRole, people::{PeopleMessage, Person}, serie::{Serie, SerieExt, SerieWithAction, SeriesMessage}
+        ElementAction,
+        MediaElement,
+        deleted::RsDeleted,
+        episode::EpisodeExt,
+        library::{LibraryRole, LibraryType},
+        people::{PeopleMessage, Person},
+        serie::{Serie, SerieExt, SerieWithAction, SeriesMessage},
     },
     error::RsResult,
     plugins::{
@@ -235,7 +241,20 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> RsResult<Vec<Serie>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
-        let mut searched = self.trakt.search_show(&query).await?;
+        let mut searched = Vec::new();
+
+        let is_books_library = if let Some(library) = self.cache_get_library(library_id).await {
+            library.kind == LibraryType::Books
+        } else {
+            self.get_internal_library(library_id)
+                .await?
+                .map(|library| library.kind == LibraryType::Books)
+                .unwrap_or(false)
+        };
+
+        if !is_books_library {
+            searched = self.trakt.search_show(&query).await?;
+        }
 
         let lookup_query = RsLookupQuery::Serie(RsLookupSerie {
             name: query.name,
