@@ -110,6 +110,32 @@ impl ModelController {
                 self.fill_movie_watched(&mut movie, requesting_user, Some(library_id.to_string())).await?;
                 Ok(movie)
             } else {
+                // Try plugin lookup first
+                let lookup_query = RsLookupQuery::Movie(RsLookupMovie {
+                    name: String::new(),
+                    ids: Some(id.clone()),
+                });
+                let plugin_results = self
+                    .exec_lookup_metadata_grouped(
+                        lookup_query,
+                        Some(library_id.to_string()),
+                        requesting_user,
+                        None,
+                    )
+                    .await?;
+                let plugin_movie = plugin_results
+                    .into_values()
+                    .flatten()
+                    .find_map(|result| match result.metadata {
+                        RsLookupMetadataResult::Movie(movie) => Some(movie),
+                        _ => None,
+                    });
+                if let Some(mut movie) = plugin_movie {
+                    self.fill_movie_watched(&mut movie, requesting_user, Some(library_id.to_string())).await?;
+                    return Ok(movie);
+                }
+
+                // Fallback to Trakt
                 let mut trakt_movie = self.trakt.get_movie(&id).await?;
                 self.fill_movie_watched(&mut trakt_movie, requesting_user, Some(library_id.to_string())).await?;
                 Ok(trakt_movie)

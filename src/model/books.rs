@@ -1,7 +1,7 @@
 use std::io::Cursor;
 
 use nanoid::nanoid;
-use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, ImageType};
+use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, lookup::{RsLookupBook, RsLookupMetadataResult, RsLookupQuery}, ImageType};
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
 
@@ -85,14 +85,39 @@ impl ModelController {
                     "get_book".to_string(),
                 )
             })?;
-            store.get_book_by_external_id(ids.clone()).await?.ok_or(
-                SourcesError::UnableToFindMovie(
-                    library_id.to_string(),
-                    format!("{:?}", ids),
-                    "get_book".to_string(),
+            if let Some(book) = store.get_book_by_external_id(ids.clone()).await? {
+                Ok(book)
+            } else {
+                // Try plugin lookup first
+                let lookup_query = RsLookupQuery::Book(RsLookupBook {
+                    title: String::new(),
+                    author: String::new(),
+                    ids: Some(ids.clone()),
+                });
+                let plugin_results = self
+                    .exec_lookup_metadata_grouped(
+                        lookup_query,
+                        Some(library_id.to_string()),
+                        requesting_user,
+                        None,
+                    )
+                    .await?;
+                let plugin_book = plugin_results
+                    .into_values()
+                    .flatten()
+                    .find_map(|result| match result.metadata {
+                        RsLookupMetadataResult::Book(book) => Some(book),
+                        _ => None,
+                    });
+                plugin_book.ok_or(
+                    SourcesError::UnableToFindMovie(
+                        library_id.to_string(),
+                        format!("{:?}", ids),
+                        "get_book".to_string(),
+                    )
+                    .into(),
                 )
-                .into(),
-            )
+            }
         } else {
             store.get_book(&book_id).await?.ok_or(
                 SourcesError::UnableToFindMovie(

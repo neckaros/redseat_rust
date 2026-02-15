@@ -186,6 +186,31 @@ impl ModelController {
             if let Some(serie) = serie {
                 Ok(Some(serie))
             } else {
+                // Try plugin lookup first
+                let lookup_query = RsLookupQuery::Serie(RsLookupSerie {
+                    name: String::new(),
+                    ids: Some(id.clone()),
+                });
+                let plugin_results = self
+                    .exec_lookup_metadata_grouped(
+                        lookup_query,
+                        Some(library_id.to_string()),
+                        requesting_user,
+                        None,
+                    )
+                    .await?;
+                let plugin_serie = plugin_results
+                    .into_values()
+                    .flatten()
+                    .find_map(|result| match result.metadata {
+                        RsLookupMetadataResult::Serie(serie) => Some(serie),
+                        _ => None,
+                    });
+                if let Some(serie) = plugin_serie {
+                    return Ok(Some(serie));
+                }
+
+                // Fallback to Trakt
                 let mut trakt_show = self.trakt.get_serie(&id).await.map_err(|_| {
                     SourcesError::UnableToFindSerie(
                         library_id.to_string(),
