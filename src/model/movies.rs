@@ -85,6 +85,17 @@ impl ExternalMovieImages {
 
 
 impl ModelController {
+    pub(crate) fn select_external_image_url(images: Vec<ExternalImage>, kind: &ImageType) -> Option<String> {
+        let first_kind_match = images
+            .iter()
+            .find(|image| image.kind.as_ref() == Some(kind))
+            .map(|image| image.url.clone());
+        if first_kind_match.is_some() {
+            first_kind_match
+        } else {
+            images.into_iter().next().map(|image| image.url)
+        }
+    }
 
 	pub async fn get_movies(&self, library_id: &str, query: MovieQuery, requesting_user: &ConnectedUser) -> RsResult<Vec<Movie>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
@@ -422,14 +433,29 @@ impl ModelController {
             } else {
 
                 let local_provider = self.library_source_for_library(library_id).await?;
+                let mut lookup_name = String::new();
                 if movie_ids.tmdb.is_none() {
                     let movie = self.trakt.get_movie(&movie_ids).await?;
+                    lookup_name = movie.name.clone();
                     movie_ids = movie.into();
                 }
                 let image_path = format!("cache/movie-{}-{}.avif", movie_id.replace(':', "-"), kind);
 
                 if !local_provider.exists(&image_path).await {
-                    let images = self.get_movie_image_url(&movie_ids, &kind, &None).await?.ok_or(crate::Error::NotFound(format!("Unable to get movie image url: {:?}",movie_ids)))?;
+                    let lookup_query = RsLookupMovie {
+                        name: lookup_name,
+                        ids: Some(movie_ids.clone()),
+                    };
+                    let images = self
+                        .get_movie_image_url(
+                            lookup_query,
+                            Some(library_id.to_string()),
+                            &kind,
+                            &None,
+                            requesting_user,
+                        )
+                        .await?
+                        .ok_or(crate::Error::NotFound(format!("Unable to get movie image url: {:?}",movie_ids)))?;
                     let (_, mut writer) = local_provider.get_file_write_stream(&image_path).await?;
                     let image_reader = reqwest::get(images).await?;
                     let stream = image_reader.bytes_stream();
@@ -482,29 +508,58 @@ impl ModelController {
     pub async fn refresh_movie_image(&self, library_id: &str, movie_id: &str, kind: &ImageType, requesting_user: &ConnectedUser) -> RsResult<()> {
         let movie = self.get_movie(library_id, movie_id.to_string(), requesting_user).await?;
         let ids: RsIds = movie.clone().into();
-        let reader = self.download_movie_image(&ids, kind, &movie.lang).await?;
+        let lookup_query = RsLookupMovie {
+            name: movie.name.clone(),
+            ids: Some(ids.clone()),
+        };
+        let reader = self
+            .download_movie_image(
+                lookup_query,
+                Some(library_id.to_string()),
+                kind,
+                &movie.lang,
+                requesting_user,
+            )
+            .await?;
         self.update_movie_image(library_id, movie_id, kind, reader, &ConnectedUser::ServerAdmin).await?;
         Ok(())
 	}
 
-    pub async fn get_movie_image_url(&self, ids: &RsIds, kind: &ImageType, lang: &Option<String>) -> RsResult<Option<String>> {
-        println!("Movie image ids {:?}", ids);
-        let images = if kind == &ImageType::Card {
-            None
-        } else { 
-            self.tmdb.movie_image(ids.clone(), lang).await?.into_kind(kind.clone())
-        };
-        if images.is_none() {
-            let images = self.fanart.movie_image(ids.clone()).await?.into_kind(kind.clone());
-            Ok(images)
+    pub async fn get_movie_image_url(&self, query: RsLookupMovie, library_id: Option<String>, kind: &ImageType, lang: &Option<String>, requesting_user: &ConnectedUser) -> RsResult<Option<String>> {
+        if let Some(url) = Self::select_external_image_url(
+            self.get_movie_images(query.clone(), library_id, requesting_user).await?,
+            kind,
+        ) {
+            return Ok(Some(url));
+        }
+
+        if let Some(ids) = query.ids {
+            println!("Movie image ids {:?}", ids);
+            let images = if kind == &ImageType::Card {
+                None
+            } else {
+                self.tmdb.movie_image(ids.clone(), lang).await?.into_kind(kind.clone())
+            };
+            if images.is_none() {
+                let images = self.fanart.movie_image(ids.clone()).await?.into_kind(kind.clone());
+                Ok(images)
+            } else {
+                Ok(images)
+            }
         } else {
-            Ok(images)
+            Ok(None)
         }
     }
 
 
-    pub async fn download_movie_image(&self, ids: &RsIds, kind: &ImageType, lang: &Option<String>) -> crate::Result<AsyncReadPinBox> {
-        let images = self.get_movie_image_url(ids, kind, lang).await?.ok_or(crate::Error::NotFound(format!("Unable to download movie image url: {:?} kind: {:?}",ids, kind)))?;
+    pub async fn download_movie_image(&self, query: RsLookupMovie, library_id: Option<String>, kind: &ImageType, lang: &Option<String>, requesting_user: &ConnectedUser) -> crate::Result<AsyncReadPinBox> {
+        let images = self
+            .get_movie_image_url(query.clone(), library_id, kind, lang, requesting_user)
+            .await?
+            .ok_or(crate::Error::NotFound(format!(
+                "Unable to download movie image url: {:?} kind: {:?}",
+                query.ids, kind
+            )))?;
         let image_reader = reqwest::get(images).await?;
         let stream = image_reader.bytes_stream();
         let body_with_io_error = stream.map_err(|err| io::Error::new(io::ErrorKind::Other, err));

@@ -686,17 +686,29 @@ impl ModelController {
                 Ok(image)
             } else {
                 let local_provider = self.library_source_for_library(library_id).await?;
+                let mut lookup_name = String::new();
 
                 if serie_ids.tmdb.is_none() {
                     let serie = self.trakt.get_serie(&serie_ids).await?;
+                    lookup_name = serie.name.clone();
                     serie_ids = serie.into();
                 }
                 let image_path =
                     format!("cache/serie-{}-{}.avif", serie_id.replace(':', "-"), kind);
 
                 if !local_provider.exists(&image_path).await {
+                    let lookup_query = RsLookupSerie {
+                        name: lookup_name,
+                        ids: Some(serie_ids.clone()),
+                    };
                     let images = self
-                        .get_serie_image_url(&serie_ids, &kind, &None)
+                        .get_serie_image_url(
+                            lookup_query,
+                            Some(library_id.to_string()),
+                            &kind,
+                            &None,
+                            requesting_user,
+                        )
                         .await?
                         .ok_or(crate::Error::NotFound(format!(
                             "Unable to get series image url: {:?} kind {:?}",
@@ -777,8 +789,21 @@ impl ModelController {
                 serie_id.to_string(),
                 "refresh_serie_image".to_string(),
             ))?;
+        let serie_name = serie.name.clone();
         let ids: RsIds = serie.into();
-        let reader = self.download_serie_image(&ids, kind, &None).await?;
+        let lookup_query = RsLookupSerie {
+            name: serie_name,
+            ids: Some(ids.clone()),
+        };
+        let reader = self
+            .download_serie_image(
+                lookup_query,
+                Some(library_id.to_string()),
+                kind,
+                &None,
+                requesting_user,
+            )
+            .await?;
         self.update_serie_image(
             library_id,
             serie_id,
@@ -792,27 +817,40 @@ impl ModelController {
 
     pub async fn get_serie_image_url(
         &self,
-        ids: &RsIds,
+        query: RsLookupSerie,
+        library_id: Option<String>,
         kind: &ImageType,
         lang: &Option<String>,
+        requesting_user: &ConnectedUser,
     ) -> RsResult<Option<String>> {
-        let images = if kind == &ImageType::Card {
-            None
+        if let Some(url) = Self::select_external_image_url(
+            self.get_serie_images(query.clone(), library_id, requesting_user).await?,
+            kind,
+        ) {
+            return Ok(Some(url));
+        }
+
+        if let Some(ids) = query.ids {
+            let images = if kind == &ImageType::Card {
+                None
+            } else {
+                self.tmdb
+                    .serie_image(ids.clone(), lang)
+                    .await?
+                    .into_kind(kind.clone())
+            };
+            if images.is_none() {
+                let images = self
+                    .fanart
+                    .serie_image(ids.clone())
+                    .await?
+                    .into_kind(kind.clone());
+                Ok(images)
+            } else {
+                Ok(images)
+            }
         } else {
-            self.tmdb
-                .serie_image(ids.clone(), lang)
-                .await?
-                .into_kind(kind.clone())
-        };
-        if images.is_none() {
-            let images = self
-                .fanart
-                .serie_image(ids.clone())
-                .await?
-                .into_kind(kind.clone());
-            Ok(images)
-        } else {
-            Ok(images)
+            Ok(None)
         }
     }
 
@@ -843,16 +881,18 @@ impl ModelController {
 
     pub async fn download_serie_image(
         &self,
-        ids: &RsIds,
+        query: RsLookupSerie,
+        library_id: Option<String>,
         kind: &ImageType,
         lang: &Option<String>,
+        requesting_user: &ConnectedUser,
     ) -> crate::Result<AsyncReadPinBox> {
         let images =
-            self.get_serie_image_url(ids, kind, lang)
+            self.get_serie_image_url(query.clone(), library_id, kind, lang, requesting_user)
                 .await?
                 .ok_or(crate::Error::NotFound(format!(
                     "Unable to get series image url: {:?} kind {:?}",
-                    ids, kind
+                    query.ids, kind
                 )))?;
         let image_reader = reqwest::get(images).await?;
         let stream = image_reader.bytes_stream();
