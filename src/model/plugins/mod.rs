@@ -26,21 +26,6 @@ pub struct PluginQuery {
 
 
 impl ModelController {
-    fn flatten_lookup_metadata_images(results: Vec<RsLookupMetadataResultWithImages>) -> Vec<ExternalImage> {
-        let mut images = Vec::new();
-        for mut result in results {
-            images.append(&mut result.images);
-        }
-        images
-    }
-
-    fn flatten_lookup_metadata_images_grouped(results: HashMap<String, Vec<RsLookupMetadataResultWithImages>>) -> HashMap<String, Vec<ExternalImage>> {
-        results
-            .into_iter()
-            .map(|(key, value)| (key, Self::flatten_lookup_metadata_images(value)))
-            .collect()
-    }
-
 	pub async fn get_all_plugins(&self, query: PluginQuery, requesting_user: &ConnectedUser) -> Result<Vec<Plugin>> {
         requesting_user.check_role(&UserRole::Admin)?;
 		let mut installed_plugins = self.store.get_plugins(query).await?;
@@ -258,8 +243,7 @@ impl ModelController {
         }
         let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::LookupMetadata), ..Default::default() }).await?.collect();
 
-        let results = self.plugin_manager.lookup_metadata(query, plugins, target).await?;
-        Ok(Self::flatten_lookup_metadata_images(results))
+        self.plugin_manager.lookup_images(query, plugins, target).await
     }
 
     pub async fn exec_lookup_metadata_grouped(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<HashMap<String, Vec<RsLookupMetadataResultWithImages>>> {
@@ -281,8 +265,7 @@ impl ModelController {
         }
         let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::LookupMetadata), ..Default::default() }).await?.collect();
 
-        let results = self.plugin_manager.lookup_metadata_grouped(query, plugins, target).await?;
-        Ok(Self::flatten_lookup_metadata_images_grouped(results))
+        self.plugin_manager.lookup_images_grouped(query, plugins, target).await
     }
 
     pub async fn exec_lookup_metadata_stream(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<tokio::sync::mpsc::Receiver<Vec<RsLookupMetadataResultWithImages>>> {
@@ -304,17 +287,7 @@ impl ModelController {
         }
         let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::LookupMetadata), ..Default::default() }).await?.collect();
 
-        let mut metadata_rx = self.plugin_manager.lookup_metadata_stream(query, plugins, target).await?;
-        let (tx, rx) = tokio::sync::mpsc::channel(16);
-        tokio::spawn(async move {
-            while let Some(results) = metadata_rx.recv().await {
-                let images = Self::flatten_lookup_metadata_images(results);
-                if tx.send(images).await.is_err() {
-                    break;
-                }
-            }
-        });
-        Ok(rx)
+        self.plugin_manager.lookup_images_stream(query, plugins, target).await
     }
 
     pub async fn exec_lookup_metadata_stream_grouped(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<tokio::sync::mpsc::Receiver<(String, Vec<RsLookupMetadataResultWithImages>)>> {
@@ -336,17 +309,7 @@ impl ModelController {
         }
         let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::LookupMetadata), ..Default::default() }).await?.collect();
 
-        let mut metadata_rx = self.plugin_manager.lookup_metadata_stream_grouped(query, plugins, target).await?;
-        let (tx, rx) = tokio::sync::mpsc::channel(16);
-        tokio::spawn(async move {
-            while let Some((plugin_name, results)) = metadata_rx.recv().await {
-                let images = Self::flatten_lookup_metadata_images(results);
-                if tx.send((plugin_name, images)).await.is_err() {
-                    break;
-                }
-            }
-        });
-        Ok(rx)
+        self.plugin_manager.lookup_images_stream_grouped(query, plugins, target).await
     }
 
     pub async fn exec_token_exchange(&self, plugin_id: &str, request: HashMap<String, String>, requesting_user: &ConnectedUser) -> RsResult<PluginCredential> {

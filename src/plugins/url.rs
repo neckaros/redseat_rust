@@ -4,7 +4,7 @@ use async_recursion::async_recursion;
 use extism::convert::Json;
 use futures::future::ok;
 use http::header::{CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE};
-use rs_plugin_common_interfaces::{lookup::{RsLookupMetadataResultWithImages, RsLookupQuery, RsLookupSourceResult, RsLookupWrapper}, request::{RsProcessingActionRequest, RsProcessingProgress, RsRequest, RsRequestAddResponse, RsRequestPluginRequest, RsRequestStatus}, url::RsLink, PluginCredential, PluginType};
+use rs_plugin_common_interfaces::{lookup::{RsLookupMetadataResultWithImages, RsLookupQuery, RsLookupSourceResult, RsLookupWrapper}, request::{RsProcessingActionRequest, RsProcessingProgress, RsRequest, RsRequestAddResponse, RsRequestPluginRequest, RsRequestStatus}, url::RsLink, ExternalImage, PluginCredential, PluginType};
 
 use crate::{Error, domain::{plugin::PluginWithCredential, progress::RsProgressCallback}, error::RsResult, plugins::sources::{AsyncReadPinBox, FileStreamResult}, tools::{array_tools::AddOrSetArray, file_tools::{filename_from_path, get_mime_from_filename}, http_tools::{extract_header, guess_filename, parse_content_disposition}, log::{self, log_error, log_info}, video_tools::ytdl::YydlContext}};
 
@@ -18,6 +18,20 @@ pub struct PluginTarget {
 }
 
 impl PluginManager {
+    fn flatten_lookup_metadata_images(results: Vec<RsLookupMetadataResultWithImages>) -> Vec<ExternalImage> {
+        let mut images = Vec::new();
+        for mut result in results {
+            images.append(&mut result.images);
+        }
+        images
+    }
+
+    fn flatten_lookup_metadata_images_grouped(results: HashMap<String, Vec<RsLookupMetadataResultWithImages>>) -> HashMap<String, Vec<ExternalImage>> {
+        results
+            .into_iter()
+            .map(|(key, value)| (key, Self::flatten_lookup_metadata_images(value)))
+            .collect()
+    }
 
     /// Filter plugins based on target specification
     /// Priority: target.plugin_id > target.plugin_name > request.plugin_id > request.plugin_name > all plugins
@@ -459,6 +473,44 @@ impl PluginManager {
                     if tx.send(res).await.is_err() {
                         break;
                     }
+                }
+            }
+        });
+        Ok(rx)
+    }
+
+    pub async fn lookup_images(&self, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<Vec<ExternalImage>> {
+        let results = self.lookup_metadata(query, plugins, target).await?;
+        Ok(Self::flatten_lookup_metadata_images(results))
+    }
+
+    pub async fn lookup_images_grouped(&self, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<HashMap<String, Vec<ExternalImage>>> {
+        let results = self.lookup_metadata_grouped(query, plugins, target).await?;
+        Ok(Self::flatten_lookup_metadata_images_grouped(results))
+    }
+
+    pub async fn lookup_images_stream(self: &std::sync::Arc<Self>, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<tokio::sync::mpsc::Receiver<Vec<ExternalImage>>> {
+        let mut metadata_rx = self.lookup_metadata_stream(query, plugins, target).await?;
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        tokio::spawn(async move {
+            while let Some(results) = metadata_rx.recv().await {
+                let images = Self::flatten_lookup_metadata_images(results);
+                if tx.send(images).await.is_err() {
+                    break;
+                }
+            }
+        });
+        Ok(rx)
+    }
+
+    pub async fn lookup_images_stream_grouped(self: &std::sync::Arc<Self>, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<tokio::sync::mpsc::Receiver<(String, Vec<ExternalImage>)>> {
+        let mut metadata_rx = self.lookup_metadata_stream_grouped(query, plugins, target).await?;
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        tokio::spawn(async move {
+            while let Some((plugin_name, results)) = metadata_rx.recv().await {
+                let images = Self::flatten_lookup_metadata_images(results);
+                if tx.send((plugin_name, images)).await.is_err() {
+                    break;
                 }
             }
         });
