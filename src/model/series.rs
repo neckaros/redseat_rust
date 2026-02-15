@@ -816,11 +816,28 @@ impl ModelController {
         }
     }
 
-    pub async fn get_serie_images(&self, ids: &RsIds) -> RsResult<Vec<ExternalImage>> {
-        let mut images = self.tmdb.serie_images(ids.clone()).await?;
+    pub async fn get_serie_images(
+        &self,
+        query: RsLookupSerie,
+        library_id: Option<String>,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Vec<ExternalImage>> {
+        let lookup_query = RsLookupQuery::Serie(query.clone());
+        let mut images = match self.exec_lookup_images(lookup_query, library_id, requesting_user, None).await {
+            Ok(images) => images,
+            Err(error) => {
+                crate::tools::log::log_error(crate::tools::log::LogServiceType::Plugin, format!("serie image lookup failed: {:#}", error));
+                Vec::new()
+            }
+        };
 
-        let mut fanart = self.fanart.serie_images(ids.clone()).await?;
-        images.append(&mut fanart);
+        if let Some(ids) = query.ids {
+            let mut legacy = self.tmdb.serie_images(ids.clone()).await?;
+            let mut fanart = self.fanart.serie_images(ids).await?;
+            legacy.append(&mut fanart);
+            images.append(&mut legacy);
+        }
+
         Ok(images)
     }
 

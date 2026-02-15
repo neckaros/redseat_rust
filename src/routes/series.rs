@@ -4,7 +4,7 @@ use std::{convert::Infallible, io::Cursor, time::Duration};
 use crate::{domain::serie::Serie, error::RsError, model::{episodes::EpisodeQuery, series::{SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, plugins::sources::error::SourcesError, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{sse::{Event, KeepAlive, Sse}, IntoResponse, Response}, routing::{delete, get, patch, post, put}, Json, Router};
 use futures::{Stream, TryStreamExt};
-use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, lookup::RsLookupMovie, ExternalImage, ImageType};
+use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, lookup::{RsLookupMovie, RsLookupSerie}, ExternalImage, ImageType};
 use serde_json::{json, Value};
 use tokio::io::AsyncRead;
 use tokio_util::io::{ReaderStream, StreamReader};
@@ -161,10 +161,15 @@ async fn handler_image(Path((library_id, serie_id)): Path<(String, String)>, Sta
 	}
 }
 
-async fn handler_image_search(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ImageRequestOptions>) -> Result<Json<Value>> {
-	let serie = mc.get_serie(&library_id, serie_id.clone(), &user).await?.ok_or(SourcesError::UnableToFindSerie(library_id, serie_id, "handler_image_search".to_string()))?;
+async fn handler_image_search(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(_query): Query<ImageRequestOptions>) -> Result<Json<Value>> {
+	let serie = mc.get_serie(&library_id, serie_id.clone(), &user).await?.ok_or(SourcesError::UnableToFindSerie(library_id.clone(), serie_id, "handler_image_search".to_string()))?;
+	let name = serie.name.clone();
 	let ids: RsIds = serie.into();
-	let result = mc.get_serie_images(&ids).await?;
+	let lookup_query = RsLookupSerie {
+		name,
+		ids: Some(ids.clone()),
+	};
+	let result = mc.get_serie_images(lookup_query, Some(library_id), &user).await?;
 
 	Ok(Json(json!(result)))
 }

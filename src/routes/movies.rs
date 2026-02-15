@@ -253,10 +253,15 @@ async fn handler_image_fetch(Path((library_id, serie_id)): Path<(String, String)
 }
 
 
-async fn handler_image_search(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ImageRequestOptions>) -> Result<Json<Value>> {
-	let serie = mc.get_movie(&library_id, movie_id, &user).await?;
-	let ids: RsIds = serie.into();
-	let result = mc.get_movie_images(&ids).await?;
+async fn handler_image_search(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(_query): Query<ImageRequestOptions>) -> Result<Json<Value>> {
+	let movie = mc.get_movie(&library_id, movie_id, &user).await?;
+	let name = movie.name.clone();
+	let ids: RsIds = movie.into();
+	let lookup_query = RsLookupMovie {
+		name,
+		ids: Some(ids.clone()),
+	};
+	let result = mc.get_movie_images(lookup_query, Some(library_id), &user).await?;
 
 	Ok(Json(json!(result)))
 }
