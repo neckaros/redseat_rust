@@ -514,6 +514,86 @@ function MediaLibrary({ libraryId }: { libraryId: string }) {
 }
 ```
 
+## Search Stream Endpoints
+
+Search endpoints support SSE streaming so clients receive results progressively as each provider responds, instead of waiting for all providers to finish.
+
+### Endpoints
+
+| Endpoint | Query Parameters | Description |
+|----------|-----------------|-------------|
+| `GET /libraries/:libraryId/series/searchstream` | `name` (required), `ids` (optional) | Stream series search results |
+| `GET /libraries/:libraryId/movies/searchstream` | `name` (required), `ids` (optional) | Stream movie search results |
+| `GET /libraries/:libraryId/books/searchstream` | `name` (required), `ids` (optional) | Stream book search results |
+
+### How It Works
+
+Each SSE event has event type `results`. The data is a JSON object with a single key: the provider name, and the value is an array of results from that provider.
+
+Results arrive one provider at a time. For series and movies, Trakt results are sent first, followed by each plugin (e.g., Anilist). For books, only plugin results are sent (no Trakt).
+
+### Event Format
+
+Each `results` event contains one provider's results:
+
+```json
+{"trakt": [{"metadata": {"serie": { ... }}, "images": []}]}
+```
+
+Then a second event for the next provider:
+
+```json
+{"Anilist": [{"metadata": {"serie": { ... }}, "images": [{"url": "...", "kind": "poster"}]}]}
+```
+
+The `metadata` field is a tagged enum with one of: `serie`, `movie`, `book`, `episode`, `person`, `media`.
+
+### TypeScript Example
+
+```typescript
+const params = new URLSearchParams({ name: 'one piece' });
+const eventSource = new EventSource(
+  `/libraries/${libraryId}/series/searchstream?${params}`
+);
+
+// Accumulate results by provider
+const resultsByProvider: Record<string, SearchResult[]> = {};
+
+eventSource.addEventListener('results', (event) => {
+  const data = JSON.parse(event.data);
+  // data is e.g. { "trakt": [...] } or { "Anilist": [...] }
+  for (const [provider, results] of Object.entries(data)) {
+    resultsByProvider[provider] = results;
+  }
+  // Update UI with new results
+  renderResults(resultsByProvider);
+});
+
+eventSource.onerror = () => {
+  // Stream finished or errored — close the connection
+  eventSource.close();
+};
+```
+
+### Non-Streaming Alternative
+
+The same search is available as a regular JSON endpoint that returns all providers at once:
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /libraries/:libraryId/series/search` | Returns all results grouped by provider |
+| `GET /libraries/:libraryId/movies/search` | Returns all results grouped by provider |
+| `GET /libraries/:libraryId/books/search` | Returns all results grouped by provider |
+
+Response format:
+
+```json
+{
+  "trakt": [{"metadata": {"movie": { ... }}, "images": []}],
+  "Anilist": [{"metadata": {"movie": { ... }}, "images": [...]}]
+}
+```
+
 ## Keepalive
 
 The server sends a keepalive ping every 30 seconds to prevent connection timeouts. The ping is sent as a comment (`:ping`) which is ignored by the EventSource API.

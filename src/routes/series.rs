@@ -1,9 +1,9 @@
 
-use std::io::Cursor;
+use std::{convert::Infallible, io::Cursor, time::Duration};
 
 use crate::{domain::serie::Serie, error::RsError, model::{episodes::EpisodeQuery, series::{SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, plugins::sources::error::SourcesError, Error, Result};
-use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post, put}, Json, Router};
-use futures::TryStreamExt;
+use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{sse::{Event, KeepAlive, Sse}, IntoResponse, Response}, routing::{delete, get, patch, post, put}, Json, Router};
+use futures::{Stream, TryStreamExt};
 use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, lookup::RsLookupMovie, ExternalImage, ImageType};
 use serde_json::{json, Value};
 use tokio::io::AsyncRead;
@@ -21,6 +21,7 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/upcoming", get(handler_upcoming))
 		.route("/episodes", get(handler_list_episodes))
 		.route("/search", get(handler_seach_series))
+		.route("/searchstream", get(handler_search_series_stream))
 		.route("/", post(handler_post))
 		.route("/:id", get(handler_get))
 		.route("/:id", patch(handler_patch))
@@ -52,6 +53,24 @@ async fn handler_seach_series(Path(library_id): Path<String>, State(mc): State<M
 	let libraries = mc.search_serie(&library_id, query, &user).await?;
 	let body = Json(json!(libraries));
 	Ok(body)
+}
+
+async fn handler_search_series_stream(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<RsLookupMovie>) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>> {
+	let mut rx = mc.search_serie_stream(&library_id, query, &user).await?;
+
+	let stream = async_stream::stream! {
+		while let Some((name, batch)) = rx.recv().await {
+			if let Ok(data) = serde_json::to_string(&json!({ &name: batch })) {
+				yield Ok(Event::default().event("results").data(data));
+			}
+		}
+	};
+
+	Ok(Sse::new(stream).keep_alive(
+		KeepAlive::new()
+			.interval(Duration::from_secs(30))
+			.text("ping"),
+	))
 }
 
 async fn handler_trending(State(mc): State<ModelController>) -> Result<Json<Value>> {

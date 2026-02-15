@@ -6,7 +6,7 @@ use std::{collections::HashMap, io::{self, Cursor, Read}, pin::Pin};
 use async_recursion::async_recursion;
 use futures::TryStreamExt;
 use nanoid::nanoid;
-use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, lookup::RsLookupMovie, ExternalImage, ImageType, MediaType};
+use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, lookup::{RsLookupMetadataResult, RsLookupMetadataResultWithImages, RsLookupMovie, RsLookupQuery}, ExternalImage, ImageType, MediaType};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use strum_macros::EnumString;
@@ -122,11 +122,76 @@ impl ModelController {
 	}
 
     
-    pub async fn search_movie(&self, library_id: &str, query: RsLookupMovie, requesting_user: &ConnectedUser) -> RsResult<Vec<Movie>> {
+    pub async fn search_movie(&self, library_id: &str, query: RsLookupMovie, requesting_user: &ConnectedUser) -> RsResult<HashMap<String, Vec<RsLookupMetadataResultWithImages>>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
-        let searched = self.trakt.search_movie(&query).await?;
-		Ok(searched)
+        let mut results: HashMap<String, Vec<RsLookupMetadataResultWithImages>> = HashMap::new();
+
+        let trakt_results = self.trakt.search_movie(&query).await?;
+        let trakt_entries: Vec<RsLookupMetadataResultWithImages> = trakt_results.into_iter().map(|movie| RsLookupMetadataResultWithImages {
+            metadata: RsLookupMetadataResult::Movie(movie),
+            images: vec![],
+        }).collect();
+        if !trakt_entries.is_empty() {
+            results.insert("trakt".to_string(), trakt_entries);
+        }
+
+        let lookup_query = RsLookupQuery::Movie(query);
+        let plugin_results = self
+            .exec_lookup_metadata_grouped(
+                lookup_query,
+                Some(library_id.to_string()),
+                requesting_user,
+                None,
+            )
+            .await?;
+
+        for (name, entries) in plugin_results {
+            let filtered: Vec<_> = entries.into_iter().filter(|result| matches!(result.metadata, RsLookupMetadataResult::Movie(_))).collect();
+            if !filtered.is_empty() {
+                results.entry(name).or_default().extend(filtered);
+            }
+        }
+
+        Ok(results)
 	}
+
+    pub async fn search_movie_stream(&self, library_id: &str, query: RsLookupMovie, requesting_user: &ConnectedUser) -> RsResult<tokio::sync::mpsc::Receiver<(String, Vec<RsLookupMetadataResultWithImages>)>> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+
+        let trakt_results = self.trakt.search_movie(&query).await?;
+        let trakt_entries: Vec<RsLookupMetadataResultWithImages> = trakt_results.into_iter().map(|movie| RsLookupMetadataResultWithImages {
+            metadata: RsLookupMetadataResult::Movie(movie),
+            images: vec![],
+        }).collect();
+        if !trakt_entries.is_empty() {
+            let _ = tx.send(("trakt".to_string(), trakt_entries)).await;
+        }
+
+        let lookup_query = RsLookupQuery::Movie(query);
+        let mut plugin_rx = self
+            .exec_lookup_metadata_stream_grouped(
+                lookup_query,
+                Some(library_id.to_string()),
+                requesting_user,
+                None,
+            )
+            .await?;
+
+        tokio::spawn(async move {
+            while let Some((name, entries)) = plugin_rx.recv().await {
+                let filtered: Vec<_> = entries.into_iter().filter(|result| matches!(result.metadata, RsLookupMetadataResult::Movie(_))).collect();
+                if !filtered.is_empty() {
+                    if tx.send((name, filtered)).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+
+        Ok(rx)
+    }
 
     pub async fn fill_movie_watched(&self, movie: &mut Movie, requesting_user: &ConnectedUser, library_id: Option<String>) -> RsResult<()> {
         movie.fill_imdb_ratings(&self.imdb).await;

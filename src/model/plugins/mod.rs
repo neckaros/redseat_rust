@@ -236,6 +236,17 @@ impl ModelController {
         self.plugin_manager.lookup_metadata(query, plugins, target).await
     }
 
+    pub async fn exec_lookup_metadata_grouped(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<HashMap<String, Vec<RsLookupMetadataResultWithImages>>> {
+        if let Some(library_id) = library_id {
+            requesting_user.check_library_role(&library_id, crate::domain::library::LibraryRole::Read)?;
+        } else {
+            requesting_user.check_role(&UserRole::Admin)?;
+        }
+        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::LookupMetadata), ..Default::default() }).await?.collect();
+
+        self.plugin_manager.lookup_metadata_grouped(query, plugins, target).await
+    }
+
     pub async fn exec_lookup_metadata_stream(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<tokio::sync::mpsc::Receiver<Vec<RsLookupMetadataResultWithImages>>> {
         if let Some(library_id) = library_id {
             requesting_user.check_library_role(&library_id, crate::domain::library::LibraryRole::Read)?;
@@ -245,6 +256,17 @@ impl ModelController {
         let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::LookupMetadata), ..Default::default() }).await?.collect();
 
         self.plugin_manager.lookup_metadata_stream(query, plugins, target).await
+    }
+
+    pub async fn exec_lookup_metadata_stream_grouped(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<tokio::sync::mpsc::Receiver<(String, Vec<RsLookupMetadataResultWithImages>)>> {
+        if let Some(library_id) = library_id {
+            requesting_user.check_library_role(&library_id, crate::domain::library::LibraryRole::Read)?;
+        } else {
+            requesting_user.check_role(&UserRole::Admin)?;
+        }
+        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::LookupMetadata), ..Default::default() }).await?.collect();
+
+        self.plugin_manager.lookup_metadata_stream_grouped(query, plugins, target).await
     }
 
     pub async fn exec_token_exchange(&self, plugin_id: &str, request: HashMap<String, String>, requesting_user: &ConnectedUser) -> RsResult<PluginCredential> {

@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     io::{self, Cursor, Read},
     pin::Pin,
 };
@@ -10,7 +11,7 @@ use rs_plugin_common_interfaces::{
     ExternalImage,
     ImageType,
     domain::{rs_ids::RsIds, serie::SerieStatus},
-    lookup::{RsLookupMetadataResult, RsLookupMovie, RsLookupQuery, RsLookupSerie},
+    lookup::{RsLookupMetadataResult, RsLookupMetadataResultWithImages, RsLookupMovie, RsLookupQuery, RsLookupSerie},
 };
 use rusqlite::{
     types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef},
@@ -239,9 +240,9 @@ impl ModelController {
         library_id: &str,
         query: RsLookupMovie,
         requesting_user: &ConnectedUser,
-    ) -> RsResult<Vec<Serie>> {
+    ) -> RsResult<HashMap<String, Vec<RsLookupMetadataResultWithImages>>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
-        let mut searched = Vec::new();
+        let mut results: HashMap<String, Vec<RsLookupMetadataResultWithImages>> = HashMap::new();
 
         let is_books_library = if let Some(library) = self.cache_get_library(library_id).await {
             library.kind == LibraryType::Books
@@ -253,7 +254,14 @@ impl ModelController {
         };
 
         if !is_books_library {
-            searched = self.trakt.search_show(&query).await?;
+            let trakt_results = self.trakt.search_show(&query).await?;
+            let trakt_entries: Vec<RsLookupMetadataResultWithImages> = trakt_results.into_iter().map(|serie| RsLookupMetadataResultWithImages {
+                metadata: RsLookupMetadataResult::Serie(serie),
+                images: vec![],
+            }).collect();
+            if !trakt_entries.is_empty() {
+                results.insert("trakt".to_string(), trakt_entries);
+            }
         }
 
         let lookup_query = RsLookupQuery::Serie(RsLookupSerie {
@@ -261,7 +269,7 @@ impl ModelController {
             ids: query.ids,
         });
         let plugin_results = self
-            .exec_lookup_metadata(
+            .exec_lookup_metadata_grouped(
                 lookup_query,
                 Some(library_id.to_string()),
                 requesting_user,
@@ -269,12 +277,71 @@ impl ModelController {
             )
             .await?;
 
-        searched.extend(plugin_results.into_iter().filter_map(|result| match result.metadata {
-            RsLookupMetadataResult::Serie(serie) => Some(serie),
-            _ => None,
-        }));
+        for (name, entries) in plugin_results {
+            let filtered: Vec<_> = entries.into_iter().filter(|result| matches!(result.metadata, RsLookupMetadataResult::Serie(_))).collect();
+            if !filtered.is_empty() {
+                results.entry(name).or_default().extend(filtered);
+            }
+        }
 
-        Ok(searched)
+        Ok(results)
+    }
+
+    pub async fn search_serie_stream(
+        &self,
+        library_id: &str,
+        query: RsLookupMovie,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<tokio::sync::mpsc::Receiver<(String, Vec<RsLookupMetadataResultWithImages>)>> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+
+        let is_books_library = if let Some(library) = self.cache_get_library(library_id).await {
+            library.kind == LibraryType::Books
+        } else {
+            self.get_internal_library(library_id)
+                .await?
+                .map(|library| library.kind == LibraryType::Books)
+                .unwrap_or(false)
+        };
+
+        if !is_books_library {
+            let trakt_results = self.trakt.search_show(&query).await?;
+            let trakt_entries: Vec<RsLookupMetadataResultWithImages> = trakt_results.into_iter().map(|serie| RsLookupMetadataResultWithImages {
+                metadata: RsLookupMetadataResult::Serie(serie),
+                images: vec![],
+            }).collect();
+            if !trakt_entries.is_empty() {
+                let _ = tx.send(("trakt".to_string(), trakt_entries)).await;
+            }
+        }
+
+        let lookup_query = RsLookupQuery::Serie(RsLookupSerie {
+            name: query.name,
+            ids: query.ids,
+        });
+        let mut plugin_rx = self
+            .exec_lookup_metadata_stream_grouped(
+                lookup_query,
+                Some(library_id.to_string()),
+                requesting_user,
+                None,
+            )
+            .await?;
+
+        tokio::spawn(async move {
+            while let Some((name, entries)) = plugin_rx.recv().await {
+                let filtered: Vec<_> = entries.into_iter().filter(|result| matches!(result.metadata, RsLookupMetadataResult::Serie(_))).collect();
+                if !filtered.is_empty() {
+                    if tx.send((name, filtered)).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+
+        Ok(rx)
     }
 
     pub async fn update_serie(

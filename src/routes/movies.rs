@@ -1,9 +1,9 @@
 
-use std::io::Cursor;
+use std::{convert::Infallible, io::Cursor, time::Duration};
 
 use crate::{domain::{media::MediaForUpdate, movie::{Movie, MovieForUpdate}, view_progress::{ViewProgressForAdd, ViewProgressLigh}, watched::{WatchedForAdd, WatchedForDelete, WatchedLight}, RsIdsExt}, error::RsError, model::{episodes::EpisodeQuery, medias::MediaQuery, movies::{MovieQuery, RsMovieSort}, store::sql::SqlOrder, users::{ConnectedUser, HistoryQuery}, ModelController}, tools::clock::now, Error, Result};
-use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post, put}, Json, Router};
-use futures::TryStreamExt;
+use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{sse::{Event, KeepAlive, Sse}, IntoResponse, Response}, routing::{delete, get, patch, post, put}, Json, Router};
+use futures::{Stream, TryStreamExt};
 use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, lookup::{RsLookupMovie, RsLookupQuery}, request::RsGroupDownload, ExternalImage, ImageType, MediaType, RsRequest};
 use serde_json::{json, Value};
 use tokio::io::AsyncRead;
@@ -21,6 +21,7 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/upcoming", get(handler_upcoming))
 		.route("/", post(handler_post))
 		.route("/search", get(handler_seach_movies))
+		.route("/searchstream", get(handler_search_movies_stream))
 		.route("/:id", get(handler_get))
 		
 		.route("/:id/medias", get(handler_medias))
@@ -79,6 +80,24 @@ async fn handler_seach_movies(Path(library_id): Path<String>, State(mc): State<M
 	Ok(body)
 }
 
+
+async fn handler_search_movies_stream(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<RsLookupMovie>) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>> {
+	let mut rx = mc.search_movie_stream(&library_id, query, &user).await?;
+
+	let stream = async_stream::stream! {
+		while let Some((name, batch)) = rx.recv().await {
+			if let Ok(data) = serde_json::to_string(&json!({ &name: batch })) {
+				yield Ok(Event::default().event("results").data(data));
+			}
+		}
+	};
+
+	Ok(Sse::new(stream).keep_alive(
+		KeepAlive::new()
+			.interval(Duration::from_secs(30))
+			.text("ping"),
+	))
+}
 
 async fn handler_medias(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
 	let libraries = mc.get_medias(&library_id, MediaQuery { movie: Some(movie_id), ..Default::default() }, &user).await?;

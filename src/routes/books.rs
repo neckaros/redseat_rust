@@ -94,7 +94,7 @@ async fn handler_search_books(
     Query(query): Query<RsLookupBook>,
 ) -> Result<Json<Value>> {
     let lookup_query = RsLookupQuery::Book(query);
-    let results = mc.exec_lookup_metadata(lookup_query, Some(library_id), &user, None).await?;
+    let results = mc.exec_lookup_metadata_grouped(lookup_query, Some(library_id), &user, None).await?;
     Ok(Json(json!(results)))
 }
 
@@ -105,11 +105,11 @@ async fn handler_search_books_stream(
     Query(query): Query<RsLookupBook>,
 ) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>> {
     let lookup_query = RsLookupQuery::Book(query);
-    let mut rx = mc.exec_lookup_metadata_stream(lookup_query, Some(library_id), &user, None).await?;
+    let mut rx = mc.exec_lookup_metadata_stream_grouped(lookup_query, Some(library_id), &user, None).await?;
 
     let stream = async_stream::stream! {
-        while let Some(batch) = rx.recv().await {
-            if let Ok(data) = serde_json::to_string(&batch) {
+        while let Some((name, batch)) = rx.recv().await {
+            if let Ok(data) = serde_json::to_string(&json!({ &name: batch })) {
                 yield Ok(Event::default().event("results").data(data));
             }
         }
