@@ -154,23 +154,23 @@ impl ModelController {
 
 
     pub async fn exec_parse(&self, library_id: Option<String>, url: String, requesting_user: &ConnectedUser) -> RsResult<RsLink> {
-		if let Some(library_id) = library_id {
-            requesting_user.check_library_role(&library_id, crate::domain::library::LibraryRole::Read)?;
+		if let Some(library_id) = &library_id {
+            requesting_user.check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
         } else {
             requesting_user.check_role(&UserRole::Admin)?;
         }
-        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::UrlParser), ..Default::default() }).await?;
+        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::UrlParser), library: library_id, ..Default::default() }).await?;
 
         Ok(self.plugin_manager.parse(url.clone(), plugins).await.unwrap_or(RsLink { platform: "link".to_owned(), kind: Some(RsLinkType::Other), id: url, ..Default::default() }))
 	}
 
     pub async fn exec_expand(&self, library_id: Option<String>, link: RsLink, requesting_user: &ConnectedUser) -> RsResult<String> {
-		if let Some(library_id) = library_id {
-            requesting_user.check_library_role(&library_id, crate::domain::library::LibraryRole::Read)?;
+		if let Some(library_id) = &library_id {
+            requesting_user.check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
         } else {
             requesting_user.check_role(&UserRole::Admin)?;
         }
-        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::UrlParser), ..Default::default() }).await?;
+        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::UrlParser), library: library_id, ..Default::default() }).await?;
 
         Ok(self.plugin_manager.expand(link.clone(), plugins).await.ok_or(Error::NotFound(format!("Unable to expand link {:?}", link)))?)
 	}
@@ -179,13 +179,13 @@ impl ModelController {
 
     pub async fn exec_request(&self, request: RsRequest, library_id: Option<String>, savable: bool, progress: Option<Sender<RsProgress>>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<SourceRead> {
 
-        if let Some(library_id) = library_id {
-            requesting_user.check_request_role(&library_id, &request)?;
+        if let Some(library_id) = &library_id {
+            requesting_user.check_request_role(library_id, &request)?;
 
         } else {
             requesting_user.check_role(&UserRole::Admin)?;
         }
-        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::Request), ..Default::default() }).await?.collect();
+        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::Request), library: library_id, ..Default::default() }).await?.collect();
         self.plugin_manager.request(request, savable, plugins, progress, target).await
 
     }
@@ -199,24 +199,24 @@ impl ModelController {
 
     pub async fn exec_permanent(&self, request: RsRequest, library_id: Option<String>, progress: Option<Sender<RsProgress>>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<RsRequest> {
 
-        if let Some(library_id) = library_id {
-            requesting_user.check_library_role(&library_id, crate::domain::library::LibraryRole::Read)?;
+        if let Some(library_id) = &library_id {
+            requesting_user.check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
 
         } else {
             requesting_user.check_role(&UserRole::Admin)?;
         }
-        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::Request), ..Default::default() }).await?.collect();
+        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::Request), library: library_id, ..Default::default() }).await?.collect();
         self.plugin_manager.request_permanent(request, plugins, progress, target).await?.ok_or(crate::Error::NotFound("Unable to get permanent link".to_string()))
 
     }
 
     pub async fn exec_lookup(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<Vec<RsRequest>> {
-        if let Some(library_id) = library_id {
-            requesting_user.check_library_role(&library_id, crate::domain::library::LibraryRole::Read)?;
+        if let Some(library_id) = &library_id {
+            requesting_user.check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
         } else {
             requesting_user.check_role(&UserRole::Admin)?;
         }
-        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::Lookup), ..Default::default() }).await?.collect();
+        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::Lookup), library: library_id, ..Default::default() }).await?.collect();
 
         self.plugin_manager.lookup(query, plugins, target).await
 
@@ -225,89 +225,89 @@ impl ModelController {
 
 
     pub async fn exec_lookup_metadata(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<Vec<RsLookupMetadataResultWithImages>> {
-        if let Some(library_id) = library_id {
-            requesting_user.check_library_role(&library_id, crate::domain::library::LibraryRole::Read)?;
+        if let Some(library_id) = &library_id {
+            requesting_user.check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
         } else {
             requesting_user.check_role(&UserRole::Admin)?;
         }
-        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::LookupMetadata), ..Default::default() }).await?.collect();
+        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::LookupMetadata), library: library_id, ..Default::default() }).await?.collect();
 
         self.plugin_manager.lookup_metadata(query, plugins, target).await
     }
 
     pub async fn exec_lookup_images(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<Vec<ExternalImage>> {
-        if let Some(library_id) = library_id {
-            requesting_user.check_library_role(&library_id, crate::domain::library::LibraryRole::Read)?;
+        if let Some(library_id) = &library_id {
+            requesting_user.check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
         } else {
             requesting_user.check_role(&UserRole::Admin)?;
         }
-        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::LookupMetadata), ..Default::default() }).await?.collect();
+        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::LookupMetadata), library: library_id, ..Default::default() }).await?.collect();
 
         self.plugin_manager.lookup_images(query, plugins, target).await
     }
 
     pub async fn exec_lookup_metadata_grouped(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<HashMap<String, Vec<RsLookupMetadataResultWithImages>>> {
-        if let Some(library_id) = library_id {
-            requesting_user.check_library_role(&library_id, crate::domain::library::LibraryRole::Read)?;
+        if let Some(library_id) = &library_id {
+            requesting_user.check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
         } else {
             requesting_user.check_role(&UserRole::Admin)?;
         }
-        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::LookupMetadata), ..Default::default() }).await?.collect();
+        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::LookupMetadata), library: library_id, ..Default::default() }).await?.collect();
 
         self.plugin_manager.lookup_metadata_grouped(query, plugins, target).await
     }
 
     pub async fn exec_lookup_images_grouped(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<HashMap<String, Vec<ExternalImage>>> {
-        if let Some(library_id) = library_id {
-            requesting_user.check_library_role(&library_id, crate::domain::library::LibraryRole::Read)?;
+        if let Some(library_id) = &library_id {
+            requesting_user.check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
         } else {
             requesting_user.check_role(&UserRole::Admin)?;
         }
-        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::LookupMetadata), ..Default::default() }).await?.collect();
+        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::LookupMetadata), library: library_id, ..Default::default() }).await?.collect();
 
         self.plugin_manager.lookup_images_grouped(query, plugins, target).await
     }
 
     pub async fn exec_lookup_metadata_stream(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<tokio::sync::mpsc::Receiver<Vec<RsLookupMetadataResultWithImages>>> {
-        if let Some(library_id) = library_id {
-            requesting_user.check_library_role(&library_id, crate::domain::library::LibraryRole::Read)?;
+        if let Some(library_id) = &library_id {
+            requesting_user.check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
         } else {
             requesting_user.check_role(&UserRole::Admin)?;
         }
-        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::LookupMetadata), ..Default::default() }).await?.collect();
+        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::LookupMetadata), library: library_id, ..Default::default() }).await?.collect();
 
         self.plugin_manager.lookup_metadata_stream(query, plugins, target).await
     }
 
     pub async fn exec_lookup_images_stream(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<tokio::sync::mpsc::Receiver<Vec<ExternalImage>>> {
-        if let Some(library_id) = library_id {
-            requesting_user.check_library_role(&library_id, crate::domain::library::LibraryRole::Read)?;
+        if let Some(library_id) = &library_id {
+            requesting_user.check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
         } else {
             requesting_user.check_role(&UserRole::Admin)?;
         }
-        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::LookupMetadata), ..Default::default() }).await?.collect();
+        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::LookupMetadata), library: library_id, ..Default::default() }).await?.collect();
 
         self.plugin_manager.lookup_images_stream(query, plugins, target).await
     }
 
     pub async fn exec_lookup_metadata_stream_grouped(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<tokio::sync::mpsc::Receiver<(String, Vec<RsLookupMetadataResultWithImages>)>> {
-        if let Some(library_id) = library_id {
-            requesting_user.check_library_role(&library_id, crate::domain::library::LibraryRole::Read)?;
+        if let Some(library_id) = &library_id {
+            requesting_user.check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
         } else {
             requesting_user.check_role(&UserRole::Admin)?;
         }
-        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::LookupMetadata), ..Default::default() }).await?.collect();
+        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::LookupMetadata), library: library_id, ..Default::default() }).await?.collect();
 
         self.plugin_manager.lookup_metadata_stream_grouped(query, plugins, target).await
     }
 
     pub async fn exec_lookup_images_stream_grouped(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<tokio::sync::mpsc::Receiver<(String, Vec<ExternalImage>)>> {
-        if let Some(library_id) = library_id {
-            requesting_user.check_library_role(&library_id, crate::domain::library::LibraryRole::Read)?;
+        if let Some(library_id) = &library_id {
+            requesting_user.check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
         } else {
             requesting_user.check_role(&UserRole::Admin)?;
         }
-        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::LookupMetadata), ..Default::default() }).await?.collect();
+        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::LookupMetadata), library: library_id, ..Default::default() }).await?.collect();
 
         self.plugin_manager.lookup_images_stream_grouped(query, plugins, target).await
     }
@@ -391,7 +391,7 @@ impl ModelController {
     pub async fn exec_check_instant(&self, request: RsRequest, library_id: &str, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<bool> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let plugins = self.get_plugins_with_credential(PluginQuery {
-            kind: Some(PluginType::Request),
+            kind: Some(PluginType::Request), library: Some(library_id.to_string()),
             ..Default::default()
         }).await?.collect();
 
@@ -404,7 +404,7 @@ impl ModelController {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
 
         let plugins: Vec<PluginWithCredential> = self.get_plugins_with_credential(PluginQuery {
-            kind: Some(PluginType::Request),
+            kind: Some(PluginType::Request), library: Some(library_id.to_string()),
             ..Default::default()
         }).await?.collect();
 
