@@ -55,7 +55,7 @@ async fn handler_lookup_season(Path((library_id, serie_id, season)): Path<(Strin
 	let name = serie.name.clone();
 	let ids: RsIds = serie.into();
 	let query_episode = RsLookupEpisode {
-    serie: name,
+    name: Some(name),
     ids: Some(ids),
 	season,
 	number: None
@@ -105,7 +105,7 @@ async fn handler_lookup(Path((library_id, serie_id, season, number)): Path<(Stri
 	let name = serie.name.clone();
 	let ids: RsIds = serie.into();
 	let query_episode = RsLookupEpisode {
-    serie: name,
+    name: Some(name),
     ids: Some(ids),
     season: episode.season,
     number: Some(episode.number),

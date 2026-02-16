@@ -166,7 +166,7 @@ async fn handler_image_search(Path((library_id, serie_id)): Path<(String, String
 	let name = serie.name.clone();
 	let ids: RsIds = serie.into();
 	let lookup_query = RsLookupSerie {
-		name,
+		name: Some(name),
 		ids: Some(ids.clone()),
 	};
 	let result = mc.get_serie_images(lookup_query, Some(library_id), &user).await?;
@@ -179,11 +179,11 @@ async fn handler_image_search(Path((library_id, serie_id)): Path<(String, String
 
 
 async fn handler_image_fetch(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(externalImage): Json<ExternalImage>) -> Result<Json<Value>> {
-	let url = externalImage.url;
+	let request = externalImage.url;
 
 	let kind = externalImage.kind.ok_or(RsError::Error("Missing image type".to_string()))?;
 
-	let mut reader = mc.url_to_reader(&library_id, url, &user).await?;
+	let mut reader = mc.request_to_reader(&library_id, request, &user).await?;
 
 	mc.update_serie_image(&library_id, &serie_id, &kind, reader.stream, &user).await?;
 	

@@ -110,7 +110,7 @@ async fn handler_lookup(Path((library_id, movie_id)): Path<(String, String)>, St
 	let name = movie.name.clone();
 	let ids: RsIds = movie.into();
 	let query = RsLookupQuery::Movie(RsLookupMovie {
-		name,
+		name: Some(name),
 		ids: Some(ids),
 	});
 	let library = mc.exec_lookup(query, Some(library_id), &user, None).await?;
@@ -241,11 +241,11 @@ async fn handler_image(Path((library_id, movie_id)): Path<(String, String)>, Sta
 }
 
 async fn handler_image_fetch(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(externalImage): Json<ExternalImage>) -> Result<Json<Value>> {
-	let url = externalImage.url;
+	let request = externalImage.url;
 
 	let kind = externalImage.kind.ok_or(RsError::Error("Missing image type".to_string()))?;
 
-	let mut reader = mc.url_to_reader(&library_id, url, &user).await?;
+	let mut reader = mc.request_to_reader(&library_id, request, &user).await?;
 
 	mc.update_movie_image(&library_id, &serie_id, &kind, reader.stream, &user).await?;
 	
@@ -258,7 +258,7 @@ async fn handler_image_search(Path((library_id, movie_id)): Path<(String, String
 	let name = movie.name.clone();
 	let ids: RsIds = movie.into();
 	let lookup_query = RsLookupMovie {
-		name,
+		name: Some(name),
 		ids: Some(ids.clone()),
 	};
 	let result = mc.get_movie_images(lookup_query, Some(library_id), &user).await?;

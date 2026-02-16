@@ -4397,9 +4397,9 @@ dependencies = [
 
 [[package]]
 name = "rs-plugin-common-interfaces"
-version = "0.25.3"
+version = "0.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47e2390872f53a6159b824c87d867bb0d6cbb662dd520f43ec6c41a9acc2f4c5"
+checksum = "6a237c74c0c56313fbf0d515da02be4851057384d3e6f5689afd218a904a7587"
 dependencies = [
  "regex",
  "rusqlite",

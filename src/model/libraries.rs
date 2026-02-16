@@ -802,6 +802,40 @@ impl ModelController {
 }
 
 impl ModelController {
+    pub async fn request_to_source(
+        &self,
+        library_id: &str,
+        request: RsRequest,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<SourceRead> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        Ok(SourceRead::Request(request))
+    }
+
+    pub async fn request_to_reader(
+        &self,
+        library_id: &str,
+        request: RsRequest,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<FileStreamResult<AsyncReadPinBox>> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        let source = self
+            .request_to_source(library_id, request, requesting_user)
+            .await?;
+
+        let reader = source
+            .into_reader(
+                Some(library_id),
+                None,
+                None,
+                Some((self.clone(), requesting_user)),
+                None,
+            )
+            .await?;
+
+        Ok(reader)
+    }
+
     pub async fn url_to_source(
         &self,
         library_id: &str,
@@ -825,20 +859,11 @@ impl ModelController {
         url: String,
         requesting_user: &ConnectedUser,
     ) -> RsResult<FileStreamResult<AsyncReadPinBox>> {
-        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
-        let source = self.url_to_source(library_id, url, requesting_user).await?;
-
-        let mut reader = source
-            .into_reader(
-                Some(library_id),
-                None,
-                None,
-                Some((self.clone(), requesting_user)),
-                None,
-            )
-            .await?;
-
-        Ok(reader)
+        let request = RsRequest {
+            url,
+            ..Default::default()
+        };
+        self.request_to_reader(library_id, request, requesting_user).await
     }
 
     pub async fn url_to_bufer(

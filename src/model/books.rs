@@ -1,11 +1,15 @@
-use std::io::{self, Cursor};
+use std::io::Cursor;
 
 use futures::TryStreamExt;
 use nanoid::nanoid;
-use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, lookup::{RsLookupBook, RsLookupMetadataResult, RsLookupQuery}, ExternalImage, ImageType};
+use rs_plugin_common_interfaces::{
+    domain::rs_ids::RsIds,
+    lookup::{RsLookupBook, RsLookupMetadataResult, RsLookupQuery},
+    request::RsRequest,
+    ExternalImage, ImageType,
+};
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
-use tokio_util::io::StreamReader;
 
 use crate::{
     domain::{
@@ -15,7 +19,7 @@ use crate::{
         ElementAction, MediaElement,
     },
     error::RsResult,
-    plugins::sources::{error::SourcesError, AsyncReadPinBox},
+    plugins::sources::{error::SourcesError, AsyncReadPinBox, SourceRead},
     routes::sse::SseEvent,
     tools::image_tools::{convert_image_reader, ImageSize},
 };
@@ -60,7 +64,7 @@ pub struct BookQuery {
 }
 
 impl ModelController {
-    fn select_book_image_url(images: Vec<ExternalImage>, kind: &ImageType) -> Option<String> {
+    fn select_book_image_url(images: Vec<ExternalImage>, kind: &ImageType) -> Option<RsRequest> {
         let first_kind_match = images
             .iter()
             .find(|image| image.kind.as_ref() == Some(kind))
@@ -104,8 +108,7 @@ impl ModelController {
             } else {
                 // Try plugin lookup first
                 let lookup_query = RsLookupQuery::Book(RsLookupBook {
-                    title: String::new(),
-                    author: String::new(),
+                    name: Some(String::new()),
                     ids: Some(ids.clone()),
                 });
                 let plugin_results = self
@@ -379,7 +382,7 @@ impl ModelController {
         library_id: Option<String>,
         kind: &ImageType,
         requesting_user: &ConnectedUser,
-    ) -> RsResult<Option<String>> {
+    ) -> RsResult<Option<RsRequest>> {
         let images = self
             .get_book_images(query, library_id, requesting_user)
             .await?;
@@ -393,18 +396,23 @@ impl ModelController {
         kind: &ImageType,
         requesting_user: &ConnectedUser,
     ) -> RsResult<AsyncReadPinBox> {
-        let url = self
-            .get_book_image_url(query, library_id, kind, requesting_user)
+        let request = self
+            .get_book_image_url(query, library_id.clone(), kind, requesting_user)
             .await?
             .ok_or(crate::Error::NotFound(format!(
                 "Unable to get book image url for kind: {:?}",
                 kind
             )))?;
-        let image_reader = reqwest::get(url).await?;
-        let stream = image_reader.bytes_stream();
-        let body_with_io_error = stream.map_err(|err| io::Error::new(io::ErrorKind::Other, err));
-        let body_reader = StreamReader::new(body_with_io_error);
-        Ok(Box::pin(body_reader))
+        let reader = SourceRead::Request(request)
+            .into_reader(
+                library_id.as_deref(),
+                None,
+                None,
+                Some((self.clone(), requesting_user)),
+                None,
+            )
+            .await?;
+        Ok(reader.stream)
     }
 
     pub async fn refresh_book_image(
@@ -419,8 +427,7 @@ impl ModelController {
             .await?;
         let ids: RsIds = book.clone().into();
         let lookup_query = RsLookupBook {
-            title: book.name.clone(),
-            author: String::new(),
+            name: Some(book.name.clone()),
             ids: Some(ids),
         };
         let reader = self

@@ -1,20 +1,24 @@
 
 
 
-use std::{collections::HashMap, io::{self, Cursor, Read}, pin::Pin};
+use std::{collections::HashMap, io::{Cursor, Read}, pin::Pin};
 
 use async_recursion::async_recursion;
 use futures::TryStreamExt;
 use nanoid::nanoid;
-use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, lookup::{RsLookupMetadataResult, RsLookupMetadataResultWithImages, RsLookupMovie, RsLookupQuery}, ExternalImage, ImageType, MediaType};
+use rs_plugin_common_interfaces::{
+    domain::rs_ids::RsIds,
+    lookup::{RsLookupMetadataResult, RsLookupMetadataResultWithImages, RsLookupMovie, RsLookupQuery},
+    request::{RsRequest, RsRequestStatus},
+    ExternalImage, ImageType, MediaType,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use strum_macros::EnumString;
 use tokio::{fs::File, io::{AsyncRead, AsyncWriteExt, BufReader}};
-use tokio_util::io::StreamReader;
 
 
-use crate::{domain::{ElementAction, MediaElement, deleted::RsDeleted, library::LibraryRole, movie::{Movie, MovieExt, MovieForUpdate, MovieWithAction, MoviesMessage}, people::{PeopleMessage, Person}}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{AsyncReadPinBox, FileStreamResult, Source, error::SourcesError, path_provider::PathProvider}}, server::get_server_folder_path_array, tools::{image_tools::{ImageSize, convert_image_reader, resize_image_reader}, log::log_info}};
+use crate::{domain::{ElementAction, MediaElement, deleted::RsDeleted, library::LibraryRole, movie::{Movie, MovieExt, MovieForUpdate, MovieWithAction, MoviesMessage}, people::{PeopleMessage, Person}}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{AsyncReadPinBox, FileStreamResult, Source, SourceRead, error::SourcesError, path_provider::PathProvider}}, server::get_server_folder_path_array, tools::{image_tools::{ImageSize, convert_image_reader, resize_image_reader}, log::log_info}};
 
 use super::{error::{Error, Result}, store::sql::SqlOrder, users::{ConnectedUser, HistoryQuery}, ModelController};
 use crate::routes::sse::SseEvent;
@@ -85,7 +89,7 @@ impl ExternalMovieImages {
 
 
 impl ModelController {
-    pub(crate) fn select_external_image_url(images: Vec<ExternalImage>, kind: &ImageType) -> Option<String> {
+    pub(crate) fn select_external_image_url(images: Vec<ExternalImage>, kind: &ImageType) -> Option<RsRequest> {
         let first_kind_match = images
             .iter()
             .find(|image| image.kind.as_ref() == Some(kind))
@@ -123,7 +127,7 @@ impl ModelController {
             } else {
                 // Try plugin lookup first
                 let lookup_query = RsLookupQuery::Movie(RsLookupMovie {
-                    name: String::new(),
+                    name: Some(String::new()),
                     ids: Some(id.clone()),
                 });
                 let plugin_results = self
@@ -443,10 +447,10 @@ impl ModelController {
 
                 if !local_provider.exists(&image_path).await {
                     let lookup_query = RsLookupMovie {
-                        name: lookup_name,
+                        name: if lookup_name.is_empty() { None } else { Some(lookup_name) },
                         ids: Some(movie_ids.clone()),
                     };
-                    let images = self
+                    let image_request = self
                         .get_movie_image_url(
                             lookup_query,
                             Some(library_id.to_string()),
@@ -457,11 +461,16 @@ impl ModelController {
                         .await?
                         .ok_or(crate::Error::NotFound(format!("Unable to get movie image url: {:?}",movie_ids)))?;
                     let (_, mut writer) = local_provider.get_file_write_stream(&image_path).await?;
-                    let image_reader = reqwest::get(images).await?;
-                    let stream = image_reader.bytes_stream();
-                    let body_with_io_error = stream.map_err(|err| io::Error::new(io::ErrorKind::Other, err));
-                    let mut body_reader = StreamReader::new(body_with_io_error);
-                    let resized = resize_image_reader(Box::pin(body_reader), ImageSize::Large.to_size(), image::ImageFormat::Avif, Some(70), false).await?;
+                    let mut image_reader = SourceRead::Request(image_request)
+                        .into_reader(
+                            Some(library_id),
+                            None,
+                            None,
+                            Some((self.clone(), requesting_user)),
+                            None,
+                        )
+                        .await?;
+                    let resized = resize_image_reader(image_reader.stream, ImageSize::Large.to_size(), image::ImageFormat::Avif, Some(70), false).await?;
 
                     writer.write_all(&resized).await?;
                 }
@@ -513,7 +522,7 @@ impl ModelController {
         let movie = self.get_movie(library_id, movie_id.to_string(), requesting_user).await?;
         let ids: RsIds = movie.clone().into();
         let lookup_query = RsLookupMovie {
-            name: movie.name.clone(),
+            name: Some(movie.name.clone()),
             ids: Some(ids.clone()),
         };
         let reader = self
@@ -529,12 +538,12 @@ impl ModelController {
         Ok(())
 	}
 
-    pub async fn get_movie_image_url(&self, query: RsLookupMovie, library_id: Option<String>, kind: &ImageType, lang: &Option<String>, requesting_user: &ConnectedUser) -> RsResult<Option<String>> {
-        if let Some(url) = Self::select_external_image_url(
+    pub async fn get_movie_image_url(&self, query: RsLookupMovie, library_id: Option<String>, kind: &ImageType, lang: &Option<String>, requesting_user: &ConnectedUser) -> RsResult<Option<RsRequest>> {
+        if let Some(request) = Self::select_external_image_url(
             self.get_movie_images(query.clone(), library_id, requesting_user).await?,
             kind,
         ) {
-            return Ok(Some(url));
+            return Ok(Some(request));
         }
 
         if let Some(ids) = query.ids {
@@ -546,9 +555,17 @@ impl ModelController {
             };
             if images.is_none() {
                 let images = self.fanart.movie_image(ids.clone()).await?.into_kind(kind.clone());
-                Ok(images)
+                Ok(images.map(|url| RsRequest {
+                    url,
+                    status: RsRequestStatus::FinalPublic,
+                    ..Default::default()
+                }))
             } else {
-                Ok(images)
+                Ok(images.map(|url| RsRequest {
+                    url,
+                    status: RsRequestStatus::FinalPublic,
+                    ..Default::default()
+                }))
             }
         } else {
             Ok(None)
@@ -557,18 +574,23 @@ impl ModelController {
 
 
     pub async fn download_movie_image(&self, query: RsLookupMovie, library_id: Option<String>, kind: &ImageType, lang: &Option<String>, requesting_user: &ConnectedUser) -> crate::Result<AsyncReadPinBox> {
-        let images = self
-            .get_movie_image_url(query.clone(), library_id, kind, lang, requesting_user)
+        let request = self
+            .get_movie_image_url(query.clone(), library_id.clone(), kind, lang, requesting_user)
             .await?
             .ok_or(crate::Error::NotFound(format!(
                 "Unable to download movie image url: {:?} kind: {:?}",
                 query.ids, kind
             )))?;
-        let image_reader = reqwest::get(images).await?;
-        let stream = image_reader.bytes_stream();
-        let body_with_io_error = stream.map_err(|err| io::Error::new(io::ErrorKind::Other, err));
-        let body_reader = StreamReader::new(body_with_io_error);
-        Ok(Box::pin(body_reader))
+        let reader = SourceRead::Request(request)
+            .into_reader(
+                library_id.as_deref(),
+                None,
+                None,
+                Some((self.clone(), requesting_user)),
+                None,
+            )
+            .await?;
+        Ok(reader.stream)
     }
 
     pub async fn update_movie_image(&self, library_id: &str, movie_id: &str, kind: &ImageType, reader: AsyncReadPinBox, requesting_user: &ConnectedUser) -> RsResult<()> {

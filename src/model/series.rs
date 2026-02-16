@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    io::{self, Cursor, Read},
+    io::{Cursor, Read},
     pin::Pin,
 };
 
@@ -12,6 +12,7 @@ use rs_plugin_common_interfaces::{
     ImageType,
     domain::{rs_ids::RsIds, serie::SerieStatus},
     lookup::{RsLookupMetadataResult, RsLookupMetadataResultWithImages, RsLookupMovie, RsLookupQuery, RsLookupSerie},
+    request::{RsRequest, RsRequestStatus},
 };
 use rusqlite::{
     types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef},
@@ -23,7 +24,6 @@ use tokio::{
     fs::File,
     io::{AsyncRead, AsyncWriteExt, BufReader},
 };
-use tokio_util::io::StreamReader;
 
 use crate::{
     domain::{
@@ -39,7 +39,7 @@ use crate::{
     plugins::{
         medias::imdb::ImdbContext,
         sources::{
-            AsyncReadPinBox, FileStreamResult, Source, error::SourcesError, path_provider::PathProvider
+            AsyncReadPinBox, FileStreamResult, Source, SourceRead, error::SourcesError, path_provider::PathProvider
         },
     },
     server::get_server_folder_path_array,
@@ -188,7 +188,7 @@ impl ModelController {
             } else {
                 // Try plugin lookup first
                 let lookup_query = RsLookupQuery::Serie(RsLookupSerie {
-                    name: String::new(),
+                    name: Some(String::new()),
                     ids: Some(id.clone()),
                 });
                 let plugin_results = self
@@ -701,10 +701,10 @@ impl ModelController {
 
                 if !local_provider.exists(&image_path).await {
                     let lookup_query = RsLookupSerie {
-                        name: lookup_name,
+                        name: if lookup_name.is_empty() { None } else { Some(lookup_name) },
                         ids: Some(serie_ids.clone()),
                     };
-                    let images = self
+                    let image_request = self
                         .get_serie_image_url(
                             lookup_query,
                             Some(library_id.to_string()),
@@ -718,13 +718,17 @@ impl ModelController {
                             serie_ids, kind
                         )))?;
                     let (_, mut writer) = local_provider.get_file_write_stream(&image_path).await?;
-                    let image_reader = reqwest::get(images).await?;
-                    let stream = image_reader.bytes_stream();
-                    let body_with_io_error =
-                        stream.map_err(|err| io::Error::new(io::ErrorKind::Other, err));
-                    let mut body_reader = StreamReader::new(body_with_io_error);
+                    let mut image_reader = SourceRead::Request(image_request)
+                        .into_reader(
+                            Some(library_id),
+                            None,
+                            None,
+                            Some((self.clone(), requesting_user)),
+                            None,
+                        )
+                        .await?;
                     let resized = resize_image_reader(
-                        Box::pin(body_reader),
+                        image_reader.stream,
                         ImageSize::Large.to_size(),
                         image::ImageFormat::Avif,
                         Some(70),
@@ -795,7 +799,7 @@ impl ModelController {
         let serie_name = serie.name.clone();
         let ids: RsIds = serie.into();
         let lookup_query = RsLookupSerie {
-            name: serie_name,
+            name: Some(serie_name),
             ids: Some(ids.clone()),
         };
         let reader = self
@@ -825,12 +829,12 @@ impl ModelController {
         kind: &ImageType,
         lang: &Option<String>,
         requesting_user: &ConnectedUser,
-    ) -> RsResult<Option<String>> {
-        if let Some(url) = Self::select_external_image_url(
+    ) -> RsResult<Option<RsRequest>> {
+        if let Some(request) = Self::select_external_image_url(
             self.get_serie_images(query.clone(), library_id, requesting_user).await?,
             kind,
         ) {
-            return Ok(Some(url));
+            return Ok(Some(request));
         }
 
         if let Some(ids) = query.ids {
@@ -848,9 +852,17 @@ impl ModelController {
                     .serie_image(ids.clone())
                     .await?
                     .into_kind(kind.clone());
-                Ok(images)
+                Ok(images.map(|url| RsRequest {
+                    url,
+                    status: RsRequestStatus::FinalPublic,
+                    ..Default::default()
+                }))
             } else {
-                Ok(images)
+                Ok(images.map(|url| RsRequest {
+                    url,
+                    status: RsRequestStatus::FinalPublic,
+                    ..Default::default()
+                }))
             }
         } else {
             Ok(None)
@@ -896,18 +908,23 @@ impl ModelController {
         lang: &Option<String>,
         requesting_user: &ConnectedUser,
     ) -> crate::Result<AsyncReadPinBox> {
-        let images =
-            self.get_serie_image_url(query.clone(), library_id, kind, lang, requesting_user)
-                .await?
-                .ok_or(crate::Error::NotFound(format!(
-                    "Unable to get series image url: {:?} kind {:?}",
-                    query.ids, kind
-                )))?;
-        let image_reader = reqwest::get(images).await?;
-        let stream = image_reader.bytes_stream();
-        let body_with_io_error = stream.map_err(|err| io::Error::new(io::ErrorKind::Other, err));
-        let body_reader = StreamReader::new(body_with_io_error);
-        Ok(Box::pin(body_reader))
+        let request = self
+            .get_serie_image_url(query.clone(), library_id.clone(), kind, lang, requesting_user)
+            .await?
+            .ok_or(crate::Error::NotFound(format!(
+                "Unable to get series image url: {:?} kind {:?}",
+                query.ids, kind
+            )))?;
+        let reader = SourceRead::Request(request)
+            .into_reader(
+                library_id.as_deref(),
+                None,
+                None,
+                Some((self.clone(), requesting_user)),
+                None,
+            )
+            .await?;
+        Ok(reader.stream)
     }
 
     pub async fn update_serie_image(

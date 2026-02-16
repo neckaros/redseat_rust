@@ -1,4 +1,7 @@
-use rs_plugin_common_interfaces::{ExternalImage, ImageType};
+use rs_plugin_common_interfaces::{
+    request::{RsRequest, RsRequestStatus},
+    ExternalImage, ImageType,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::model::series::ExternalSerieImages;
@@ -63,7 +66,11 @@ impl TmdbImage {
     fn into_external(self, root: &str, kind: Option<ImageType>) -> ExternalImage {
         ExternalImage {
             kind,
-            url: self.full_path(root),
+            url: RsRequest {
+                url: self.full_path(root),
+                status: RsRequestStatus::FinalPublic,
+                ..Default::default()
+            },
             aspect_ratio: Some(self.aspect_ratio),
             height: Some(self.height),
             lang: self.iso_639_1,

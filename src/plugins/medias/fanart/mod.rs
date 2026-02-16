@@ -1,6 +1,10 @@
 
 use reqwest::{Client, RequestBuilder};
-use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, ExternalImage, ImageType};
+use rs_plugin_common_interfaces::{
+    domain::rs_ids::RsIds,
+    request::{RsRequest, RsRequestStatus},
+    ExternalImage, ImageType,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::model::series::ExternalSerieImages;
@@ -57,7 +61,11 @@ impl FanArtImage {
     fn into_external(self, kind: Option<ImageType>) -> ExternalImage {
         ExternalImage {
             kind,
-            url: self.url,
+            url: RsRequest {
+                url: self.url,
+                status: RsRequestStatus::FinalPublic,
+                ..Default::default()
+            },
             aspect_ratio: None,
             height: None,
             lang: Some(self.lang),

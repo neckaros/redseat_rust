@@ -92,8 +92,11 @@ impl TraktContext {
     }
 
     pub async fn search_show(&self, search: &RsLookupMovie) -> crate::Result<Vec<Serie>> {
-
-        let url = self.base_url.join(&format!("search/show?extended=full&query={}", unidecode(&search.name))).unwrap();
+        let query = search.name.as_deref().unwrap_or_default();
+        let url = self
+            .base_url
+            .join(&format!("search/show?extended=full&query={}", unidecode(query)))
+            .unwrap();
 
         let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
 
@@ -203,8 +206,11 @@ impl TraktContext {
     }
 
     pub async fn search_movie(&self, search: &RsLookupMovie) -> crate::Result<Vec<Movie>> {
-
-        let url = self.base_url.join(&format!("search/movie?extended=full&query={}", unidecode(&search.name))).unwrap();
+        let query = search.name.as_deref().unwrap_or_default();
+        let url = self
+            .base_url
+            .join(&format!("search/movie?extended=full&query={}", unidecode(query)))
+            .unwrap();
 
         let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
         let movies: Vec<Movie> = r.json::<Vec<TraktMovieSearchElement>>().await?.into_iter().map(|m| Movie::from(m.movie)).collect();
@@ -261,8 +267,11 @@ impl TraktContext {
     }
 
     pub async fn search_person(&self, search: &RsLookupMovie) -> crate::Result<Vec<Person>> {
-
-        let url = self.base_url.join(&format!("search/person?extended=full&query={}", unidecode(&search.name))).unwrap();
+        let query = search.name.as_deref().unwrap_or_default();
+        let url = self
+            .base_url
+            .join(&format!("search/person?extended=full&query={}", unidecode(query)))
+            .unwrap();
 
         let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
         let movies: Vec<Person> = r.json::<Vec<TraktPeopleSearchElement>>().await?.into_iter().map(|m| Person::from(m.person)).collect();
@@ -301,7 +310,7 @@ mod tests {
     async fn trakt_search_person() -> RsResult<()> {
         let trakt = TraktContext::new("455f81b3409a8dd140a941e9250ff22b2ed92d68003491c3976363fe752a9024".to_owned());
 
-        let search_result = trakt.search_person(&RsLookupMovie { name: "jessica alba".to_string(), ids: None }).await?;
+        let search_result = trakt.search_person(&RsLookupMovie { name: Some("jessica alba".to_string()), ids: None }).await?;
         
         println!("{:?}", search_result.first());
         let person_serach = search_result.into_iter().next().unwrap();

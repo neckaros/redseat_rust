@@ -194,8 +194,7 @@ async fn handler_image_search(
     let title = book.name.clone();
     let ids: RsIds = book.into();
     let query = RsLookupBook {
-        title,
-        author: String::new(),
+        name: Some(title),
         ids: Some(ids),
     };
     let result = mc.get_book_images(query, Some(library_id), &user).await?;
@@ -209,12 +208,12 @@ async fn handler_image_fetch(
     user: ConnectedUser,
     Json(external_image): Json<ExternalImage>,
 ) -> Result<Json<Value>> {
-    let url = external_image.url;
+    let request = external_image.url;
     let kind = external_image
         .kind
         .ok_or(Error::Error("Missing image type".to_string()))?;
 
-    let mut reader = mc.url_to_reader(&library_id, url, &user).await?;
+    let mut reader = mc.request_to_reader(&library_id, request, &user).await?;
 
     mc.update_book_image(&library_id, &book_id, &kind, reader.stream, &user)
         .await?;
