@@ -864,7 +864,7 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> RsResult<Vec<ExternalImage>> {
         let lookup_query = RsLookupQuery::Serie(query.clone());
-        println!("lookup_query: {:?}", lookup_query);
+        //println!("lookup_query: {:?}", lookup_query);
         let mut images = match self.exec_lookup_images(lookup_query, library_id, requesting_user, None).await {
             Ok(images) => images,
             Err(error) => {
@@ -872,13 +872,13 @@ impl ModelController {
                 Vec::new()
             }
         };
-        print!("images from plugins: {:?}", images);
+        //print!("images from plugins: {:?}", images);
 
         if let Some(ids) = query.ids {
-            let mut legacy = self.tmdb.serie_images(ids.clone()).await;
+            let mut tmdb = self.tmdb.serie_images(ids.clone()).await;
             let mut fanart = self.fanart.serie_images(ids).await;
-            if let Ok(legacy) = &mut legacy {
-                images.append(legacy)
+            if let Ok(tmdb) = &mut tmdb {
+                images.append(tmdb)
             }
             if let Ok(fanart) = &mut fanart {
                 images.append(fanart)

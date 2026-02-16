@@ -495,10 +495,14 @@ impl ModelController {
         };
 
         if let Some(ids) = query.ids {
-            let mut legacy = self.tmdb.movie_images(ids.clone()).await?;
-            let mut fanart = self.fanart.movie_images(ids).await?;
-            legacy.append(&mut fanart);
-            images.append(&mut legacy);
+            let mut tmdb = self.tmdb.movie_images(ids.clone()).await;
+            let mut fanart = self.fanart.movie_images(ids).await;
+             if let Ok(tmdb) = &mut tmdb {
+                images.append(tmdb)
+            }
+            if let Ok(fanart) = &mut fanart {
+                images.append(fanart)
+            }
         }
 
         Ok(images)
