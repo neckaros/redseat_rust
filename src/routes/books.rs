@@ -11,8 +11,9 @@ use axum::{
     Json, Router,
 };
 use futures::{Stream, TryStreamExt};
+use rs_plugin_common_interfaces::domain::rs_ids::RsIds;
 use rs_plugin_common_interfaces::lookup::{RsLookupBook, RsLookupQuery};
-use rs_plugin_common_interfaces::ImageType;
+use rs_plugin_common_interfaces::{ExternalImage, ImageType};
 use serde_json::{json, Value};
 use tokio_util::io::{ReaderStream, StreamReader};
 
@@ -35,6 +36,9 @@ pub fn routes(mc: ModelController) -> Router {
         .route("/:id", delete(handler_delete))
         .route("/:id/medias", get(handler_medias))
         .route("/:id/image", get(handler_image))
+        .route("/:id/image/search", get(handler_image_search))
+        .route("/:id/image/fetch", post(handler_image_fetch))
+        .route("/:id/image/refresh", get(handler_image_refresh))
         .route("/:id/image", post(handler_post_image))
         .with_state(mc)
 }
@@ -146,26 +150,87 @@ async fn handler_image(
     user: ConnectedUser,
     Query(query): Query<ImageRequestOptions>,
 ) -> Result<Response> {
-    if query.kind.as_ref().is_some_and(|kind| kind != &ImageType::Poster) {
-        return Err(Error::NotFound("Only poster image type is supported for books".to_string()));
-    }
-
     let reader_response = mc
-        .book_image(
-            &library_id,
-            &book_id,
-            Some(ImageType::Poster),
-            query.size,
-            &user,
-        )
-        .await?;
-    let headers = reader_response
-        .hearders()
-        .map_err(|_| Error::GenericRedseatError)?;
-    let stream = ReaderStream::new(reader_response.stream);
-    let body = Body::from_stream(stream);
+        .book_image(&library_id, &book_id, query.kind.clone(), query.size.clone(), &user)
+        .await;
 
-    Ok((headers, body).into_response())
+    if let Ok(reader_response) = reader_response {
+        let headers = reader_response
+            .hearders()
+            .map_err(|_| Error::GenericRedseatError)?;
+        let stream = ReaderStream::new(reader_response.stream);
+        let body = Body::from_stream(stream);
+        Ok((headers, body).into_response())
+    } else if query.defaulting {
+        let reader_response = mc
+            .book_image(&library_id, &book_id, Some(ImageType::Poster), query.size, &user)
+            .await?;
+        let headers = reader_response
+            .hearders()
+            .map_err(|_| Error::GenericRedseatError)?;
+        let stream = ReaderStream::new(reader_response.stream);
+        let body = Body::from_stream(stream);
+        Ok((headers, body).into_response())
+    } else if let Err(err) = reader_response {
+        Err(Error::NotFound(format!(
+            "Unable to find book image: {} {} {:?}",
+            library_id, book_id, err
+        )))
+    } else {
+        Err(Error::NotFound(format!(
+            "Unable to find book image: {} {}",
+            library_id, book_id
+        )))
+    }
+}
+
+async fn handler_image_search(
+    Path((library_id, book_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Query(_query): Query<ImageRequestOptions>,
+) -> Result<Json<Value>> {
+    let book = mc.get_book(&library_id, book_id, &user).await?;
+    let title = book.name.clone();
+    let ids: RsIds = book.into();
+    let query = RsLookupBook {
+        title,
+        author: String::new(),
+        ids: Some(ids),
+    };
+    let result = mc.get_book_images(query, Some(library_id), &user).await?;
+
+    Ok(Json(json!(result)))
+}
+
+async fn handler_image_fetch(
+    Path((library_id, book_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Json(external_image): Json<ExternalImage>,
+) -> Result<Json<Value>> {
+    let url = external_image.url;
+    let kind = external_image
+        .kind
+        .ok_or(Error::Error("Missing image type".to_string()))?;
+
+    let mut reader = mc.url_to_reader(&library_id, url, &user).await?;
+
+    mc.update_book_image(&library_id, &book_id, &kind, reader.stream, &user)
+        .await?;
+
+    Ok(Json(json!({"data": "ok"})))
+}
+
+async fn handler_image_refresh(
+    Path((library_id, book_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Query(query): Query<ImageRequestOptions>,
+) -> Result<Json<Value>> {
+    let kind = query.kind.unwrap_or(ImageType::Poster);
+    let book = mc.refresh_book_image(&library_id, &book_id, &kind, &user).await?;
+    Ok(Json(json!(book)))
 }
 
 #[debug_handler]
@@ -176,10 +241,6 @@ async fn handler_post_image(
     Query(query): Query<ImageUploadOptions>,
     mut multipart: Multipart,
 ) -> Result<Json<Value>> {
-    if query.kind != ImageType::Poster {
-        return Err(Error::NotFound("Only poster image type is supported for books".to_string()));
-    }
-
     while let Some(field) = multipart.next_field().await.unwrap() {
         let mut reader = StreamReader::new(field.map_err(|multipart_error| {
             std::io::Error::new(std::io::ErrorKind::Other, multipart_error)

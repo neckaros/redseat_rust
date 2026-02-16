@@ -1,9 +1,11 @@
-use std::io::Cursor;
+use std::io::{self, Cursor};
 
+use futures::TryStreamExt;
 use nanoid::nanoid;
-use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, lookup::{RsLookupBook, RsLookupMetadataResult, RsLookupQuery}, ImageType};
+use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, lookup::{RsLookupBook, RsLookupMetadataResult, RsLookupQuery}, ExternalImage, ImageType};
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
+use tokio_util::io::StreamReader;
 
 use crate::{
     domain::{
@@ -58,6 +60,18 @@ pub struct BookQuery {
 }
 
 impl ModelController {
+    fn select_book_image_url(images: Vec<ExternalImage>, kind: &ImageType) -> Option<String> {
+        let first_kind_match = images
+            .iter()
+            .find(|image| image.kind.as_ref() == Some(kind))
+            .map(|image| image.url.clone());
+        if first_kind_match.is_some() {
+            first_kind_match
+        } else {
+            images.into_iter().next().map(|image| image.url)
+        }
+    }
+
     pub async fn get_books(
         &self,
         library_id: &str,
@@ -302,12 +316,6 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> RsResult<crate::plugins::sources::FileStreamResult<AsyncReadPinBox>> {
         let target_kind = kind.unwrap_or(ImageType::Poster);
-        if target_kind != ImageType::Poster {
-            return Err(
-                Error::NotFound("Only poster image type is supported for books".to_string())
-                    .into(),
-            );
-        }
 
         let resolved_book_id = if RsIds::is_id(book_id) {
             self.get_book(library_id, book_id.to_string(), requesting_user)
@@ -317,15 +325,115 @@ impl ModelController {
             book_id.to_string()
         };
 
+        if !self
+            .has_library_image(
+                library_id,
+                ".books",
+                &resolved_book_id,
+                Some(target_kind.clone()),
+                requesting_user,
+            )
+            .await?
+        {
+            self.refresh_book_image(library_id, &resolved_book_id, &target_kind, requesting_user)
+                .await?;
+        }
+
         self.library_image(
             library_id,
             ".books",
             &resolved_book_id,
-            Some(ImageType::Poster),
+            Some(target_kind),
             size,
             requesting_user,
         )
         .await
+    }
+
+    pub async fn get_book_images(
+        &self,
+        query: RsLookupBook,
+        library_id: Option<String>,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Vec<ExternalImage>> {
+        let lookup_query = RsLookupQuery::Book(query);
+        let images = match self
+            .exec_lookup_images(lookup_query, library_id, requesting_user, None)
+            .await
+        {
+            Ok(images) => images,
+            Err(error) => {
+                crate::tools::log::log_error(
+                    crate::tools::log::LogServiceType::Plugin,
+                    format!("book image lookup failed: {:#}", error),
+                );
+                Vec::new()
+            }
+        };
+        Ok(images)
+    }
+
+    pub async fn get_book_image_url(
+        &self,
+        query: RsLookupBook,
+        library_id: Option<String>,
+        kind: &ImageType,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Option<String>> {
+        let images = self
+            .get_book_images(query, library_id, requesting_user)
+            .await?;
+        Ok(Self::select_book_image_url(images, kind))
+    }
+
+    pub async fn download_book_image(
+        &self,
+        query: RsLookupBook,
+        library_id: Option<String>,
+        kind: &ImageType,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<AsyncReadPinBox> {
+        let url = self
+            .get_book_image_url(query, library_id, kind, requesting_user)
+            .await?
+            .ok_or(crate::Error::NotFound(format!(
+                "Unable to get book image url for kind: {:?}",
+                kind
+            )))?;
+        let image_reader = reqwest::get(url).await?;
+        let stream = image_reader.bytes_stream();
+        let body_with_io_error = stream.map_err(|err| io::Error::new(io::ErrorKind::Other, err));
+        let body_reader = StreamReader::new(body_with_io_error);
+        Ok(Box::pin(body_reader))
+    }
+
+    pub async fn refresh_book_image(
+        &self,
+        library_id: &str,
+        book_id: &str,
+        kind: &ImageType,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Book> {
+        let book = self
+            .get_book(library_id, book_id.to_string(), requesting_user)
+            .await?;
+        let ids: RsIds = book.clone().into();
+        let lookup_query = RsLookupBook {
+            title: book.name.clone(),
+            author: String::new(),
+            ids: Some(ids),
+        };
+        let reader = self
+            .download_book_image(
+                lookup_query,
+                Some(library_id.to_string()),
+                kind,
+                requesting_user,
+            )
+            .await?;
+        self.update_book_image(library_id, &book.id, kind, reader, &ConnectedUser::ServerAdmin)
+            .await?;
+        self.get_book(library_id, book.id, requesting_user).await
     }
 
     pub async fn update_book_image(
@@ -337,12 +445,6 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> RsResult<()> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
-        if *kind != ImageType::Poster {
-            return Err(
-                Error::NotFound("Only poster image type is supported for books".to_string())
-                    .into(),
-            );
-        }
         if RsIds::is_id(book_id) {
             return Err(
                 Error::InvalidIdForAction("udpate book image".to_string(), book_id.to_string())
@@ -358,7 +460,7 @@ impl ModelController {
             library_id,
             ".books",
             book_id,
-            &Some(ImageType::Poster),
+            &Some(kind.clone()),
             &None,
             converted_reader,
             requesting_user,
