@@ -323,7 +323,7 @@ impl ModelController {
     }
 
 
-    pub async fn refresh_repo_plugin(&self, plugin_id: &str, requesting_user: &ConnectedUser) -> RsResult<String> {
+    pub async fn refresh_repo_plugin(&self, plugin_id: &str, requesting_user: &ConnectedUser) -> RsResult<Plugin> {
 
         requesting_user.check_role(&UserRole::Admin)?;
 
@@ -336,9 +336,7 @@ impl ModelController {
 
         download_latest_wasm(&url, path.to_str().ok_or(RsError::Error("Unable to get plugin folder path".to_string()))?, Some(&name)).await?;
 
-        self.reload_plugins(&requesting_user).await?;
-        path.push(name);
-        Ok(path.to_string_lossy().to_string())
+        self.reload_plugin(plugin_id.to_string(), requesting_user).await
 
 	}
 

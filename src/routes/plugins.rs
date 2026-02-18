@@ -131,10 +131,8 @@ async fn handler_reload(Path(plugin_id): Path<String>, State(mc): State<ModelCon
 }
 
 async fn handler_refresh_repo(Path(plugin_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
-	let update_path = mc.refresh_repo_plugin(&plugin_id, &user).await?;
-	let body = Json(json!(json!({
-		"path": update_path
-	})));
+	let plugin = mc.refresh_repo_plugin(&plugin_id, &user).await?;
+	let body = Json(json!(plugin));
 	Ok(body)
 }
 
