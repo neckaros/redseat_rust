@@ -1,5 +1,6 @@
 use std::io::Cursor;
 
+use async_recursion::async_recursion;
 use futures::TryStreamExt;
 use nanoid::nanoid;
 use rs_plugin_common_interfaces::{
@@ -10,6 +11,7 @@ use rs_plugin_common_interfaces::{
 };
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
+use tokio::io::AsyncWriteExt;
 
 use crate::{
     domain::{
@@ -19,9 +21,9 @@ use crate::{
         ElementAction, MediaElement,
     },
     error::RsResult,
-    plugins::sources::{error::SourcesError, AsyncReadPinBox, SourceRead},
+    plugins::sources::{error::SourcesError, AsyncReadPinBox, FileStreamResult, Source, SourceRead},
     routes::sse::SseEvent,
-    tools::image_tools::{convert_image_reader, ImageSize},
+    tools::image_tools::{convert_image_reader, ImageSize, resize_image_reader},
 };
 
 use super::{
@@ -310,6 +312,7 @@ impl ModelController {
         self.broadcast_sse(SseEvent::Books(message));
     }
 
+    #[async_recursion]
     pub async fn book_image(
         &self,
         library_id: &str,
@@ -317,40 +320,73 @@ impl ModelController {
         kind: Option<ImageType>,
         size: Option<ImageSize>,
         requesting_user: &ConnectedUser,
-    ) -> RsResult<crate::plugins::sources::FileStreamResult<AsyncReadPinBox>> {
+    ) -> RsResult<FileStreamResult<AsyncReadPinBox>> {
         let target_kind = kind.unwrap_or(ImageType::Poster);
 
-        let resolved_book_id = if RsIds::is_id(book_id) {
-            self.get_book(library_id, book_id.to_string(), requesting_user)
-                .await?
-                .id
+        if RsIds::is_id(book_id) {
+            let book_ids: RsIds = book_id.to_string().try_into()?;
+            let store = self.store.get_library_store(library_id)?;
+            let existing_book = store.get_book_by_external_id(book_ids.clone()).await?;
+
+            if let Some(existing_book) = existing_book {
+                self.book_image(library_id, &existing_book.id, Some(target_kind), size, requesting_user)
+                    .await
+            } else {
+                // Book not in DB — fetch image from plugin lookup and cache it
+                let local_provider = self.library_source_for_library(library_id).await?;
+                let image_path = format!("cache/book-{}-{}.avif", book_id.replace(':', "-"), target_kind);
+
+                if !local_provider.exists(&image_path).await {
+                    let lookup_query = RsLookupBook {
+                        name: None,
+                        ids: Some(book_ids),
+                    };
+                    let image_request = self
+                        .get_book_image_url(lookup_query, Some(library_id.to_string()), &target_kind, requesting_user)
+                        .await?
+                        .ok_or(crate::Error::NotFound(format!(
+                            "Unable to get book image url: {} kind {:?}",
+                            book_id, target_kind
+                        )))?;
+                    let (_, mut writer) = local_provider.get_file_write_stream(&image_path).await?;
+                    let image_reader = SourceRead::Request(image_request)
+                        .into_reader(
+                            Some(library_id),
+                            None,
+                            None,
+                            Some((self.clone(), requesting_user)),
+                            None,
+                        )
+                        .await?;
+                    let resized = resize_image_reader(
+                        image_reader.stream,
+                        ImageSize::Large.to_size(),
+                        image::ImageFormat::Avif,
+                        Some(70),
+                        false,
+                    )
+                    .await?;
+                    writer.write_all(&resized).await?;
+                }
+
+                let source = local_provider.get_file(&image_path, None).await?;
+                match source {
+                    SourceRead::Stream(s) => Ok(s),
+                    SourceRead::Request(_) => Err(crate::Error::GenericRedseatError),
+                }
+            }
         } else {
-            book_id.to_string()
-        };
+            if !self
+                .has_library_image(library_id, ".books", book_id, Some(target_kind.clone()), requesting_user)
+                .await?
+            {
+                self.refresh_book_image(library_id, book_id, &target_kind, requesting_user)
+                    .await?;
+            }
 
-        if !self
-            .has_library_image(
-                library_id,
-                ".books",
-                &resolved_book_id,
-                Some(target_kind.clone()),
-                requesting_user,
-            )
-            .await?
-        {
-            self.refresh_book_image(library_id, &resolved_book_id, &target_kind, requesting_user)
-                .await?;
+            self.library_image(library_id, ".books", book_id, Some(target_kind), size, requesting_user)
+                .await
         }
-
-        self.library_image(
-            library_id,
-            ".books",
-            &resolved_book_id,
-            Some(target_kind),
-            size,
-            requesting_user,
-        )
-        .await
     }
 
     pub async fn get_book_images(
@@ -360,6 +396,7 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> RsResult<Vec<ExternalImage>> {
         let lookup_query = RsLookupQuery::Book(query);
+        println!("Executing book image lookup with query: {:?}", lookup_query);
         let images = match self
             .exec_lookup_images(lookup_query, library_id, requesting_user, None)
             .await
@@ -373,6 +410,8 @@ impl ModelController {
                 Vec::new()
             }
         };
+        
+        println!("result: {:?}", images);
         Ok(images)
     }
 

@@ -1,7 +1,7 @@
 
 use std::{convert::Infallible, io::Cursor, time::Duration};
 
-use crate::{domain::serie::Serie, error::RsError, model::{episodes::EpisodeQuery, series::{SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, plugins::sources::error::SourcesError, Error, Result};
+use crate::{domain::serie::Serie, error::RsError, model::{books::BookQuery, episodes::EpisodeQuery, series::{SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, plugins::sources::error::SourcesError, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{sse::{Event, KeepAlive, Sse}, IntoResponse, Response}, routing::{delete, get, patch, post, put}, Json, Router};
 use futures::{Stream, TryStreamExt};
 use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, lookup::{RsLookupMovie, RsLookupSerie}, ExternalImage, ImageType};
@@ -32,9 +32,21 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/:id/image", post(handler_post_image))
 		.route("/:id/image/search", get(handler_image_search))
 		.route("/:id/image/fetch", post(handler_image_fetch))
+		.route("/:id/books", get(handler_list_books))
 		.with_state(mc.clone())
 		.nest("/:id/", super::episodes::routes(mc))
         
+}
+
+async fn handler_list_books(
+	Path((library_id, serie_id)): Path<(String, String)>,
+	State(mc): State<ModelController>,
+	user: ConnectedUser,
+	Query(mut query): Query<BookQuery>,
+) -> Result<Json<Value>> {
+	query.serie_ref = Some(serie_id);
+	let books = mc.get_books(&library_id, query, &user).await?;
+	Ok(Json(json!(books)))
 }
 
 async fn handler_list(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<SerieQuery>) -> Result<Json<Value>> {
