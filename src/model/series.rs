@@ -283,6 +283,7 @@ impl ModelController {
             let trakt_entries: Vec<RsLookupMetadataResultWithImages> = trakt_results.into_iter().map(|serie| RsLookupMetadataResultWithImages {
                 metadata: RsLookupMetadataResult::Serie(serie),
                 images: vec![],
+                ..Default::default()
             }).collect();
             if !trakt_entries.is_empty() {
                 results.insert("trakt".to_string(), trakt_entries);
@@ -336,6 +337,7 @@ impl ModelController {
             let trakt_entries: Vec<RsLookupMetadataResultWithImages> = trakt_results.into_iter().map(|serie| RsLookupMetadataResultWithImages {
                 metadata: RsLookupMetadataResult::Serie(serie),
                 images: vec![],
+                ..Default::default()
             }).collect();
             if !trakt_entries.is_empty() {
                 let _ = tx.send(("trakt".to_string(), trakt_entries)).await;
