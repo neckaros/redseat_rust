@@ -303,7 +303,7 @@ pub enum ClientError {
 	NOT_FOR_CRYPTED_LIBRARY,
 	INVALID_PARAMS,
 	SERVICE_ERROR,
-	Custom(String),
+	Custom { message: String },
 	DUPLICATE(DuplicateClientError),
 	PLUGIN {code: i32, message: String}
 }

@@ -139,7 +139,7 @@ impl Error {
             Error::UserNotFound(_) => (StatusCode::NOT_FOUND, ClientError::NOT_FOUND),
             Error::LibraryDeletionInProgress(_) => (
                 StatusCode::CONFLICT,
-                ClientError::Custom("Library deletion already in progress".to_string()),
+                ClientError::Custom { message: "Library deletion already in progress".to_string() },
             ),
 
             Self::Duplicate(id, element) => (
@@ -152,7 +152,7 @@ impl Error {
 
             Error::InvalidIdForAction(action, id) => (
                 StatusCode::BAD_REQUEST,
-                ClientError::Custom(format!("Invalid id {} for {}", id, action)),
+                ClientError::Custom { message: format!("Invalid id {} for {}", id, action) },
             ),
 
             Error::ServiceError(_, _) => (
