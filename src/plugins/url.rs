@@ -2,7 +2,7 @@ use std::{collections::HashMap, time::Duration};
 
 use async_recursion::async_recursion;
 use extism::convert::Json;
-use futures::future::ok;
+use futures::StreamExt;
 use http::header::{CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE};
 use rs_plugin_common_interfaces::{lookup::{RsLookupMetadataResultWithImages, RsLookupQuery, RsLookupSourceResult, RsLookupWrapper}, request::{RsProcessingActionRequest, RsProcessingProgress, RsRequest, RsRequestAddResponse, RsRequestPluginRequest, RsRequestStatus}, url::RsLink, ExternalImage, PluginCredential, PluginType};
 
@@ -279,34 +279,55 @@ impl PluginManager {
 
     pub async fn lookup(&self, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<Vec<RsRequest>> {
         let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
+
+        let tasks: Vec<_> = {
+            let plugins_guard = self.plugins.read().await;
+            plugins.into_iter().filter_map(|plugin_with_cred| {
+                plugins_guard.iter()
+                    .find(|p| p.filename == plugin_with_cred.plugin.path)
+                    .filter(|p| p.infos.capabilities.contains(&PluginType::Lookup))
+                    .map(|p| {
+                        let plugin_arc = p.plugin.clone();
+                        let plugin_id = plugin_with_cred.plugin.id.clone();
+                        let plugin_name = plugin_with_cred.plugin.name.clone();
+                        let wrapped_query = RsLookupWrapper {
+                            query: query.clone(),
+                            credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
+                            params: plugin_with_cred.credential.as_ref()
+                                .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
+                        };
+                        (plugin_arc, plugin_id, plugin_name, wrapped_query)
+                    })
+            }).collect()
+        };
+
+        let handles: Vec<_> = tasks.into_iter().map(|(plugin_arc, plugin_id, plugin_name, wrapped_query)| {
+            tokio::task::spawn_blocking(move || {
+                let mut plugin_m = plugin_arc.lock().unwrap();
+                let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<RsLookupSourceResult>>("lookup", Json(wrapped_query));
+                (plugin_id, plugin_name, res)
+            })
+        }).collect();
+
         let mut results = vec![];
-        for plugin_with_cred in plugins {
-            if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
-                let mut plugin_m = plugin.plugin.lock().unwrap();
-
-                println!("PLUGIN {}", plugin_with_cred.plugin.name);
-                if plugin.infos.capabilities.contains(&PluginType::Lookup) {
-                    let wrapped_query = RsLookupWrapper {
-                        query: query.clone(),
-                        credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
-                        params: plugin_with_cred.credential.as_ref()
-                            .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
-                    };
-                    let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<RsLookupSourceResult>>("lookup", Json(wrapped_query));
-                    if let Ok(Json(res)) = res {                        if let RsLookupSourceResult::Requests(mut request) = res {
-                            log_info(crate::tools::log::LogServiceType::Plugin, format!("Lookup result from plugin {}", plugin_with_cred.plugin.name));
-                            for req in &mut request {
-                                req.plugin_id = Some(plugin_with_cred.plugin.id.clone());
-                                req.plugin_name = Some(plugin_with_cred.plugin.name.clone());
-                            }
-                            results.append(&mut request)
-                        }
-                    } else if let Err((error, code)) = res {
-                        if code != 404 {
-                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request lookup {} {:?}", code, error))
-                        }
+        for handle in handles {
+            match handle.await {
+                Ok((plugin_id, plugin_name, Ok(Json(RsLookupSourceResult::Requests(mut request))))) => {
+                    log_info(crate::tools::log::LogServiceType::Plugin, format!("Lookup result from plugin {}", plugin_name));
+                    for req in &mut request {
+                        req.plugin_id = Some(plugin_id.clone());
+                        req.plugin_name = Some(plugin_name.clone());
                     }
-
+                    results.append(&mut request);
+                }
+                Ok((_, _, Ok(_))) => {}
+                Ok((_, _, Err((error, code)))) => {
+                    if code != 404 {
+                        log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request lookup {} {:?}", code, error));
+                    }
+                }
+                Err(e) => {
+                    log_error(crate::tools::log::LogServiceType::Plugin, format!("Plugin task panicked: {:?}", e));
                 }
             }
         }
@@ -315,27 +336,49 @@ impl PluginManager {
 
     pub async fn lookup_metadata(&self, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<Vec<RsLookupMetadataResultWithImages>> {
         let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
-        let mut results = vec![];
-        for plugin_with_cred in plugins {
-            if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
-                let mut plugin_m = plugin.plugin.lock().unwrap();
 
-                if plugin.infos.capabilities.contains(&PluginType::LookupMetadata) {
-                    let wrapped_query = RsLookupWrapper {
-                        query: query.clone(),
-                        credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
-                        params: plugin_with_cred.credential.as_ref()
-                            .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
-                    };
-                    let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<RsLookupMetadataResultWithImages>>>("lookup_metadata", Json(wrapped_query));
-                    if let Ok(Json(mut res)) = res {
-                        log_info(crate::tools::log::LogServiceType::Plugin, format!("Lookup metadata result from plugin {}", plugin_with_cred.plugin.name));
-                        results.append(&mut res);
-                    } else if let Err((error, code)) = res {
-                        if code != 404 {
-                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request lookup_metadata {} {:?}", code, error))
-                        }
+        let tasks: Vec<_> = {
+            let plugins_guard = self.plugins.read().await;
+            plugins.into_iter().filter_map(|plugin_with_cred| {
+                plugins_guard.iter()
+                    .find(|p| p.filename == plugin_with_cred.plugin.path)
+                    .filter(|p| p.infos.capabilities.contains(&PluginType::LookupMetadata))
+                    .map(|p| {
+                        let plugin_arc = p.plugin.clone();
+                        let plugin_name = plugin_with_cred.plugin.name.clone();
+                        let wrapped_query = RsLookupWrapper {
+                            query: query.clone(),
+                            credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
+                            params: plugin_with_cred.credential.as_ref()
+                                .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
+                        };
+                        (plugin_arc, plugin_name, wrapped_query)
+                    })
+            }).collect()
+        };
+
+        let handles: Vec<_> = tasks.into_iter().map(|(plugin_arc, plugin_name, wrapped_query)| {
+            tokio::task::spawn_blocking(move || {
+                let mut plugin_m = plugin_arc.lock().unwrap();
+                let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<RsLookupMetadataResultWithImages>>>("lookup_metadata", Json(wrapped_query));
+                (plugin_name, res)
+            })
+        }).collect();
+
+        let mut results = vec![];
+        for handle in handles {
+            match handle.await {
+                Ok((plugin_name, Ok(Json(mut res)))) => {
+                    log_info(crate::tools::log::LogServiceType::Plugin, format!("Lookup metadata result from plugin {}", plugin_name));
+                    results.append(&mut res);
+                }
+                Ok((_, Err((error, code)))) => {
+                    if code != 404 {
+                        log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request lookup_metadata {} {:?}", code, error));
                     }
+                }
+                Err(e) => {
+                    log_error(crate::tools::log::LogServiceType::Plugin, format!("Plugin task panicked: {:?}", e));
                 }
             }
         }
@@ -344,27 +387,49 @@ impl PluginManager {
 
     pub async fn lookup_metadata_grouped(&self, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<HashMap<String, Vec<RsLookupMetadataResultWithImages>>> {
         let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
-        let mut results: HashMap<String, Vec<RsLookupMetadataResultWithImages>> = HashMap::new();
-        for plugin_with_cred in plugins {
-            if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
-                let mut plugin_m = plugin.plugin.lock().unwrap();
 
-                if plugin.infos.capabilities.contains(&PluginType::LookupMetadata) {
-                    let wrapped_query = RsLookupWrapper {
-                        query: query.clone(),
-                        credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
-                        params: plugin_with_cred.credential.as_ref()
-                            .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
-                    };
-                    let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<RsLookupMetadataResultWithImages>>>("lookup_metadata", Json(wrapped_query));
-                    if let Ok(Json(res)) = res {
-                        log_info(crate::tools::log::LogServiceType::Plugin, format!("Lookup metadata result from plugin {}", plugin_with_cred.plugin.name));
-                        results.entry(plugin_with_cred.plugin.name.clone()).or_default().extend(res);
-                    } else if let Err((error, code)) = res {
-                        if code != 404 {
-                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request lookup_metadata {} {:?}", code, error))
-                        }
+        let tasks: Vec<_> = {
+            let plugins_guard = self.plugins.read().await;
+            plugins.into_iter().filter_map(|plugin_with_cred| {
+                plugins_guard.iter()
+                    .find(|p| p.filename == plugin_with_cred.plugin.path)
+                    .filter(|p| p.infos.capabilities.contains(&PluginType::LookupMetadata))
+                    .map(|p| {
+                        let plugin_arc = p.plugin.clone();
+                        let plugin_name = plugin_with_cred.plugin.name.clone();
+                        let wrapped_query = RsLookupWrapper {
+                            query: query.clone(),
+                            credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
+                            params: plugin_with_cred.credential.as_ref()
+                                .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
+                        };
+                        (plugin_arc, plugin_name, wrapped_query)
+                    })
+            }).collect()
+        };
+
+        let handles: Vec<_> = tasks.into_iter().map(|(plugin_arc, plugin_name, wrapped_query)| {
+            tokio::task::spawn_blocking(move || {
+                let mut plugin_m = plugin_arc.lock().unwrap();
+                let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<RsLookupMetadataResultWithImages>>>("lookup_metadata", Json(wrapped_query));
+                (plugin_name, res)
+            })
+        }).collect();
+
+        let mut results: HashMap<String, Vec<RsLookupMetadataResultWithImages>> = HashMap::new();
+        for handle in handles {
+            match handle.await {
+                Ok((plugin_name, Ok(Json(res)))) => {
+                    log_info(crate::tools::log::LogServiceType::Plugin, format!("Lookup metadata result from plugin {}", plugin_name));
+                    results.entry(plugin_name).or_default().extend(res);
+                }
+                Ok((_, Err((error, code)))) => {
+                    if code != 404 {
+                        log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request lookup_metadata {} {:?}", code, error));
                     }
+                }
+                Err(e) => {
+                    log_error(crate::tools::log::LogServiceType::Plugin, format!("Plugin task panicked: {:?}", e));
                 }
             }
         }
@@ -374,43 +439,51 @@ impl PluginManager {
     pub async fn lookup_metadata_stream(self: &std::sync::Arc<Self>, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<tokio::sync::mpsc::Receiver<Vec<RsLookupMetadataResultWithImages>>> {
         let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
         let (tx, rx) = tokio::sync::mpsc::channel(16);
-        let manager = self.clone();
+
+        let tasks: Vec<_> = {
+            let plugins_guard = self.plugins.read().await;
+            plugins.into_iter().filter_map(|plugin_with_cred| {
+                plugins_guard.iter()
+                    .find(|p| p.filename == plugin_with_cred.plugin.path)
+                    .filter(|p| p.infos.capabilities.contains(&PluginType::LookupMetadata))
+                    .map(|p| {
+                        let plugin_arc = p.plugin.clone();
+                        let plugin_name = plugin_with_cred.plugin.name.clone();
+                        let wrapped_query = RsLookupWrapper {
+                            query: query.clone(),
+                            credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
+                            params: plugin_with_cred.credential.as_ref()
+                                .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
+                        };
+                        (plugin_arc, plugin_name, wrapped_query)
+                    })
+            }).collect()
+        };
+
         tokio::spawn(async move {
-            for plugin_with_cred in plugins {
-                let call_result = {
-                    let plugins_guard = manager.plugins.read().await;
-                    if let Some(plugin) = plugins_guard.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
-                        if plugin.infos.capabilities.contains(&PluginType::LookupMetadata) {
-                            let mut plugin_m = plugin.plugin.lock().unwrap();
-                            let wrapped_query = RsLookupWrapper {
-                                query: query.clone(),
-                                credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
-                                params: plugin_with_cred.credential.as_ref()
-                                    .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
-                            };
-                            let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<RsLookupMetadataResultWithImages>>>("lookup_metadata", Json(wrapped_query));
-                            match res {
-                                Ok(Json(res)) => {
-                                    log_info(crate::tools::log::LogServiceType::Plugin, format!("Lookup metadata stream result from plugin {}", plugin_with_cred.plugin.name));
-                                    Some(Ok(res))
-                                }
-                                Err((error, code)) => {
-                                    if code != 404 {
-                                        log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request lookup_metadata {} {:?}", code, error))
-                                    }
-                                    Some(Err(()))
-                                }
-                            }
-                        } else {
-                            None
+            let mut pending: futures::stream::FuturesUnordered<_> = tasks.into_iter().map(|(plugin_arc, plugin_name, wrapped_query)| {
+                tokio::task::spawn_blocking(move || {
+                    let mut plugin_m = plugin_arc.lock().unwrap();
+                    let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<RsLookupMetadataResultWithImages>>>("lookup_metadata", Json(wrapped_query));
+                    (plugin_name, res)
+                })
+            }).collect();
+
+            while let Some(handle_result) = pending.next().await {
+                match handle_result {
+                    Ok((plugin_name, Ok(Json(res)))) => {
+                        log_info(crate::tools::log::LogServiceType::Plugin, format!("Lookup metadata stream result from plugin {}", plugin_name));
+                        if tx.send(res).await.is_err() {
+                            break;
                         }
-                    } else {
-                        None
                     }
-                };
-                if let Some(Ok(res)) = call_result {
-                    if tx.send(res).await.is_err() {
-                        break;
+                    Ok((_, Err((error, code)))) => {
+                        if code != 404 {
+                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request lookup_metadata {} {:?}", code, error));
+                        }
+                    }
+                    Err(e) => {
+                        log_error(crate::tools::log::LogServiceType::Plugin, format!("Plugin task panicked: {:?}", e));
                     }
                 }
             }
@@ -421,43 +494,51 @@ impl PluginManager {
     pub async fn lookup_metadata_stream_grouped(self: &std::sync::Arc<Self>, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<tokio::sync::mpsc::Receiver<(String, Vec<RsLookupMetadataResultWithImages>)>> {
         let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
         let (tx, rx) = tokio::sync::mpsc::channel(16);
-        let manager = self.clone();
+
+        let tasks: Vec<_> = {
+            let plugins_guard = self.plugins.read().await;
+            plugins.into_iter().filter_map(|plugin_with_cred| {
+                plugins_guard.iter()
+                    .find(|p| p.filename == plugin_with_cred.plugin.path)
+                    .filter(|p| p.infos.capabilities.contains(&PluginType::LookupMetadata))
+                    .map(|p| {
+                        let plugin_arc = p.plugin.clone();
+                        let plugin_name = plugin_with_cred.plugin.name.clone();
+                        let wrapped_query = RsLookupWrapper {
+                            query: query.clone(),
+                            credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
+                            params: plugin_with_cred.credential.as_ref()
+                                .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
+                        };
+                        (plugin_arc, plugin_name, wrapped_query)
+                    })
+            }).collect()
+        };
+
         tokio::spawn(async move {
-            for plugin_with_cred in plugins {
-                let call_result = {
-                    let plugins_guard = manager.plugins.read().await;
-                    if let Some(plugin) = plugins_guard.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
-                        if plugin.infos.capabilities.contains(&PluginType::LookupMetadata) {
-                            let mut plugin_m = plugin.plugin.lock().unwrap();
-                            let wrapped_query = RsLookupWrapper {
-                                query: query.clone(),
-                                credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
-                                params: plugin_with_cred.credential.as_ref()
-                                    .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
-                            };
-                            let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<RsLookupMetadataResultWithImages>>>("lookup_metadata", Json(wrapped_query));
-                            match res {
-                                Ok(Json(res)) => {
-                                    log_info(crate::tools::log::LogServiceType::Plugin, format!("Lookup metadata stream result from plugin {}", plugin_with_cred.plugin.name));
-                                    Some(Ok((plugin_with_cred.plugin.name.clone(), res)))
-                                }
-                                Err((error, code)) => {
-                                    if code != 404 {
-                                        log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request lookup_metadata {} {:?}", code, error))
-                                    }
-                                    Some(Err(()))
-                                }
-                            }
-                        } else {
-                            None
+            let mut pending: futures::stream::FuturesUnordered<_> = tasks.into_iter().map(|(plugin_arc, plugin_name, wrapped_query)| {
+                tokio::task::spawn_blocking(move || {
+                    let mut plugin_m = plugin_arc.lock().unwrap();
+                    let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<RsLookupMetadataResultWithImages>>>("lookup_metadata", Json(wrapped_query));
+                    (plugin_name, res)
+                })
+            }).collect();
+
+            while let Some(handle_result) = pending.next().await {
+                match handle_result {
+                    Ok((plugin_name, Ok(Json(res)))) => {
+                        log_info(crate::tools::log::LogServiceType::Plugin, format!("Lookup metadata stream result from plugin {}", plugin_name));
+                        if tx.send((plugin_name, res)).await.is_err() {
+                            break;
                         }
-                    } else {
-                        None
                     }
-                };
-                if let Some(Ok(res)) = call_result {
-                    if tx.send(res).await.is_err() {
-                        break;
+                    Ok((_, Err((error, code)))) => {
+                        if code != 404 {
+                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request lookup_metadata {} {:?}", code, error));
+                        }
+                    }
+                    Err(e) => {
+                        log_error(crate::tools::log::LogServiceType::Plugin, format!("Plugin task panicked: {:?}", e));
                     }
                 }
             }
@@ -467,27 +548,49 @@ impl PluginManager {
 
     pub async fn lookup_images(&self, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<Vec<ExternalImage>> {
         let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
-        let mut results = vec![];
-        for plugin_with_cred in plugins {
-            if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
-                let mut plugin_m = plugin.plugin.lock().unwrap();
 
-                if plugin.infos.capabilities.contains(&PluginType::LookupMetadata) {
-                    let wrapped_query = RsLookupWrapper {
-                        query: query.clone(),
-                        credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
-                        params: plugin_with_cred.credential.as_ref()
-                            .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
-                    };
-                    let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<ExternalImage>>>("lookup_metadata_images", Json(wrapped_query));
-                    if let Ok(Json(mut res)) = res {
-                        log_info(crate::tools::log::LogServiceType::Plugin, format!("Lookup metadata images result from plugin {}", plugin_with_cred.plugin.name));
-                        results.append(&mut res);
-                    } else if let Err((error, code)) = res {
-                        if code != 404 {
-                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request lookup_metadata_images {} {:?}", code, error))
-                        }
+        let tasks: Vec<_> = {
+            let plugins_guard = self.plugins.read().await;
+            plugins.into_iter().filter_map(|plugin_with_cred| {
+                plugins_guard.iter()
+                    .find(|p| p.filename == plugin_with_cred.plugin.path)
+                    .filter(|p| p.infos.capabilities.contains(&PluginType::LookupMetadata))
+                    .map(|p| {
+                        let plugin_arc = p.plugin.clone();
+                        let plugin_name = plugin_with_cred.plugin.name.clone();
+                        let wrapped_query = RsLookupWrapper {
+                            query: query.clone(),
+                            credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
+                            params: plugin_with_cred.credential.as_ref()
+                                .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
+                        };
+                        (plugin_arc, plugin_name, wrapped_query)
+                    })
+            }).collect()
+        };
+
+        let handles: Vec<_> = tasks.into_iter().map(|(plugin_arc, plugin_name, wrapped_query)| {
+            tokio::task::spawn_blocking(move || {
+                let mut plugin_m = plugin_arc.lock().unwrap();
+                let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<ExternalImage>>>("lookup_metadata_images", Json(wrapped_query));
+                (plugin_name, res)
+            })
+        }).collect();
+
+        let mut results = vec![];
+        for handle in handles {
+            match handle.await {
+                Ok((plugin_name, Ok(Json(mut res)))) => {
+                    log_info(crate::tools::log::LogServiceType::Plugin, format!("Lookup metadata images result from plugin {}", plugin_name));
+                    results.append(&mut res);
+                }
+                Ok((_, Err((error, code)))) => {
+                    if code != 404 {
+                        log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request lookup_metadata_images {} {:?}", code, error));
                     }
+                }
+                Err(e) => {
+                    log_error(crate::tools::log::LogServiceType::Plugin, format!("Plugin task panicked: {:?}", e));
                 }
             }
         }
@@ -496,27 +599,49 @@ impl PluginManager {
 
     pub async fn lookup_images_grouped(&self, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<HashMap<String, Vec<ExternalImage>>> {
         let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
-        let mut results: HashMap<String, Vec<ExternalImage>> = HashMap::new();
-        for plugin_with_cred in plugins {
-            if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
-                let mut plugin_m = plugin.plugin.lock().unwrap();
 
-                if plugin.infos.capabilities.contains(&PluginType::LookupMetadata) {
-                    let wrapped_query = RsLookupWrapper {
-                        query: query.clone(),
-                        credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
-                        params: plugin_with_cred.credential.as_ref()
-                            .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
-                    };
-                    let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<ExternalImage>>>("lookup_metadata_images", Json(wrapped_query));
-                    if let Ok(Json(res)) = res {
-                        log_info(crate::tools::log::LogServiceType::Plugin, format!("Lookup metadata images result from plugin {}", plugin_with_cred.plugin.name));
-                        results.entry(plugin_with_cred.plugin.name.clone()).or_default().extend(res);
-                    } else if let Err((error, code)) = res {
-                        if code != 404 {
-                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request lookup_metadata_images {} {:?}", code, error))
-                        }
+        let tasks: Vec<_> = {
+            let plugins_guard = self.plugins.read().await;
+            plugins.into_iter().filter_map(|plugin_with_cred| {
+                plugins_guard.iter()
+                    .find(|p| p.filename == plugin_with_cred.plugin.path)
+                    .filter(|p| p.infos.capabilities.contains(&PluginType::LookupMetadata))
+                    .map(|p| {
+                        let plugin_arc = p.plugin.clone();
+                        let plugin_name = plugin_with_cred.plugin.name.clone();
+                        let wrapped_query = RsLookupWrapper {
+                            query: query.clone(),
+                            credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
+                            params: plugin_with_cred.credential.as_ref()
+                                .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
+                        };
+                        (plugin_arc, plugin_name, wrapped_query)
+                    })
+            }).collect()
+        };
+
+        let handles: Vec<_> = tasks.into_iter().map(|(plugin_arc, plugin_name, wrapped_query)| {
+            tokio::task::spawn_blocking(move || {
+                let mut plugin_m = plugin_arc.lock().unwrap();
+                let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<ExternalImage>>>("lookup_metadata_images", Json(wrapped_query));
+                (plugin_name, res)
+            })
+        }).collect();
+
+        let mut results: HashMap<String, Vec<ExternalImage>> = HashMap::new();
+        for handle in handles {
+            match handle.await {
+                Ok((plugin_name, Ok(Json(res)))) => {
+                    log_info(crate::tools::log::LogServiceType::Plugin, format!("Lookup metadata images result from plugin {}", plugin_name));
+                    results.entry(plugin_name).or_default().extend(res);
+                }
+                Ok((_, Err((error, code)))) => {
+                    if code != 404 {
+                        log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request lookup_metadata_images {} {:?}", code, error));
                     }
+                }
+                Err(e) => {
+                    log_error(crate::tools::log::LogServiceType::Plugin, format!("Plugin task panicked: {:?}", e));
                 }
             }
         }
@@ -526,43 +651,51 @@ impl PluginManager {
     pub async fn lookup_images_stream(self: &std::sync::Arc<Self>, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<tokio::sync::mpsc::Receiver<Vec<ExternalImage>>> {
         let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
         let (tx, rx) = tokio::sync::mpsc::channel(16);
-        let manager = self.clone();
+
+        let tasks: Vec<_> = {
+            let plugins_guard = self.plugins.read().await;
+            plugins.into_iter().filter_map(|plugin_with_cred| {
+                plugins_guard.iter()
+                    .find(|p| p.filename == plugin_with_cred.plugin.path)
+                    .filter(|p| p.infos.capabilities.contains(&PluginType::LookupMetadata))
+                    .map(|p| {
+                        let plugin_arc = p.plugin.clone();
+                        let plugin_name = plugin_with_cred.plugin.name.clone();
+                        let wrapped_query = RsLookupWrapper {
+                            query: query.clone(),
+                            credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
+                            params: plugin_with_cred.credential.as_ref()
+                                .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
+                        };
+                        (plugin_arc, plugin_name, wrapped_query)
+                    })
+            }).collect()
+        };
+
         tokio::spawn(async move {
-            for plugin_with_cred in plugins {
-                let call_result = {
-                    let plugins_guard = manager.plugins.read().await;
-                    if let Some(plugin) = plugins_guard.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
-                        if plugin.infos.capabilities.contains(&PluginType::LookupMetadata) {
-                            let mut plugin_m = plugin.plugin.lock().unwrap();
-                            let wrapped_query = RsLookupWrapper {
-                                query: query.clone(),
-                                credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
-                                params: plugin_with_cred.credential.as_ref()
-                                    .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
-                            };
-                            let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<ExternalImage>>>("lookup_metadata_images", Json(wrapped_query));
-                            match res {
-                                Ok(Json(res)) => {
-                                    log_info(crate::tools::log::LogServiceType::Plugin, format!("Lookup metadata images stream result from plugin {}", plugin_with_cred.plugin.name));
-                                    Some(Ok(res))
-                                }
-                                Err((error, code)) => {
-                                    if code != 404 {
-                                        log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request lookup_metadata_images {} {:?}", code, error))
-                                    }
-                                    Some(Err(()))
-                                }
-                            }
-                        } else {
-                            None
+            let mut pending: futures::stream::FuturesUnordered<_> = tasks.into_iter().map(|(plugin_arc, plugin_name, wrapped_query)| {
+                tokio::task::spawn_blocking(move || {
+                    let mut plugin_m = plugin_arc.lock().unwrap();
+                    let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<ExternalImage>>>("lookup_metadata_images", Json(wrapped_query));
+                    (plugin_name, res)
+                })
+            }).collect();
+
+            while let Some(handle_result) = pending.next().await {
+                match handle_result {
+                    Ok((plugin_name, Ok(Json(res)))) => {
+                        log_info(crate::tools::log::LogServiceType::Plugin, format!("Lookup metadata images stream result from plugin {}", plugin_name));
+                        if tx.send(res).await.is_err() {
+                            break;
                         }
-                    } else {
-                        None
                     }
-                };
-                if let Some(Ok(res)) = call_result {
-                    if tx.send(res).await.is_err() {
-                        break;
+                    Ok((_, Err((error, code)))) => {
+                        if code != 404 {
+                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request lookup_metadata_images {} {:?}", code, error));
+                        }
+                    }
+                    Err(e) => {
+                        log_error(crate::tools::log::LogServiceType::Plugin, format!("Plugin task panicked: {:?}", e));
                     }
                 }
             }
@@ -573,43 +706,51 @@ impl PluginManager {
     pub async fn lookup_images_stream_grouped(self: &std::sync::Arc<Self>, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<tokio::sync::mpsc::Receiver<(String, Vec<ExternalImage>)>> {
         let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
         let (tx, rx) = tokio::sync::mpsc::channel(16);
-        let manager = self.clone();
+
+        let tasks: Vec<_> = {
+            let plugins_guard = self.plugins.read().await;
+            plugins.into_iter().filter_map(|plugin_with_cred| {
+                plugins_guard.iter()
+                    .find(|p| p.filename == plugin_with_cred.plugin.path)
+                    .filter(|p| p.infos.capabilities.contains(&PluginType::LookupMetadata))
+                    .map(|p| {
+                        let plugin_arc = p.plugin.clone();
+                        let plugin_name = plugin_with_cred.plugin.name.clone();
+                        let wrapped_query = RsLookupWrapper {
+                            query: query.clone(),
+                            credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
+                            params: plugin_with_cred.credential.as_ref()
+                                .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
+                        };
+                        (plugin_arc, plugin_name, wrapped_query)
+                    })
+            }).collect()
+        };
+
         tokio::spawn(async move {
-            for plugin_with_cred in plugins {
-                let call_result = {
-                    let plugins_guard = manager.plugins.read().await;
-                    if let Some(plugin) = plugins_guard.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
-                        if plugin.infos.capabilities.contains(&PluginType::LookupMetadata) {
-                            let mut plugin_m = plugin.plugin.lock().unwrap();
-                            let wrapped_query = RsLookupWrapper {
-                                query: query.clone(),
-                                credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
-                                params: plugin_with_cred.credential.as_ref()
-                                    .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
-                            };
-                            let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<ExternalImage>>>("lookup_metadata_images", Json(wrapped_query));
-                            match res {
-                                Ok(Json(res)) => {
-                                    log_info(crate::tools::log::LogServiceType::Plugin, format!("Lookup metadata images stream result from plugin {}", plugin_with_cred.plugin.name));
-                                    Some(Ok((plugin_with_cred.plugin.name.clone(), res)))
-                                }
-                                Err((error, code)) => {
-                                    if code != 404 {
-                                        log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request lookup_metadata_images {} {:?}", code, error))
-                                    }
-                                    Some(Err(()))
-                                }
-                            }
-                        } else {
-                            None
+            let mut pending: futures::stream::FuturesUnordered<_> = tasks.into_iter().map(|(plugin_arc, plugin_name, wrapped_query)| {
+                tokio::task::spawn_blocking(move || {
+                    let mut plugin_m = plugin_arc.lock().unwrap();
+                    let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<ExternalImage>>>("lookup_metadata_images", Json(wrapped_query));
+                    (plugin_name, res)
+                })
+            }).collect();
+
+            while let Some(handle_result) = pending.next().await {
+                match handle_result {
+                    Ok((plugin_name, Ok(Json(res)))) => {
+                        log_info(crate::tools::log::LogServiceType::Plugin, format!("Lookup metadata images stream result from plugin {}", plugin_name));
+                        if tx.send((plugin_name, res)).await.is_err() {
+                            break;
                         }
-                    } else {
-                        None
                     }
-                };
-                if let Some(Ok(res)) = call_result {
-                    if tx.send(res).await.is_err() {
-                        break;
+                    Ok((_, Err((error, code)))) => {
+                        if code != 404 {
+                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request lookup_metadata_images {} {:?}", code, error));
+                        }
+                    }
+                    Err(e) => {
+                        log_error(crate::tools::log::LogServiceType::Plugin, format!("Plugin task panicked: {:?}", e));
                     }
                 }
             }

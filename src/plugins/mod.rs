@@ -1,4 +1,4 @@
-use std::{fs::read_dir, path::PathBuf, sync::Mutex};
+use std::{fs::read_dir, path::PathBuf, sync::{Arc, Mutex}};
 
 use extism::{convert::Json, Manifest, PluginBuilder, Wasm};
 use rs_plugin_common_interfaces::{PluginInformation, PluginType, RsRequest};
@@ -60,7 +60,7 @@ pub async fn list_plugins() -> crate::Result<impl Iterator<Item = PluginWasm>> {
                                             filename: filename.to_str().unwrap().to_string(),
                                             path,
                                             infos: res,
-                                            plugin:Mutex::new(plugin),
+                                            plugin: Arc::new(Mutex::new(plugin)),
                                         };
                                         Some(p)
                                     } else {
@@ -165,7 +165,7 @@ impl PluginManager {
             filename: filename.to_string(),
             path: folder,
             infos: infos.clone(),
-            plugin:Mutex::new(plugin),
+            plugin: Arc::new(Mutex::new(plugin)),
         };
         self.plugins.write().await.push(p);
         Ok(infos)

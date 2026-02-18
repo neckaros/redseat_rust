@@ -1,4 +1,4 @@
-use std::{path::PathBuf, sync::Mutex};
+use std::{path::PathBuf, sync::{Arc, Mutex}};
 
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
@@ -12,7 +12,7 @@ pub struct PluginWasm {
     pub path: PathBuf,
 	pub infos: PluginInformation,
     #[serde(skip_serializing)]
-    pub plugin: Mutex<ExtismPlugin>,
+    pub plugin: Arc<Mutex<ExtismPlugin>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
