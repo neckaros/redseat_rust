@@ -57,6 +57,8 @@ pub fn file_type_from_mime(mime: &str) -> FileType {
         FileType::Album
     } else if mime == "application/vnd.comicbook+cbz" || mime == "application/x-cbr" {
         FileType::Album
+    } else if mime == "application/epub+zip" {
+        FileType::Book
     } else {
         FileType::Other
     }

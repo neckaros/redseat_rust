@@ -1971,6 +1971,32 @@ impl ModelController {
                     .await?;
                 Ok(th)
             }
+            FileType::Book => {
+                let media_source: MediaSource = media.try_into()?;
+                let reader = m.get_file(&media_source.source, None).await?;
+                let mut reader = reader
+                    .into_reader(
+                        Some(library_id),
+                        None,
+                        None,
+                        Some((self.clone(), &requesting_user)),
+                        None,
+                    )
+                    .await?;
+                let mut epub_bytes = Vec::new();
+                reader.stream.read_to_end(&mut epub_bytes).await?;
+                let cover_bytes = tokio::task::spawn_blocking(move || {
+                    Self::extract_epub_cover_from_bytes(epub_bytes)
+                })
+                .await
+                .map_err(|_| crate::model::error::Error::UnsupportedTypeForThumb)??;
+                let image_reader: AsyncReadPinBox =
+                    Box::pin(std::io::Cursor::new(cover_bytes));
+                let image =
+                    resize_image_reader(image_reader, 512, image::ImageFormat::Avif, Some(50), false)
+                        .await?;
+                Ok(image)
+            }
             _ => Err(crate::model::error::Error::UnsupportedTypeForThumb),
         }?;
         self.update_library_image(
@@ -1985,6 +2011,61 @@ impl ModelController {
         .await?;
 
         Ok(())
+    }
+
+    fn extract_epub_cover_from_bytes(bytes: Vec<u8>) -> crate::error::Result<Vec<u8>> {
+        use std::io::Read as _;
+        let cursor = std::io::Cursor::new(bytes);
+        let mut archive = zip::ZipArchive::new(cursor)
+            .map_err(|_| RsError::Error("Unable to open epub as zip".to_string()))?;
+
+        // Priority 1: entry with stem "cover" and an image extension
+        let cover_index = (0..archive.len()).find(|&i| {
+            archive
+                .by_index_raw(i)
+                .ok()
+                .and_then(|e| {
+                    e.enclosed_name().map(|p| {
+                        let is_cover = p
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .map(|s| s.eq_ignore_ascii_case("cover"))
+                            .unwrap_or(false);
+                        let is_image = matches!(
+                            p.extension().and_then(|ext| ext.to_str()),
+                            Some("jpg" | "jpeg" | "png" | "webp" | "gif")
+                        );
+                        is_cover && is_image
+                    })
+                })
+                .unwrap_or(false)
+        });
+
+        // Priority 2: first image file in the archive
+        let index = cover_index.or_else(|| {
+            (0..archive.len()).find(|&i| {
+                archive
+                    .by_index_raw(i)
+                    .ok()
+                    .and_then(|e| {
+                        e.enclosed_name().map(|p| {
+                            matches!(
+                                p.extension().and_then(|ext| ext.to_str()),
+                                Some("jpg" | "jpeg" | "png" | "webp" | "gif")
+                            )
+                        })
+                    })
+                    .unwrap_or(false)
+            })
+        });
+
+        let index = index.ok_or(crate::model::error::Error::UnsupportedTypeForThumb)?;
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|_| RsError::Error("Unable to read epub cover entry".to_string()))?;
+        let mut data = Vec::new();
+        entry.read_to_end(&mut data)?;
+        Ok(data)
     }
 
     pub async fn get_video_thumb(
