@@ -3,15 +3,15 @@ use std::{convert::Infallible, io::Cursor, time::Duration};
 use axum::{
     body::Body,
     debug_handler,
-    extract::{Path, Query, State},
-    response::{IntoResponse, Response},
-    response::sse::{Event, KeepAlive, Sse},
     extract::Multipart,
+    extract::{Path, Query, State},
+    response::sse::{Event, KeepAlive, Sse},
+    response::{IntoResponse, Response},
     routing::{delete, get, patch, post},
     Json, Router,
 };
 use futures::{Stream, TryStreamExt};
-use rs_plugin_common_interfaces::domain::rs_ids::RsIds;
+use rs_plugin_common_interfaces::domain::{rs_ids::RsIds, ItemWithRelations};
 use rs_plugin_common_interfaces::lookup::{RsLookupBook, RsLookupQuery};
 use rs_plugin_common_interfaces::{ExternalImage, ImageType};
 use serde_json::{json, Value};
@@ -21,8 +21,7 @@ use crate::{
     domain::book::{Book, BookForUpdate},
     model::{books::BookQuery, medias::MediaQuery, users::ConnectedUser, ModelController},
     routes::{ImageRequestOptions, ImageUploadOptions},
-    Error,
-    Result,
+    Error, Result,
 };
 
 pub fn routes(mc: ModelController) -> Router {
@@ -48,9 +47,17 @@ async fn handler_list(
     State(mc): State<ModelController>,
     user: ConnectedUser,
     Query(query): Query<BookQuery>,
-) -> Result<Json<Value>> {
-    let books = mc.get_books(&library_id, query, &user).await?;
-    Ok(Json(json!(books)))
+) -> Result<Json<Vec<ItemWithRelations<Book>>>> {
+    let books: Vec<ItemWithRelations<Book>> = mc
+        .get_books(&library_id, query, &user)
+        .await?
+        .into_iter()
+        .map(|book| ItemWithRelations {
+            item: book,
+            relations: None,
+        })
+        .collect();
+    Ok(Json(books))
 }
 
 async fn handler_post(
@@ -67,9 +74,9 @@ async fn handler_get(
     Path((library_id, book_id)): Path<(String, String)>,
     State(mc): State<ModelController>,
     user: ConnectedUser,
-) -> Result<Json<Value>> {
+) -> Result<Json<ItemWithRelations<Book>>> {
     let book = mc.get_book(&library_id, book_id, &user).await?;
-    Ok(Json(json!(book)))
+    Ok(Json(book))
 }
 
 async fn handler_patch(
@@ -98,7 +105,9 @@ async fn handler_search_books(
     Query(query): Query<RsLookupBook>,
 ) -> Result<Json<Value>> {
     let lookup_query = RsLookupQuery::Book(query);
-    let results = mc.exec_lookup_metadata_grouped(lookup_query, Some(library_id), &user, None).await?;
+    let results = mc
+        .exec_lookup_metadata_grouped(lookup_query, Some(library_id), &user, None)
+        .await?;
     Ok(Json(json!(results)))
 }
 
@@ -109,7 +118,9 @@ async fn handler_search_books_stream(
     Query(query): Query<RsLookupBook>,
 ) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>> {
     let lookup_query = RsLookupQuery::Book(query);
-    let mut rx = mc.exec_lookup_metadata_stream_grouped(lookup_query, Some(library_id), &user, None).await?;
+    let mut rx = mc
+        .exec_lookup_metadata_stream_grouped(lookup_query, Some(library_id), &user, None)
+        .await?;
 
     let stream = async_stream::stream! {
         while let Some((name, batch)) = rx.recv().await {
@@ -151,7 +162,13 @@ async fn handler_image(
     Query(query): Query<ImageRequestOptions>,
 ) -> Result<Response> {
     let reader_response = mc
-        .book_image(&library_id, &book_id, query.kind.clone(), query.size.clone(), &user)
+        .book_image(
+            &library_id,
+            &book_id,
+            query.kind.clone(),
+            query.size.clone(),
+            &user,
+        )
         .await;
 
     if let Ok(reader_response) = reader_response {
@@ -163,7 +180,13 @@ async fn handler_image(
         Ok((headers, body).into_response())
     } else if query.defaulting {
         let reader_response = mc
-            .book_image(&library_id, &book_id, Some(ImageType::Poster), query.size, &user)
+            .book_image(
+                &library_id,
+                &book_id,
+                Some(ImageType::Poster),
+                query.size,
+                &user,
+            )
             .await?;
         let headers = reader_response
             .hearders()
@@ -191,8 +214,8 @@ async fn handler_image_search(
     Query(_query): Query<ImageRequestOptions>,
 ) -> Result<Json<Value>> {
     let book = mc.get_book(&library_id, book_id, &user).await?;
-    let title = book.name.clone();
-    let ids: RsIds = book.into();
+    let title = book.item.name.clone();
+    let ids: RsIds = book.item.into();
     let query = RsLookupBook {
         name: Some(title),
         ids: Some(ids),
@@ -228,7 +251,9 @@ async fn handler_image_refresh(
     Query(query): Query<ImageRequestOptions>,
 ) -> Result<Json<Value>> {
     let kind = query.kind.unwrap_or(ImageType::Poster);
-    let book = mc.refresh_book_image(&library_id, &book_id, &kind, &user).await?;
+    let book = mc
+        .refresh_book_image(&library_id, &book_id, &kind, &user)
+        .await?;
     Ok(Json(json!(book)))
 }
 
