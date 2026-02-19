@@ -411,7 +411,7 @@ impl ModelController {
             }
         };
         
-        println!("result: {:?}", images);
+        //println!("result: {:?}", images);
         Ok(images)
     }
 
