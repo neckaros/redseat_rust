@@ -39,7 +39,7 @@ use crate::{
     },
 };
 use rs_plugin_common_interfaces::{
-    domain::rs_ids::RsIds, url::RsLink, ExternalImage, Gender, ImageType,
+    domain::{other_ids::OtherIds, rs_ids::RsIds}, url::RsLink, ExternalImage, Gender, ImageType,
 };
 use tokio_util::io::StreamReader;
 
@@ -75,6 +75,7 @@ pub struct PersonForAdd {
     pub gender: Option<Gender>,
     pub country: Option<String>,
     pub bio: Option<String>,
+    pub otherids: Option<OtherIds>,
 }
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct PersonForInsert {
@@ -139,6 +140,7 @@ pub struct PersonForUpdate {
     pub gender: Option<Gender>,
     pub country: Option<String>,
     pub bio: Option<String>,
+    pub otherids: Option<OtherIds>,
 }
 
 lazy_static! {
