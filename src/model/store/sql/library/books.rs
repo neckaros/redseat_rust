@@ -1,4 +1,4 @@
-use rs_plugin_common_interfaces::domain::rs_ids::RsIds;
+use rs_plugin_common_interfaces::domain::{other_ids::OtherIds, rs_ids::RsIds};
 use rusqlite::{params, OptionalExtension, Row};
 
 use crate::{
@@ -35,8 +35,9 @@ impl SqliteLibraryStore {
             openlibrary_work_id: row.get(15)?,
             google_books_volume_id: row.get(16)?,
             asin: row.get(17)?,
-            modified: row.get(18)?,
-            added: row.get(19)?,
+            otherids: row.get(18)?,
+            modified: row.get(19)?,
+            added: row.get(20)?,
         })
     }
 
@@ -82,7 +83,7 @@ impl SqliteLibraryStore {
                 let mut statement = conn.prepare(&format!(
                     "SELECT
                     id, name, type, serie_ref, volume, chapter, year, airdate, overview, pages, params, lang, original,
-                    isbn13, openlibrary_edition_id, openlibrary_work_id, google_books_volume_id, asin, modified, added
+                    isbn13, openlibrary_edition_id, openlibrary_work_id, google_books_volume_id, asin, otherids, modified, added
                     FROM books {}{}",
                     where_query.format(),
                     where_query.format_order()
@@ -103,7 +104,7 @@ impl SqliteLibraryStore {
                 let mut statement = conn.prepare(
                     "SELECT
                     id, name, type, serie_ref, volume, chapter, year, airdate, overview, pages, params, lang, original,
-                    isbn13, openlibrary_edition_id, openlibrary_work_id, google_books_volume_id, asin, modified, added
+                    isbn13, openlibrary_edition_id, openlibrary_work_id, google_books_volume_id, asin, otherids, modified, added
                     FROM books WHERE id = ?",
                 )?;
                 let row = statement
@@ -122,7 +123,7 @@ impl SqliteLibraryStore {
                 let mut direct_statement = conn.prepare(
                     "SELECT
                     id, name, type, serie_ref, volume, chapter, year, airdate, overview, pages, params, lang, original,
-                    isbn13, openlibrary_edition_id, openlibrary_work_id, google_books_volume_id, asin, modified, added
+                    isbn13, openlibrary_edition_id, openlibrary_work_id, google_books_volume_id, asin, otherids, modified, added
                     FROM books
                     WHERE id = ? or isbn13 = ? or openlibrary_edition_id = ? or openlibrary_work_id = ? or google_books_volume_id = ? or asin = ?",
                 )?;
@@ -162,7 +163,7 @@ impl SqliteLibraryStore {
                 let mut by_series_statement = conn.prepare(
                     "SELECT
                     b.id, b.name, b.type, b.serie_ref, b.volume, b.chapter, b.year, b.airdate, b.overview, b.pages, b.params, b.lang, b.original,
-                    b.isbn13, b.openlibrary_edition_id, b.openlibrary_work_id, b.google_books_volume_id, b.asin, b.modified, b.added
+                    b.isbn13, b.openlibrary_edition_id, b.openlibrary_work_id, b.google_books_volume_id, b.asin, b.otherids, b.modified, b.added
                     FROM books b
                     INNER JOIN series s ON s.id = b.serie_ref
                     WHERE (
@@ -203,8 +204,8 @@ impl SqliteLibraryStore {
                 conn.execute(
                     "INSERT INTO books (
                         id, name, type, serie_ref, volume, chapter, year, airdate, overview, pages, params, lang, original,
-                        isbn13, openlibrary_edition_id, openlibrary_work_id, google_books_volume_id, asin
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        isbn13, openlibrary_edition_id, openlibrary_work_id, google_books_volume_id, asin, otherids
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     params![
                         book.id,
                         book.name,
@@ -223,7 +224,8 @@ impl SqliteLibraryStore {
                         book.openlibrary_edition_id,
                         book.openlibrary_work_id,
                         book.google_books_volume_id,
-                        book.asin
+                        book.asin,
+                        book.otherids
                     ],
                 )?;
                 Ok(())
@@ -258,6 +260,7 @@ impl SqliteLibraryStore {
                 where_query.add_update(&update.openlibrary_work_id, "openlibrary_work_id");
                 where_query.add_update(&update.google_books_volume_id, "google_books_volume_id");
                 where_query.add_update(&update.asin, "asin");
+                where_query.add_update(&update.otherids, "otherids");
                 where_query.add_where(QueryWhereType::Equal("id", &book_id));
                 if where_query.columns_update.is_empty() {
                     return Ok(());

@@ -1,3 +1,4 @@
+use rs_plugin_common_interfaces::domain::other_ids::OtherIds;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 pub use rs_plugin_common_interfaces::domain::book::Book;
@@ -24,6 +25,7 @@ pub struct BookForUpdate {
     pub openlibrary_work_id: Option<String>,
     pub google_books_volume_id: Option<String>,
     pub asin: Option<String>,
+    pub otherids: Option<OtherIds>,
 }
 
 impl BookForUpdate {
