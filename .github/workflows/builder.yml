@@ -5,23 +5,75 @@ on:
 jobs:
   release:
     name: release ${{ matrix.target }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-pc-windows-gnu
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
             archive: zip
           - target: x86_64-unknown-linux-musl
-            archive: tar.gz tar.xz tar.zst
+            os: ubuntu-latest
+            archive: tar.gz
           - target: x86_64-apple-darwin
+            os: macos-13
             archive: zip
     steps:
-      - uses: actions/checkout@master
-      - name: Compile and release
-        uses: rust-build/rust-build.action@v1.4.5
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          RUSTTARGET: ${{ matrix.target }}
-          ARCHIVE_TYPES: ${{ matrix.archive }}
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install Linux dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools libheif-dev nasm
+
+      - name: Install macOS dependencies
+        if: matrix.os == 'macos-13'
+        run: brew install libheif nasm
+
+      - name: Install cargo-vcpkg (Windows)
+        if: matrix.os == 'windows-latest'
+        run: cargo install cargo-vcpkg
+
+      - name: Build vcpkg dependencies (Windows)
+        if: matrix.os == 'windows-latest'
+        run: cargo vcpkg build
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czf redseat-rust-${{ matrix.target }}.tar.gz redseat-rust redseat-daemon
+          echo "ASSET=target/${{ matrix.target }}/release/redseat-rust-${{ matrix.target }}.tar.gz" >> $GITHUB_ENV
+
+      - name: Package (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          cd target/${{ matrix.target }}/release
+          7z a redseat-rust-${{ matrix.target }}.zip redseat-rust.exe redseat-daemon.exe
+          echo "ASSET=target/${{ matrix.target }}/release/redseat-rust-${{ matrix.target }}.zip" >> $GITHUB_ENV
+
+      - name: Package (macOS)
+        if: matrix.os == 'macos-13'
+        run: |
+          cd target/${{ matrix.target }}/release
+          zip redseat-rust-${{ matrix.target }}.zip redseat-rust redseat-daemon
+          echo "ASSET=target/${{ matrix.target }}/release/redseat-rust-${{ matrix.target }}.zip" >> $GITHUB_ENV
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ASSET }}

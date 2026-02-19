@@ -8,7 +8,17 @@ RUN apt-get update && apt-get install -y \
     nasm \
   && rm -rf /var/lib/apt/lists/*
 WORKDIR /usr/src/redseat-daemon
-COPY . .
+
+# Cache dependencies — only invalidated when Cargo.toml/lock/build.rs change
+COPY Cargo.toml Cargo.lock build.rs ./
+RUN mkdir -p src/daemon \
+    && echo 'fn main() {}' > src/main.rs \
+    && echo 'fn main() {}' > src/daemon/main.rs \
+    && cargo build --release \
+    && rm -rf target/release/deps/redseat* target/release/redseat*
+
+# Copy real source and rebuild only your code
+COPY src/ src/
 RUN cargo build --release
 
 
