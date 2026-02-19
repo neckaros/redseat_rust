@@ -4,6 +4,7 @@
 use std::vec;
 
 use nanoid::nanoid;
+use rs_plugin_common_interfaces::domain::other_ids::OtherIds;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use x509_parser::nom::branch::alt;
@@ -31,6 +32,7 @@ pub struct TagForAdd {
     pub params: Option<Value>,
     #[serde(default)]
     pub generated: bool,
+    pub otherids: Option<OtherIds>,
 }
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -44,6 +46,7 @@ pub struct TagForInsert {
     pub thumb: Option<String>,
     pub params: Option<Value>,
     pub generated: bool,
+    pub otherids: Option<OtherIds>,
 }
 
 impl Default for TagForInsert {
@@ -56,7 +59,8 @@ impl Default for TagForInsert {
             alt: None,
             thumb: None,
             params: None,
-            generated: false
+            generated: false,
+            otherids: None,
         }
     }
 }
@@ -254,6 +258,7 @@ impl ModelController {
             thumb: new_tag.thumb,
             params: new_tag.params,
             generated: new_tag.generated,
+            otherids: new_tag.otherids,
         };
 		store.add_tag(backup.clone()).await?;
         let new_tag = self.get_tag(library_id, backup.id.clone(), requesting_user).await?.ok_or(SourcesError::UnableToFindTag(library_id.to_string(), backup.id, "add_tag".to_string()))?;

@@ -12,7 +12,7 @@ use crate::model::Error;
 
 impl SqliteLibraryStore {
 
-    const PEOPLE_FIELDS: &str = "id, name, socials, type, alt, portrait, params, birthday, modified, added, posterv, generated, imdb, slug, tmdb, trakt, death, gender, country, bio";
+    const PEOPLE_FIELDS: &str = "id, name, socials, type, alt, portrait, params, birthday, modified, added, posterv, generated, imdb, slug, tmdb, trakt, death, gender, country, bio, otherids";
   
     fn row_to_person(row: &Row) -> rusqlite::Result<Person> {
         Ok(Person {
@@ -38,6 +38,7 @@ impl SqliteLibraryStore {
             gender: row.get(17)?,
             country: row.get(18)?,
             bio: row.get(19)?,
+            otherids: row.get(20)?,
         })
     }
 
@@ -139,6 +140,7 @@ else 0 end) as score", q, q, q, q, q, q);
             where_query.add_update(&update.gender, "gender");
             where_query.add_update(&update.death, "death");
             where_query.add_update(&update.country, "country");
+            where_query.add_update(&update.otherids, "otherids");
 
             let alts = replace_add_remove_from_array(existing.alt, update.alt, update.add_alts, update.remove_alts);
             let v = to_pipe_separated_optional(alts);
@@ -180,8 +182,8 @@ else 0 end) as score", q, q, q, q, q, q);
                 None
             };
 
-            conn.execute("INSERT INTO people (id, name, socials, type, alt, portrait, params, birthday, generated, imdb, slug, tmdb, trakt, death, gender, country, bio)
-            VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params![
+            conn.execute("INSERT INTO people (id, name, socials, type, alt, portrait, params, birthday, generated, imdb, slug, tmdb, trakt, death, gender, country, bio, otherids)
+            VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params![
                 id,
                 person.name,
                 socials,
@@ -196,12 +198,13 @@ else 0 end) as score", q, q, q, q, q, q);
                 person.slug,
                 person.tmdb,
                 person.trakt,
-                
+
                 person.death,
                 person.gender,
                 person.country,
-                person.bio
-                
+                person.bio,
+                person.otherids
+
             ])?;
 
             Ok(())

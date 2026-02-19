@@ -21,6 +21,7 @@ impl SqliteLibraryStore {
             added: row.get(8)?,
             generated: row.get(9)?,
             path: row.get(10)?,
+            otherids: row.get(11)?,
         })
     }
 
@@ -49,7 +50,7 @@ impl SqliteLibraryStore {
             }
             //println!("sql: {}", where_query.format());
 
-            let mut query = conn.prepare(&format!("SELECT id, name, parent, type, alt, thumb, params, modified, added, generated, path  FROM tags {}{}", where_query.format(), where_query.format_order()))?;
+            let mut query = conn.prepare(&format!("SELECT id, name, parent, type, alt, thumb, params, modified, added, generated, path, otherids  FROM tags {}{}", where_query.format(), where_query.format_order()))?;
             
             let rows = query.query_map(
             where_query.values(), Self::row_to_tag,
@@ -63,7 +64,7 @@ impl SqliteLibraryStore {
     pub async fn get_tag(&self, credential_id: &str) -> Result<Option<Tag>> {
         let credential_id = credential_id.to_string();
         let row = self.connection.call( move |conn| { 
-            let mut query = conn.prepare("SELECT id, name, parent, type, alt, thumb, params, modified, added, generated, path FROM tags WHERE id = ?")?;
+            let mut query = conn.prepare("SELECT id, name, parent, type, alt, thumb, params, modified, added, generated, path, otherids FROM tags WHERE id = ?")?;
             let row = query.query_row(
             [credential_id],Self::row_to_tag).optional()?;
             Ok(row)
@@ -89,7 +90,8 @@ impl SqliteLibraryStore {
 
             where_query.add_update(&update.thumb, "thumb");
             where_query.add_update(&update.params, "params");
-            
+            where_query.add_update(&update.otherids, "otherids");
+
             let generated = Some(update.generated.unwrap_or_default());
             where_query.add_update(&generated, "generated");
             
@@ -111,7 +113,7 @@ impl SqliteLibraryStore {
                 tx.execute("UPDATE tags SET path = REPLACE(path, ?, ?) where path like ?", params![existing_tag.childs_path(), format!("{}{}/", existing_tag.path, new_name), existing_tag.childs_path()])?;
             } 
             if let Some(new_parent) = update.parent {
-                let mut query_parent = tx.prepare("SELECT id, name, parent, type, alt, thumb, params, modified, added, generated, path FROM tags WHERE id = ?")?;
+                let mut query_parent = tx.prepare("SELECT id, name, parent, type, alt, thumb, params, modified, added, generated, path, otherids FROM tags WHERE id = ?")?;
                 let parent = query_parent.query_row([&new_parent],Self::row_to_tag)?;
                 
                 tx.execute("UPDATE tags SET path = ? where id = ?", params![parent.childs_path(), &existing_tag.id])?;
@@ -131,15 +133,15 @@ impl SqliteLibraryStore {
     pub async fn add_tag(&self, tag: TagForInsert) -> Result<()> {
         self.connection.call( move |conn| { 
             let new_path = if let Some(parent) = &tag.parent {
-                let mut query_parent = conn.prepare("SELECT id, name, parent, type, alt, thumb, params, modified, added, generated, path FROM tags WHERE id = ?")?;
+                let mut query_parent = conn.prepare("SELECT id, name, parent, type, alt, thumb, params, modified, added, generated, path, otherids FROM tags WHERE id = ?")?;
                 let parent = query_parent.query_row(&[&parent],Self::row_to_tag)?;
                 parent.childs_path()
             } else {
                 String::from("/")
             };
             
-            conn.execute("INSERT INTO tags (id, name, parent, type, alt, thumb, params, generated, path)
-            VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?)", params![
+            conn.execute("INSERT INTO tags (id, name, parent, type, alt, thumb, params, generated, path, otherids)
+            VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?)", params![
                 tag.id,
                 tag.name,
                 tag.parent,
@@ -148,7 +150,8 @@ impl SqliteLibraryStore {
                 tag.thumb,
                 tag.params,
                 tag.generated,
-                new_path
+                new_path,
+                tag.otherids
             ])?;
             
             Ok(())
@@ -198,7 +201,7 @@ impl SqliteLibraryStore {
         self.connection.call( move |conn| { 
             let tx = conn.transaction()?;
             
-            let existing = tx.query_row("SELECT id, name, parent, type, alt, thumb, params, modified, added, generated, path FROM tags WHERE id = ?", &[&tag_id],Self::row_to_tag)?;
+            let existing = tx.query_row("SELECT id, name, parent, type, alt, thumb, params, modified, added, generated, path, otherids FROM tags WHERE id = ?", &[&tag_id],Self::row_to_tag)?;
 
             tx.execute("DELETE FROM tags WHERE id = ?", &[&tag_id])?;
             tx.execute("DELETE FROM media_tag_mapping  WHERE tag_ref = ?", &[&tag_id])?;
