@@ -1,5 +1,6 @@
 
-use crate::{model::{tags::{TagForAdd, TagForUpdate, TagQuery}, users::ConnectedUser, ModelController}, Result};
+use crate::{model::{tags::{TagForAdd, TagQuery}, users::ConnectedUser, ModelController}, Result};
+use crate::domain::tag::TagForUpdate;
 use axum::{extract::{Path, Query, State}, routing::{delete, get, patch, post}, Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};

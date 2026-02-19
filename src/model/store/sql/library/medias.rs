@@ -15,6 +15,7 @@ use crate::model::Error;
 use crate::{
     domain::{
         library::LibraryLimits,
+        tag::TagForUpdate,
         media::{
             self, FileEpisode, FileType, Media, MediaForInsert, MediaForUpdate, MediaItemReference,
             RsGpsPosition,
@@ -32,7 +33,7 @@ use crate::{
             },
             to_comma_separated_optional, to_pipe_separated_optional,
         },
-        tags::{TagForInsert, TagForUpdate, TagQuery},
+        tags::{TagForInsert, TagQuery},
     },
     plugins::sources::error::SourcesError,
     tools::{

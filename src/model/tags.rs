@@ -7,6 +7,7 @@ use nanoid::nanoid;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use x509_parser::nom::branch::alt;
+use crate::domain::tag::TagForUpdate;
 
 
 use crate::{domain::{deleted::RsDeleted, library::LibraryRole, tag::{self, Tag, TagMessage, TagWithAction}, ElementAction}, error::RsResult, plugins::sources::error::SourcesError, tools::prediction::PredictionTag};
@@ -90,26 +91,6 @@ impl TagQuery {
         TagQuery { name: Some(name.to_string()), parent, ..Default::default()  }
     }
 }
-
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct TagForUpdate {
-	pub name: Option<String>,
-    pub parent: Option<String>,
-    #[serde(rename = "type")]
-    pub kind: Option<String>,
-    
-    pub alt: Option<Vec<String>>,
-    pub add_alts: Option<Vec<String>>,
-    pub remove_alts: Option<Vec<String>>,
-
-    pub thumb: Option<String>,
-    pub params: Option<Value>,
-    pub generated: Option<bool>,
-    
-    pub migrate_to: Option<String>,
-}
-
 
 
 impl ModelController {

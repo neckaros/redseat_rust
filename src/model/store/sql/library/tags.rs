@@ -1,7 +1,7 @@
 use nanoid::nanoid;
 use rusqlite::{params, OptionalExtension, Row};
 
-use crate::{domain::tag::Tag, model::{store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_pipe_separated_optional}, tags::{TagForAdd, TagForInsert, TagForUpdate, TagQuery}}, plugins::sources::error::SourcesError, tools::array_tools::replace_add_remove_from_array};
+use crate::{domain::tag::{Tag, TagForUpdate}, model::{store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_pipe_separated_optional}, tags::{TagForAdd, TagForInsert, TagQuery}}, plugins::sources::error::SourcesError, tools::array_tools::replace_add_remove_from_array};
 use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
 
