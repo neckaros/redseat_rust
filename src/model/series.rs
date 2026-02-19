@@ -11,7 +11,7 @@ use rs_plugin_common_interfaces::{
     ExternalImage,
     ImageType,
     domain::{rs_ids::RsIds, serie::SerieStatus},
-    lookup::{RsLookupMetadataResult, RsLookupMetadataResultWithImages, RsLookupMovie, RsLookupQuery, RsLookupSerie},
+    lookup::{RsLookupMetadataResult, RsLookupMetadataResultWrapper, RsLookupMovie, RsLookupQuery, RsLookupSerie},
     request::{RsRequest, RsRequestStatus},
 };
 use rusqlite::{
@@ -265,9 +265,9 @@ impl ModelController {
         library_id: &str,
         query: RsLookupMovie,
         requesting_user: &ConnectedUser,
-    ) -> RsResult<HashMap<String, Vec<RsLookupMetadataResultWithImages>>> {
+    ) -> RsResult<HashMap<String, Vec<RsLookupMetadataResultWrapper>>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
-        let mut results: HashMap<String, Vec<RsLookupMetadataResultWithImages>> = HashMap::new();
+        let mut results: HashMap<String, Vec<RsLookupMetadataResultWrapper>> = HashMap::new();
 
         let is_books_library = if let Some(library) = self.cache_get_library(library_id).await {
             library.kind == LibraryType::Books
@@ -280,9 +280,8 @@ impl ModelController {
 
         if !is_books_library {
             let trakt_results = self.trakt.search_show(&query).await?;
-            let trakt_entries: Vec<RsLookupMetadataResultWithImages> = trakt_results.into_iter().map(|serie| RsLookupMetadataResultWithImages {
+            let trakt_entries: Vec<RsLookupMetadataResultWrapper> = trakt_results.into_iter().map(|serie| RsLookupMetadataResultWrapper {
                 metadata: RsLookupMetadataResult::Serie(serie),
-                images: vec![],
                 ..Default::default()
             }).collect();
             if !trakt_entries.is_empty() {
@@ -318,7 +317,7 @@ impl ModelController {
         library_id: &str,
         query: RsLookupMovie,
         requesting_user: &ConnectedUser,
-    ) -> RsResult<tokio::sync::mpsc::Receiver<(String, Vec<RsLookupMetadataResultWithImages>)>> {
+    ) -> RsResult<tokio::sync::mpsc::Receiver<(String, Vec<RsLookupMetadataResultWrapper>)>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
 
         let (tx, rx) = tokio::sync::mpsc::channel(16);
@@ -334,9 +333,8 @@ impl ModelController {
 
         if !is_books_library {
             let trakt_results = self.trakt.search_show(&query).await?;
-            let trakt_entries: Vec<RsLookupMetadataResultWithImages> = trakt_results.into_iter().map(|serie| RsLookupMetadataResultWithImages {
+            let trakt_entries: Vec<RsLookupMetadataResultWrapper> = trakt_results.into_iter().map(|serie| RsLookupMetadataResultWrapper {
                 metadata: RsLookupMetadataResult::Serie(serie),
-                images: vec![],
                 ..Default::default()
             }).collect();
             if !trakt_entries.is_empty() {

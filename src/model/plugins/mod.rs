@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use nanoid::nanoid;
-use rs_plugin_common_interfaces::{lookup::{RsLookupMetadataResultWithImages, RsLookupQuery, RsLookupSourceResult}, request::{RsGroupDownload, RsProcessingStatus, RsRequest}, url::{RsLink, RsLinkType}, ExternalImage, PluginCredential, PluginInformation, PluginType, RsPluginRequest};
+use rs_plugin_common_interfaces::{lookup::{RsLookupMetadataResultWrapper, RsLookupQuery, RsLookupSourceResult}, request::{RsGroupDownload, RsProcessingStatus, RsRequest}, url::{RsLink, RsLinkType}, ExternalImage, PluginCredential, PluginInformation, PluginType, RsPluginRequest};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -224,7 +224,7 @@ impl ModelController {
 
 
 
-    pub async fn exec_lookup_metadata(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<Vec<RsLookupMetadataResultWithImages>> {
+    pub async fn exec_lookup_metadata(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<Vec<RsLookupMetadataResultWrapper>> {
         if let Some(library_id) = &library_id {
             requesting_user.check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
         } else {
@@ -246,7 +246,7 @@ impl ModelController {
         self.plugin_manager.lookup_images(query, plugins, target).await
     }
 
-    pub async fn exec_lookup_metadata_grouped(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<HashMap<String, Vec<RsLookupMetadataResultWithImages>>> {
+    pub async fn exec_lookup_metadata_grouped(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<HashMap<String, Vec<RsLookupMetadataResultWrapper>>> {
         if let Some(library_id) = &library_id {
             requesting_user.check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
         } else {
@@ -268,7 +268,7 @@ impl ModelController {
         self.plugin_manager.lookup_images_grouped(query, plugins, target).await
     }
 
-    pub async fn exec_lookup_metadata_stream(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<tokio::sync::mpsc::Receiver<Vec<RsLookupMetadataResultWithImages>>> {
+    pub async fn exec_lookup_metadata_stream(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<tokio::sync::mpsc::Receiver<Vec<RsLookupMetadataResultWrapper>>> {
         if let Some(library_id) = &library_id {
             requesting_user.check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
         } else {
@@ -290,7 +290,7 @@ impl ModelController {
         self.plugin_manager.lookup_images_stream(query, plugins, target).await
     }
 
-    pub async fn exec_lookup_metadata_stream_grouped(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<tokio::sync::mpsc::Receiver<(String, Vec<RsLookupMetadataResultWithImages>)>> {
+    pub async fn exec_lookup_metadata_stream_grouped(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<tokio::sync::mpsc::Receiver<(String, Vec<RsLookupMetadataResultWrapper>)>> {
         if let Some(library_id) = &library_id {
             requesting_user.check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
         } else {

@@ -8,7 +8,7 @@ use futures::TryStreamExt;
 use nanoid::nanoid;
 use rs_plugin_common_interfaces::{
     domain::rs_ids::RsIds,
-    lookup::{RsLookupMetadataResult, RsLookupMetadataResultWithImages, RsLookupMovie, RsLookupQuery},
+    lookup::{RsLookupMetadataResult, RsLookupMetadataResultWrapper, RsLookupMovie, RsLookupQuery},
     request::{RsRequest, RsRequestStatus},
     ExternalImage, ImageType, MediaType,
 };
@@ -163,14 +163,13 @@ impl ModelController {
 	}
 
     
-    pub async fn search_movie(&self, library_id: &str, query: RsLookupMovie, requesting_user: &ConnectedUser) -> RsResult<HashMap<String, Vec<RsLookupMetadataResultWithImages>>> {
+    pub async fn search_movie(&self, library_id: &str, query: RsLookupMovie, requesting_user: &ConnectedUser) -> RsResult<HashMap<String, Vec<RsLookupMetadataResultWrapper>>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
-        let mut results: HashMap<String, Vec<RsLookupMetadataResultWithImages>> = HashMap::new();
+        let mut results: HashMap<String, Vec<RsLookupMetadataResultWrapper>> = HashMap::new();
 
         let trakt_results = self.trakt.search_movie(&query).await?;
-        let trakt_entries: Vec<RsLookupMetadataResultWithImages> = trakt_results.into_iter().map(|movie| RsLookupMetadataResultWithImages {
+        let trakt_entries: Vec<RsLookupMetadataResultWrapper> = trakt_results.into_iter().map(|movie| RsLookupMetadataResultWrapper {
             metadata: RsLookupMetadataResult::Movie(movie),
-            images: vec![],
             ..Default::default()
         }).collect();
         if !trakt_entries.is_empty() {
@@ -197,15 +196,14 @@ impl ModelController {
         Ok(results)
 	}
 
-    pub async fn search_movie_stream(&self, library_id: &str, query: RsLookupMovie, requesting_user: &ConnectedUser) -> RsResult<tokio::sync::mpsc::Receiver<(String, Vec<RsLookupMetadataResultWithImages>)>> {
+    pub async fn search_movie_stream(&self, library_id: &str, query: RsLookupMovie, requesting_user: &ConnectedUser) -> RsResult<tokio::sync::mpsc::Receiver<(String, Vec<RsLookupMetadataResultWrapper>)>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
 
         let (tx, rx) = tokio::sync::mpsc::channel(16);
 
         let trakt_results = self.trakt.search_movie(&query).await?;
-        let trakt_entries: Vec<RsLookupMetadataResultWithImages> = trakt_results.into_iter().map(|movie| RsLookupMetadataResultWithImages {
+        let trakt_entries: Vec<RsLookupMetadataResultWrapper> = trakt_results.into_iter().map(|movie| RsLookupMetadataResultWrapper {
             metadata: RsLookupMetadataResult::Movie(movie),
-            images: vec![],
             ..Default::default()
         }).collect();
         if !trakt_entries.is_empty() {

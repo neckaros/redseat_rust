@@ -4,7 +4,7 @@ use async_recursion::async_recursion;
 use extism::convert::Json;
 use futures::StreamExt;
 use http::header::{CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE};
-use rs_plugin_common_interfaces::{lookup::{RsLookupMetadataResultWithImages, RsLookupQuery, RsLookupSourceResult, RsLookupWrapper}, request::{RsProcessingActionRequest, RsProcessingProgress, RsRequest, RsRequestAddResponse, RsRequestPluginRequest, RsRequestStatus}, url::RsLink, ExternalImage, PluginCredential, PluginType};
+use rs_plugin_common_interfaces::{lookup::{RsLookupMetadataResultWrapper, RsLookupQuery, RsLookupSourceResult, RsLookupWrapper}, request::{RsProcessingActionRequest, RsProcessingProgress, RsRequest, RsRequestAddResponse, RsRequestPluginRequest, RsRequestStatus}, url::RsLink, ExternalImage, PluginCredential, PluginType};
 
 use crate::{Error, domain::{plugin::PluginWithCredential, progress::RsProgressCallback}, error::RsResult, plugins::sources::{AsyncReadPinBox, FileStreamResult}, tools::{array_tools::AddOrSetArray, file_tools::{filename_from_path, get_mime_from_filename}, http_tools::{extract_header, guess_filename, parse_content_disposition}, log::{self, log_error, log_info}, video_tools::ytdl::YydlContext}};
 
@@ -334,7 +334,7 @@ impl PluginManager {
         Ok(results)
     }
 
-    pub async fn lookup_metadata(&self, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<Vec<RsLookupMetadataResultWithImages>> {
+    pub async fn lookup_metadata(&self, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<Vec<RsLookupMetadataResultWrapper>> {
         let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
 
         let tasks: Vec<_> = {
@@ -360,7 +360,7 @@ impl PluginManager {
         let handles: Vec<_> = tasks.into_iter().map(|(plugin_arc, plugin_name, wrapped_query)| {
             tokio::task::spawn_blocking(move || {
                 let mut plugin_m = plugin_arc.lock().unwrap();
-                let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<RsLookupMetadataResultWithImages>>>("lookup_metadata", Json(wrapped_query));
+                let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<RsLookupMetadataResultWrapper>>>("lookup_metadata", Json(wrapped_query));
                 (plugin_name, res)
             })
         }).collect();
@@ -385,7 +385,7 @@ impl PluginManager {
         Ok(results)
     }
 
-    pub async fn lookup_metadata_grouped(&self, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<HashMap<String, Vec<RsLookupMetadataResultWithImages>>> {
+    pub async fn lookup_metadata_grouped(&self, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<HashMap<String, Vec<RsLookupMetadataResultWrapper>>> {
         let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
 
         let tasks: Vec<_> = {
@@ -411,12 +411,12 @@ impl PluginManager {
         let handles: Vec<_> = tasks.into_iter().map(|(plugin_arc, plugin_name, wrapped_query)| {
             tokio::task::spawn_blocking(move || {
                 let mut plugin_m = plugin_arc.lock().unwrap();
-                let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<RsLookupMetadataResultWithImages>>>("lookup_metadata", Json(wrapped_query));
+                let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<RsLookupMetadataResultWrapper>>>("lookup_metadata", Json(wrapped_query));
                 (plugin_name, res)
             })
         }).collect();
 
-        let mut results: HashMap<String, Vec<RsLookupMetadataResultWithImages>> = HashMap::new();
+        let mut results: HashMap<String, Vec<RsLookupMetadataResultWrapper>> = HashMap::new();
         for handle in handles {
             match handle.await {
                 Ok((plugin_name, Ok(Json(res)))) => {
@@ -436,7 +436,7 @@ impl PluginManager {
         Ok(results)
     }
 
-    pub async fn lookup_metadata_stream(self: &std::sync::Arc<Self>, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<tokio::sync::mpsc::Receiver<Vec<RsLookupMetadataResultWithImages>>> {
+    pub async fn lookup_metadata_stream(self: &std::sync::Arc<Self>, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<tokio::sync::mpsc::Receiver<Vec<RsLookupMetadataResultWrapper>>> {
         let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
         let (tx, rx) = tokio::sync::mpsc::channel(16);
 
@@ -464,7 +464,7 @@ impl PluginManager {
             let mut pending: futures::stream::FuturesUnordered<_> = tasks.into_iter().map(|(plugin_arc, plugin_name, wrapped_query)| {
                 tokio::task::spawn_blocking(move || {
                     let mut plugin_m = plugin_arc.lock().unwrap();
-                    let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<RsLookupMetadataResultWithImages>>>("lookup_metadata", Json(wrapped_query));
+                    let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<RsLookupMetadataResultWrapper>>>("lookup_metadata", Json(wrapped_query));
                     (plugin_name, res)
                 })
             }).collect();
@@ -491,7 +491,7 @@ impl PluginManager {
         Ok(rx)
     }
 
-    pub async fn lookup_metadata_stream_grouped(self: &std::sync::Arc<Self>, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<tokio::sync::mpsc::Receiver<(String, Vec<RsLookupMetadataResultWithImages>)>> {
+    pub async fn lookup_metadata_stream_grouped(self: &std::sync::Arc<Self>, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<tokio::sync::mpsc::Receiver<(String, Vec<RsLookupMetadataResultWrapper>)>> {
         let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
         let (tx, rx) = tokio::sync::mpsc::channel(16);
 
@@ -519,7 +519,7 @@ impl PluginManager {
             let mut pending: futures::stream::FuturesUnordered<_> = tasks.into_iter().map(|(plugin_arc, plugin_name, wrapped_query)| {
                 tokio::task::spawn_blocking(move || {
                     let mut plugin_m = plugin_arc.lock().unwrap();
-                    let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<RsLookupMetadataResultWithImages>>>("lookup_metadata", Json(wrapped_query));
+                    let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<RsLookupMetadataResultWrapper>>>("lookup_metadata", Json(wrapped_query));
                     (plugin_name, res)
                 })
             }).collect();
