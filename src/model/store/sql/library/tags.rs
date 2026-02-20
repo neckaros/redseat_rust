@@ -228,6 +228,7 @@ impl SqliteLibraryStore {
             let existing = tx.query_row("SELECT id, name, parent, type, alt, thumb, params, modified, added, generated, path, otherids FROM tags WHERE id = ?", &[&tag_id],Self::row_to_tag)?;
 
             tx.execute("DELETE FROM tags WHERE id = ?", &[&tag_id])?;
+            tx.execute("DELETE FROM book_tag_mapping  WHERE tag_ref = ?", &[&tag_id])?;
             tx.execute("DELETE FROM media_tag_mapping  WHERE tag_ref = ?", &[&tag_id])?;
             tx.execute("DELETE FROM tags WHERE path like ?", &[&format!("{}%", existing.childs_path())])?;
 

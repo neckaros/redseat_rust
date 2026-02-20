@@ -61,6 +61,8 @@ struct AddBookOptions {
     upsert_tags: bool,
     #[serde(default)]
     upsert_people: bool,
+    #[serde(default)]
+    upsert_serie: bool,
 }
 
 async fn handler_post(
@@ -70,7 +72,7 @@ async fn handler_post(
     Query(options): Query<AddBookOptions>,
     Json(item): Json<ItemWithRelations<Book>>,
 ) -> Result<Json<Value>> {
-    let created = mc.add_book(&library_id, item, options.upsert_tags, options.upsert_people, &user).await?;
+    let created = mc.add_book(&library_id, item, options.upsert_tags, options.upsert_people, options.upsert_serie, &user).await?;
     Ok(Json(json!(created)))
 }
 

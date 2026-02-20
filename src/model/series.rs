@@ -239,6 +239,46 @@ impl ModelController {
         Ok(serie)
     }
 
+    /// Find a serie in the library by matching its local ID, any external identifier, or name/alt.
+    pub async fn get_serie_by_any_id(
+        &self,
+        library_id: &str,
+        serie: &Serie,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Option<Serie>> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        let store = self.store.get_library_store(library_id)?;
+
+        // 1. Exact local ID
+        if let Some(found) = store.get_serie(&serie.id).await? {
+            return Ok(Some(found));
+        }
+
+        // 2. Any external ID
+        let ids: RsIds = serie.clone().into();
+        if let Some(found) = store.get_serie_by_external_id(ids).await? {
+            return Ok(Some(found));
+        }
+
+        // 3. Name / alt fallback
+        let mut names = vec![serie.name.clone()];
+        if let Some(alts) = &serie.alt {
+            names.extend(alts.clone());
+        }
+        for name in &names {
+            if let Some(found) = store
+                .get_series(SerieQuery { name: Some(name.clone()), ..Default::default() })
+                .await?
+                .into_iter()
+                .next()
+            {
+                return Ok(Some(found));
+            }
+        }
+
+        Ok(None)
+    }
+
     pub async fn get_serie_ids(
         &self,
         library_id: &str,

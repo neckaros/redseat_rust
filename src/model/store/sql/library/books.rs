@@ -427,10 +427,8 @@ impl SqliteLibraryStore {
         self.connection
             .call(move |conn| {
                 conn.execute("DELETE FROM books WHERE id = ?", [book_id.clone()])?;
-                conn.execute(
-                    "INSERT INTO deleted (id, type) VALUES (?, ?)",
-                    [&book_id, "book"],
-                )?;
+                conn.execute("DELETE FROM book_tag_mapping  WHERE book_ref = ?", &[&book_id])?;
+                conn.execute("DELETE FROM book_people_mapping  WHERE book_ref = ?", &[&book_id])?;
                 Ok(())
             })
             .await?;

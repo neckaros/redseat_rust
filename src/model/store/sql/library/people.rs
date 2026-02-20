@@ -216,6 +216,7 @@ else 0 end) as score", q, q, q, q, q, q);
         self.connection.call( move |conn| { 
             
             conn.execute("DELETE FROM media_people_mapping WHERE people_ref = ?", &[&tag_id])?;
+            conn.execute("DELETE FROM book_people_mapping WHERE people_ref = ?", &[&tag_id])?;
             conn.execute("DELETE FROM people_faces WHERE people_ref = ?", &[&tag_id])?;
             conn.execute("DELETE FROM people WHERE id = ?", &[&tag_id])?;
             Ok(())

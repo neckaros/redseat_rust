@@ -112,14 +112,15 @@ impl ModelController {
         if let Some(existing_tag) = existing_tag {
             return Ok(existing_tag);
         }
-        let tag = self.get_or_create_path(&library_id, vec!["ai", &tag.name], TagForUpdate { alt: Some(tag.alts), generated: Some(true), ..Default::default()}, &requesting_user).await?;
+        let tag = self.get_or_create_path(&library_id, vec!["ai", &tag.name], TagForAdd { alt: Some(tag.alts), generated: true, ..Default::default()}, &requesting_user).await?;
 
 		Ok(tag)
 	}
 
-    pub async fn add_imported_tag(&self, library_id: &str, name: &str, requesting_user: &ConnectedUser) -> RsResult<Tag> {
+    pub async fn add_imported_tag(&self, library_id: &str, mut tag: TagForAdd, requesting_user: &ConnectedUser) -> RsResult<Tag> {
+        tag.generated = true;
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
-        let tag = self.get_or_create_path(library_id, vec!["imported", name], TagForUpdate { generated: Some(true), ..Default::default()}, &requesting_user).await?;
+        let tag = self.get_or_create_path(library_id, vec!["imported", &tag.name.clone()], tag, &requesting_user).await?;
 
 		Ok(tag)
 	}
@@ -186,7 +187,7 @@ impl ModelController {
 		Ok(tag)
 	}
 
-    pub async fn get_or_create_path(&self, library_id: &str, mut path: Vec<&str>, template: TagForUpdate, requesting_user: &ConnectedUser) -> RsResult<Tag> {
+    pub async fn get_or_create_path(&self, library_id: &str, mut path: Vec<&str>, template: TagForAdd, requesting_user: &ConnectedUser) -> RsResult<Tag> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let path_string = path.join("/");
         let tag_by_path = self.get_tags(&library_id, TagQuery::new_with_path(path_string), &requesting_user).await?.into_iter().nth(0);
@@ -204,7 +205,7 @@ impl ModelController {
             parent = if let Some(parent) = tag_by_name_and_parent {
                 Some(parent.clone())
             } else {
-                let new_tag = self.add_tag(&library_id, TagForAdd { name: element.to_string(), parent: previous_parent, generated: template.generated.unwrap_or(false), alt: template.alt.clone(), ..Default::default() } , &requesting_user).await?;
+                let new_tag = self.add_tag(&library_id, TagForAdd { name: element.to_string(), parent: previous_parent, generated: template.generated, alt: template.alt.clone(), ..Default::default() } , &requesting_user).await?;
                 Some(new_tag)
             }
         }
@@ -219,7 +220,7 @@ impl ModelController {
             }
         }
         
-        let result_tag = self.add_tag(&library_id, TagForAdd { name: last_element.to_string(), parent: parent.and_then(|t| Some(t.id.clone())), generated: template.generated.unwrap_or(false), alt: template.alt.clone(), ..Default::default() } , &requesting_user).await?;
+        let result_tag = self.add_tag(&library_id, TagForAdd { name: last_element.to_string(), parent: parent.and_then(|t| Some(t.id.clone())), generated: template.generated, alt: template.alt.clone(), ..Default::default() } , &requesting_user).await?;
 
         Ok(result_tag)
 	}

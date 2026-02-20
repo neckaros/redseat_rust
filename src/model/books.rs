@@ -191,12 +191,27 @@ impl ModelController {
         item: ItemWithRelations<Book>,
         upsert_tags: bool,
         upsert_people: bool,
+        upsert_serie: bool,
         requesting_user: &ConnectedUser,
     ) -> RsResult<Book> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         let mut new_book = item.item;
         let relations = item.relations;
         Self::validate_book(&new_book)?;
+
+        // Resolve or upsert series_details into new_book.serie_ref
+        if let Some(rel) = &relations {
+            if let Some(series_details) = &rel.series_details {
+                if let Some(serie) = series_details.first() {
+                    if let Some(found) = self.get_serie_by_any_id(library_id, serie, requesting_user).await? {
+                        new_book.serie_ref = Some(found.id);
+                    } else if upsert_serie {
+                        let created = self.add_serie(library_id, serie.clone(), requesting_user).await?;
+                        new_book.serie_ref = Some(created.id);
+                    }
+                }
+            }
+        }
 
         let ids: RsIds = new_book.clone().into();
         if ids.isbn13.is_some()
