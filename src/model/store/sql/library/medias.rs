@@ -161,79 +161,102 @@ impl SqliteLibraryStore {
         })
     }
 
-    fn row_to_media(row: &Row) -> rusqlite::Result<Media> {
-        Ok(Media {
-            id: row.get(0)?,
-            source: row.get(1)?,
-            name: row.get(2)?,
-            description: row.get(3)?,
+    fn row_to_media(row: &Row) -> rusqlite::Result<ItemWithRelations<Media>> {
+        let tags: Option<String> = row.get(43)?;
+        let people: Option<String> = row.get(44)?;
+        let series: Option<String> = row.get(45)?;
+        let movie: Option<String> = row.get(35)?;
+        let book: Option<String> = row.get(36)?;
 
-            kind: row.get(4)?,
-            mimetype: row.get(5)?,
-            size: row.get(6)?,
+        let tags = from_comma_separated_optional::<MediaItemReference>(tags);
+        let people = from_comma_separated_optional::<MediaItemReference>(people);
+        let series = from_comma_separated_optional::<FileEpisode>(series);
+        let movies = movie.map(|m| vec![m]);
+        let books = book.map(|b| vec![b]);
 
-            avg_rating: row.get(7)?,
-            md5: row.get(8)?,
+        let has_relations = tags.is_some()
+            || people.is_some()
+            || series.is_some()
+            || movies.is_some()
+            || books.is_some();
+        let relations = has_relations.then(|| Relations {
+            tags,
+            people,
+            series,
+            movies,
+            books,
+            ..Default::default()
+        });
 
-            params: row.get(9)?,
+        Ok(ItemWithRelations {
+            item: Media {
+                id: row.get(0)?,
+                source: row.get(1)?,
+                name: row.get(2)?,
+                description: row.get(3)?,
 
-            width: row.get(10)?,
-            height: row.get(11)?,
-            phash: row.get(12)?,
-            thumbhash: row.get(13)?,
-            focal: row.get(14)?,
-            iso: row.get(15)?,
-            color_space: row.get(16)?,
-            sspeed: row.get(17)?,
-            orientation: row.get(18)?,
+                kind: row.get(4)?,
+                mimetype: row.get(5)?,
+                size: row.get(6)?,
 
-            duration: row.get(19)?,
-            acodecs: from_pipe_separated_optional(row.get(20)?),
-            achan: from_pipe_separated_optional(row.get(21)?),
-            vcodecs: from_pipe_separated_optional(row.get(22)?),
-            fps: row.get(23)?,
-            bitrate: row.get(24)?,
+                avg_rating: row.get(7)?,
+                md5: row.get(8)?,
 
-            long: row.get(25)?,
-            lat: row.get(26)?,
-            model: row.get(27)?,
+                params: row.get(9)?,
 
-            pages: row.get(28)?,
+                width: row.get(10)?,
+                height: row.get(11)?,
+                phash: row.get(12)?,
+                thumbhash: row.get(13)?,
+                focal: row.get(14)?,
+                iso: row.get(15)?,
+                color_space: row.get(16)?,
+                sspeed: row.get(17)?,
+                orientation: row.get(18)?,
 
-            progress: row.get(49)?,
-            thumb: row.get(30)?,
-            thumbv: row.get(31)?,
+                duration: row.get(19)?,
+                acodecs: from_pipe_separated_optional(row.get(20)?),
+                achan: from_pipe_separated_optional(row.get(21)?),
+                vcodecs: from_pipe_separated_optional(row.get(22)?),
+                fps: row.get(23)?,
+                bitrate: row.get(24)?,
 
-            thumbsize: row.get(32)?,
-            iv: row.get(33)?,
+                long: row.get(25)?,
+                lat: row.get(26)?,
+                model: row.get(27)?,
 
-            origin: row.get(34)?,
-            movie: row.get(35)?,
-            book: row.get(36)?,
-            lang: row.get(37)?,
-            uploader: row.get(38)?,
-            uploadkey: row.get(39)?,
+                pages: row.get(28)?,
 
-            modified: row.get(40)?,
-            added: row.get(41)?,
-            created: row.get(42)?,
+                progress: row.get(49)?,
+                thumb: row.get(30)?,
+                thumbv: row.get(31)?,
 
-            tags: from_comma_separated_optional(row.get(43)?),
-            people: from_comma_separated_optional(row.get(44)?),
-            series: from_comma_separated_optional(row.get(45)?),
-            faces: None,
-            backups: None,
+                thumbsize: row.get(32)?,
+                iv: row.get(33)?,
 
-            f_number: row.get(46)?,
-            icc: row.get(47)?,
-            mp: row.get(48)?,
+                origin: row.get(34)?,
+                lang: row.get(37)?,
+                uploader: row.get(38)?,
+                uploadkey: row.get(39)?,
 
-            rating: row.get(50)?,
+                modified: row.get(40)?,
+                added: row.get(41)?,
+                created: row.get(42)?,
 
-            original_hash: row.get(51)?,
-            original_id: row.get(52)?,
-            face_recognition_error: row.get(53)?,
-            //series: None,
+                faces: None,
+                backups: None,
+
+                f_number: row.get(46)?,
+                icc: row.get(47)?,
+                mp: row.get(48)?,
+
+                rating: row.get(50)?,
+
+                original_hash: row.get(51)?,
+                original_id: row.get(52)?,
+                face_recognition_error: row.get(53)?,
+            },
+            relations,
         })
     }
 
@@ -498,7 +521,7 @@ impl SqliteLibraryStore {
         where_query
     }
 
-    pub async fn get_medias(&self, query: MediaQuery, limits: LibraryLimits) -> Result<Vec<Media>> {
+    pub async fn get_medias(&self, query: MediaQuery, limits: LibraryLimits) -> Result<Vec<ItemWithRelations<Media>>> {
         let row = self
             .connection
             .call(move |conn| {
@@ -524,8 +547,8 @@ impl SqliteLibraryStore {
                 //println!("query {:?}", query.expanded_sql());
 
                 let rows = query.query_map(where_query.values(), Self::row_to_media)?;
-                let backups: Vec<Media> =
-                    rows.collect::<std::result::Result<Vec<Media>, rusqlite::Error>>()?;
+                let backups: Vec<ItemWithRelations<Media>> =
+                    rows.collect::<std::result::Result<Vec<ItemWithRelations<Media>>, rusqlite::Error>>()?;
                 Ok(backups)
             })
             .await?;
@@ -569,7 +592,7 @@ impl SqliteLibraryStore {
         &self,
         media_id: &str,
         user_id: Option<String>,
-    ) -> Result<Option<Media>> {
+    ) -> Result<Option<ItemWithRelations<Media>>> {
         let media_id = media_id.to_string();
         let row = self
             .connection
@@ -583,7 +606,7 @@ impl SqliteLibraryStore {
         Ok(row)
     }
 
-    pub async fn get_media_by_hash(&self, hash: String, check_original: bool) -> Option<Media> {
+    pub async fn get_media_by_hash(&self, hash: String, check_original: bool) -> Option<ItemWithRelations<Media>> {
         let row = self
             .connection
             .call(move |conn| {
@@ -607,7 +630,7 @@ impl SqliteLibraryStore {
         row.ok()
     }
 
-    pub async fn get_media_by_origin(&self, origin: RsLink) -> Option<Media> {
+    pub async fn get_media_by_origin(&self, origin: RsLink) -> Option<ItemWithRelations<Media>> {
         let origin = origin.to_owned();
         let row = self.connection.call( move |conn| { 
             let query_elements = if let Some(file) = origin.file {
@@ -890,7 +913,7 @@ impl SqliteLibraryStore {
                     .await?;
                 if let Some(serie) = found.first() {
                     found_series.push(FileEpisode {
-                        id: serie.id.to_string(),
+                        id: serie.item.id.to_string(),
                         season: update.season,
                         episode: update.episode,
                         episode_to: None,
@@ -974,7 +997,7 @@ impl SqliteLibraryStore {
             
 
 
-            let all_tags: Vec<String> = existing.tags.clone().unwrap_or(vec![]).into_iter().filter(|t| t.conf.unwrap_or(1) == 1).map(|t| t.id).collect();
+            let all_tags: Vec<String> = existing.relations.as_ref().and_then(|r| r.tags.as_ref()).cloned().unwrap_or_default().into_iter().filter(|t| t.conf.unwrap_or(1) == 1).map(|t| t.id).collect();
             if let Some(add_tags) = update.add_tags {
                 for tag in add_tags {
                     if !all_tags.contains(&tag.id) {
@@ -993,7 +1016,7 @@ impl SqliteLibraryStore {
 
 
             
-            let all_people: Vec<String> = existing.people.clone().unwrap_or(vec![]).into_iter().map(|t| t.id).collect();
+            let all_people: Vec<String> = existing.relations.as_ref().and_then(|r| r.people.as_ref()).cloned().unwrap_or_default().into_iter().map(|t| t.id).collect();
             if let Some(add_people) = update.add_people {
                 for person in add_people {
                     if !all_people.contains(&person.id)  {
@@ -1011,7 +1034,7 @@ impl SqliteLibraryStore {
             }
             
 
-            let all_series: Vec<FileEpisode> = existing.series.clone().unwrap_or(vec![]);
+            let all_series: Vec<FileEpisode> = existing.relations.as_ref().and_then(|r| r.series.as_ref()).cloned().unwrap_or_default();
             if let Some(add_serie) = update.add_series {
                 for file_episode in add_serie {
                     if !all_series.contains(&file_episode) {
@@ -1185,7 +1208,13 @@ mod tests {
             .unwrap();
 
         let media = store.get_media(&media_id, None).await.unwrap().unwrap();
-        assert_eq!(media.book.as_deref(), Some("book-42"));
+        assert_eq!(
+            media.relations.as_ref()
+                .and_then(|r| r.books.as_ref())
+                .and_then(|b| b.first())
+                .map(|s| s.as_str()),
+            Some("book-42")
+        );
 
         let by_book = store
             .get_medias(
@@ -1200,6 +1229,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(by_book.len(), 1);
-        assert_eq!(by_book[0].id, media_id);
+        assert_eq!(by_book[0].item.id, media_id);
     }
 }

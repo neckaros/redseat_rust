@@ -47,7 +47,7 @@ impl RsSchedulerTask for RefreshTask {
             };
             let nowd = now().floor_to_hour().ok_or(crate::error::Error::TimeCreationError)?;
             
-            let series: Vec<Serie> = mc.get_series(&library.id, SerieQuery::new_empty(), &connected_user).await?.into_iter().filter(|s| s.trakt.is_some()).collect();
+            let series: Vec<Serie> = mc.get_series(&library.id, SerieQuery::new_empty(), &connected_user).await?.into_iter().map(|iwr| iwr.item).filter(|s| s.trakt.is_some()).collect();
             let series: Vec<Serie> = if let Some(last_update) = last_update {
                 let to_refresh = mc.trakt.episodes_refreshed(last_update).await;
                 if let Ok(to_refresh) = to_refresh {

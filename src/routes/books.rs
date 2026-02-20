@@ -41,6 +41,7 @@ pub fn routes(mc: ModelController) -> Router {
         .route("/:id/image/fetch", post(handler_image_fetch))
         .route("/:id/image/refresh", get(handler_image_refresh))
         .route("/:id/image", post(handler_post_image))
+        .route("/:id/search", get(handler_lookup))
         .with_state(mc)
 }
 
@@ -141,6 +142,22 @@ async fn handler_search_books_stream(
             .interval(Duration::from_secs(30))
             .text("ping"),
     ))
+}
+
+async fn handler_lookup(
+    Path((library_id, book_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<Json<Value>> {
+    let book = mc.get_book(&library_id, book_id, &user).await?;
+    let name = book.item.name.clone();
+    let ids: RsIds = book.item.into();
+    let query = RsLookupQuery::Book(RsLookupBook {
+        name: Some(name),
+        ids: Some(ids),
+    });
+    let results = mc.exec_lookup(query, Some(library_id), &user, None).await?;
+    Ok(Json(json!(results)))
 }
 
 async fn handler_medias(

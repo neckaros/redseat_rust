@@ -345,6 +345,6 @@ mod tests {
         store.migrate().await.unwrap();
 
         let media = store.get_media("m1", None).await.unwrap().unwrap();
-        assert!(media.book.is_none());
+        assert!(media.relations.as_ref().and_then(|r| r.books.as_ref()).is_none());
     }
 }

@@ -210,7 +210,7 @@ impl ModelController {
 
     }
 
-    pub async fn exec_lookup(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<Vec<RsRequest>> {
+    pub async fn exec_lookup(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<Vec<RsGroupDownload>> {
         if let Some(library_id) = &library_id {
             requesting_user.check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
         } else {

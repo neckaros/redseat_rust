@@ -64,6 +64,7 @@ use crate::{
     },
 };
 
+use rs_plugin_common_interfaces::domain::ItemWithRelations;
 use crate::{
     domain::{
         library::LibraryRole,
@@ -292,7 +293,7 @@ impl ModelController {
     ) -> RsResult<()> {
         origin.file = origin_filename;
         if !ignore_duplicate {
-            if let Some(existing) = store.get_media_by_origin(origin.clone()).await {
+            if let Some(existing) = store.get_media_by_origin(origin.clone()).await.map(|iwr| iwr.item) {
                 if let Some(tx) = tx_progress {
                     let _ = tx
                         .send(RsProgress {
@@ -324,7 +325,7 @@ impl ModelController {
         tx_progress: Option<&mpsc::Sender<RsProgress>>,
         upload_id: &str,
     ) -> RsResult<()> {
-        if let Some(existing) = store.get_media_by_hash(hash.to_owned(), true).await {
+        if let Some(existing) = store.get_media_by_hash(hash.to_owned(), true).await.map(|iwr| iwr.item) {
             let m = self.source_for_library(library_id).await?;
             m.remove(source_path).await?;
             if let Some(tx) = tx_progress {
@@ -400,7 +401,7 @@ impl ModelController {
         library_id: &str,
         query: MediaQuery,
         requesting_user: &ConnectedUser,
-    ) -> RsResult<Vec<Media>> {
+    ) -> RsResult<Vec<ItemWithRelations<Media>>> {
         let progress_user = self
             .get_library_mapped_user(library_id, requesting_user.user_id()?)
             .await
@@ -453,7 +454,7 @@ impl ModelController {
         library_id: &str,
         media_id: String,
         requesting_user: &ConnectedUser,
-    ) -> RsResult<Option<Media>> {
+    ) -> RsResult<Option<ItemWithRelations<Media>>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id)?;
         let mut media = store
@@ -461,7 +462,7 @@ impl ModelController {
             .await?;
         if let Some(ref mut media) = media {
             if !requesting_user.is_admin() {
-                media.source = None;
+                media.item.source = None;
             }
         }
         Ok(media)
@@ -473,14 +474,14 @@ impl ModelController {
         hash: String,
         check_original: bool,
         requesting_user: &ConnectedUser,
-    ) -> RsResult<Option<Media>> {
+    ) -> RsResult<Option<ItemWithRelations<Media>>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id)?;
         let mut media = store.get_media_by_hash(hash, check_original).await;
 
         if let Some(media) = &mut media {
-            if requesting_user.is_admin() {
-                media.source = None;
+            if !requesting_user.is_admin() {
+                media.item.source = None;
             }
         }
         Ok(media)
@@ -531,7 +532,8 @@ impl ModelController {
                 library_id.to_string(),
                 media_id.to_string(),
                 "update_media".to_string(),
-            ))?;
+            ))?
+            .item;
         if notif {
             self.send_media(MediasMessage {
                 library: library_id.to_string(),
@@ -574,7 +576,8 @@ impl ModelController {
                 library_id.to_string(),
                 media.id.to_string(),
                 "add_media".to_string(),
-            ))?;
+            ))?
+            .item;
         if notif {
             self.send_media(MediasMessage {
                 library: library_id.to_string(),
@@ -597,7 +600,8 @@ impl ModelController {
         let store = self.store.get_library_store(library_id)?;
         let existing = store
             .get_media(media_id, requesting_user.user_id().ok())
-            .await?;
+            .await?
+            .map(|iwr| iwr.item);
         if let Some(existing) = existing {
             self.remove_library_file(library_id, media_id, requesting_user)
                 .await?;
@@ -701,7 +705,8 @@ impl ModelController {
                 library_id.to_string(),
                 media_id.to_string(),
                 "split_media".to_string(),
-            ))?;
+            ))?
+            .item;
         let mut infos: MediaForUpdate = media.clone().into();
         if media.kind != FileType::Album {
             return Err(Error::ServiceError(
@@ -774,7 +779,7 @@ impl ModelController {
         m.fill_infos(&source, &mut infos).await?;
 
         if let Some(hash) = &infos.md5 {
-            let existing = store.get_media_by_hash(hash.to_owned(), true).await;
+            let existing = store.get_media_by_hash(hash.to_owned(), true).await.map(|iwr| iwr.item);
             if let Some(existing) = existing {
                 m.remove(&source).await?;
                 //let _ = tx_progress.send(RsProgress { id: upload_id.clone(), total: existing.size, current: existing.size, kind: RsProgressType::Duplicate(existing.id.clone()), filename: Some(existing.name.to_owned()) }).await;
@@ -837,7 +842,8 @@ impl ModelController {
                 library_id.to_string(),
                 id.to_string(),
                 "split_media".to_string(),
-            ))?;
+            ))?
+            .item;
 
         log_info(
             crate::tools::log::LogServiceType::Source,
@@ -885,7 +891,8 @@ impl ModelController {
                 library_id.to_string(),
                 media_id.to_string(),
                 "update_media_image".to_string(),
-            ))?;
+            ))?
+            .item;
         self.send_media(MediasMessage {
             library: library_id.to_string(),
             medias: vec![MediaWithAction {
@@ -1056,7 +1063,8 @@ impl ModelController {
                 library_id.to_string(),
                 media_id.to_string(),
                 "process_media".to_string(),
-            ))?;
+            ))?
+            .item;
 
         let r = self
             .process_media_faces(library_id, media_id, requesting_user, None)
@@ -1123,7 +1131,8 @@ impl ModelController {
                 library_id.to_string(),
                 media_id.to_string(),
                 "process_media".to_string(),
-            ))?;
+            ))?
+            .item;
         self.send_media(MediasMessage {
             library: library_id.to_string(),
             medias: vec![MediaWithAction {
@@ -1178,7 +1187,7 @@ impl ModelController {
             let _ = m.fill_infos(&source, &mut infos).await;
         }
         if let Some(hash) = &infos.md5 {
-            let existing = store.get_media_by_hash(hash.to_owned(), true).await;
+            let existing = store.get_media_by_hash(hash.to_owned(), true).await.map(|iwr| iwr.item);
             if let Some(existing) = existing {
                 m.remove(&source).await?;
                 let _ = tx_progress
@@ -1260,7 +1269,8 @@ impl ModelController {
                 library_id.to_string(),
                 id.to_string(),
                 "add_library_file".to_string(),
-            ))?;
+            ))?
+            .item;
         self.send_media(MediasMessage {
             library: library_id.to_string(),
             medias: vec![MediaWithAction {
@@ -1406,7 +1416,8 @@ impl ModelController {
             let media = store
                 .get_media(&id, requesting_user.user_id().ok())
                 .await?
-                .ok_or(Error::MediaNotFound(id.to_owned()))?;
+                .ok_or(Error::MediaNotFound(id.to_owned()))?
+                .item;
             self.send_media(MediasMessage {
                 library: library_id.to_string(),
                 medias: vec![MediaWithAction {
@@ -1609,7 +1620,8 @@ impl ModelController {
                 library_id.to_string(),
                 id.to_string(),
                 "download_grouped".to_string(),
-            ))?;
+            ))?
+            .item;
         let _ = tx_progress
             .send(RsProgress {
                 id: upload_id.clone(),
@@ -1806,7 +1818,8 @@ impl ModelController {
                     library_id.to_string(),
                     id.to_string(),
                     "download_individual".to_string(),
-                ))?;
+                ))?
+                .item;
             let _ = tx_progress
                 .send(RsProgress {
                     id: upload_id.clone(),
@@ -1899,7 +1912,8 @@ impl ModelController {
                 library_id.to_string(),
                 media_id.to_string(),
                 "generate_thumb".to_string(),
-            ))?;
+            ))?
+            .item;
         //println!("GENERATE THUMB {:?}", media.kind);
         let thumb = match media.kind {
             FileType::Photo => {
@@ -2210,7 +2224,8 @@ impl ModelController {
                     library_id.to_string(),
                     media_id.to_string(),
                     "prediction".to_string(),
-                ))?;
+                ))?
+                .item;
 
             let mut reader_response = self
                 .media_image(&library_id, &media_id, None, &requesting_user)
@@ -2299,7 +2314,8 @@ impl ModelController {
                 library_id.to_string(),
                 media_id.to_string(),
                 "convert".to_string(),
-            ))?;
+            ))?
+            .item;
 
         let filename = format!("{}.{}", remove_extension(&media.name), request.format);
         let queue_element = VideoConvertQueueElement::new(
@@ -2555,7 +2571,8 @@ impl ModelController {
                     element.library.to_string(),
                     element.media.to_string(),
                     "convert_element".to_string(),
-                ))?;
+                ))?
+                .item;
 
         let m = self.source_for_library(&element.library).await?;
         let local = self.library_source_for_library(&element.library).await?;
@@ -2780,7 +2797,8 @@ impl ModelController {
         let media = self
             .get_media(library_id, media_id.to_owned(), requesting_user)
             .await?
-            .ok_or(crate::model::Error::MediaNotFound(media_id.to_string()))?;
+            .ok_or(crate::model::Error::MediaNotFound(media_id.to_string()))?
+            .item;
 
         let mut update = MediaForUpdate::default();
         let m = self.source_for_library(&library_id).await?;
@@ -2858,7 +2876,8 @@ impl ModelController {
                 library_id.to_string(),
                 media_id.to_string(),
                 "update_album_infos".to_string(),
-            ))?;
+            ))?
+            .item;
         let source = existing
             .source
             .clone()

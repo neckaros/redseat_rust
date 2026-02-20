@@ -1,4 +1,4 @@
-use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, ImageType};
+use rs_plugin_common_interfaces::{domain::{rs_ids::RsIds, ItemWithRelations}, ImageType};
 use rusqlite::{params, OptionalExtension, Row};
 
 use super::{Result, SqliteLibraryStore};
@@ -22,46 +22,49 @@ use crate::{
 const SERIE_SQL_FIELDS: &str = "id, name, type, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, openlibrary_work_id, anilist_manga_id, mangadex_manga_uuid, myanimelist_manga_id, year, modified, added, imdb_rating, imdb_votes, trailer, maxCreated, trakt_rating, trakt_votes, status, posterv, backgroundv, cardv";
 
 impl SqliteLibraryStore {
-    fn row_to_serie(row: &Row) -> rusqlite::Result<Serie> {
-        Ok(Serie {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            kind: row.get(2)?,
-            alt: from_pipe_separated_optional(row.get(3)?),
-            params: row.get(4)?,
+    fn row_to_serie(row: &Row) -> rusqlite::Result<ItemWithRelations<Serie>> {
+        Ok(ItemWithRelations {
+            item: Serie {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                kind: row.get(2)?,
+                alt: from_pipe_separated_optional(row.get(3)?),
+                params: row.get(4)?,
 
-            imdb: row.get(5)?,
-            slug: row.get(6)?,
-            tmdb: row.get(7)?,
-            trakt: row.get(8)?,
-            tvdb: row.get(9)?,
+                imdb: row.get(5)?,
+                slug: row.get(6)?,
+                tmdb: row.get(7)?,
+                trakt: row.get(8)?,
+                tvdb: row.get(9)?,
 
-            otherids: row.get(10)?,
-            openlibrary_work_id: row.get(11)?,
-            anilist_manga_id: row.get(12)?,
-            mangadex_manga_uuid: row.get(13)?,
-            myanimelist_manga_id: row.get(14)?,
-            year: row.get(15)?,
-            modified: row.get(16)?,
-            added: row.get(17)?,
+                otherids: row.get(10)?,
+                openlibrary_work_id: row.get(11)?,
+                anilist_manga_id: row.get(12)?,
+                mangadex_manga_uuid: row.get(13)?,
+                myanimelist_manga_id: row.get(14)?,
+                year: row.get(15)?,
+                modified: row.get(16)?,
+                added: row.get(17)?,
 
-            imdb_rating: row.get(18)?,
-            imdb_votes: row.get(19)?,
+                imdb_rating: row.get(18)?,
+                imdb_votes: row.get(19)?,
 
-            trailer: row.get(20)?,
-            max_created: row.get(21)?,
-            trakt_rating: row.get(22)?,
-            trakt_votes: row.get(23)?,
+                trailer: row.get(20)?,
+                max_created: row.get(21)?,
+                trakt_rating: row.get(22)?,
+                trakt_votes: row.get(23)?,
 
-            status: row.get(24)?,
+                status: row.get(24)?,
 
-            posterv: row.get(25)?,
-            backgroundv: row.get(26)?,
-            cardv: row.get(27)?,
+                posterv: row.get(25)?,
+                backgroundv: row.get(26)?,
+                cardv: row.get(27)?,
+            },
+            relations: None,
         })
     }
 
-    pub async fn get_series(&self, query: SerieQuery) -> Result<Vec<Serie>> {
+    pub async fn get_series(&self, query: SerieQuery) -> Result<Vec<ItemWithRelations<Serie>>> {
         let row = self
             .connection
             .call(move |conn| {
@@ -92,14 +95,14 @@ impl SqliteLibraryStore {
                     where_query.format_order()
                 ))?;
                 let rows = query.query_map(where_query.values(), Self::row_to_serie)?;
-                let backups: Vec<Serie> =
-                    rows.collect::<std::result::Result<Vec<Serie>, rusqlite::Error>>()?;
+                let backups: Vec<ItemWithRelations<Serie>> =
+                    rows.collect::<std::result::Result<Vec<ItemWithRelations<Serie>>, rusqlite::Error>>()?;
                 Ok(backups)
             })
             .await?;
         Ok(row)
     }
-    pub async fn get_serie(&self, credential_id: &str) -> Result<Option<Serie>> {
+    pub async fn get_serie(&self, credential_id: &str) -> Result<Option<ItemWithRelations<Serie>>> {
         let credential_id = credential_id.to_string();
         let row = self
             .connection
@@ -117,7 +120,7 @@ impl SqliteLibraryStore {
         Ok(row)
     }
 
-    pub async fn get_serie_by_external_id(&self, ids: RsIds) -> Result<Option<Serie>> {
+    pub async fn get_serie_by_external_id(&self, ids: RsIds) -> Result<Option<ItemWithRelations<Serie>>> {
         let row = self.connection.call( move |conn| { 
             let mut query = conn.prepare(&format!("SELECT 
             {} 
@@ -180,7 +183,7 @@ impl SqliteLibraryStore {
                 where_query.add_update(&update.max_created, "max_created");
 
                 let alts = replace_add_remove_from_array(
-                    existing.alt,
+                    existing.item.alt,
                     update.alt,
                     update.add_alts,
                     update.remove_alts,
@@ -307,13 +310,13 @@ mod tests {
         };
         store.add_serie(serie).await.unwrap();
         let inserted = store.get_serie("serie-books-ids").await.unwrap().unwrap();
-        assert_eq!(inserted.anilist_manga_id, Some(30013));
+        assert_eq!(inserted.item.anilist_manga_id, Some(30013));
         assert_eq!(
-            inserted.mangadex_manga_uuid.as_deref(),
+            inserted.item.mangadex_manga_uuid.as_deref(),
             Some("manga-level-uuid")
         );
-        assert_eq!(inserted.myanimelist_manga_id, Some(13));
-        assert_eq!(inserted.openlibrary_work_id.as_deref(), Some("OL123W"));
+        assert_eq!(inserted.item.myanimelist_manga_id, Some(13));
+        assert_eq!(inserted.item.openlibrary_work_id.as_deref(), Some("OL123W"));
 
         store
             .update_serie(
@@ -326,6 +329,6 @@ mod tests {
             .await
             .unwrap();
         let updated = store.get_serie("serie-books-ids").await.unwrap().unwrap();
-        assert_eq!(updated.myanimelist_manga_id, Some(99));
+        assert_eq!(updated.item.myanimelist_manga_id, Some(99));
     }
 }

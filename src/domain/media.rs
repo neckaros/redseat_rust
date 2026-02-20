@@ -185,20 +185,16 @@ impl From<Media> for MediaForAdd {
         MediaForAdd {
             name: value.name,
             description: value.description,
-            people: value
-                .people
-                .map(|e| e.iter().map(|p| p.id.to_string()).collect::<Vec<String>>()),
-            tags: value
-                .tags
-                .map(|e| e.iter().map(|p| p.id.to_string()).collect::<Vec<String>>()),
+            people: None,
+            tags: None,
             long: value.long,
             lat: value.lat,
             created: value.created,
             origin: value.origin,
-            series: value.series,
+            series: None,
             original_hash: value.md5,
             original_id: Some(value.original_id.unwrap_or(value.id)),
-            book: value.book,
+            book: None,
             ..Default::default()
         }
     }
@@ -208,17 +204,17 @@ impl From<Media> for MediaForUpdate {
     fn from(value: Media) -> Self {
         MediaForUpdate {
             description: value.description,
-            add_people: value.people,
-            add_tags: value.tags,
+            add_people: None,
+            add_tags: None,
             long: value.long,
             lat: value.lat,
             created: value.created,
             origin: value.origin,
-            add_series: value.series,
+            add_series: None,
             pages: value.pages,
             original_hash: value.original_hash.or(value.md5),
             original_id: Some(value.original_id.unwrap_or(value.id)),
-            book: value.book,
+            book: None,
             ..Default::default()
         }
     }

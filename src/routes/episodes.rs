@@ -52,8 +52,8 @@ async fn handler_refresh(Path((library_id, serie_id)): Path<(String, String)>, S
 
 async fn handler_lookup_season(Path((library_id, serie_id, season)): Path<(String, String, u32)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
 	let serie = mc.get_serie(&library_id.clone(), serie_id.clone(),  &user).await?.ok_or(SourcesError::UnableToFindSerie(library_id.to_string(), serie_id.to_string(), "handler_lookup_season".to_string()))?;
-	let name = serie.name.clone();
-	let ids: RsIds = serie.into();
+	let name = serie.item.name.clone();
+	let ids: RsIds = serie.item.into();
 	let query_episode = RsLookupEpisode {
     name: Some(name),
     ids: Some(ids),
@@ -102,8 +102,8 @@ async fn handler_delete(Path((library_id, serie_id, season, number)): Path<(Stri
 async fn handler_lookup(Path((library_id, serie_id, season, number)): Path<(String, String, u32, u32)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
 	let episode = mc.get_episode(&library_id, serie_id.clone(), season, number, &user).await?;
 	let serie = mc.get_serie(&library_id, serie_id.clone(),  &user).await?.ok_or(SourcesError::UnableToFindSerie(library_id.to_string(), serie_id.to_string(), "handler_lookup".to_string()))?;
-	let name = serie.name.clone();
-	let ids: RsIds = serie.into();
+	let name = serie.item.name.clone();
+	let ids: RsIds = serie.item.into();
 	let query_episode = RsLookupEpisode {
     name: Some(name),
     ids: Some(ids),
@@ -159,7 +159,7 @@ async fn handler_progress_set(Path((library_id, serie_id, season, number)): Path
 	let episode = mc.get_episode(&library_id, serie_id.clone(), season, number, &user).await?;
 	let serie = mc.get_serie(&library_id, serie_id.clone(), &user).await?.ok_or(SourcesError::UnableToFindSerie(library_id.to_string(), serie_id.to_string(), "handler_lookup_season".to_string()))?;
 	let id = RsIds::from(episode).into_best_external().ok_or(Error::NotFound(format!("Unable to get best external for handler_progress_set")))?;
-	let serie_id = RsIds::from(serie).into_best_external().ok_or(Error::NotFound(format!("Unable to get best external for handler_progress_set serie")))?;
+	let serie_id = RsIds::from(serie.item).into_best_external().ok_or(Error::NotFound(format!("Unable to get best external for handler_progress_set serie")))?;
 	let progress = ViewProgressForAdd { kind: MediaType::Episode, id, progress: progress.progress, parent: Some(serie_id) };
 	mc.add_view_progress(progress, &user, Some(library_id)).await?;
 

@@ -269,7 +269,7 @@ impl ModelController {
 
             let media = self.get_media(library_id, media_id.to_string(), requesting_user).await?;
 
-            
+
             let key = derive_key(backup_info.password.clone().unwrap_or_default());
 
             let (asyncwriter, asyncreader) = tokio::io::duplex(256 * 1024);
@@ -279,7 +279,7 @@ impl ModelController {
 
             tokio::spawn(async move {
 
-                
+
                 let mut buffer = vec![0; 1024];
                 loop {
                     let bytes_read = reader.stream.read(&mut buffer).await.unwrap();
@@ -288,26 +288,26 @@ impl ModelController {
                     }
                     decrypt_stream.write_decrypted(&buffer[..bytes_read]).await.unwrap();
                 }
-            
-                decrypt_stream.finalize().await.unwrap();
-                
 
-            
+                decrypt_stream.finalize().await.unwrap();
+
+
+
             }).map_err(|r| RsError::Error("Unable to get plugin writer".to_string()));
 
             SourceRead::Stream(FileStreamResult {
                 stream: Box::pin(asyncreader),
-                size: media.as_ref().map(|m| m.size.to_owned()).flatten(),
+                size: media.as_ref().map(|m| m.item.size.to_owned()).flatten(),
                 accept_range: false,
                 range: None,
-                mime: media.as_ref().map(|m| m.mimetype.to_owned()),
-                name: media.as_ref().map(|m| m.name.to_owned()),
+                mime: media.as_ref().map(|m| m.item.mimetype.to_owned()),
+                name: media.as_ref().map(|m| m.item.name.to_owned()),
                 cleanup: None,
             })
         } else {
             source_read
         };
-        
+
         Ok(source)
 	}
 
@@ -354,7 +354,7 @@ impl ModelController {
                 None
             };
 
-            
+
             let key = derive_key(backup_info.password.clone().unwrap_or_default());
 
             let (asyncwriter, asyncreader) = tokio::io::duplex(256 * 1024);
@@ -364,7 +364,7 @@ impl ModelController {
 
             tokio::spawn(async move {
 
-                
+
                 let mut buffer = vec![0; 1024];
                 loop {
                     let bytes_read = reader.stream.read(&mut buffer).await.unwrap();
@@ -373,26 +373,26 @@ impl ModelController {
                     }
                     decrypt_stream.write_decrypted(&buffer[..bytes_read]).await.unwrap();
                 }
-            
-                decrypt_stream.finalize().await.unwrap();
-                
 
-            
+                decrypt_stream.finalize().await.unwrap();
+
+
+
             }).map_err(|r| RsError::Error("Unable to get plugin writer".to_string()));
 
             SourceRead::Stream(FileStreamResult {
                 stream: Box::pin(asyncreader),
-                size: media.as_ref().map(|m| m.size.to_owned()).flatten(),
+                size: media.as_ref().map(|m| m.item.size.to_owned()).flatten(),
                 accept_range: false,
                 range: None,
-                mime: media.as_ref().map(|m| m.mimetype.to_owned()),
-                name: media.as_ref().map(|m| m.name.to_owned()),
+                mime: media.as_ref().map(|m| m.item.mimetype.to_owned()),
+                name: media.as_ref().map(|m| m.item.name.to_owned()),
                 cleanup: None,
             })
         } else {
             source_read
         };
-        
+
         Ok(source)
 	}
 
@@ -494,7 +494,7 @@ impl ModelController {
     pub async fn upload_backup_media(&self, backup_id: &str, library_id: &str, media_id: &str, id: Option<String>, requesting_user: &ConnectedUser) -> RsResult<BackupFile> {
         
         let id = id.unwrap_or(nanoid!());
-        let media_info = self.get_media(&library_id, media_id.to_string(), requesting_user).await?.ok_or(SourcesError::UnableToFindMedia(library_id.to_string(), media_id.to_string(), "upload_backup_media".to_string()))?;
+        let media_info = self.get_media(&library_id, media_id.to_string(), requesting_user).await?.ok_or(SourcesError::UnableToFindMedia(library_id.to_string(), media_id.to_string(), "upload_backup_media".to_string()))?.item;
         let mut source_read = self.library_file(&library_id, media_id, None, MediaFileQuery { raw: true, ..Default::default()}, requesting_user).await?;
 
         let backup_file = self.upload_backup(source_read, media_id.to_string(), backup_id.to_string(), media_info.md5.clone().unwrap_or("none".to_string()), media_info.max_date(),Some(library_id.to_string()), Some(media_info), Some(id)).await?;

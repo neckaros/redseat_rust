@@ -175,8 +175,8 @@ async fn handler_image(Path((library_id, serie_id)): Path<(String, String)>, Sta
 
 async fn handler_image_search(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(_query): Query<ImageRequestOptions>) -> Result<Json<Value>> {
 	let serie = mc.get_serie(&library_id, serie_id.clone(), &user).await?.ok_or(SourcesError::UnableToFindSerie(library_id.clone(), serie_id, "handler_image_search".to_string()))?;
-	let name = serie.name.clone();
-	let ids: RsIds = serie.into();
+	let name = serie.item.name.clone();
+	let ids: RsIds = serie.item.into();
 	let lookup_query = RsLookupSerie {
 		name: Some(name),
 		ids: Some(ids.clone()),

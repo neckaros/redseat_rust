@@ -10,7 +10,7 @@ use nanoid::nanoid;
 use rs_plugin_common_interfaces::{
     ExternalImage,
     ImageType,
-    domain::{rs_ids::RsIds, serie::SerieStatus},
+    domain::{rs_ids::RsIds, serie::SerieStatus, ItemWithRelations},
     lookup::{RsLookupMetadataResult, RsLookupMetadataResultWrapper, RsLookupMovie, RsLookupQuery, RsLookupSerie},
     request::{RsRequest, RsRequestStatus},
 };
@@ -158,7 +158,7 @@ impl ModelController {
         library_id: &str,
         query: SerieQuery,
         requesting_user: &ConnectedUser,
-    ) -> RsResult<Vec<Serie>> {
+    ) -> RsResult<Vec<ItemWithRelations<Serie>>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id)?;
         let people = store.get_series(query).await?;
@@ -170,7 +170,7 @@ impl ModelController {
         library_id: &str,
         serie_id: String,
         requesting_user: &ConnectedUser,
-    ) -> RsResult<Option<Serie>> {
+    ) -> RsResult<Option<ItemWithRelations<Serie>>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id)?;
 
@@ -207,7 +207,7 @@ impl ModelController {
                         _ => None,
                     });
                 if let Some(serie) = plugin_serie {
-                    return Ok(Some(serie));
+                    return Ok(Some(ItemWithRelations { item: serie, relations: None }));
                 }
 
                 // Fallback to Trakt
@@ -219,7 +219,7 @@ impl ModelController {
                     )
                 })?;
                 trakt_show.fill_imdb_ratings(&self.imdb).await;
-                Ok(Some(trakt_show))
+                Ok(Some(ItemWithRelations { item: trakt_show, relations: None }))
             }
         } else {
             let serie = store.get_serie(&serie_id).await?;
@@ -232,7 +232,7 @@ impl ModelController {
         library_id: &str,
         ids: RsIds,
         requesting_user: &ConnectedUser,
-    ) -> RsResult<Option<Serie>> {
+    ) -> RsResult<Option<ItemWithRelations<Serie>>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id)?;
         let serie = store.get_serie_by_external_id(ids).await?;
@@ -251,13 +251,13 @@ impl ModelController {
 
         // 1. Exact local ID
         if let Some(found) = store.get_serie(&serie.id).await? {
-            return Ok(Some(found));
+            return Ok(Some(found.item));
         }
 
         // 2. Any external ID
         let ids: RsIds = serie.clone().into();
         if let Some(found) = store.get_serie_by_external_id(ids).await? {
-            return Ok(Some(found));
+            return Ok(Some(found.item));
         }
 
         // 3. Name / alt fallback
@@ -272,7 +272,7 @@ impl ModelController {
                 .into_iter()
                 .next()
             {
-                return Ok(Some(found));
+                return Ok(Some(found.item));
             }
         }
 
@@ -292,7 +292,7 @@ impl ModelController {
                 library_id.to_string(),
                 "get_serie_ids".to_string(),
             ))?;
-        let ids: RsIds = serie.into();
+        let ids: RsIds = serie.item.into();
         Ok(ids)
     }
 
@@ -431,7 +431,8 @@ impl ModelController {
                         library_id.to_string(),
                         serie_id,
                         "get_serie".to_string(),
-                    ))?;
+                    ))?
+                    .item;
             self.send_serie(SeriesMessage {
                 library: library_id.to_string(),
                 series: vec![SerieWithAction {
@@ -448,7 +449,8 @@ impl ModelController {
                     library_id.to_string(),
                     serie_id,
                     "get_serie".to_string(),
-                ))?;
+                ))?
+                .item;
             Ok(serie)
         }
     }
@@ -470,7 +472,7 @@ impl ModelController {
             .await?;
         if let Some(existing) = existing {
             return Err(
-                Error::Duplicate(existing.id.to_owned(), MediaElement::Serie(existing)).into(),
+                Error::Duplicate(existing.item.id.to_owned(), MediaElement::Serie(existing.item)).into(),
             );
         }
         let store = self.store.get_library_store(library_id)?;
@@ -484,7 +486,8 @@ impl ModelController {
                 library_id.to_string(),
                 id,
                 "add_serie".to_string(),
-            ))?;
+            ))?
+            .item;
         self.send_serie(SeriesMessage {
             library: library_id.to_string(),
             series: vec![SerieWithAction {
@@ -529,7 +532,8 @@ impl ModelController {
                 library_id.to_string(),
                 serie_id.to_string(),
                 "remove_serie".to_string(),
-            ))?;
+            ))?
+            .item;
 
         if delete_medias {
             let medias = self
@@ -543,7 +547,7 @@ impl ModelController {
                 )
                 .await?;
             for media in medias {
-                self.remove_media(library_id, &media.id, requesting_user)
+                self.remove_media(library_id, &media.item.id, requesting_user)
                     .await?;
             }
         }
@@ -582,7 +586,8 @@ impl ModelController {
                 library_id.to_string(),
                 serie_id.to_string(),
                 "remove_serie".to_string(),
-            ))?;
+            ))?
+            .item;
         let new_serie = self.trakt.get_serie(&ids).await?;
         let mut updates = SerieForUpdate {
             ..Default::default()
@@ -618,9 +623,12 @@ impl ModelController {
         library_id: &str,
         requesting_user: &ConnectedUser,
     ) -> RsResult<()> {
-        let all_series = self
+        let all_series: Vec<Serie> = self
             .get_series(&library_id, SerieQuery::default(), &requesting_user)
-            .await?;
+            .await?
+            .into_iter()
+            .map(|iwr| iwr.item)
+            .collect();
         //Imdb rating
         for mut serie in all_series {
             let existing_votes = serie.imdb_votes.unwrap_or(0);
@@ -684,7 +692,7 @@ impl ModelController {
                 .get_serie_by_external_id(library_id, ids.clone(), requesting_user)
                 .await?;
             if let Some(existing) = existing {
-                Err(Error::Duplicate(existing.id.to_owned(), MediaElement::Serie(existing)).into())
+                Err(Error::Duplicate(existing.item.id.to_owned(), MediaElement::Serie(existing.item)).into())
             } else {
                 let mut new_serie = self.trakt.get_serie(&ids).await?;
                 new_serie.fill_imdb_ratings(&self.imdb).await;
@@ -717,7 +725,7 @@ impl ModelController {
                 let image = self
                     .serie_image(
                         library_id,
-                        &existing_serie.id,
+                        &existing_serie.item.id,
                         Some(kind),
                         size,
                         requesting_user,
@@ -836,8 +844,8 @@ impl ModelController {
                 serie_id.to_string(),
                 "refresh_serie_image".to_string(),
             ))?;
-        let serie_name = serie.name.clone();
-        let ids: RsIds = serie.into();
+        let serie_name = serie.item.name.clone();
+        let ids: RsIds = serie.item.into();
         let lookup_query = RsLookupSerie {
             name: Some(serie_name),
             ids: Some(ids.clone()),
@@ -1009,7 +1017,8 @@ impl ModelController {
                 library_id.to_string(),
                 serie_id.to_string(),
                 "update_serie_image".to_string(),
-            ))?;
+            ))?
+            .item;
         self.send_serie(SeriesMessage {
             library: library_id.to_string(),
             series: vec![SerieWithAction {

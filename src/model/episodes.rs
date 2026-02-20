@@ -106,7 +106,7 @@ impl ModelController {
             let serie = store.get_serie_by_external_id(id.clone()).await?;
 
             if let Some(serie) = serie {
-                query.serie_ref = Some(serie.id);
+                query.serie_ref = Some(serie.item.id);
                 store.get_episodes(query).await?
             } else {
                 self.trakt.all_episodes(&id).await.map_err(|_| SourcesError::NotFound(Some(format!("get_episodes_by_id - Unable to find episodes on trakt for {:?}", id))))?
@@ -243,7 +243,7 @@ impl ModelController {
             let store = self.store.get_library_store_optional(library_id).ok_or(Error::LibraryStoreNotFoundFor(library_id.clone().to_string(), "episode_image".to_string()))?;
             let existing_serie = store.get_serie_by_external_id(serie_ids.clone()).await?;
             if let Some(existing_serie) = existing_serie {
-                self.episode_image(library_id, &existing_serie.id, season,  episode, size, requesting_user).await
+                self.episode_image(library_id, &existing_serie.item.id, season,  episode, size, requesting_user).await
             } else {
 
                 let local_provider = self.library_source_for_library(library_id).await?;

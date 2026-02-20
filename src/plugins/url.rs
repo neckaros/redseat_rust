@@ -4,7 +4,7 @@ use async_recursion::async_recursion;
 use extism::convert::Json;
 use futures::StreamExt;
 use http::header::{CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE};
-use rs_plugin_common_interfaces::{lookup::{RsLookupMetadataResultWrapper, RsLookupQuery, RsLookupSourceResult, RsLookupWrapper}, request::{RsProcessingActionRequest, RsProcessingProgress, RsRequest, RsRequestAddResponse, RsRequestPluginRequest, RsRequestStatus}, url::RsLink, ExternalImage, PluginCredential, PluginType};
+use rs_plugin_common_interfaces::{lookup::{RsLookupMetadataResultWrapper, RsLookupQuery, RsLookupSourceResult, RsLookupWrapper}, request::{RsGroupDownload, RsProcessingActionRequest, RsProcessingProgress, RsRequest, RsRequestAddResponse, RsRequestPluginRequest, RsRequestStatus}, url::RsLink, ExternalImage, PluginCredential, PluginType};
 
 use crate::{Error, domain::{plugin::PluginWithCredential, progress::RsProgressCallback}, error::RsResult, plugins::sources::{AsyncReadPinBox, FileStreamResult}, tools::{array_tools::AddOrSetArray, file_tools::{filename_from_path, get_mime_from_filename}, http_tools::{extract_header, guess_filename, parse_content_disposition}, log::{self, log_error, log_info}, video_tools::ytdl::YydlContext}};
 
@@ -277,7 +277,7 @@ impl PluginManager {
         }
     }
 
-    pub async fn lookup(&self, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<Vec<RsRequest>> {
+    pub async fn lookup(&self, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<Vec<RsGroupDownload>> {
         let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
 
         let tasks: Vec<_> = {
@@ -309,16 +309,30 @@ impl PluginManager {
             })
         }).collect();
 
-        let mut results = vec![];
+        let mut results: Vec<RsGroupDownload> = vec![];
         for handle in handles {
             match handle.await {
-                Ok((plugin_id, plugin_name, Ok(Json(RsLookupSourceResult::Requests(mut request))))) => {
+                Ok((plugin_id, plugin_name, Ok(Json(RsLookupSourceResult::GroupRequest(mut groups))))) => {
                     log_info(crate::tools::log::LogServiceType::Plugin, format!("Lookup result from plugin {}", plugin_name));
-                    for req in &mut request {
+                    for group in &mut groups {
+                        for req in &mut group.requests {
+                            req.plugin_id = Some(plugin_id.clone());
+                            req.plugin_name = Some(plugin_name.clone());
+                        }
+                    }
+                    results.append(&mut groups);
+                }
+                Ok((plugin_id, plugin_name, Ok(Json(RsLookupSourceResult::Requests(request))))) => {
+                    log_info(crate::tools::log::LogServiceType::Plugin, format!("Lookup result from plugin {}", plugin_name));
+                    for mut req in request {
                         req.plugin_id = Some(plugin_id.clone());
                         req.plugin_name = Some(plugin_name.clone());
+                        results.push(RsGroupDownload {
+                            requests: vec![req],
+                            group: false,
+                            ..Default::default()
+                        });
                     }
-                    results.append(&mut request);
                 }
                 Ok((_, _, Ok(_))) => {}
                 Ok((_, _, Err((error, code)))) => {

@@ -727,7 +727,8 @@ impl ModelController {
                 library_id.to_string(),
                 media_id.to_string(),
                 "process_media_faces".to_string(),
-            ))?;
+            ))?
+            .item;
 
         // Process in a block to catch errors and update DB status
         let result: RsResult<Vec<DetectedFaceResult>> = async {
@@ -1355,7 +1356,8 @@ impl ModelController {
         let media = self
             .get_media(library_id, media_ref.clone(), requesting_user)
             .await?
-            .ok_or_else(|| RsError::NotFound(format!("Media not found: {}", media_ref)))?;
+            .ok_or_else(|| RsError::NotFound(format!("Media not found: {}", media_ref)))?
+            .item;
 
         // Load media image based on type
         let image_result = match media.kind {
@@ -1528,7 +1530,7 @@ impl ModelController {
                 .await
             {
                 medias_to_send.push(MediaWithAction {
-                    media,
+                    media: media.item,
                     action: ElementAction::Updated,
                 });
             }
