@@ -10,6 +10,8 @@ use rusqlite::{
 use serde::{Deserialize, Serialize};
 use stream_map_any::StreamMapAnyVariant;
 
+use rs_plugin_common_interfaces::domain::{ItemWithRelations, Relations};
+
 use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
 use crate::{
