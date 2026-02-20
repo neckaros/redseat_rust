@@ -4,7 +4,7 @@
 use std::vec;
 
 use nanoid::nanoid;
-use rs_plugin_common_interfaces::domain::other_ids::OtherIds;
+use rs_plugin_common_interfaces::domain::{media::MediaItemReference, other_ids::OtherIds};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use x509_parser::nom::branch::alt;
@@ -133,9 +133,51 @@ impl ModelController {
                 return Ok(Some(tag));
             }
         }
-		
+
 		Ok(None)
 	}
+
+    /// Finds a tag by trying in order:
+    /// 1. Exact ID match         → `conf: None`     (treated as 100 by consumers)
+    /// 2. OtherIds overlap       → `conf: None`     (treated as 100 by consumers)
+    /// 3. Name / alt-name match  → `conf: Some(80)`
+    ///
+    /// Returns a `MediaItemReference` so the caller gets both the resolved ID and the
+    /// confidence derived from the match method, ready to insert into a mapping table.
+    pub async fn get_tag_by_external_id(
+        &self,
+        library_id: &str,
+        id: &str,
+        names: Vec<String>,
+        otherids: Option<OtherIds>,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Option<MediaItemReference>> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        let store = self.store.get_library_store(library_id)?;
+
+        // 1. Exact ID
+        if let Some(tag) = store.get_tag(id).await? {
+            return Ok(Some(MediaItemReference { id: tag.id, conf: None }));
+        }
+
+        // 2. OtherIds overlap
+        if let Some(ids) = otherids {
+            if !ids.0.is_empty() {
+                if let Some(tag) = store.get_tag_by_otherids(ids).await? {
+                    return Ok(Some(MediaItemReference { id: tag.id, conf: None }));
+                }
+            }
+        }
+
+        // 3. Name / alt match (least specific)
+        for name in &names {
+            if let Some(tag) = store.get_tags(TagQuery::new_with_name(name)).await?.into_iter().next() {
+                return Ok(Some(MediaItemReference { id: tag.id, conf: Some(80) }));
+            }
+        }
+
+        Ok(None)
+    }
 
     pub async fn get_tag_by_name(&self, library_id: &str, name: &str, requesting_user: &ConnectedUser) -> RsResult<Option<Tag>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;

@@ -17,6 +17,8 @@ use rs_plugin_common_interfaces::{ExternalImage, ImageType};
 use serde_json::{json, Value};
 use tokio_util::io::{ReaderStream, StreamReader};
 
+use serde::Deserialize;
+
 use crate::{
     domain::book::{Book, BookForUpdate},
     model::{books::BookQuery, medias::MediaQuery, users::ConnectedUser, ModelController},
@@ -48,25 +50,27 @@ async fn handler_list(
     user: ConnectedUser,
     Query(query): Query<BookQuery>,
 ) -> Result<Json<Vec<ItemWithRelations<Book>>>> {
-    let books: Vec<ItemWithRelations<Book>> = mc
-        .get_books(&library_id, query, &user)
-        .await?
-        .into_iter()
-        .map(|book| ItemWithRelations {
-            item: book,
-            relations: None,
-        })
-        .collect();
+    let books = mc.get_books(&library_id, query, &user).await?;
     Ok(Json(books))
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct AddBookOptions {
+    #[serde(default)]
+    upsert_tags: bool,
+    #[serde(default)]
+    upsert_people: bool,
 }
 
 async fn handler_post(
     Path(library_id): Path<String>,
     State(mc): State<ModelController>,
     user: ConnectedUser,
-    Json(book): Json<Book>,
+    Query(options): Query<AddBookOptions>,
+    Json(item): Json<ItemWithRelations<Book>>,
 ) -> Result<Json<Value>> {
-    let created = mc.add_book(&library_id, book, &user).await?;
+    let created = mc.add_book(&library_id, item, options.upsert_tags, options.upsert_people, &user).await?;
     Ok(Json(json!(created)))
 }
 

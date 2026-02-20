@@ -21,6 +21,10 @@ use crate::{
         ElementAction, MediaElement,
     },
     error::RsResult,
+    model::{
+        people::PersonForAdd,
+        tags::TagForAdd,
+    },
     plugins::sources::{
         error::SourcesError, AsyncReadPinBox, FileStreamResult, Source, SourceRead,
     },
@@ -85,7 +89,7 @@ impl ModelController {
         library_id: &str,
         query: BookQuery,
         requesting_user: &ConnectedUser,
-    ) -> RsResult<Vec<Book>> {
+    ) -> RsResult<Vec<ItemWithRelations<Book>>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id)?;
         Ok(store.get_books(query).await?)
@@ -108,10 +112,7 @@ impl ModelController {
                 )
             })?;
             if let Some(book) = store.get_book_by_external_id(ids.clone()).await? {
-                Ok(ItemWithRelations {
-                    item: book,
-                    relations: None,
-                })
+                Ok(book)
             } else {
                 // Try plugin lookup first
                 let lookup_query = RsLookupQuery::Book(RsLookupBook {
@@ -149,10 +150,6 @@ impl ModelController {
             store
                 .get_book(&book_id)
                 .await?
-                .map(|book| ItemWithRelations {
-                    item: book,
-                    relations: None,
-                })
                 .ok_or(
                     SourcesError::UnableToFindMovie(
                         library_id.to_string(),
@@ -169,7 +166,7 @@ impl ModelController {
         library_id: &str,
         ids: RsIds,
         requesting_user: &ConnectedUser,
-    ) -> RsResult<Option<Book>> {
+    ) -> RsResult<Option<ItemWithRelations<Book>>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id)?;
         Ok(store.get_book_by_external_id(ids).await?)
@@ -191,10 +188,14 @@ impl ModelController {
     pub async fn add_book(
         &self,
         library_id: &str,
-        mut new_book: Book,
+        item: ItemWithRelations<Book>,
+        upsert_tags: bool,
+        upsert_people: bool,
         requesting_user: &ConnectedUser,
     ) -> RsResult<Book> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        let mut new_book = item.item;
+        let relations = item.relations;
         Self::validate_book(&new_book)?;
 
         let ids: RsIds = new_book.clone().into();
@@ -209,7 +210,7 @@ impl ModelController {
                 .await?
             {
                 return Err(
-                    Error::Duplicate(existing.id.to_owned(), MediaElement::Book(existing)).into(),
+                    Error::Duplicate(existing.item.id.to_owned(), MediaElement::Book(existing.item)).into(),
                 );
             }
         }
@@ -217,6 +218,85 @@ impl ModelController {
         let store = self.store.get_library_store(library_id)?;
         new_book.id = nanoid!();
         store.add_book(new_book.clone()).await?;
+
+        // Wire up raw tag references
+        if let Some(rel) = &relations {
+            if let Some(tags) = &rel.tags {
+                for tag_ref in tags {
+                    store.add_book_tag(&new_book.id, &tag_ref.id, tag_ref.conf.map(|c| c as i32)).await?;
+                }
+            }
+            if let Some(people) = &rel.people {
+                for person_ref in people {
+                    store.add_book_person(&new_book.id, &person_ref.id, person_ref.conf.map(|c| c as i32)).await?;
+                }
+            }
+
+            // Wire up tags_details with upsert logic
+            if let Some(tags_details) = &rel.tags_details {
+                for tag in tags_details {
+                    let mut names = vec![tag.name.clone()];
+                    if let Some(alts) = &tag.alt {
+                        names.extend(alts.clone());
+                    }
+                    if let Some(found) = self.get_tag_by_external_id(
+                        library_id,
+                        &tag.id,
+                        names,
+                        tag.otherids.clone(),
+                        requesting_user,
+                    ).await? {
+                        store.add_book_tag(&new_book.id, &found.id, found.conf.map(|c| c as i32)).await?;
+                    } else if upsert_tags {
+                        let created = self.add_tag(library_id, TagForAdd {
+                            name: tag.name.clone(),
+                            parent: tag.parent.clone(),
+                            kind: tag.kind.clone(),
+                            alt: tag.alt.clone(),
+                            thumb: tag.thumb.clone(),
+                            params: tag.params.clone(),
+                            generated: tag.generated,
+                            otherids: tag.otherids.clone(),
+                        }, requesting_user).await?;
+                        store.add_book_tag(&new_book.id, &created.id, None).await?;
+                    }
+                }
+            }
+
+            // Wire up people_details with upsert logic
+            if let Some(people_details) = &rel.people_details {
+                for person in people_details {
+                    let person_ids: RsIds = person.clone().into();
+                    if let Some(_existing_person) = store.get_person(&person.id).await? {
+                        store.add_book_person(&new_book.id, &person.id, None).await?;
+                    } else if let Some(found) = store.get_person_by_external_id(person_ids).await? {
+                        store.add_book_person(&new_book.id, &found.id, Some(80)).await?;
+                    } else if upsert_people {
+                        let created = self.add_pesron(library_id, PersonForAdd {
+                            name: person.name.clone(),
+                            socials: person.socials.clone(),
+                            kind: person.kind.clone(),
+                            alt: person.alt.clone(),
+                            portrait: person.portrait.clone(),
+                            params: person.params.clone(),
+                            birthday: person.birthday,
+                            generated: person.generated,
+                            imdb: person.imdb.clone(),
+                            slug: person.slug.clone(),
+                            tmdb: person.tmdb,
+                            trakt: person.trakt,
+                            death: person.death,
+                            gender: person.gender.clone(),
+                            country: person.country.clone(),
+                            bio: person.bio.clone(),
+                            otherids: person.otherids.clone(),
+                        }, requesting_user).await?;
+                        store.add_book_person(&new_book.id, &created.id, None).await?;
+                    }
+                }
+            }
+        }
+
         let inserted =
             store
                 .get_book(&new_book.id)
@@ -225,7 +305,8 @@ impl ModelController {
                     library_id.to_string(),
                     new_book.id.clone(),
                     "add_book".to_string(),
-                ))?;
+                ))?
+                .item;
         self.send_book(BooksMessage {
             library: library_id.to_string(),
             books: vec![BookWithAction {
@@ -261,7 +342,8 @@ impl ModelController {
                 library_id.to_string(),
                 book_id.clone(),
                 "update_book".to_string(),
-            ))?;
+            ))?
+            .item;
         if update.chapter.is_some() && update.serie_ref.is_none() && existing.serie_ref.is_none() {
             return Err(Error::ServiceError(
                 "invalid book".to_string(),
@@ -277,7 +359,8 @@ impl ModelController {
                 library_id.to_string(),
                 book_id,
                 "update_book".to_string(),
-            ))?;
+            ))?
+            .item;
         self.send_book(BooksMessage {
             library: library_id.to_string(),
             books: vec![BookWithAction {
@@ -308,7 +391,8 @@ impl ModelController {
                 library_id.to_string(),
                 book_id.to_string(),
                 "remove_book".to_string(),
-            ))?;
+            ))?
+            .item;
         store.remove_book(book_id.to_string()).await?;
         self.add_deleted(
             library_id,
@@ -349,7 +433,7 @@ impl ModelController {
             if let Some(existing_book) = existing_book {
                 self.book_image(
                     library_id,
-                    &existing_book.id,
+                    &existing_book.item.id,
                     Some(target_kind),
                     size,
                     requesting_user,

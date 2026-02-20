@@ -1,5 +1,6 @@
 use nanoid::nanoid;
-use rusqlite::{params, OptionalExtension, Row};
+use rusqlite::{params, params_from_iter, OptionalExtension, Row};
+use rs_plugin_common_interfaces::domain::other_ids::OtherIds;
 
 use crate::{domain::tag::{Tag, TagForUpdate}, model::{store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_pipe_separated_optional}, tags::{TagForAdd, TagForInsert, TagQuery}}, plugins::sources::error::SourcesError, tools::array_tools::replace_add_remove_from_array};
 use super::{Result, SqliteLibraryStore};
@@ -63,7 +64,7 @@ impl SqliteLibraryStore {
     }
     pub async fn get_tag(&self, credential_id: &str) -> Result<Option<Tag>> {
         let credential_id = credential_id.to_string();
-        let row = self.connection.call( move |conn| { 
+        let row = self.connection.call( move |conn| {
             let mut query = conn.prepare("SELECT id, name, parent, type, alt, thumb, params, modified, added, generated, path, otherids FROM tags WHERE id = ?")?;
             let row = query.query_row(
             [credential_id],Self::row_to_tag).optional()?;
@@ -72,7 +73,30 @@ impl SqliteLibraryStore {
         Ok(row)
     }
 
-
+    /// Returns the first tag whose stored `otherids` JSON overlaps any entry in the provided list.
+    /// Each stored entry looks like `"platform:value"` inside a JSON array, so we match with LIKE `%"entry"%`.
+    pub async fn get_tag_by_otherids(&self, otherids: OtherIds) -> Result<Option<Tag>> {
+        if otherids.0.is_empty() {
+            return Ok(None);
+        }
+        let row = self.connection.call(move |conn| {
+            let conditions = otherids.0.iter()
+                .map(|_| "otherids LIKE ?")
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            let sql = format!(
+                "SELECT id, name, parent, type, alt, thumb, params, modified, added, generated, path, otherids FROM tags WHERE {}",
+                conditions
+            );
+            let like_params: Vec<String> = otherids.0.iter()
+                .map(|entry| format!("%\"{}\"%" , entry))
+                .collect();
+            let mut query = conn.prepare(&sql)?;
+            let row = query.query_row(params_from_iter(like_params.iter()), Self::row_to_tag).optional()?;
+            Ok(row)
+        }).await?;
+        Ok(row)
+    }
 
     pub async fn update_tag(&self, tag_id: &str, update: TagForUpdate) -> Result<()> {
         let id = tag_id.to_string();
