@@ -4,7 +4,7 @@ use super::{mw_range::RangeDefinition, ImageRequestOptions, ImageUploadOptions};
 use crate::{
     domain::{
         media::{
-            self, MediaForUpdate, MediaItemReference,
+            self, ItemWithRelations, MediaForUpdate, MediaItemReference,
             MediaWithAction, MediasMessage,
         },
         ElementAction,
@@ -508,7 +508,7 @@ async fn handler_multi_delete(
         medias: removed
             .iter()
             .map(|m| MediaWithAction {
-                media: m.clone(),
+                media: ItemWithRelations { item: m.clone(), relations: None },
                 action: ElementAction::Deleted,
             })
             .collect(),
@@ -545,7 +545,7 @@ async fn handler_multi_patch(
         medias: updated
             .iter()
             .map(|m| MediaWithAction {
-                media: m.clone(),
+                media: ItemWithRelations { item: m.clone(), relations: None },
                 action: ElementAction::Updated,
             })
             .collect(),

@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use strum_macros::EnumString;
 pub use rs_plugin_common_interfaces::domain::media::{FileEpisode, FileType, Media, RsGpsPosition, MediaItemReference};
+pub use rs_plugin_common_interfaces::domain::ItemWithRelations;
 
 use crate::{domain::backup::BackupFile, plugins::sources::SourceRead};
 
@@ -285,7 +286,7 @@ impl From<&SourceRead> for MediaForUpdate {
 #[serde(rename_all = "camelCase")]
 pub struct MediaWithAction {
     pub action: ElementAction,
-    pub media: Media,
+    pub media: ItemWithRelations<Media>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

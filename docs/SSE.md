@@ -105,7 +105,21 @@ interface MediasMessage {
 
 interface MediaWithAction {
   action: ElementAction;
-  media: Media;
+  // All Media fields are present at the top level (flattened), plus optional relations
+  media: Media & { relations?: Relations };
+}
+
+interface Relations {
+  people?: MediaItemReference[];
+  peopleDetails?: Person[];
+  tags?: MediaItemReference[];
+  tagsDetails?: Tag[];
+  series?: FileEpisode[];
+  seriesDetails?: Serie[];
+  movies?: string[];
+  moviesDetails?: Movie[];
+  books?: string[];
+  booksDetails?: Book[];
 }
 
 interface UploadProgressMessage {

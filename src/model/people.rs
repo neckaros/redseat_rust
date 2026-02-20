@@ -1530,7 +1530,7 @@ impl ModelController {
                 .await
             {
                 medias_to_send.push(MediaWithAction {
-                    media: media.item,
+                    media,
                     action: ElementAction::Updated,
                 });
             }

@@ -532,8 +532,7 @@ impl ModelController {
                 library_id.to_string(),
                 media_id.to_string(),
                 "update_media".to_string(),
-            ))?
-            .item;
+            ))?;
         if notif {
             self.send_media(MediasMessage {
                 library: library_id.to_string(),
@@ -543,7 +542,7 @@ impl ModelController {
                 }],
             });
         }
-        Ok(media)
+        Ok(media.item)
     }
 
     pub fn send_media(&self, message: MediasMessage) {
@@ -576,8 +575,7 @@ impl ModelController {
                 library_id.to_string(),
                 media.id.to_string(),
                 "add_media".to_string(),
-            ))?
-            .item;
+            ))?;
         if notif {
             self.send_media(MediasMessage {
                 library: library_id.to_string(),
@@ -587,7 +585,7 @@ impl ModelController {
                 }],
             });
         }
-        Ok(new_file)
+        Ok(new_file.item)
     }
 
     pub async fn remove_media(
@@ -600,8 +598,7 @@ impl ModelController {
         let store = self.store.get_library_store(library_id)?;
         let existing = store
             .get_media(media_id, requesting_user.user_id().ok())
-            .await?
-            .map(|iwr| iwr.item);
+            .await?;
         if let Some(existing) = existing {
             self.remove_library_file(library_id, media_id, requesting_user)
                 .await?;
@@ -618,7 +615,7 @@ impl ModelController {
                     action: ElementAction::Deleted,
                 }],
             });
-            Ok(existing)
+            Ok(existing.item)
         } else {
             Err(Error::MediaNotFound(media_id.to_string()).into())
         }
@@ -842,12 +839,11 @@ impl ModelController {
                 library_id.to_string(),
                 id.to_string(),
                 "split_media".to_string(),
-            ))?
-            .item;
+            ))?;
 
         log_info(
             crate::tools::log::LogServiceType::Source,
-            format!("splitted {:?}", media),
+            format!("splitted {:?}", media.item),
         );
         self.send_media(MediasMessage {
             library: library_id.to_string(),
@@ -857,7 +853,7 @@ impl ModelController {
             }],
         });
 
-        Ok(media)
+        Ok(media.item)
     }
 
     pub async fn update_media_image(
@@ -891,8 +887,7 @@ impl ModelController {
                 library_id.to_string(),
                 media_id.to_string(),
                 "update_media_image".to_string(),
-            ))?
-            .item;
+            ))?;
         self.send_media(MediasMessage {
             library: library_id.to_string(),
             medias: vec![MediaWithAction {
@@ -1131,8 +1126,7 @@ impl ModelController {
                 library_id.to_string(),
                 media_id.to_string(),
                 "process_media".to_string(),
-            ))?
-            .item;
+            ))?;
         self.send_media(MediasMessage {
             library: library_id.to_string(),
             medias: vec![MediaWithAction {
@@ -1269,8 +1263,7 @@ impl ModelController {
                 library_id.to_string(),
                 id.to_string(),
                 "add_library_file".to_string(),
-            ))?
-            .item;
+            ))?;
         self.send_media(MediasMessage {
             library: library_id.to_string(),
             medias: vec![MediaWithAction {
@@ -1279,7 +1272,7 @@ impl ModelController {
             }],
         });
 
-        Ok(media)
+        Ok(media.item)
     }
 
     pub async fn download_library_url(
@@ -1416,8 +1409,7 @@ impl ModelController {
             let media = store
                 .get_media(&id, requesting_user.user_id().ok())
                 .await?
-                .ok_or(Error::MediaNotFound(id.to_owned()))?
-                .item;
+                .ok_or(Error::MediaNotFound(id.to_owned()))?;
             self.send_media(MediasMessage {
                 library: library_id.to_string(),
                 medias: vec![MediaWithAction {
@@ -1425,7 +1417,7 @@ impl ModelController {
                     action: ElementAction::Added,
                 }],
             });
-            medias.push(media);
+            medias.push(media.item);
         }
 
         Ok(medias)
@@ -1622,15 +1614,14 @@ impl ModelController {
                 library_id.to_string(),
                 id.to_string(),
                 "download_grouped".to_string(),
-            ))?
-            .item;
+            ))?;
         let _ = tx_progress
             .send(RsProgress {
                 id: upload_id.clone(),
-                total: media.size,
-                current: media.size,
+                total: media.item.size,
+                current: media.item.size,
                 kind: RsProgressType::Finished,
-                filename: Some(media.name.to_owned()),
+                filename: Some(media.item.name.to_owned()),
             })
             .await;
 
@@ -1642,7 +1633,7 @@ impl ModelController {
             }],
         });
 
-        Ok(vec![media])
+        Ok(vec![media.item])
     }
 
     /// Handle individual file downloads - processes each request separately
@@ -1820,15 +1811,14 @@ impl ModelController {
                     library_id.to_string(),
                     id.to_string(),
                     "download_individual".to_string(),
-                ))?
-                .item;
+                ))?;
             let _ = tx_progress
                 .send(RsProgress {
                     id: upload_id.clone(),
-                    total: media.size,
-                    current: media.size,
+                    total: media.item.size,
+                    current: media.item.size,
                     kind: RsProgressType::Finished,
-                    filename: Some(media.name.to_owned()),
+                    filename: Some(media.item.name.to_owned()),
                 })
                 .await;
 
@@ -1839,7 +1829,7 @@ impl ModelController {
                     action: ElementAction::Added,
                 }],
             });
-            medias.push(media);
+            medias.push(media.item);
         }
 
         Ok(medias)
