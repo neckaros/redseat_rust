@@ -304,12 +304,14 @@ impl PluginManager {
         let handles: Vec<_> = tasks.into_iter().map(|(plugin_arc, plugin_id, plugin_name, wrapped_query)| {
             tokio::task::spawn_blocking(move || {
                 let mut plugin_m = plugin_arc.lock().unwrap();
+                println!("Executing lookup for plugin {} lookup results... ", plugin_name);
                 let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<RsLookupSourceResult>>("lookup", Json(wrapped_query));
                 (plugin_id, plugin_name, res)
             })
         }).collect();
 
         let mut results: Vec<RsGroupDownload> = vec![];
+        
         for handle in handles {
             match handle.await {
                 Ok((plugin_id, plugin_name, Ok(Json(RsLookupSourceResult::GroupRequest(mut groups))))) => {

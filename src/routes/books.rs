@@ -156,6 +156,7 @@ async fn handler_lookup(
         name: Some(name),
         ids: Some(ids),
     });
+    print!("Executing lookup with query: {:?}", query);
     let results = mc.exec_lookup(query, Some(library_id), &user, None).await?;
     Ok(Json(json!(results)))
 }

@@ -4,10 +4,7 @@ use async_recursion::async_recursion;
 use futures::TryStreamExt;
 use nanoid::nanoid;
 use rs_plugin_common_interfaces::{
-    domain::{rs_ids::RsIds, ItemWithRelations},
-    lookup::{RsLookupBook, RsLookupMetadataResult, RsLookupQuery},
-    request::RsRequest,
-    ExternalImage, ImageType,
+    ExternalImage, ImageType, domain::{ItemWithRelations, rs_ids::{ApplyRsIds, RsIds}}, lookup::{RsLookupBook, RsLookupMetadataResult, RsLookupQuery}, request::RsRequest
 };
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
@@ -214,6 +211,9 @@ impl ModelController {
         }
 
         let ids: RsIds = new_book.clone().into();
+        new_book.apply_rs_ids(&ids);
+        println!("Adding book with ids: {:?}", ids);
+        println!("Adding book {:?}", new_book);
         if ids.isbn13.is_some()
             || ids.openlibrary_edition_id.is_some()
             || ids.openlibrary_work_id.is_some()

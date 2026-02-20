@@ -1462,6 +1462,8 @@ impl ModelController {
             episode: first_request.and_then(|r| r.episode),
             description: first_request.and_then(|r| r.description.clone()),
             movie: first_request.and_then(|r| r.movie.clone()),
+            book: first_request.and_then(|r| r.book.as_ref().map(|f| f.id.clone())),
+            
             origin: origin.clone(),
             ..Default::default()
         };
