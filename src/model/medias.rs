@@ -1460,6 +1460,7 @@ impl ModelController {
         let m = self.source_for_library(library_id).await?;
         let thumbnail = files.group_thumbnail_url.clone();
         let first_request = files.requests.first();
+    
 
         let mut infos = MediaForUpdate {
             name: files.group_filename.clone(),
@@ -1483,6 +1484,9 @@ impl ModelController {
             origin: origin.clone(),
             ..Default::default()
         };
+        if let Some(infos_group) = files.infos {
+            infos = infos.merged(infos_group);
+        }
 
         let upload_id = nanoid!();
         let tx_progress =

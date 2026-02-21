@@ -614,6 +614,7 @@ impl ModelController {
                     group_filename: None,
                     group_mime: None,
                     requests: vec![final_request],
+                    ..Default::default()
                 };
 
                 // Trigger download

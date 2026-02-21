@@ -594,6 +594,7 @@ async fn handler_add_request(
         group_thumbnail_url,
         group_filename,
         group_mime,
+        ..Default::default()
     };
     let added = mc
         .download_library_url(&library_id, group, &user)
