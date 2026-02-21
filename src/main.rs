@@ -190,6 +190,7 @@ async fn app() -> Result<Router> {
     ];
 
     let cors: CorsLayer = CorsLayer::new()
+        .max_age(Duration::from_secs(3600))
         // allow `GET` and `POST` when accessing the resource
         .allow_methods(vec![
             Method::GET,
