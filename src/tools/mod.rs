@@ -22,6 +22,7 @@ pub mod clock;
 pub mod compression;
 pub mod download_external_libs;
 pub mod test_sample;
+pub mod zip_range;
 
 pub fn get_time() -> Duration {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap()

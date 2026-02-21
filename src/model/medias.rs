@@ -92,6 +92,7 @@ use crate::{
         log::{log_error, log_info, log_warn, LogServiceType},
         prediction::{predict_net, preload_model, PredictionTagResult},
         video_tools::{self, probe_video, VideoTime},
+        zip_range::extract_zip_page_from_request,
     },
 };
 
@@ -966,6 +967,29 @@ impl ModelController {
                 });
 
                 return Ok(source_reader);
+            } else if let SourceRead::Request(ref request) = reader_response {
+                if matches!(
+                    request.status,
+                    RsRequestStatus::FinalPrivate | RsRequestStatus::FinalPublic
+                ) {
+                    if let Some(file_size) = existing.size {
+                        let page = query.page.unwrap_or(1) as usize;
+                        let (data, name) =
+                            extract_zip_page_from_request(request, page, file_size).await?;
+                        let size = data.len() as u64;
+                        let async_reader: AsyncReadPinBox =
+                            Box::pin(std::io::Cursor::new(data));
+                        return Ok(SourceRead::Stream(FileStreamResult {
+                            stream: async_reader,
+                            size: Some(size),
+                            accept_range: false,
+                            range: None,
+                            mime: None,
+                            name,
+                            cleanup: None,
+                        }));
+                    }
+                }
             }
         }
 
