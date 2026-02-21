@@ -1551,6 +1551,7 @@ impl ModelController {
             .await
             .map_err(|_| Error::ServiceError("Unable to close zip file".to_string(), None))?;
         file.flush().await?;
+        drop(file); // Signal EOF to duplex reader so plugin provider background upload task can finish
         println!("CLOSED");
 
         let source = source_promise.await??;
