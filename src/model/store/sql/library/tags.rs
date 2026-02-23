@@ -114,7 +114,15 @@ impl SqliteLibraryStore {
 
             where_query.add_update(&update.thumb, "thumb");
             where_query.add_update(&update.params, "params");
-            where_query.add_update(&update.otherids, "otherids");
+
+            let otherids = replace_add_remove_from_array(
+                existing_tag.otherids.clone().map(|o| o.into_vec()),
+                update.otherids.map(|o| o.into_vec()),
+                update.add_otherids,
+                update.remove_otherids,
+            );
+            let otherids: Option<OtherIds> = otherids.map(OtherIds::from);
+            where_query.add_update(&otherids, "otherids");
 
             let generated = Some(update.generated.unwrap_or_default());
             where_query.add_update(&generated, "generated");

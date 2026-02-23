@@ -390,7 +390,7 @@ impl SourceRead {
                         if let Ok(url) = HeaderValue::from_str(&request.url) {
                             headers.append(axum::http::header::LOCATION, url);
                         }
-                        let status = axum::http::StatusCode::TEMPORARY_REDIRECT;
+                        let status = axum::http::StatusCode::SEE_OTHER;
                         let body = Body::empty();
                         Ok((status, headers, body).into_response())
                     },
