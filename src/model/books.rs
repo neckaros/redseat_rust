@@ -4,7 +4,7 @@ use async_recursion::async_recursion;
 use futures::TryStreamExt;
 use nanoid::nanoid;
 use rs_plugin_common_interfaces::{
-    ExternalImage, ImageType, domain::{ItemWithRelations, rs_ids::{ApplyRsIds, RsIds}}, lookup::{RsLookupBook, RsLookupMetadataResult, RsLookupQuery}, request::RsRequest
+    ExternalImage, ImageType, domain::{ItemWithRelations, other_ids::OtherIds, rs_ids::{ApplyRsIds, RsIds}}, lookup::{RsLookupBook, RsLookupMetadataResult, RsLookupQuery}, request::RsRequest
 };
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
@@ -282,11 +282,18 @@ impl ModelController {
             if let Some(people_details) = &rel.people_details {
                 for person in people_details {
                     let person_ids: RsIds = person.clone().into();
+                    let external_ids = person_ids.as_all_external_ids();
                     if let Some(_existing_person) = store.get_person(&person.id).await? {
                         store.add_book_person(&new_book.id, &person.id, None).await?;
                     } else if let Some(found) = store.get_person_by_external_id(person_ids).await? {
                         store.add_book_person(&new_book.id, &found.id, Some(80)).await?;
                     } else if upsert_people {
+                        let mut otherids = person.otherids.clone().unwrap_or_default();
+                        for ext_id in external_ids {
+                            if let Some((key, value)) = ext_id.split_once(':') {
+                                otherids.add(key, value);
+                            }
+                        }
                         let created = self.add_pesron(library_id, PersonForAdd {
                             name: person.name.clone(),
                             socials: person.socials.clone(),
@@ -304,7 +311,7 @@ impl ModelController {
                             gender: person.gender.clone(),
                             country: person.country.clone(),
                             bio: person.bio.clone(),
-                            otherids: person.otherids.clone(),
+                            otherids: Some(otherids),
                         }, requesting_user).await?;
                         store.add_book_person(&new_book.id, &created.id, None).await?;
                     }

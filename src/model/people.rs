@@ -141,6 +141,8 @@ pub struct PersonForUpdate {
     pub country: Option<String>,
     pub bio: Option<String>,
     pub otherids: Option<OtherIds>,
+    pub add_otherids: Option<Vec<String>>,
+    pub remove_otherids: Option<Vec<String>>,
 }
 
 lazy_static! {

@@ -1,5 +1,5 @@
 
-use rs_plugin_common_interfaces::domain::rs_ids::RsIds;
+use rs_plugin_common_interfaces::domain::{other_ids::OtherIds, rs_ids::RsIds};
 use rusqlite::{params, types::FromSqlError, OptionalExtension, Row};
 
 
@@ -140,7 +140,14 @@ else 0 end) as score", q, q, q, q, q, q);
             where_query.add_update(&update.gender, "gender");
             where_query.add_update(&update.death, "death");
             where_query.add_update(&update.country, "country");
-            where_query.add_update(&update.otherids, "otherids");
+            let otherids = replace_add_remove_from_array(
+                existing.otherids.clone().map(|o| o.into_vec()),
+                update.otherids.map(|o| o.into_vec()),
+                update.add_otherids,
+                update.remove_otherids,
+            );
+            let otherids: Option<OtherIds> = otherids.map(OtherIds::from);
+            where_query.add_update(&otherids, "otherids");
 
             let alts = replace_add_remove_from_array(existing.alt, update.alt, update.add_alts, update.remove_alts);
             let v = to_pipe_separated_optional(alts);
