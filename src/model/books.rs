@@ -124,7 +124,7 @@ impl ModelController {
                         None,
                     )
                     .await?;
-                let plugin_book = plugin_results.into_values().flatten().find_map(|result| {
+                let plugin_book = plugin_results.into_iter().flat_map(|(_, _, r)| r.results).find_map(|result| {
                     let relations = result.relations;
                     match result.metadata {
                         RsLookupMetadataResult::Book(book) => Some(ItemWithRelations {

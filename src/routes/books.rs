@@ -22,7 +22,7 @@ use serde::Deserialize;
 use crate::{
     domain::book::{Book, BookForUpdate},
     model::{books::BookQuery, medias::MediaQuery, users::ConnectedUser, ModelController},
-    routes::{ImageRequestOptions, ImageUploadOptions},
+    routes::{ImageRequestOptions, ImageUploadOptions, SearchResultGroup, SseSearchEvent},
     Error, Result,
 };
 
@@ -112,10 +112,11 @@ async fn handler_search_books(
     Query(query): Query<RsLookupBook>,
 ) -> Result<Json<Value>> {
     let lookup_query = RsLookupQuery::Book(query);
-    let results = mc
+    let groups = mc
         .exec_lookup_metadata_grouped(lookup_query, Some(library_id), &user, None)
         .await?;
-    Ok(Json(json!(results)))
+    let body: Vec<SearchResultGroup> = groups.into_iter().map(|(source_id, source_name, data)| SearchResultGroup { source_id, source_name, data }).collect();
+    Ok(Json(json!(body)))
 }
 
 async fn handler_search_books_stream(
@@ -130,8 +131,8 @@ async fn handler_search_books_stream(
         .await?;
 
     let stream = async_stream::stream! {
-        while let Some((name, batch)) = rx.recv().await {
-            if let Ok(data) = serde_json::to_string(&json!({ &name: batch })) {
+        while let Some((source_id, source_name, batch)) = rx.recv().await {
+            if let Ok(data) = serde_json::to_string(&SseSearchEvent { source_id: &source_id, source_name: &source_name, data: &batch }) {
                 yield Ok(Event::default().event("results").data(data));
             }
         }

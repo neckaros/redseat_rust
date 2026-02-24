@@ -1,4 +1,4 @@
-use rs_plugin_common_interfaces::ImageType;
+use rs_plugin_common_interfaces::{lookup::RsLookupMetadataResults, ImageType};
 use serde::{Deserialize, Serialize};
 
 use crate::tools::image_tools::ImageSize;
@@ -22,6 +22,24 @@ pub mod movies;
 pub mod people;
 pub mod series;
 pub mod tags;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SseSearchEvent<'a> {
+    pub source_id: &'a str,
+    pub source_name: &'a str,
+    #[serde(flatten)]
+    pub data: &'a RsLookupMetadataResults,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchResultGroup {
+    pub source_id: String,
+    pub source_name: String,
+    #[serde(flatten)]
+    pub data: RsLookupMetadataResults,
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ImageRequestOptions {

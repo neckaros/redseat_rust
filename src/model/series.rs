@@ -11,7 +11,7 @@ use rs_plugin_common_interfaces::{
     ExternalImage,
     ImageType,
     domain::{rs_ids::RsIds, serie::SerieStatus, ItemWithRelations},
-    lookup::{RsLookupMetadataResult, RsLookupMetadataResultWrapper, RsLookupMovie, RsLookupQuery, RsLookupSerie},
+    lookup::{RsLookupMetadataResult, RsLookupMetadataResultWrapper, RsLookupMetadataResults, RsLookupMovie, RsLookupQuery, RsLookupSerie},
     request::{RsRequest, RsRequestStatus},
 };
 use rusqlite::{
@@ -200,8 +200,8 @@ impl ModelController {
                     )
                     .await?;
                 let plugin_serie = plugin_results
-                    .into_values()
-                    .flatten()
+                    .into_iter()
+                    .flat_map(|(_, _, r)| r.results)
                     .find_map(|result| match result.metadata {
                         RsLookupMetadataResult::Serie(serie) => Some(serie),
                         _ => None,
@@ -305,9 +305,9 @@ impl ModelController {
         library_id: &str,
         query: RsLookupMovie,
         requesting_user: &ConnectedUser,
-    ) -> RsResult<HashMap<String, Vec<RsLookupMetadataResultWrapper>>> {
+    ) -> RsResult<Vec<(String, String, RsLookupMetadataResults)>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
-        let mut results: HashMap<String, Vec<RsLookupMetadataResultWrapper>> = HashMap::new();
+        let mut groups: Vec<(String, String, RsLookupMetadataResults)> = Vec::new();
 
         let is_books_library = if let Some(library) = self.cache_get_library(library_id).await {
             library.kind == LibraryType::Books
@@ -325,7 +325,7 @@ impl ModelController {
                 ..Default::default()
             }).collect();
             if !trakt_entries.is_empty() {
-                results.insert("trakt".to_string(), trakt_entries);
+                groups.push(("trakt".to_string(), "trakt".to_string(), RsLookupMetadataResults { results: trakt_entries, next_page_key: None }));
             }
         }
 
@@ -342,14 +342,14 @@ impl ModelController {
             )
             .await?;
 
-        for (name, entries) in plugin_results {
-            let filtered: Vec<_> = entries.into_iter().filter(|result| matches!(result.metadata, RsLookupMetadataResult::Serie(_))).collect();
+        for (id, name, RsLookupMetadataResults { results, next_page_key }) in plugin_results {
+            let filtered: Vec<_> = results.into_iter().filter(|result| matches!(result.metadata, RsLookupMetadataResult::Serie(_))).collect();
             if !filtered.is_empty() {
-                results.entry(name).or_default().extend(filtered);
+                groups.push((id, name, RsLookupMetadataResults { results: filtered, next_page_key }));
             }
         }
 
-        Ok(results)
+        Ok(groups)
     }
 
     pub async fn search_serie_stream(
@@ -357,7 +357,7 @@ impl ModelController {
         library_id: &str,
         query: RsLookupMovie,
         requesting_user: &ConnectedUser,
-    ) -> RsResult<tokio::sync::mpsc::Receiver<(String, Vec<RsLookupMetadataResultWrapper>)>> {
+    ) -> RsResult<tokio::sync::mpsc::Receiver<(String, String, RsLookupMetadataResults)>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
 
         let (tx, rx) = tokio::sync::mpsc::channel(16);
@@ -378,7 +378,7 @@ impl ModelController {
                 ..Default::default()
             }).collect();
             if !trakt_entries.is_empty() {
-                let _ = tx.send(("trakt".to_string(), trakt_entries)).await;
+                let _ = tx.send(("trakt".to_string(), "trakt".to_string(), RsLookupMetadataResults { results: trakt_entries, next_page_key: None })).await;
             }
         }
 
@@ -396,10 +396,11 @@ impl ModelController {
             .await?;
 
         tokio::spawn(async move {
-            while let Some((name, entries)) = plugin_rx.recv().await {
-                let filtered: Vec<_> = entries.into_iter().filter(|result| matches!(result.metadata, RsLookupMetadataResult::Serie(_))).collect();
+            while let Some((id, name, entries)) = plugin_rx.recv().await {
+                let RsLookupMetadataResults { results, next_page_key } = entries;
+                let filtered: Vec<_> = results.into_iter().filter(|result| matches!(result.metadata, RsLookupMetadataResult::Serie(_))).collect();
                 if !filtered.is_empty() {
-                    if tx.send((name, filtered)).await.is_err() {
+                    if tx.send((id, name, RsLookupMetadataResults { results: filtered, next_page_key })).await.is_err() {
                         break;
                     }
                 }

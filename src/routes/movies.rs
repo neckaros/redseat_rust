@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use tokio::io::AsyncRead;
 use tokio_util::io::{ReaderStream, StreamReader};
 
-use super::{ImageRequestOptions, ImageUploadOptions};
+use super::{ImageRequestOptions, ImageUploadOptions, SearchResultGroup, SseSearchEvent};
 
 
 
@@ -75,9 +75,9 @@ async fn handler_get(Path((library_id, movie_id)): Path<(String, String)>, State
 }
 
 async fn handler_seach_movies(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<RsLookupMovie>) -> Result<Json<Value>> {
-	let libraries = mc.search_movie(&library_id, query, &user).await?;
-	let body = Json(json!(libraries));
-	Ok(body)
+	let groups = mc.search_movie(&library_id, query, &user).await?;
+	let body: Vec<SearchResultGroup> = groups.into_iter().map(|(source_id, source_name, data)| SearchResultGroup { source_id, source_name, data }).collect();
+	Ok(Json(json!(body)))
 }
 
 
@@ -85,8 +85,8 @@ async fn handler_search_movies_stream(Path(library_id): Path<String>, State(mc):
 	let mut rx = mc.search_movie_stream(&library_id, query, &user).await?;
 
 	let stream = async_stream::stream! {
-		while let Some((name, batch)) = rx.recv().await {
-			if let Ok(data) = serde_json::to_string(&json!({ &name: batch })) {
+		while let Some((source_id, source_name, batch)) = rx.recv().await {
+			if let Ok(data) = serde_json::to_string(&SseSearchEvent { source_id: &source_id, source_name: &source_name, data: &batch }) {
 				yield Ok(Event::default().event("results").data(data));
 			}
 		}
