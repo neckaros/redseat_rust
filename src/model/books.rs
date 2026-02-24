@@ -115,12 +115,14 @@ impl ModelController {
                 let lookup_query = RsLookupQuery::Book(RsLookupBook {
                     name: Some(String::new()),
                     ids: Some(ids.clone()),
+                    page_key: None,
                 });
                 let plugin_results = self
                     .exec_lookup_metadata_grouped(
                         lookup_query,
                         Some(library_id.to_string()),
                         requesting_user,
+                        None,
                         None,
                     )
                     .await?;
@@ -474,6 +476,7 @@ impl ModelController {
                     let lookup_query = RsLookupBook {
                         name: None,
                         ids: Some(book_ids),
+                        page_key: None,
                     };
                     let image_request = self
                         .get_book_image_url(
@@ -621,6 +624,7 @@ impl ModelController {
         let lookup_query = RsLookupBook {
             name: Some(book.name.clone()),
             ids: Some(ids),
+            page_key: None,
         };
         let reader = self
             .download_book_image(

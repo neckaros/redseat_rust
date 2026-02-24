@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use tokio::io::AsyncRead;
 use tokio_util::io::{ReaderStream, StreamReader};
 
-use super::{ImageRequestOptions, ImageUploadOptions, SearchResultGroup, SseSearchEvent};
+use super::{ImageRequestOptions, ImageUploadOptions, SearchQuery, SearchResultGroup, SseSearchEvent};
 
 
 
@@ -74,15 +74,17 @@ async fn handler_get(Path((library_id, movie_id)): Path<(String, String)>, State
 	Ok(body)
 }
 
-async fn handler_seach_movies(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<RsLookupMovie>) -> Result<Json<Value>> {
-	let groups = mc.search_movie(&library_id, query, &user).await?;
+async fn handler_seach_movies(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<SearchQuery<RsLookupMovie>>) -> Result<Json<Value>> {
+	let sources = query.sources();
+	let groups = mc.search_movie(&library_id, query.lookup, sources, &user).await?;
 	let body: Vec<SearchResultGroup> = groups.into_iter().map(|(source_id, source_name, data)| SearchResultGroup { source_id, source_name, data }).collect();
 	Ok(Json(json!(body)))
 }
 
 
-async fn handler_search_movies_stream(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<RsLookupMovie>) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>> {
-	let mut rx = mc.search_movie_stream(&library_id, query, &user).await?;
+async fn handler_search_movies_stream(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<SearchQuery<RsLookupMovie>>) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>> {
+	let sources = query.sources();
+	let mut rx = mc.search_movie_stream(&library_id, query.lookup, sources, &user).await?;
 
 	let stream = async_stream::stream! {
 		while let Some((source_id, source_name, batch)) = rx.recv().await {
@@ -112,6 +114,7 @@ async fn handler_lookup(Path((library_id, movie_id)): Path<(String, String)>, St
 	let query = RsLookupQuery::Movie(RsLookupMovie {
 		name: Some(name),
 		ids: Some(ids),
+		page_key: None,
 	});
 	let library = mc.exec_lookup(query, Some(library_id), &user, None).await?;
 	let body = Json(json!(library));
@@ -260,6 +263,7 @@ async fn handler_image_search(Path((library_id, movie_id)): Path<(String, String
 	let lookup_query = RsLookupMovie {
 		name: Some(name),
 		ids: Some(ids.clone()),
+		page_key: None,
 	};
 	let result = mc.get_movie_images(lookup_query, Some(library_id), &user).await?;
 

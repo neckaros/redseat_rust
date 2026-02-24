@@ -22,7 +22,7 @@ use serde::Deserialize;
 use crate::{
     domain::book::{Book, BookForUpdate},
     model::{books::BookQuery, medias::MediaQuery, users::ConnectedUser, ModelController},
-    routes::{ImageRequestOptions, ImageUploadOptions, SearchResultGroup, SseSearchEvent},
+    routes::{ImageRequestOptions, ImageUploadOptions, SearchQuery, SearchResultGroup, SseSearchEvent},
     Error, Result,
 };
 
@@ -109,11 +109,12 @@ async fn handler_search_books(
     Path(library_id): Path<String>,
     State(mc): State<ModelController>,
     user: ConnectedUser,
-    Query(query): Query<RsLookupBook>,
+    Query(query): Query<SearchQuery<RsLookupBook>>,
 ) -> Result<Json<Value>> {
-    let lookup_query = RsLookupQuery::Book(query);
+    let sources = query.sources();
+    let lookup_query = RsLookupQuery::Book(query.lookup);
     let groups = mc
-        .exec_lookup_metadata_grouped(lookup_query, Some(library_id), &user, None)
+        .exec_lookup_metadata_grouped(lookup_query, Some(library_id), &user, None, sources.as_deref())
         .await?;
     let body: Vec<SearchResultGroup> = groups.into_iter().map(|(source_id, source_name, data)| SearchResultGroup { source_id, source_name, data }).collect();
     Ok(Json(json!(body)))
@@ -123,11 +124,12 @@ async fn handler_search_books_stream(
     Path(library_id): Path<String>,
     State(mc): State<ModelController>,
     user: ConnectedUser,
-    Query(query): Query<RsLookupBook>,
+    Query(query): Query<SearchQuery<RsLookupBook>>,
 ) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>> {
-    let lookup_query = RsLookupQuery::Book(query);
+    let sources = query.sources();
+    let lookup_query = RsLookupQuery::Book(query.lookup);
     let mut rx = mc
-        .exec_lookup_metadata_stream_grouped(lookup_query, Some(library_id), &user, None)
+        .exec_lookup_metadata_stream_grouped(lookup_query, Some(library_id), &user, None, sources.as_deref())
         .await?;
 
     let stream = async_stream::stream! {
@@ -156,6 +158,7 @@ async fn handler_lookup(
     let query = RsLookupQuery::Book(RsLookupBook {
         name: Some(name),
         ids: Some(ids),
+        page_key: None,
     });
     print!("Executing lookup with query: {:?}", query);
     let results = mc.exec_lookup(query, Some(library_id), &user, None).await?;
@@ -244,6 +247,7 @@ async fn handler_image_search(
     let query = RsLookupBook {
         name: Some(title),
         ids: Some(ids),
+        page_key: None,
     };
     let result = mc.get_book_images(query, Some(library_id), &user).await?;
 

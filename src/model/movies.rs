@@ -129,12 +129,14 @@ impl ModelController {
                 let lookup_query = RsLookupQuery::Movie(RsLookupMovie {
                     name: Some(String::new()),
                     ids: Some(id.clone()),
+                    page_key: None,
                 });
                 let plugin_results = self
                     .exec_lookup_metadata_grouped(
                         lookup_query,
                         Some(library_id.to_string()),
                         requesting_user,
+                        None,
                         None,
                     )
                     .await?;
@@ -163,17 +165,20 @@ impl ModelController {
 	}
 
     
-    pub async fn search_movie(&self, library_id: &str, query: RsLookupMovie, requesting_user: &ConnectedUser) -> RsResult<Vec<(String, String, RsLookupMetadataResults)>> {
+    pub async fn search_movie(&self, library_id: &str, query: RsLookupMovie, sources: Option<Vec<String>>, requesting_user: &ConnectedUser) -> RsResult<Vec<(String, String, RsLookupMetadataResults)>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let mut groups: Vec<(String, String, RsLookupMetadataResults)> = Vec::new();
 
-        let trakt_results = self.trakt.search_movie(&query).await?;
-        let trakt_entries: Vec<RsLookupMetadataResultWrapper> = trakt_results.into_iter().map(|movie| RsLookupMetadataResultWrapper {
-            metadata: RsLookupMetadataResult::Movie(movie),
-            ..Default::default()
-        }).collect();
-        if !trakt_entries.is_empty() {
-            groups.push(("trakt".to_string(), "trakt".to_string(), RsLookupMetadataResults { results: trakt_entries, next_page_key: None }));
+        let include_trakt = sources.as_deref().map_or(true, |s| s.iter().any(|id| id == "trakt"));
+        if include_trakt {
+            let trakt_results = self.trakt.search_movie(&query).await?;
+            let trakt_entries: Vec<RsLookupMetadataResultWrapper> = trakt_results.into_iter().map(|movie| RsLookupMetadataResultWrapper {
+                metadata: RsLookupMetadataResult::Movie(movie),
+                ..Default::default()
+            }).collect();
+            if !trakt_entries.is_empty() {
+                groups.push(("trakt".to_string(), "trakt".to_string(), RsLookupMetadataResults { results: trakt_entries, next_page_key: None }));
+            }
         }
 
         let lookup_query = RsLookupQuery::Movie(query);
@@ -183,6 +188,7 @@ impl ModelController {
                 Some(library_id.to_string()),
                 requesting_user,
                 None,
+                sources.as_deref(),
             )
             .await?;
 
@@ -196,18 +202,21 @@ impl ModelController {
         Ok(groups)
 	}
 
-    pub async fn search_movie_stream(&self, library_id: &str, query: RsLookupMovie, requesting_user: &ConnectedUser) -> RsResult<tokio::sync::mpsc::Receiver<(String, String, RsLookupMetadataResults)>> {
+    pub async fn search_movie_stream(&self, library_id: &str, query: RsLookupMovie, sources: Option<Vec<String>>, requesting_user: &ConnectedUser) -> RsResult<tokio::sync::mpsc::Receiver<(String, String, RsLookupMetadataResults)>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
 
         let (tx, rx) = tokio::sync::mpsc::channel(16);
 
-        let trakt_results = self.trakt.search_movie(&query).await?;
-        let trakt_entries: Vec<RsLookupMetadataResultWrapper> = trakt_results.into_iter().map(|movie| RsLookupMetadataResultWrapper {
-            metadata: RsLookupMetadataResult::Movie(movie),
-            ..Default::default()
-        }).collect();
-        if !trakt_entries.is_empty() {
-            let _ = tx.send(("trakt".to_string(), "trakt".to_string(), RsLookupMetadataResults { results: trakt_entries, next_page_key: None })).await;
+        let include_trakt = sources.as_deref().map_or(true, |s| s.iter().any(|id| id == "trakt"));
+        if include_trakt {
+            let trakt_results = self.trakt.search_movie(&query).await?;
+            let trakt_entries: Vec<RsLookupMetadataResultWrapper> = trakt_results.into_iter().map(|movie| RsLookupMetadataResultWrapper {
+                metadata: RsLookupMetadataResult::Movie(movie),
+                ..Default::default()
+            }).collect();
+            if !trakt_entries.is_empty() {
+                let _ = tx.send(("trakt".to_string(), "trakt".to_string(), RsLookupMetadataResults { results: trakt_entries, next_page_key: None })).await;
+            }
         }
 
         let lookup_query = RsLookupQuery::Movie(query);
@@ -217,6 +226,7 @@ impl ModelController {
                 Some(library_id.to_string()),
                 requesting_user,
                 None,
+                sources.as_deref(),
             )
             .await?;
 
@@ -450,6 +460,7 @@ impl ModelController {
                     let lookup_query = RsLookupMovie {
                         name: if lookup_name.is_empty() { None } else { Some(lookup_name) },
                         ids: Some(movie_ids.clone()),
+                        page_key: None,
                     };
                     let image_request = self
                         .get_movie_image_url(
@@ -525,6 +536,7 @@ impl ModelController {
         let lookup_query = RsLookupMovie {
             name: Some(movie.name.clone()),
             ids: Some(ids.clone()),
+            page_key: None,
         };
         let reader = self
             .download_movie_image(

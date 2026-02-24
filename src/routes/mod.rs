@@ -20,6 +20,7 @@ pub mod library_plugins;
 pub mod medias;
 pub mod movies;
 pub mod people;
+pub mod search;
 pub mod series;
 pub mod tags;
 
@@ -39,6 +40,25 @@ pub struct SearchResultGroup {
     pub source_name: String,
     #[serde(flatten)]
     pub data: RsLookupMetadataResults,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchQuery<T> {
+    #[serde(flatten)]
+    pub lookup: T,
+    pub source: Option<String>,
+}
+
+impl<T> SearchQuery<T> {
+    pub fn sources(&self) -> Option<Vec<String>> {
+        self.source.as_deref().map(|s| {
+            s.split(',')
+                .map(|p| p.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

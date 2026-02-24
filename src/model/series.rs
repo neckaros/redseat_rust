@@ -190,12 +190,14 @@ impl ModelController {
                 let lookup_query = RsLookupQuery::Serie(RsLookupSerie {
                     name: Some(String::new()),
                     ids: Some(id.clone()),
+                    page_key: None,
                 });
                 let plugin_results = self
                     .exec_lookup_metadata_grouped(
                         lookup_query,
                         Some(library_id.to_string()),
                         requesting_user,
+                        None,
                         None,
                     )
                     .await?;
@@ -304,6 +306,7 @@ impl ModelController {
         &self,
         library_id: &str,
         query: RsLookupMovie,
+        sources: Option<Vec<String>>,
         requesting_user: &ConnectedUser,
     ) -> RsResult<Vec<(String, String, RsLookupMetadataResults)>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
@@ -318,7 +321,8 @@ impl ModelController {
                 .unwrap_or(false)
         };
 
-        if !is_books_library {
+        let include_trakt = sources.as_deref().map_or(true, |s| s.iter().any(|id| id == "trakt"));
+        if !is_books_library && include_trakt {
             let trakt_results = self.trakt.search_show(&query).await?;
             let trakt_entries: Vec<RsLookupMetadataResultWrapper> = trakt_results.into_iter().map(|serie| RsLookupMetadataResultWrapper {
                 metadata: RsLookupMetadataResult::Serie(serie),
@@ -332,6 +336,7 @@ impl ModelController {
         let lookup_query = RsLookupQuery::Serie(RsLookupSerie {
             name: query.name,
             ids: query.ids,
+            page_key: query.page_key,
         });
         let plugin_results = self
             .exec_lookup_metadata_grouped(
@@ -339,6 +344,7 @@ impl ModelController {
                 Some(library_id.to_string()),
                 requesting_user,
                 None,
+                sources.as_deref(),
             )
             .await?;
 
@@ -356,6 +362,7 @@ impl ModelController {
         &self,
         library_id: &str,
         query: RsLookupMovie,
+        sources: Option<Vec<String>>,
         requesting_user: &ConnectedUser,
     ) -> RsResult<tokio::sync::mpsc::Receiver<(String, String, RsLookupMetadataResults)>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
@@ -371,7 +378,8 @@ impl ModelController {
                 .unwrap_or(false)
         };
 
-        if !is_books_library {
+        let include_trakt = sources.as_deref().map_or(true, |s| s.iter().any(|id| id == "trakt"));
+        if !is_books_library && include_trakt {
             let trakt_results = self.trakt.search_show(&query).await?;
             let trakt_entries: Vec<RsLookupMetadataResultWrapper> = trakt_results.into_iter().map(|serie| RsLookupMetadataResultWrapper {
                 metadata: RsLookupMetadataResult::Serie(serie),
@@ -385,6 +393,7 @@ impl ModelController {
         let lookup_query = RsLookupQuery::Serie(RsLookupSerie {
             name: query.name,
             ids: query.ids,
+            page_key: query.page_key,
         });
         let mut plugin_rx = self
             .exec_lookup_metadata_stream_grouped(
@@ -392,6 +401,7 @@ impl ModelController {
                 Some(library_id.to_string()),
                 requesting_user,
                 None,
+                sources.as_deref(),
             )
             .await?;
 
@@ -752,6 +762,7 @@ impl ModelController {
                     let lookup_query = RsLookupSerie {
                         name: if lookup_name.is_empty() { None } else { Some(lookup_name) },
                         ids: Some(serie_ids.clone()),
+                        page_key: None,
                     };
                     let image_request = self
                         .get_serie_image_url(
@@ -850,6 +861,7 @@ impl ModelController {
         let lookup_query = RsLookupSerie {
             name: Some(serie_name),
             ids: Some(ids.clone()),
+            page_key: None,
         };
         let reader = self
             .download_serie_image(

@@ -310,7 +310,7 @@ mod tests {
     async fn trakt_search_person() -> RsResult<()> {
         let trakt = TraktContext::new("455f81b3409a8dd140a941e9250ff22b2ed92d68003491c3976363fe752a9024".to_owned());
 
-        let search_result = trakt.search_person(&RsLookupMovie { name: Some("jessica alba".to_string()), ids: None }).await?;
+        let search_result = trakt.search_person(&RsLookupMovie { name: Some("jessica alba".to_string()), ids: None, page_key: None }).await?;
         
         println!("{:?}", search_result.first());
         let person_serach = search_result.into_iter().next().unwrap();

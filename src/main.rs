@@ -259,6 +259,10 @@ async fn app() -> Result<Router> {
             "/libraries/:libraryid/plugins",
             routes::library_plugins::routes(mc.clone()),
         )
+        .nest(
+            "/libraries/:libraryid",
+            routes::search::routes(mc.clone()),
+        )
         .nest("/library", routes::libraries::routes(mc.clone())) // duplicate for legacy
         .nest("/users", routes::users::routes(mc.clone()))
         .nest("/credentials", routes::credentials::routes(mc.clone()))
