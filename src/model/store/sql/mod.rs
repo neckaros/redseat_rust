@@ -76,7 +76,15 @@ pub async fn migrate_database(connection: &Connection) -> Result<usize> {
                 conn.pragma_update(None, "user_version", 7)?;
                 println!("Update SQL to verison 7 (add repo info to plugins)")
             }
-            
+
+            if version < 8 {
+                let update = String::from_utf8_lossy(include_bytes!("008 - LIBRARY PASSWORD.sql"));
+                conn.execute_batch(&update)?;
+
+                conn.pragma_update(None, "user_version", 8)?;
+                println!("Update SQL to verison 8 (library password)")
+            }
+
             conn.execute("VACUUM;", params![])?;
             Ok(6)
     }).await?;

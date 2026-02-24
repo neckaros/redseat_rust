@@ -526,7 +526,7 @@ impl ModelController {
             let reader = if let Some(library) = library {
             
 
-                let library_add = ServerLibraryForAdd { name: library.name, source: library.source, root: library.root, settings: library.settings, kind: library.kind, crypt: library.crypt, credentials: library.credentials, plugin: library.plugin  };
+                let library_add = ServerLibraryForAdd { name: library.name, source: library.source, root: library.root, settings: library.settings, kind: library.kind, crypt: library.crypt, credentials: library.credentials, plugin: library.plugin, password: library.password  };
                 // Create prefix
                 let json_str = serde_json::to_string(&library_add)?;
                 let json_bytes = json_str.as_bytes();

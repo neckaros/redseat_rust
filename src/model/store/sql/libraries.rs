@@ -77,7 +77,7 @@ impl SqliteStore {
         let library_id = library_id.to_string();
             let row = self.server_store.call( move |conn| { 
                 let row = conn.query_row(
-                "SELECT id, name, source, root, type, crypt, settings, credentials, plugin  FROM Libraries WHERE id = ?1",
+                "SELECT id, name, source, root, type, crypt, settings, credentials, plugin, password  FROM Libraries WHERE id = ?1",
                 [&library_id],
                 |row| {
                     Ok(ServerLibrary {
@@ -90,6 +90,7 @@ impl SqliteStore {
                         settings:  row.get(6)?,
                         credentials:  row.get(7)?,
                         plugin:  row.get(8)?,
+                        password:  row.get(9)?,
 
                         ..Default::default()
                     })
@@ -103,7 +104,7 @@ impl SqliteStore {
     
     pub async fn get_libraries(&self) -> Result<Vec<ServerLibrary>> {
         let row = self.server_store.call( move |conn| { 
-            let mut query = conn.prepare("SELECT id, name, source, root, type, crypt, settings, credentials, plugin   FROM Libraries")?;
+            let mut query = conn.prepare("SELECT id, name, source, root, type, crypt, settings, credentials, plugin, password   FROM Libraries")?;
             let rows = query.query_map(
             [],
             |row| {
@@ -117,6 +118,7 @@ impl SqliteStore {
                     settings:  row.get(6)?,
                     credentials:  row.get(7)?,
                     plugin:  row.get(8)?,
+                    password:  row.get(9)?,
 
                     ..Default::default()
                 })
@@ -142,8 +144,8 @@ impl SqliteStore {
     pub async fn add_library(&self, library: ServerLibrary) -> Result<()> {
         self.server_store.call( move |conn| { 
 
-            conn.execute("INSERT INTO Libraries (id, name, type, source, root, settings, crypt, credentials, plugin)
-            VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?)", params![
+            conn.execute("INSERT INTO Libraries (id, name, type, source, root, settings, crypt, credentials, plugin, password)
+            VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?)", params![
                 library.id,
                 library.name,
                 library.kind,
@@ -152,7 +154,8 @@ impl SqliteStore {
                 library.settings,
                 library.crypt,
                 library.credentials,
-                library.plugin
+                library.plugin,
+                library.password
             ])?;
             
             Ok(())
@@ -187,6 +190,7 @@ impl SqliteStore {
             super::add_for_sql_update(update.settings, "settings", &mut columns, &mut values);
             super::add_for_sql_update(update.credentials, "credentials", &mut columns, &mut values);
             super::add_for_sql_update(update.plugin, "plugin", &mut columns, &mut values);
+            super::add_for_sql_update(update.password, "password", &mut columns, &mut values);
 
             if columns.len() > 0 {
                 values.push(Box::new(library_id));

@@ -105,6 +105,8 @@ pub struct ServerLibraryForRead {
     pub settings: Option<ServerLibrarySettings>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub roles: Option<Vec<LibraryRole>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
 
     #[serde(default)]
     pub hidden: bool,
@@ -120,6 +122,7 @@ impl From<ServerLibrary> for ServerLibraryForRead {
             crypt: lib.crypt,
             settings: Some(lib.settings),
             roles: None,
+            password: lib.password,
 
             ..Default::default()
         }
@@ -140,6 +143,7 @@ impl ServerLibraryForRead {
             crypt: lib.crypt,
             settings: Some(lib.settings),
             roles: Some(roles.to_owned()),
+            password: lib.password,
             ..Default::default()
         }
     }
@@ -153,6 +157,7 @@ pub struct ServerLibraryForUpdate {
     pub settings: Option<ServerLibrarySettings>,
     pub credentials: Option<String>,
     pub plugin: Option<String>,
+    pub password: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -166,6 +171,7 @@ pub struct ServerLibraryForAdd {
     pub crypt: Option<bool>,
     pub credentials: Option<String>,
     pub plugin: Option<String>,
+    pub password: Option<String>,
 }
 
 pub(super) fn map_library_for_user(
@@ -447,6 +453,7 @@ impl ModelController {
             settings: library_for_add.settings,
             plugin: library_for_add.plugin,
             credentials: library_for_add.credentials,
+            password: library_for_add.password,
 
             ..Default::default()
         };
