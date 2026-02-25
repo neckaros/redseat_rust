@@ -770,8 +770,11 @@ impl ModelController {
         );
         println!("Zip name: {}", filename);
 
+        let crypted = self.cache_get_library_crypt(library_id).await;
+        let id = nanoid!();
+        let disk_filename = if crypted { id.clone() } else { filename.clone() };
         let m = self.source_for_library(&library_id).await?;
-        let (source, mut file) = m.writerseek(&filename).await?;
+        let (source, mut file) = m.writerseek(&disk_filename).await?;
         //let file = file.compat_write();
 
         //let mut file = Box::pin(File::create("D:\\System\\backup\\2024\\7\\foo.zip").await?);
@@ -853,8 +856,6 @@ impl ModelController {
         infos.mimetype = None;
         infos.created = None;
         infos.pages = Some(pages);
-
-        let id = nanoid!();
 
         log_info(
             crate::tools::log::LogServiceType::Source,
@@ -1328,8 +1329,10 @@ impl ModelController {
         );
 
         let encryption_key = self.get_library_encryption_key(library_id).await;
+        let id = nanoid!();
+        let disk_filename = if encryption_key.is_some() { id.clone() } else { filename.to_string() };
         let (source, mut file) = m
-            .writer(filename, infos.size.map(|s| if encryption_key.is_some() { s + CTR_NONCE_SIZE } else { s }), infos.mimetype.clone())
+            .writer(&disk_filename, infos.size.map(|s| if encryption_key.is_some() { s + CTR_NONCE_SIZE } else { s }), infos.mimetype.clone())
             .await?;
         if let Some(ref key) = encryption_key {
             let mut enc_file = CtrEncryptWriter::new(file, key)?;
@@ -1397,7 +1400,6 @@ impl ModelController {
         new_file.kind = file_type_from_mime(&new_file.mimetype);
 
         let store = self.store.get_library_store(library_id)?;
-        let id = nanoid!();
         store
             .add_media(MediaForInsert {
                 id: id.clone(),
@@ -1658,10 +1660,12 @@ impl ModelController {
         }
 
         // Create zip file
-        let filename = format!("{}.zip", nanoid!());
-        println!("Zip name: {}", filename);
         let encryption_key = self.get_library_encryption_key(library_id).await;
-        let (source_promise, file) = m.writer(&filename, None, None).await?;
+        let id = nanoid!();
+        let filename = format!("{}.zip", nanoid!());
+        let disk_filename = if encryption_key.is_some() { id.clone() } else { filename.clone() };
+        println!("Zip name: {}", filename);
+        let (source_promise, file) = m.writer(&disk_filename, None, None).await?;
         // If library has password, wrap writer with encryption
         let mut enc_writer: Option<CtrEncryptWriter<Pin<Box<dyn tokio::io::AsyncWrite + Send>>>> = None;
         let mut plain_writer: Option<Pin<Box<dyn tokio::io::AsyncWrite + Send>>> = None;
@@ -1769,7 +1773,6 @@ impl ModelController {
             ..Default::default()
         };
 
-        let id = nanoid!();
         store
             .add_media(MediaForInsert {
                 id: id.clone(),
@@ -1918,7 +1921,9 @@ impl ModelController {
                 tx_progress.clone(),
             );
             let encryption_key = self.get_library_encryption_key(library_id).await;
-            let (source, mut file) = m.writerseek(&filename).await?;
+            let id = nanoid!();
+            let disk_filename = if encryption_key.is_some() { id.clone() } else { filename.clone() };
+            let (source, mut file) = m.writerseek(&disk_filename).await?;
             if let Some(ref key) = encryption_key {
                 let mut enc_file = CtrEncryptWriter::new(file, key)?;
                 copy(&mut progress_reader, &mut enc_file).await?;
@@ -1977,7 +1982,6 @@ impl ModelController {
                 );
             }
 
-            let id = nanoid!();
             store
                 .add_media(MediaForInsert {
                     id: id.clone(),
