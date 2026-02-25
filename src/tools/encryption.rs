@@ -1,15 +1,16 @@
 use std::{pin::Pin, task::{Context, Poll}};
 
-use aes::{cipher::{block_padding::{Padding, Pkcs7}, BlockDecryptMut, BlockEncryptMut, KeyIvInit}, Aes256, Aes256Dec, Block};
+use aes::{cipher::{block_padding::{Padding, Pkcs7}, BlockDecryptMut, BlockEncryptMut, KeyIvInit, StreamCipher, StreamCipherSeek}, Aes256, Aes256Dec, Block};
 use extism::ToBytes;
 use hex_literal::hex;
 use pbkdf2::{pbkdf2_hmac, pbkdf2_hmac_array};
 use rand::RngCore;
 use sha1::Sha1;
-use tokio::{fs::{File, OpenOptions}, io::{AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter}};
+use tokio::{fs::{File, OpenOptions}, io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter, ReadBuf}};
 
 type Aes256CbcDec = cbc::Decryptor<Aes256>;
 type Aes256CbcEnc = cbc::Encryptor<Aes256>;
+type Aes256Ctr = ctr::Ctr128BE<Aes256>;
 use futures::Stream;
 use x509_parser::nom::bytes::complete;
 
@@ -529,6 +530,215 @@ pub async fn decrypt_file(
     Ok(())
 }
 
+//======================================================
+// AES-256-CTR Streaming Encryption/Decryption
+// Used for password-protected library file encryption.
+// Format: [16-byte nonce][CTR-encrypted data]
+// Supports random access (range requests) via counter seeking.
+//======================================================
+
+pub const CTR_NONCE_SIZE: u64 = 16;
+
+/// Returns the encrypted file size for a given plaintext size (CTR adds only the nonce)
+pub fn ctr_encrypted_size(plaintext_size: u64) -> u64 {
+    plaintext_size + CTR_NONCE_SIZE
+}
+
+/// AsyncWrite wrapper that encrypts data using AES-256-CTR.
+/// Writes a 16-byte random nonce first, then encrypts all subsequent data.
+pub struct CtrEncryptWriter<W: AsyncWrite + Unpin> {
+    writer: W,
+    cipher: Aes256Ctr,
+    nonce: [u8; 16],
+    header_written: bool,
+    /// Tracks total plaintext bytes encrypted so far, used to seek cipher back on partial writes.
+    bytes_encrypted: u64,
+}
+
+impl<W: AsyncWrite + Unpin> CtrEncryptWriter<W> {
+    pub fn new(writer: W, key: &[u8; 32]) -> RsResult<Self> {
+        let nonce = random_iv();
+        let cipher = Aes256Ctr::new(key.into(), &nonce.into());
+        Ok(Self {
+            writer,
+            cipher,
+            nonce,
+            header_written: false,
+            bytes_encrypted: 0,
+        })
+    }
+
+    /// Write the nonce header if not yet written. Returns Poll::Pending if writer not ready.
+    fn poll_write_header(&mut self, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        if self.header_written {
+            return Poll::Ready(Ok(()));
+        }
+        match Pin::new(&mut self.writer).poll_write(cx, &self.nonce) {
+            Poll::Ready(Ok(n)) if n == 16 => {
+                self.header_written = true;
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(Ok(_)) => {
+                // Partial nonce write - this is unlikely with buffered writers but handle it
+                Poll::Ready(Err(std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "Failed to write full nonce",
+                )))
+            }
+            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl<W: AsyncWrite + Unpin> AsyncWrite for CtrEncryptWriter<W> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        // Ensure header is written first
+        match self.poll_write_header(cx) {
+            Poll::Ready(Ok(())) => {}
+            Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+            Poll::Pending => return Poll::Pending,
+        }
+
+        // Encrypt data (CTR is XOR-based, same operation for encrypt/decrypt)
+        let pos_before = self.bytes_encrypted;
+        let mut encrypted = buf.to_vec();
+        self.cipher.apply_keystream(&mut encrypted);
+
+        match Pin::new(&mut self.writer).poll_write(cx, &encrypted) {
+            Poll::Ready(Ok(n)) => {
+                self.bytes_encrypted = pos_before + n as u64;
+                if n < encrypted.len() {
+                    // Partial write: cipher advanced past what was written.
+                    // Seek it back to match the actual bytes written.
+                    let pos = self.bytes_encrypted;
+                    self.cipher.seek(pos);
+                }
+                Poll::Ready(Ok(n))
+            }
+            Poll::Ready(Err(e)) => {
+                // Nothing written: rewind cipher to before this call
+                self.cipher.seek(pos_before);
+                Poll::Ready(Err(e))
+            }
+            Poll::Pending => {
+                // Nothing written: rewind cipher to before this call
+                self.cipher.seek(pos_before);
+                Poll::Pending
+            }
+        }
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.writer).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.writer).poll_shutdown(cx)
+    }
+}
+
+/// AsyncRead wrapper that decrypts data using AES-256-CTR.
+/// Reads the 16-byte nonce from the stream on first read, then decrypts transparently.
+pub struct CtrDecryptReader<R: AsyncRead + Unpin> {
+    reader: R,
+    cipher: Option<Aes256Ctr>,
+    key: [u8; 32],
+    nonce_buf: Vec<u8>,
+    nonce_read: bool,
+}
+
+impl<R: AsyncRead + Unpin> CtrDecryptReader<R> {
+    /// Create a new decrypting reader. The nonce is read from the first 16 bytes of the stream.
+    pub fn new(reader: R, key: &[u8; 32]) -> Self {
+        Self {
+            reader,
+            cipher: None,
+            key: *key,
+            nonce_buf: Vec::with_capacity(16),
+            nonce_read: false,
+        }
+    }
+
+    /// Create a decrypting reader for range requests where the nonce is already known.
+    /// `offset` is the plaintext byte offset we want to start decrypting from.
+    /// The underlying reader should already be positioned past the nonce (at file offset = nonce_size + offset).
+    pub fn new_at_offset(reader: R, key: &[u8; 32], nonce: &[u8; 16], offset: u64) -> Self {
+        let mut cipher = Aes256Ctr::new(key.into(), nonce.into());
+        // Seek the CTR counter to the correct position
+        cipher.seek(offset);
+        Self {
+            reader,
+            cipher: Some(cipher),
+            key: *key,
+            nonce_buf: Vec::new(),
+            nonce_read: true,
+        }
+    }
+}
+
+impl<R: AsyncRead + Unpin> AsyncRead for CtrDecryptReader<R> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        // Phase 1: Read the nonce from the stream
+        if !self.nonce_read {
+            let remaining = 16 - self.nonce_buf.len();
+            let mut nonce_tmp = vec![0u8; remaining];
+            let mut nonce_read_buf = ReadBuf::new(&mut nonce_tmp);
+            match Pin::new(&mut self.reader).poll_read(cx, &mut nonce_read_buf) {
+                Poll::Ready(Ok(())) => {
+                    let filled = nonce_read_buf.filled().len();
+                    if filled == 0 {
+                        // EOF before nonce complete
+                        return Poll::Ready(Err(std::io::Error::new(
+                            std::io::ErrorKind::UnexpectedEof,
+                            "Encrypted file too short: missing nonce",
+                        )));
+                    }
+                    self.nonce_buf.extend_from_slice(&nonce_tmp[..filled]);
+                    if self.nonce_buf.len() == 16 {
+                        let nonce: [u8; 16] = self.nonce_buf[..16].try_into().unwrap();
+                        self.cipher = Some(Aes256Ctr::new(self.key.as_ref().into(), &nonce.into()));
+                        self.nonce_read = true;
+                    }
+                    // If nonce not complete yet, we need another read
+                    if !self.nonce_read {
+                        cx.waker().wake_by_ref();
+                        return Poll::Pending;
+                    }
+                    // Nonce read complete, fall through to read actual data
+                }
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+
+        // Phase 2: Read and decrypt data
+        let before = buf.filled().len();
+        match Pin::new(&mut self.reader).poll_read(cx, buf) {
+            Poll::Ready(Ok(())) => {
+                let after = buf.filled().len();
+                let new_bytes = after - before;
+                if new_bytes > 0 {
+                    // Decrypt the newly read bytes in place
+                    let cipher = self.cipher.as_mut().unwrap();
+                    cipher.apply_keystream(&mut buf.filled_mut()[before..after]);
+                }
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -542,11 +752,69 @@ mod tests {
        encrypt_file("/Users/arnaudjezequel/Documents/video.mp4", "/Users/arnaudjezequel/Documents/video.enc", &key, &iv).await.unwrap();
        decrypt_file("/Users/arnaudjezequel/Documents/video.enc", "/Users/arnaudjezequel/Documents/video.enc.mp4", &key, None).await.unwrap();
        //test_file("/Users/arnaudjezequel/Documents/video.mp4","/Users/arnaudjezequel/Documents/video.mp4.enc", "/Users/arnaudjezequel/Documents/video.mp4.dec.mp4", &key, &iv).await.unwrap();
-       
+
        //decrypt_file("/Users/arnaudjezequel/Downloads/U-AqTolcHF-H0vBi8mtpHQ", "/Users/arnaudjezequel/Downloads/U-AqTolcHF-H0vBi8mtpHQ.heic", &key, None).await.unwrap();
 
     }
 
+    #[tokio::test]
+    async fn ctr_roundtrip() {
+        use tokio::io::{copy, AsyncReadExt};
 
-    
+        let key = derive_key("test-ctr-password".to_string());
+        let plaintext = b"Hello, this is a test of CTR encryption with streaming!";
+
+        // Encrypt
+        let mut encrypted = Vec::new();
+        {
+            let cursor = std::io::Cursor::new(&mut encrypted);
+            let mut writer = CtrEncryptWriter::new(cursor, &key).unwrap();
+            tokio::io::AsyncWriteExt::write_all(&mut writer, plaintext).await.unwrap();
+            tokio::io::AsyncWriteExt::shutdown(&mut writer).await.unwrap();
+        }
+
+        // Verify encrypted size = plaintext + 16 nonce
+        assert_eq!(encrypted.len(), plaintext.len() + 16);
+        // Verify data is actually encrypted (not plaintext)
+        assert_ne!(&encrypted[16..], plaintext.as_slice());
+
+        // Decrypt
+        let reader = std::io::Cursor::new(&encrypted);
+        let mut decryptor = CtrDecryptReader::new(reader, &key);
+        let mut decrypted = Vec::new();
+        decryptor.read_to_end(&mut decrypted).await.unwrap();
+
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[tokio::test]
+    async fn ctr_range_decrypt() {
+        use tokio::io::AsyncReadExt;
+
+        let key = derive_key("test-ctr-range".to_string());
+        let plaintext: Vec<u8> = (0..=255u8).cycle().take(1024).collect();
+
+        // Encrypt
+        let mut encrypted = Vec::new();
+        {
+            let cursor = std::io::Cursor::new(&mut encrypted);
+            let mut writer = CtrEncryptWriter::new(cursor, &key).unwrap();
+            tokio::io::AsyncWriteExt::write_all(&mut writer, &plaintext).await.unwrap();
+            tokio::io::AsyncWriteExt::shutdown(&mut writer).await.unwrap();
+        }
+
+        // Extract nonce
+        let nonce: [u8; 16] = encrypted[..16].try_into().unwrap();
+
+        // Decrypt from offset 100
+        let offset: u64 = 100;
+        let range_data = &encrypted[(16 + offset as usize)..];
+        let reader = std::io::Cursor::new(range_data);
+        let mut decryptor = CtrDecryptReader::new_at_offset(reader, &key, &nonce, offset);
+        let mut decrypted = Vec::new();
+        decryptor.read_to_end(&mut decrypted).await.unwrap();
+
+        assert_eq!(decrypted, &plaintext[offset as usize..]);
+    }
+
 }

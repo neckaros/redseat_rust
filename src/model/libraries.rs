@@ -421,6 +421,12 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> Result<Option<super::libraries::ServerLibraryForRead>> {
         requesting_user.check_library_role(&library_id, LibraryRole::Admin)?;
+
+        // Check if password is being changed to trigger encryption migration
+        let old_library = self.cache_get_library(library_id).await;
+        let old_password = old_library.and_then(|l| l.password.clone());
+        let new_password = update.password.clone();
+
         self.store.update_library(library_id, update).await?;
         let library = self.store.get_library(library_id).await?;
         if let Some(library) = library {
@@ -429,6 +435,26 @@ impl ModelController {
                 action: crate::domain::ElementAction::Updated,
                 library: library.clone(),
             });
+
+            // Schedule encryption migration if password changed
+            if new_password != old_password {
+                if let Some(ref _new_pw) = new_password {
+                    // Password was set or changed: encrypt existing files
+                    use crate::tools::scheduler::{encrypt_library::EncryptLibraryTask, RsSchedulerWhen, RsTaskType};
+                    let task = EncryptLibraryTask::new_encrypt(library_id.to_string());
+                    if let Err(e) = self.scheduler.add(RsTaskType::EncryptLibrary, RsSchedulerWhen::At(0), task).await {
+                        log_error(LogServiceType::Other, format!("Failed to schedule encryption task: {:?}", e));
+                    }
+                } else {
+                    // Password was removed: decrypt existing files
+                    use crate::tools::scheduler::{encrypt_library::EncryptLibraryTask, RsSchedulerWhen, RsTaskType};
+                    let task = EncryptLibraryTask::new_decrypt(library_id.to_string());
+                    if let Err(e) = self.scheduler.add(RsTaskType::EncryptLibrary, RsSchedulerWhen::At(0), task).await {
+                        log_error(LogServiceType::Other, format!("Failed to schedule decryption task: {:?}", e));
+                    }
+                }
+            }
+
             Ok(map_library_for_user(library, &requesting_user))
         } else {
             Ok(None)

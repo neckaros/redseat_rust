@@ -686,6 +686,41 @@ impl SqliteLibraryStore {
         Ok(rows)
     }
 
+    /// Returns all (media_id, source) pairs for encryption migration
+    pub async fn get_all_media_id_sources(&self) -> Result<Vec<(String, String)>> {
+        let rows = self
+            .connection
+            .call(move |conn| {
+                let mut query = conn.prepare("SELECT id, source FROM medias")?;
+                let rows = query.query_map(params![], |row| {
+                    let id: String = row.get(0)?;
+                    let source: String = row.get(1)?;
+                    Ok((id, source))
+                })?;
+                let rows: Vec<(String, String)> =
+                    rows.collect::<std::result::Result<Vec<(String, String)>, rusqlite::Error>>()?;
+                Ok(rows)
+            })
+            .await?;
+        Ok(rows)
+    }
+
+    /// Update the source field for a media record (used after re-encrypting plugin files)
+    pub async fn update_media_source(&self, media_id: &str, new_source: &str) -> Result<()> {
+        let id = media_id.to_string();
+        let source = new_source.to_string();
+        self.connection
+            .call(move |conn| {
+                conn.execute(
+                    "UPDATE medias SET source = ? WHERE id = ?",
+                    params![source, id],
+                )?;
+                Ok(())
+            })
+            .await?;
+        Ok(())
+    }
+
     pub async fn get_medias_locs(&self, precision: u32) -> Result<Vec<RsGpsPosition>> {
         let rows = self.connection.call( move |conn| { 
 

@@ -87,6 +87,7 @@ use crate::{
     server::get_server_port,
     tools::{
         auth::{sign_local, ClaimsLocal},
+        encryption::{CtrDecryptReader, CtrEncryptWriter, CTR_NONCE_SIZE},
         file_tools::{file_type_from_mime, get_extension_from_mime},
         image_tools::{self, resize_image_reader, ImageSize},
         log::{log_error, log_info, log_warn, LogServiceType},
@@ -260,6 +261,54 @@ impl TryFrom<Media> for MediaSource {
 }
 
 impl ModelController {
+    /// Extract a page from a zip archive stored as in-memory bytes.
+    fn extract_zip_page_from_bytes(data: &[u8], page: usize) -> RsResult<SourceRead> {
+        let cursor = std::io::Cursor::new(data);
+        let mut archive = zip::ZipArchive::new(cursor)
+            .map_err(|_| RsError::Error("Unable to open zip file".to_string()))?;
+        let pages = archive.len();
+        let mut file = archive
+            .by_index(page.saturating_sub(1))
+            .map_err(|_| {
+                RsError::Error(format!(
+                    "Unable to get file at page {}. Files in zip: {}",
+                    page, pages
+                ))
+            })?;
+        let mut page_data = Vec::new();
+        file.read_to_end(&mut page_data)?;
+        let size = page_data.len() as u64;
+        let name = file
+            .enclosed_name()
+            .map(|s| s.to_str().unwrap_or_default().to_string());
+        drop(file);
+        let async_reader: AsyncReadPinBox = Box::pin(std::io::Cursor::new(page_data));
+        Ok(SourceRead::Stream(FileStreamResult {
+            stream: async_reader,
+            size: Some(size),
+            accept_range: false,
+            range: None,
+            mime: None,
+            name,
+            cleanup: None,
+        }))
+    }
+
+    /// Wraps a SourceRead stream with CTR decryption (consumes and rebuilds).
+    fn decrypt_source_read(source_read: SourceRead, key: &[u8; 32]) -> SourceRead {
+        match source_read {
+            SourceRead::Stream(mut reader) => {
+                let placeholder: AsyncReadPinBox = Box::pin(tokio::io::empty());
+                let original_stream = std::mem::replace(&mut reader.stream, placeholder);
+                let decrypted: AsyncReadPinBox = Box::pin(CtrDecryptReader::new(original_stream, key));
+                reader.stream = decrypted;
+                reader.size = reader.size.map(|s| s.saturating_sub(CTR_NONCE_SIZE));
+                SourceRead::Stream(reader)
+            }
+            other => other,
+        }
+    }
+
     /// Helper to aggregate lookup fields from multiple requests into a single deduplicated list
     fn aggregate_lookup_field<F>(requests: &[RsRequest], getter: F) -> Option<Vec<String>>
     where
@@ -923,6 +972,12 @@ impl ModelController {
             .await
             .and_then(|l| l.crypt)
             .unwrap_or(false);
+        let encryption_key = if !query.raw {
+            self.get_library_encryption_key(library_id).await
+        } else {
+            None
+        };
+        let client_range = range.clone();
 
         let m = self.source_for_library(library_id).await?;
         if crypted && !query.raw {
@@ -931,9 +986,43 @@ impl ModelController {
                 end: None,
             })
         }
+        // For password-encrypted files, adjust range to account for CTR nonce prefix
+        if encryption_key.is_some() {
+            range = match range {
+                Some(r) => Some(RangeDefinition {
+                    start: Some(CTR_NONCE_SIZE + r.start.unwrap_or(0)),
+                    end: r.end.map(|e| e + CTR_NONCE_SIZE),
+                }),
+                None => None, // No range = read full file including nonce
+            };
+        }
         let mut reader_response = m.get_file(&existing.source, range.clone()).await?;
 
         if existing.kind == FileType::Album && !query.raw && query.page.is_some() {
+            // For password-encrypted zips, we need to decrypt the full file first
+            // since zip requires random access (seeking).
+            if let Some(ref key) = encryption_key {
+                // Read the full encrypted file and decrypt to memory
+                let full_read = m.get_file(&existing.source, None).await?;
+                // Resolve requests (plugin sources) to streams first
+                let full_read = full_read
+                    .into_reader(
+                        Some(library_id),
+                        None,
+                        None,
+                        Some((self.clone(), &requesting_user)),
+                        None,
+                    )
+                    .await?;
+                let decrypted: AsyncReadPinBox = Box::pin(CtrDecryptReader::new(full_read.stream, key));
+                let mut decrypted_bytes = Vec::new();
+                tokio::io::AsyncReadExt::read_to_end(&mut tokio::io::BufReader::new(decrypted), &mut decrypted_bytes).await?;
+                return Self::extract_zip_page_from_bytes(
+                    &decrypted_bytes,
+                    query.page.unwrap_or(1) as usize,
+                );
+            }
+
             let local_path = m.local_path(&existing.source);
             if let Some(local_path) = local_path {
                 let archive = std::fs::File::open(local_path)?;
@@ -997,6 +1086,52 @@ impl ModelController {
             if let SourceRead::Stream(reader) = &mut reader_response {
                 reader.range = None;
                 reader.size = existing.size;
+            }
+        }
+
+        // Password-based CTR decryption (separate from client-side crypt flag)
+        if let Some(ref key) = encryption_key {
+            // Resolve Request to Stream first so decryption can wrap the stream
+            if matches!(reader_response, SourceRead::Request(_)) {
+                let stream_reader = reader_response
+                    .into_reader(
+                        Some(library_id),
+                        range.clone(),
+                        None,
+                        Some((self.clone(), &requesting_user)),
+                        None,
+                    )
+                    .await?;
+                reader_response = SourceRead::Stream(stream_reader);
+            }
+
+            if let Some(ref original_range) = client_range {
+                // Range request: read nonce separately, then decrypt at offset
+                let nonce_read = m.get_file(&existing.source, Some(RangeDefinition { start: Some(0), end: Some(CTR_NONCE_SIZE) })).await?;
+                let mut nonce_read = nonce_read
+                    .into_reader(
+                        Some(library_id),
+                        None,
+                        None,
+                        Some((self.clone(), &requesting_user)),
+                        None,
+                    )
+                    .await?;
+                let mut nonce = [0u8; 16];
+                tokio::io::AsyncReadExt::read_exact(&mut nonce_read.stream, &mut nonce).await?;
+
+                let plaintext_start = original_range.start.unwrap_or(0);
+                if let SourceRead::Stream(ref mut stream_reader) = reader_response {
+                    let placeholder: AsyncReadPinBox = Box::pin(tokio::io::empty());
+                    let original_stream = std::mem::replace(&mut stream_reader.stream, placeholder);
+                    let decrypted: AsyncReadPinBox = Box::pin(
+                        CtrDecryptReader::new_at_offset(original_stream, key, &nonce, plaintext_start)
+                    );
+                    stream_reader.stream = decrypted;
+                }
+            } else {
+                // No range: read full file including nonce, CtrDecryptReader reads nonce automatically
+                reader_response = Self::decrypt_source_read(reader_response, key);
             }
         }
 
@@ -1192,12 +1327,20 @@ impl ModelController {
             tx_progress.clone(),
         );
 
+        let encryption_key = self.get_library_encryption_key(library_id).await;
         let (source, mut file) = m
-            .writer(filename, infos.size, infos.mimetype.clone())
+            .writer(filename, infos.size.map(|s| if encryption_key.is_some() { s + CTR_NONCE_SIZE } else { s }), infos.mimetype.clone())
             .await?;
-        copy(&mut progress_reader, &mut file).await?;
-        file.flush().await?;
-        file.shutdown().await?;
+        if let Some(ref key) = encryption_key {
+            let mut enc_file = CtrEncryptWriter::new(file, key)?;
+            copy(&mut progress_reader, &mut enc_file).await?;
+            tokio::io::AsyncWriteExt::flush(&mut enc_file).await?;
+            tokio::io::AsyncWriteExt::shutdown(&mut enc_file).await?;
+        } else {
+            copy(&mut progress_reader, &mut file).await?;
+            file.flush().await?;
+            file.shutdown().await?;
+        }
         let source = source.await??;
         println!("source: {}", source);
         drop(progress_reader);
@@ -1320,7 +1463,7 @@ impl ModelController {
                 .await;
         }
 
-        // Non-virtual libraries: check not crypted
+        // Client-side encrypted libraries can't be written to by the server
         self.cache_check_library_notcrypt(library_id).await?;
 
         // Parse origin from first request
@@ -1517,8 +1660,23 @@ impl ModelController {
         // Create zip file
         let filename = format!("{}.zip", nanoid!());
         println!("Zip name: {}", filename);
-        let (source_promise, mut file) = m.writer(&filename, None, None).await?;
-        let mut zip_writer = ZipFileWriter::with_tokio(&mut file);
+        let encryption_key = self.get_library_encryption_key(library_id).await;
+        let (source_promise, file) = m.writer(&filename, None, None).await?;
+        // If library has password, wrap writer with encryption
+        let mut enc_writer: Option<CtrEncryptWriter<Pin<Box<dyn tokio::io::AsyncWrite + Send>>>> = None;
+        let mut plain_writer: Option<Pin<Box<dyn tokio::io::AsyncWrite + Send>>> = None;
+        if let Some(ref key) = encryption_key {
+            enc_writer = Some(CtrEncryptWriter::new(file, key)?);
+        } else {
+            plain_writer = Some(file);
+        }
+        // Get a mutable reference to whichever writer is active
+        let writer_ref: &mut (dyn tokio::io::AsyncWrite + Unpin + Send) = if let Some(ref mut w) = enc_writer {
+            w
+        } else {
+            plain_writer.as_mut().unwrap()
+        };
+        let mut zip_writer = ZipFileWriter::with_tokio(writer_ref);
 
         let mut pages = 0usize;
         let mut total_size = 0u64;
@@ -1578,8 +1736,13 @@ impl ModelController {
             .close()
             .await
             .map_err(|_| Error::ServiceError("Unable to close zip file".to_string(), None))?;
-        file.flush().await?;
-        drop(file); // Signal EOF to duplex reader so plugin provider background upload task can finish
+        if let Some(mut w) = enc_writer {
+            tokio::io::AsyncWriteExt::flush(&mut w).await?;
+            tokio::io::AsyncWriteExt::shutdown(&mut w).await?;
+        } else if let Some(mut w) = plain_writer {
+            w.flush().await?;
+            drop(w);
+        }
         println!("CLOSED");
 
         let source = source_promise.await??;
@@ -1754,9 +1917,17 @@ impl ModelController {
                 },
                 tx_progress.clone(),
             );
+            let encryption_key = self.get_library_encryption_key(library_id).await;
             let (source, mut file) = m.writerseek(&filename).await?;
-            copy(&mut progress_reader, &mut file).await?;
-            file.flush().await?;
+            if let Some(ref key) = encryption_key {
+                let mut enc_file = CtrEncryptWriter::new(file, key)?;
+                copy(&mut progress_reader, &mut enc_file).await?;
+                tokio::io::AsyncWriteExt::flush(&mut enc_file).await?;
+                tokio::io::AsyncWriteExt::shutdown(&mut enc_file).await?;
+            } else {
+                copy(&mut progress_reader, &mut file).await?;
+                file.flush().await?;
+            }
             drop(progress_reader);
 
             let _ = m.fill_infos(&source, &mut infos).await;
@@ -1923,6 +2094,7 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> crate::error::Result<()> {
         self.cache_check_library_notcrypt(library_id).await?;
+        let encryption_key = self.get_library_encryption_key(library_id).await;
 
         let m = self.source_for_library(library_id).await?;
         let store = self.store.get_library_store(library_id)?;
@@ -1949,8 +2121,14 @@ impl ModelController {
                         None,
                     )
                     .await?;
+                // Decrypt after resolving to stream (plugin sources return Request, not Stream)
+                let stream: AsyncReadPinBox = if let Some(ref key) = encryption_key {
+                    Box::pin(CtrDecryptReader::new(reader.stream, key))
+                } else {
+                    reader.stream
+                };
                 let image = resize_image_reader(
-                    reader.stream,
+                    stream,
                     512,
                     image::ImageFormat::Avif,
                     Some(50),
@@ -2018,8 +2196,14 @@ impl ModelController {
                         None,
                     )
                     .await?;
+                // Decrypt after resolving to stream (plugin sources return Request, not Stream)
+                let stream: AsyncReadPinBox = if let Some(ref key) = encryption_key {
+                    Box::pin(CtrDecryptReader::new(reader.stream, key))
+                } else {
+                    reader.stream
+                };
                 let mut epub_bytes = Vec::new();
-                reader.stream.read_to_end(&mut epub_bytes).await?;
+                tokio::io::AsyncReadExt::read_to_end(&mut tokio::io::BufReader::new(stream), &mut epub_bytes).await?;
                 let cover_bytes = tokio::task::spawn_blocking(move || {
                     Self::extract_epub_cover_from_bytes(epub_bytes)
                 })

@@ -37,6 +37,7 @@ use crate::{
     },
     tools::{
         clock::SECONDS_IN_HOUR,
+        encryption::{derive_key, CtrDecryptReader, CtrEncryptWriter, CTR_NONCE_SIZE},
         image_tools::{resize_image_reader, ImageSize},
         log::log_info,
         scheduler::{
@@ -225,6 +226,14 @@ impl ModelController {
         }
     }
 
+    /// Returns the AES-256 encryption key derived from the library password, if set.
+    pub async fn get_library_encryption_key(&self, library_id: &str) -> Option<[u8; 32]> {
+        self.cache_get_library(library_id)
+            .await
+            .and_then(|l| l.password)
+            .map(derive_key)
+    }
+
     pub async fn cache_update_library(&self, library: ServerLibrary) {
         let mut cache = self.chache_libraries.write().await;
         cache.remove(&library.id);
@@ -240,6 +249,24 @@ impl ModelController {
             self.cache_update_library(library).await;
         }
         Ok(())
+    }
+
+    /// Get all distinct media source paths for a library (used by encryption migration task)
+    pub async fn get_all_media_sources(&self, library_id: &str) -> RsResult<Vec<String>> {
+        let store = self.store.get_library_store(library_id)?;
+        Ok(store.get_all_sources().await?)
+    }
+
+    /// Get all (media_id, source) pairs for a library (used by encryption migration task)
+    pub async fn get_all_media_id_sources(&self, library_id: &str) -> RsResult<Vec<(String, String)>> {
+        let store = self.store.get_library_store(library_id)?;
+        Ok(store.get_all_media_id_sources().await?)
+    }
+
+    /// Update the source reference for a media record
+    pub async fn update_media_source(&self, library_id: &str, media_id: &str, new_source: &str) -> RsResult<()> {
+        let store = self.store.get_library_store(library_id)?;
+        Ok(store.update_media_source(media_id, new_source).await?)
     }
 
     pub async fn get_user_unchecked(&self, user_id: &str) -> Result<users::ServerUser> {
@@ -316,6 +343,20 @@ impl ModelController {
             .map_err(|_| crate::model::Error::Other("Unable to get local provider".to_string()))
     }
 
+    /// Wraps a FileStreamResult with CTR decryption if an encryption key is provided.
+    fn decrypt_stream_if_needed(
+        mut reader: FileStreamResult<AsyncReadPinBox>,
+        encryption_key: &Option<[u8; 32]>,
+    ) -> FileStreamResult<AsyncReadPinBox> {
+        if let Some(key) = encryption_key {
+            let decrypted: AsyncReadPinBox = Box::pin(CtrDecryptReader::new(reader.stream, key));
+            reader.stream = decrypted;
+            reader.size = reader.size.map(|s| s.saturating_sub(CTR_NONCE_SIZE));
+            reader.accept_range = false;
+        }
+        reader
+    }
+
     pub async fn library_image(
         &self,
         library_id: &str,
@@ -327,6 +368,8 @@ impl ModelController {
     ) -> RsResult<FileStreamResult<AsyncReadPinBox>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         self.cache_check_library_notcrypt(library_id).await?;
+
+        let encryption_key = self.get_library_encryption_key(library_id).await;
 
         let m = self.library_source_for_library(&library_id).await?;
         let mut source_filepath = format!(
@@ -372,8 +415,15 @@ impl ModelController {
                                 None,
                             )
                             .await?;
+                        // Decrypt the original image before resizing if library is encrypted
+                        let stream = if let Some(key) = &encryption_key {
+                            let decrypted: AsyncReadPinBox = Box::pin(CtrDecryptReader::new(reader.stream, key));
+                            decrypted
+                        } else {
+                            reader.stream
+                        };
                         let image = resize_image_reader(
-                            reader.stream,
+                            stream,
                             512,
                             image::ImageFormat::Avif,
                             Some(50),
@@ -404,7 +454,7 @@ impl ModelController {
                         let reader = m.get_file(&source_filepath, None).await?;
 
                         if let SourceRead::Stream(reader) = reader {
-                            return Ok(reader);
+                            return Ok(Self::decrypt_stream_if_needed(reader, &encryption_key));
                         } else {
                             return Err(SourcesError::NotFound(Some(format!(
                                 "library_image - File Not Found - {}",
@@ -422,7 +472,7 @@ impl ModelController {
             return Err(RsError::CorruptedImage);
         }
         if let SourceRead::Stream(reader) = reader {
-            return Ok(reader);
+            return Ok(Self::decrypt_stream_if_needed(reader, &encryption_key));
         } else {
             return Err(crate::Error::ImageNotFound(
                 format!("id:{} kind:{:?}", id, kind),
@@ -476,8 +526,14 @@ impl ModelController {
 
         let (_, writer) = m.get_file_write_stream(&source_filepath).await?;
         tokio::pin!(reader);
-        tokio::pin!(writer);
-        copy(&mut reader, &mut writer).await?;
+        if let Some(key) = self.get_library_encryption_key(library_id).await {
+            let mut enc_writer = CtrEncryptWriter::new(writer, &key).map_err(|e| Error::Other(e.to_string()))?;
+            copy(&mut reader, &mut enc_writer).await?;
+            tokio::io::AsyncWriteExt::shutdown(&mut enc_writer).await?;
+        } else {
+            tokio::pin!(writer);
+            copy(&mut reader, &mut writer).await?;
+        }
 
         Ok(())
     }
