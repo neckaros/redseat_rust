@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use nanoid::nanoid;
-use rs_plugin_common_interfaces::{lookup::{RsLookupMetadataResultWrapper, RsLookupMetadataResults, RsLookupQuery, RsLookupSourceResult}, request::{RsGroupDownload, RsProcessingStatus, RsRequest}, url::{RsLink, RsLinkType}, ExternalImage, PluginCredential, PluginInformation, PluginType, RsPluginRequest};
+use rs_plugin_common_interfaces::{lookup::{RsLookupMetadataResultWrapper, RsLookupMetadataResults, RsLookupQuery, RsLookupSourceResult}, request::{RsGroupDownload, RsProcessingStatus, RsRequest}, url::{RsLink, RsLinkType}, CustomParam, ExternalImage, PluginCredential, PluginInformation, PluginType, RsPluginRequest};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -25,7 +25,33 @@ pub struct PluginQuery {
 }
 
 
+/// Merge WASM-defined params with DB-stored params.
+/// Starts from WASM params (full schema), then overrides values from DB where name matches.
+fn merge_params(wasm_params: &[CustomParam], db_params: &[CustomParam]) -> Vec<CustomParam> {
+    wasm_params.iter().map(|wasm_param| {
+        if let Some(db_param) = db_params.iter().find(|p| p.name == wasm_param.name) {
+            CustomParam {
+                param: db_param.param.clone(),
+                ..wasm_param.clone()
+            }
+        } else {
+            wasm_param.clone()
+        }
+    }).collect()
+}
+
 impl ModelController {
+
+    /// Enrich a plugin with WASM runtime data (description, credential_type, merged params)
+    async fn enrich_plugin(&self, plugin: &mut Plugin) {
+        let all_plugins = self.plugin_manager.plugins.read().await;
+        if let Some(wasm) = all_plugins.iter().find(|p| p.filename == plugin.path) {
+            plugin.description = wasm.infos.description.clone();
+            plugin.credential_type = wasm.infos.credential_kind.clone();
+            plugin.params = merge_params(&wasm.infos.settings, &plugin.params);
+        }
+    }
+
 	pub async fn get_all_plugins(&self, query: PluginQuery, requesting_user: &ConnectedUser) -> Result<Vec<Plugin>> {
         requesting_user.check_role(&UserRole::Admin)?;
 		let mut installed_plugins = self.store.get_plugins(query).await?;
@@ -35,10 +61,10 @@ impl ModelController {
             if let Some(existing) = existing {
                 existing.description = plugin.infos.description.clone();
                 existing.credential_type = plugin.infos.credential_kind.clone();
-                existing.params = plugin.infos.settings.clone();
+                existing.params = merge_params(&plugin.infos.settings, &existing.params);
             } else {
                 installed_plugins.push(plugin.into());
-                
+
             }
         }
 		Ok(installed_plugins)
@@ -69,8 +95,9 @@ impl ModelController {
 
     pub async fn get_plugin(&self, plugin_id: String, requesting_user: &ConnectedUser) -> RsResult<Plugin> {
         requesting_user.check_role(&UserRole::Admin)?;
-		let credential = self.store.get_plugin(&plugin_id).await?.ok_or(SourcesError::UnableToFindPlugin(plugin_id.to_string(), "get_plugin".to_string()))?;
-		Ok(credential)
+		let mut plugin = self.store.get_plugin(&plugin_id).await?.ok_or(SourcesError::UnableToFindPlugin(plugin_id.to_string(), "get_plugin".to_string()))?;
+        self.enrich_plugin(&mut plugin).await;
+		Ok(plugin)
 	}
     
     pub async fn get_plugin_with_credential(&self, id: &str) -> Result<PluginWithCredential> {
@@ -100,8 +127,8 @@ impl ModelController {
     pub async fn update_plugin(&self, plugin_id: &str, update: PluginForUpdate, requesting_user: &ConnectedUser) -> Result<Plugin> {
         requesting_user.check_role(&UserRole::Admin)?;
 		self.store.update_plugin(plugin_id, update).await?;
-        let plugin = self.store.get_plugin(plugin_id).await?.ok_or(SourcesError::UnableToFindPlugin(plugin_id.to_string(), "update_plugin".to_string()))?;
-
+        let mut plugin = self.store.get_plugin(plugin_id).await?.ok_or(SourcesError::UnableToFindPlugin(plugin_id.to_string(), "update_plugin".to_string()))?;
+        self.enrich_plugin(&mut plugin).await;
         Ok(plugin)
 	}
 

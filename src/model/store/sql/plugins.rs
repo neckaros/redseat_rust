@@ -5,7 +5,8 @@ use crate::{domain::plugin::{Plugin, PluginForInsert, PluginForUpdate, PluginSet
 use super::{QueryBuilder, QueryWhereType, Result};
 use rusqlite::{params, params_from_iter, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, Row, ToSql};
 
-use rs_plugin_common_interfaces::PluginType;
+use std::collections::HashMap;
+use rs_plugin_common_interfaces::{CustomParam, CustomParamTypes, PluginType};
 
 
 // endregion: ---
@@ -31,12 +32,40 @@ impl ToSql for PluginSettings {
         Ok(ToSqlOutput::from(r))
     }
 }
-// endregion:    --- 
+// endregion:    ---
 
+/// Serialize params to DB: store only name → value mapping
+fn params_to_json(params: &[CustomParam]) -> Option<String> {
+    if params.is_empty() {
+        None
+    } else {
+        let map: HashMap<&str, &CustomParamTypes> = params.iter()
+            .map(|p| (p.name.as_str(), &p.param))
+            .collect();
+        serde_json::to_string(&map).ok()
+    }
+}
+
+/// Deserialize params from DB: reconstruct partial CustomParam (name + value only)
+fn params_from_json(json: Option<String>) -> Vec<CustomParam> {
+    json.and_then(|s| serde_json::from_str::<HashMap<String, CustomParamTypes>>(&s).ok())
+        .map(|map| map.into_iter().map(|(name, param)| CustomParam {
+            name,
+            param,
+            description: None,
+            required: false,
+        }).collect())
+        .unwrap_or_default()
+}
+
+/// Convert optional params update to JSON for DB storage
+fn params_to_json_optional(params: Option<Vec<CustomParam>>) -> Option<String> {
+    params.and_then(|p| params_to_json(&p))
+}
 
 impl SqliteStore {
 
-    fn row_to_plugin(row: &Row) -> rusqlite::Result<Plugin> { 
+    fn row_to_plugin(row: &Row) -> rusqlite::Result<Plugin> {
         Ok(Plugin {
             id: row.get(0)?,
             name: row.get(1)?,
@@ -50,6 +79,7 @@ impl SqliteStore {
             version:  row.get(9)?,
             repo:  row.get(10)?,
             repov:  row.get(11)?,
+            params: params_from_json(row.get(12)?),
             installed: true,
             ..Default::default()
         })
@@ -58,7 +88,7 @@ impl SqliteStore {
         let plugin_id = plugin_id.to_string();
             let row = self.server_store.call( move |conn| { 
                 let row = conn.query_row(
-                "SELECT id, name, path, kind, settings, libraries, credential, credtype, desc, version, repo, repov FROM plugins WHERE id = ?1",
+                "SELECT id, name, path, kind, settings, libraries, credential, credtype, desc, version, repo, repov, params FROM plugins WHERE id = ?1",
                 [&plugin_id],
                 Self::row_to_plugin,
                 ).optional()?;
@@ -79,7 +109,7 @@ impl SqliteStore {
                 where_query.add_where(super::QueryWhereType::SeparatedContain("libraries", ",".to_string(), q));
             }
 
-            let mut query = conn.prepare(&format!("SELECT id, name, path, kind, settings, libraries, credential, credtype, desc, version, repo, repov FROM plugins 
+            let mut query = conn.prepare(&format!("SELECT id, name, path, kind, settings, libraries, credential, credtype, desc, version, repo, repov, params FROM plugins
             {}", where_query.format()))?;
             //println!("query {:?}", query.expanded_sql());
             let rows = query.query_map(
@@ -103,8 +133,8 @@ impl SqliteStore {
     pub async fn add_plugin(&self, plugin: PluginForInsert) -> Result<()> {
         self.server_store.call( move |conn| { 
 
-            conn.execute("INSERT INTO plugins (id, name, path, kind, settings, libraries, credential, credtype, desc, version, repo, repov)
-            VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, ? ,?)", params![
+            conn.execute("INSERT INTO plugins (id, name, path, kind, settings, libraries, credential, credtype, desc, version, repo, repov, params)
+            VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, ? ,?, ?)", params![
                 plugin.id,
                 plugin.plugin.name,
                 plugin.plugin.path,
@@ -117,6 +147,7 @@ impl SqliteStore {
                 plugin.plugin.version,
                 plugin.plugin.repo,
                 plugin.plugin.repov,
+                params_to_json(&plugin.plugin.params),
             ])?;
             
             Ok(())
@@ -143,6 +174,9 @@ impl SqliteStore {
             
             let capa = to_comma_separated_optional(update.capabilities);
             where_query.add_update(&capa, "kind");
+
+            let params_json = params_to_json_optional(update.params);
+            where_query.add_update(&params_json, "params");
 
             where_query.add_update(&update.credential, "credential");
 

@@ -81,6 +81,7 @@ impl From<&PluginWasm> for PluginForAdd {
             settings: PluginSettings {..Default::default()},
             libraries: vec![],
             credential: None,
+            params: vec![],
         }
     }
 }
@@ -123,7 +124,9 @@ pub struct PluginForAdd {
     pub capabilities: Vec<PluginType>,
     pub settings: PluginSettings,
     pub libraries: Vec<String>,
-    pub credential: Option<String>
+    pub credential: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub params: Vec<CustomParam>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -148,6 +151,8 @@ pub struct PluginForUpdate{
 	pub credential: Option<String>,
     #[serde(default)]
 	pub remove_credential: bool,
+
+    pub params: Option<Vec<CustomParam>>,
 
     pub libraries: Option<Vec<String>>,
     pub add_libraries: Option<Vec<String>>,

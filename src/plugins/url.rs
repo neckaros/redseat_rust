@@ -6,9 +6,19 @@ use futures::StreamExt;
 use http::header::{CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE};
 use rs_plugin_common_interfaces::{lookup::{RsLookupMetadataResultWrapper, RsLookupMetadataResults, RsLookupQuery, RsLookupSourceResult, RsLookupWrapper}, request::{RsGroupDownload, RsProcessingActionRequest, RsProcessingProgress, RsRequest, RsRequestAddResponse, RsRequestPluginRequest, RsRequestStatus}, url::RsLink, ExternalImage, PluginCredential, PluginType};
 
+use rs_plugin_common_interfaces::CustomParamTypes;
+
 use crate::{Error, domain::{plugin::PluginWithCredential, progress::RsProgressCallback}, error::RsResult, plugins::sources::{AsyncReadPinBox, FileStreamResult}, tools::{array_tools::AddOrSetArray, file_tools::{filename_from_path, get_mime_from_filename}, http_tools::{extract_header, guess_filename, parse_content_disposition}, log::{self, log_error, log_info}, video_tools::ytdl::YydlContext}};
 
 use super::{sources::{RsRequestHeader, SourceRead}, PluginManager};
+
+/// Build params HashMap from plugin's stored CustomParam values
+fn build_plugin_params(plugin_with_cred: &PluginWithCredential) -> Option<HashMap<String, CustomParamTypes>> {
+    let params: HashMap<String, CustomParamTypes> = plugin_with_cred.plugin.params.iter()
+        .map(|p| (p.name.clone(), p.param.clone()))
+        .collect();
+    if params.is_empty() { None } else { Some(params) }
+}
 
 /// Optional targeting for specific plugin by ID or name
 #[derive(Debug, Clone, Default)]
@@ -179,8 +189,7 @@ impl PluginManager {
                     let req = RsRequestPluginRequest {
                         request: request.clone(),
                         credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
-                        params: plugin_with_cred.credential.as_ref()
-                            .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
+                        params: build_plugin_params(&plugin_with_cred),
                     };
                     
                     //println!("call plugin request {:?}: {}", plugin.path, request.url);
@@ -246,8 +255,7 @@ impl PluginManager {
                         let req = RsRequestPluginRequest {
                             request: request.clone(),
                             credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
-                            params: plugin_with_cred.credential.as_ref()
-                                .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
+                            params: build_plugin_params(&plugin_with_cred),
                         };
                         log_info(crate::tools::log::LogServiceType::Plugin, format!("call plugin request permanent  {:?}", plugin.infos.name));
                         let res = plugin_m.call_get_error_code::<Json<RsRequestPluginRequest>, Json<RsRequest>>("request_permanent", Json(req));
@@ -293,8 +301,7 @@ impl PluginManager {
                         let wrapped_query = RsLookupWrapper {
                             query: query.clone(),
                             credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
-                            params: plugin_with_cred.credential.as_ref()
-                                .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
+                            params: build_plugin_params(&plugin_with_cred),
                         };
                         (plugin_arc, plugin_id, plugin_name, wrapped_query)
                     })
@@ -365,8 +372,7 @@ impl PluginManager {
                         let wrapped_query = RsLookupWrapper {
                             query: query.clone(),
                             credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
-                            params: plugin_with_cred.credential.as_ref()
-                                .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
+                            params: build_plugin_params(&plugin_with_cred),
                         };
                         (plugin_arc, plugin_name, wrapped_query)
                     })
@@ -417,8 +423,7 @@ impl PluginManager {
                         let wrapped_query = RsLookupWrapper {
                             query: query.clone(),
                             credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
-                            params: plugin_with_cred.credential.as_ref()
-                                .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
+                            params: build_plugin_params(&plugin_with_cred),
                         };
                         (plugin_arc, plugin_id, plugin_name, wrapped_query)
                     })
@@ -469,8 +474,7 @@ impl PluginManager {
                         let wrapped_query = RsLookupWrapper {
                             query: query.clone(),
                             credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
-                            params: plugin_with_cred.credential.as_ref()
-                                .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
+                            params: build_plugin_params(&plugin_with_cred),
                         };
                         (plugin_arc, plugin_name, wrapped_query)
                     })
@@ -525,8 +529,7 @@ impl PluginManager {
                         let wrapped_query = RsLookupWrapper {
                             query: query.clone(),
                             credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
-                            params: plugin_with_cred.credential.as_ref()
-                                .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
+                            params: build_plugin_params(&plugin_with_cred),
                         };
                         (plugin_arc, plugin_id, plugin_name, wrapped_query)
                     })
@@ -579,8 +582,7 @@ impl PluginManager {
                         let wrapped_query = RsLookupWrapper {
                             query: query.clone(),
                             credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
-                            params: plugin_with_cred.credential.as_ref()
-                                .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
+                            params: build_plugin_params(&plugin_with_cred),
                         };
                         (plugin_arc, plugin_name, wrapped_query)
                     })
@@ -630,8 +632,7 @@ impl PluginManager {
                         let wrapped_query = RsLookupWrapper {
                             query: query.clone(),
                             credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
-                            params: plugin_with_cred.credential.as_ref()
-                                .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
+                            params: build_plugin_params(&plugin_with_cred),
                         };
                         (plugin_arc, plugin_name, wrapped_query)
                     })
@@ -682,8 +683,7 @@ impl PluginManager {
                         let wrapped_query = RsLookupWrapper {
                             query: query.clone(),
                             credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
-                            params: plugin_with_cred.credential.as_ref()
-                                .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
+                            params: build_plugin_params(&plugin_with_cred),
                         };
                         (plugin_arc, plugin_name, wrapped_query)
                     })
@@ -737,8 +737,7 @@ impl PluginManager {
                         let wrapped_query = RsLookupWrapper {
                             query: query.clone(),
                             credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
-                            params: plugin_with_cred.credential.as_ref()
-                                .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
+                            params: build_plugin_params(&plugin_with_cred),
                         };
                         (plugin_arc, plugin_name, wrapped_query)
                     })
@@ -786,8 +785,7 @@ impl PluginManager {
                     let req = RsRequestPluginRequest {
                         request: request.clone(),
                         credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
-                        params: plugin_with_cred.credential.as_ref()
-                            .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
+                        params: build_plugin_params(&plugin_with_cred),
                     };
                     let res = plugin_m.call_get_error_code::<Json<RsRequestPluginRequest>, Json<bool>>("check_instant", Json(req));
                     if let Ok(Json(instant)) = res {
@@ -814,8 +812,7 @@ impl PluginManager {
                     let req = RsRequestPluginRequest {
                         request: request.clone(),
                         credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
-                        params: plugin_with_cred.credential.as_ref()
-                            .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
+                        params: build_plugin_params(&plugin_with_cred),
                     };
                     let res = plugin_m.call_get_error_code::<Json<RsRequestPluginRequest>, Json<RsRequestAddResponse>>("request_add", Json(req));
                     if let Ok(Json(mut response)) = res {
@@ -846,8 +843,7 @@ impl PluginManager {
             let req = RsProcessingActionRequest {
                 processing_id: processing_id.to_string(),
                 credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
-                params: plugin_with_cred.credential.as_ref()
-                    .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
+                params: build_plugin_params(plugin_with_cred),
             };
             let res = plugin_m.call_get_error_code::<Json<RsProcessingActionRequest>, Json<RsProcessingProgress>>("get_progress", Json(req));
             match res {
@@ -876,8 +872,7 @@ impl PluginManager {
             let req = RsProcessingActionRequest {
                 processing_id: processing_id.to_string(),
                 credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
-                params: plugin_with_cred.credential.as_ref()
-                    .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
+                params: build_plugin_params(plugin_with_cred),
             };
             let res = plugin_m.call_get_error_code::<Json<RsProcessingActionRequest>, ()>("pause", Json(req));
             match res {
@@ -896,8 +891,7 @@ impl PluginManager {
             let req = RsProcessingActionRequest {
                 processing_id: processing_id.to_string(),
                 credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
-                params: plugin_with_cred.credential.as_ref()
-                    .and_then(|c| serde_json::from_value(c.settings.clone()).ok()),
+                params: build_plugin_params(plugin_with_cred),
             };
             let res = plugin_m.call_get_error_code::<Json<RsProcessingActionRequest>, ()>("remove", Json(req));
             match res {
