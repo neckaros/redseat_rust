@@ -4,12 +4,12 @@ use std::{convert::Infallible, io::Cursor, time::Duration};
 use crate::{domain::{media::MediaForUpdate, movie::{Movie, MovieForUpdate}, view_progress::{ViewProgressForAdd, ViewProgressLigh}, watched::{WatchedForAdd, WatchedForDelete, WatchedLight}, RsIdsExt}, error::RsError, model::{episodes::EpisodeQuery, medias::MediaQuery, movies::{MovieQuery, RsMovieSort}, store::sql::SqlOrder, users::{ConnectedUser, HistoryQuery}, ModelController}, tools::clock::now, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{sse::{Event, KeepAlive, Sse}, IntoResponse, Response}, routing::{delete, get, patch, post, put}, Json, Router};
 use futures::{Stream, TryStreamExt};
-use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, lookup::{RsLookupMovie, RsLookupQuery}, request::RsGroupDownload, ExternalImage, ImageType, MediaType, RsRequest};
+use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, lookup::{RsLookupMovie, RsLookupQuery}, request::RsGroupDownload, ElementType, ExternalImage, ImageType, MediaType, RsRequest};
 use serde_json::{json, Value};
 use tokio::io::AsyncRead;
 use tokio_util::io::{ReaderStream, StreamReader};
 
-use super::{ImageRequestOptions, ImageUploadOptions, SearchQuery, SearchResultGroup, SseSearchEvent};
+use super::{ImageRequestOptions, ImageUploadOptions, RatingUpdateBody, SearchQuery, SearchResultGroup, SseSearchEvent};
 
 
 
@@ -34,9 +34,12 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/:id/image", get(handler_image))
 		.route("/:id/image/search", get(handler_image_search))
 		.route("/:id/image/fetch", post(handler_image_fetch))
+		.route("/:id/image/refresh", get(handler_image_refresh))
 		.route("/:id/image", post(handler_post_image))
 		.route("/:id/progress", get(handler_progress_get))
 		.route("/:id/progress", post(handler_progress_set))
+		.route("/:id/rating", get(handler_rating_get))
+		.route("/:id/rating", patch(handler_rating_set))
 		.route("/:id/watched", get(handler_watched_get))
 		.route("/:id/watched", post(handler_watched_set))
 		.route("/:id/watched", delete(handler_watched_delete))
@@ -178,6 +181,16 @@ async fn handler_progress_set(Path((library_id, movie_id)): Path<(String, String
 	Ok(())
 }
 
+async fn handler_rating_get(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	let rating = mc.get_media_rating(&library_id, ElementType::Movie, movie_id, &user).await?;
+	Ok(Json(json!(rating)))
+}
+
+async fn handler_rating_set(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(body): Json<RatingUpdateBody>) -> Result<Json<Value>> {
+	let rating = mc.set_media_rating(&library_id, ElementType::Movie, movie_id, body.rating, &user).await?;
+	Ok(Json(json!(rating)))
+}
+
 async fn handler_watched_get(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
 	let movie = mc.get_movie(&library_id, movie_id, &user).await?;
 	let query = HistoryQuery {
@@ -268,6 +281,17 @@ async fn handler_image_search(Path((library_id, movie_id)): Path<(String, String
 	let result = mc.get_movie_images(lookup_query, Some(library_id), &user).await?;
 
 	Ok(Json(json!(result)))
+}
+
+async fn handler_image_refresh(
+	Path((library_id, movie_id)): Path<(String, String)>,
+	State(mc): State<ModelController>,
+	user: ConnectedUser,
+	Query(query): Query<ImageRequestOptions>,
+) -> Result<Json<Value>> {
+	let kind = query.kind.unwrap_or(ImageType::Poster);
+	mc.refresh_movie_image(&library_id, &movie_id, &kind, &user).await?;
+	Ok(Json(json!({"data": "ok"})))
 }
 
 #[debug_handler]

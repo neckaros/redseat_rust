@@ -41,7 +41,7 @@ Example: `/sse?libraries=lib1,lib2` will only receive events for those libraries
 | `backups` | Backup job events | Library admin or server admin |
 | `backups-files` | Backup file progress | Server admin only |
 | `media_progress` | Playback position tracking | User-specific (only progress owner) |
-| `media_rating` | Media rating changes | User-specific (only rating owner) |
+| `media_rating` | Rating changes (media, movies, series, episodes, books, people) | User-specific (only rating owner) |
 | `watched` | Content marked as watched | User-specific (only watched owner) |
 | `unwatched` | Content unmarked as watched | User-specific (only watched owner) |
 | `request_processing` | Request processing status updates | Library read access |
@@ -191,17 +191,21 @@ interface MediasProgressMessage {
   progress: MediaProgress;
 }
 
-// Media rating events (user-specific)
-interface MediaRating {
+// Rating events (user-specific)
+// Supports rating media, movies, series, episodes, and books.
+// The `type` field indicates the entity type being rated.
+// For episodes, `refId` uses the format "serieRef:season:number".
+interface Rating {
+  type: string;   // ElementType: "media", "movie", "serie", "episode", "book", "person"
+  refId: string;  // Reference ID of the rated entity
   userRef: string;
-  mediaRef: string;
   rating: number;
   modified: number;
 }
 
 interface MediasRatingMessage {
   library: string;
-  rating: MediaRating;
+  rating: Rating;
 }
 
 // Watched events (user-specific)
@@ -539,6 +543,7 @@ Search endpoints support SSE streaming so clients receive results progressively 
 | `GET /libraries/:libraryId/series/searchstream` | `name` (required), `ids` (optional) | Stream series search results |
 | `GET /libraries/:libraryId/movies/searchstream` | `name` (required), `ids` (optional) | Stream movie search results |
 | `GET /libraries/:libraryId/books/searchstream` | `name` (required), `ids` (optional) | Stream book search results |
+| `GET /libraries/:libraryId/people/searchstream` | `name` (required), `ids` (optional) | Stream people search results |
 
 ### How It Works
 
@@ -598,6 +603,7 @@ The same search is available as a regular JSON endpoint that returns all provide
 | `GET /libraries/:libraryId/series/search` | Returns all results grouped by provider |
 | `GET /libraries/:libraryId/movies/search` | Returns all results grouped by provider |
 | `GET /libraries/:libraryId/books/search` | Returns all results grouped by provider |
+| `GET /libraries/:libraryId/people/search` | Returns all results grouped by provider |
 
 Response format:
 

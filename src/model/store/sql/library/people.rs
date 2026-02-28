@@ -1,6 +1,6 @@
 
 use rs_plugin_common_interfaces::domain::{other_ids::OtherIds, rs_ids::RsIds};
-use rusqlite::{params, types::FromSqlError, OptionalExtension, Row};
+use rusqlite::{params, params_from_iter, types::FromSqlError, OptionalExtension, Row};
 
 
 use crate::{domain::people::{FaceBBox, FaceEmbedding, Person, UnassignedFace}, model::{people::{PeopleQuery, PersonForInsert, PersonForUpdate}, store::{from_pipe_separated_optional, sql::{deserialize_from_row, OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType}, to_pipe_separated_optional}}, plugins::sources::error::SourcesError, tools::{array_tools::replace_add_remove_from_array, serialization::optional_serde_to_string}};
@@ -97,16 +97,36 @@ else 0 end) as score", q, q, q, q, q, q);
     }
 
     pub async fn get_person_by_external_id(&self, ids: RsIds) -> Result<Option<Person>> {
-        
-        //println!("{}, {}, {}, {}, {}",i.imdb.unwrap_or("zz".to_string()), i.slug.unwrap_or("zz".to_string()), i.tmdb.unwrap_or(0), i.trakt.unwrap_or(0), i.tvdb.unwrap_or(0));
-        let row = self.connection.call( move |conn| { 
-            let mut query = conn.prepare(&format!("SELECT  
-            {}
-            FROM people 
-            WHERE 
-            imdb = ? or slug = ? or tmdb = ? or trakt = ?", Self::PEOPLE_FIELDS))?;
-            let row = query.query_row(
-            params![ids.imdb.unwrap_or("zz".to_string()), ids.slug.unwrap_or("zz".to_string()), ids.tmdb.unwrap_or(0), ids.trakt.unwrap_or(0)],Self::row_to_person).optional()?;
+        let row = self.connection.call( move |conn| {
+            let mut conditions = vec![
+                "imdb = ?".to_string(),
+                "slug = ?".to_string(),
+                "tmdb = ?".to_string(),
+                "trakt = ?".to_string(),
+            ];
+            let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
+                Box::new(ids.imdb.clone().unwrap_or("zz".to_string())),
+                Box::new(ids.slug.clone().unwrap_or("zz".to_string())),
+                Box::new(ids.tmdb.unwrap_or(0)),
+                Box::new(ids.trakt.unwrap_or(0)),
+            ];
+
+            if let Some(other_ids) = &ids.other_ids {
+                for entry in other_ids.as_slice() {
+                    conditions.push("otherids LIKE ?".to_string());
+                    params_vec.push(Box::new(format!("%\"{}\"%" , entry)));
+                }
+            }
+
+            let where_clause = conditions.join(" OR ");
+            let sql = format!(
+                "SELECT {} FROM people WHERE {}",
+                Self::PEOPLE_FIELDS,
+                where_clause
+            );
+            let mut query = conn.prepare(&sql)?;
+            let params_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+            let row = query.query_row(params_from_iter(params_refs), Self::row_to_person).optional()?;
             Ok(row)
         }).await?;
         Ok(row)

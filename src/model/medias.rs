@@ -22,7 +22,7 @@ use rs_plugin_common_interfaces::{
         RsVideoTranscodeJob, RsVideoTranscodeJobPluginRequest, RsVideoTranscodeStatus,
         VideoConvertRequest, VideoOverlayType,
     },
-    PluginType, RsCookie,
+    ElementType, PluginType, RsCookie,
 };
 use rusqlite::{
     types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef},
@@ -559,7 +559,7 @@ impl ModelController {
         }
 
         if let Some(rating) = update.rating.clone() {
-            self.set_media_rating(library_id, media_id.clone(), rating as f64, requesting_user)
+            self.set_media_rating(library_id, ElementType::Media, media_id.clone(), rating as f64, requesting_user)
                 .await?;
         }
         if let Some(progress) = update.progress.clone() {

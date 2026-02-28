@@ -80,17 +80,18 @@ const MEDIA_QUERY: &str = "SELECT
             m.originalhash, m.originalid, m.face_recognition_error
 			
             FROM medias as m
-            LEFT JOIN 
-					(SELECT 
-							media_ref, 
+            LEFT JOIN
+					(SELECT
+							ref,
 							AVG(rating) AS rating
-						FROM 
+						FROM
 							ratings
-						GROUP BY 
-							media_ref
+						WHERE type = 'media'
+						GROUP BY
+							ref
 					) as art
-				ON 
-					art.media_ref = m.id
+				ON
+					art.ref = m.id
         ";
 
 fn media_query(user_id: &Option<String>) -> String {
@@ -116,21 +117,22 @@ fn media_query(user_id: &Option<String>) -> String {
 					media_progress mp
 				ON 
 					mp.media_ref = m.id and mp.user_ref = '{}'
-			LEFT JOIN 
+			LEFT JOIN
 					ratings rt
-				ON 
-					rt.media_ref = m.id and rt.user_ref = '{}'
-          LEFT JOIN 
-					(SELECT 
-							media_ref, 
+				ON
+					rt.ref = m.id and rt.type = 'media' and rt.user_ref = '{}'
+			LEFT JOIN
+					(SELECT
+							ref,
 							AVG(rating) AS rating
-						FROM 
+						FROM
 							ratings
-						GROUP BY 
-							media_ref
+						WHERE type = 'media'
+						GROUP BY
+							ref
 					) as art
-				ON 
-					art.media_ref = m.id          
+				ON
+					art.ref = m.id          
                     
                     
                     ", user_id, user_id)

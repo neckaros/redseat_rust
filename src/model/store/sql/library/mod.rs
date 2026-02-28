@@ -250,6 +250,17 @@ impl SqliteLibraryStore {
                     );
                 }
 
+                if version < 46 {
+                    let initial = String::from_utf8_lossy(include_bytes!("046 - RATINGS TYPE.sql"));
+                    conn.execute_batch(&initial)?;
+                    version = 46;
+                    conn.pragma_update(None, "user_version", version)?;
+                    log_info(
+                        LogServiceType::Database,
+                        format!("Update Library Database to version: {}", version),
+                    );
+                }
+
                 conn.execute("VACUUM;", params![])?;
                 conn.execute("DELETE FROM media_people_mapping where people_ref not in (select id from people) or media_ref not in (select id from medias);", []);
                 conn.execute("DELETE FROM media_tag_mapping where tag_ref not in (select id from tags) or media_ref not in (select id from medias);", []);
@@ -329,7 +340,7 @@ mod tests {
 
         let store = SqliteLibraryStore::new(connection).await.unwrap();
         let version = store.migrate().await.unwrap();
-        assert_eq!(version, 45);
+        assert_eq!(version, 46);
 
         store
             .connection

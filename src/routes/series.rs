@@ -4,12 +4,12 @@ use std::{convert::Infallible, io::Cursor, time::Duration};
 use crate::{domain::serie::Serie, error::RsError, model::{books::BookQuery, episodes::EpisodeQuery, series::{SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, plugins::sources::error::SourcesError, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{sse::{Event, KeepAlive, Sse}, IntoResponse, Response}, routing::{delete, get, patch, post, put}, Json, Router};
 use futures::{Stream, TryStreamExt};
-use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, lookup::{RsLookupMovie, RsLookupSerie}, ExternalImage, ImageType};
+use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, lookup::{RsLookupMovie, RsLookupQuery, RsLookupSerie}, ElementType, ExternalImage, ImageType};
 use serde_json::{json, Value};
 use tokio::io::AsyncRead;
 use tokio_util::io::{ReaderStream, StreamReader};
 
-use super::{ImageRequestOptions, ImageUploadOptions, SearchQuery, SearchResultGroup, SseSearchEvent};
+use super::{ImageRequestOptions, ImageUploadOptions, RatingUpdateBody, SearchQuery, SearchResultGroup, SseSearchEvent};
 
 
 
@@ -32,10 +32,24 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/:id/image", post(handler_post_image))
 		.route("/:id/image/search", get(handler_image_search))
 		.route("/:id/image/fetch", post(handler_image_fetch))
+		.route("/:id/image/refresh", get(handler_image_refresh))
+		.route("/:id/search", get(handler_lookup))
+		.route("/:id/rating", get(handler_rating_get))
+		.route("/:id/rating", patch(handler_rating_set))
 		.route("/:id/books", get(handler_list_books))
 		.with_state(mc.clone())
 		.nest("/:id/", super::episodes::routes(mc))
         
+}
+
+async fn handler_rating_get(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	let rating = mc.get_media_rating(&library_id, ElementType::Serie, serie_id, &user).await?;
+	Ok(Json(json!(rating)))
+}
+
+async fn handler_rating_set(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(body): Json<RatingUpdateBody>) -> Result<Json<Value>> {
+	let rating = mc.set_media_rating(&library_id, ElementType::Serie, serie_id, body.rating, &user).await?;
+	Ok(Json(json!(rating)))
 }
 
 async fn handler_list_books(
@@ -192,6 +206,39 @@ async fn handler_image_search(Path((library_id, serie_id)): Path<(String, String
 
 
 
+
+async fn handler_lookup(
+	Path((library_id, serie_id)): Path<(String, String)>,
+	State(mc): State<ModelController>,
+	user: ConnectedUser,
+) -> Result<Json<Value>> {
+	let serie = mc.get_serie(&library_id, serie_id.clone(), &user).await?
+		.ok_or(SourcesError::UnableToFindSerie(
+			library_id.clone(),
+			serie_id,
+			"handler_lookup".to_string(),
+		))?;
+	let name = serie.item.name.clone();
+	let ids: RsIds = serie.item.into();
+	let query = RsLookupQuery::Serie(RsLookupSerie {
+		name: Some(name),
+		ids: Some(ids),
+		page_key: None,
+	});
+	let results = mc.exec_lookup(query, Some(library_id), &user, None).await?;
+	Ok(Json(json!(results)))
+}
+
+async fn handler_image_refresh(
+	Path((library_id, serie_id)): Path<(String, String)>,
+	State(mc): State<ModelController>,
+	user: ConnectedUser,
+	Query(query): Query<ImageRequestOptions>,
+) -> Result<Json<Value>> {
+	let kind = query.kind.unwrap_or(ImageType::Poster);
+	mc.refresh_serie_image(&library_id, &serie_id, &kind, &user).await?;
+	Ok(Json(json!({"data": "ok"})))
+}
 
 async fn handler_image_fetch(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(externalImage): Json<ExternalImage>) -> Result<Json<Value>> {
 	let request = externalImage.url;

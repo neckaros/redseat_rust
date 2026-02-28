@@ -4,12 +4,12 @@ use std::io::Cursor;
 use crate::{domain::{episode::{self, Episode}, media::{FileEpisode, Media, MediaForUpdate}, progress, view_progress::{ViewProgressForAdd, ViewProgressLigh}, watched::{WatchedForAdd, WatchedForDelete, WatchedLight}, RsIdsExt}, error::RsError, model::{episodes::{EpisodeForUpdate, EpisodeQuery}, medias::MediaQuery, users::{ConnectedUser, HistoryQuery}, ModelController}, plugins::sources::error::SourcesError, Error, Result};
 use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
 use futures::TryStreamExt;
-use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, lookup::{RsLookupEpisode, RsLookupQuery}, request::{RsGroupDownload, RsRequest}, ImageType, MediaType};
+use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, lookup::{RsLookupEpisode, RsLookupQuery}, request::{RsGroupDownload, RsRequest}, ElementType, ImageType, MediaType};
 use serde_json::{json, ser, Value};
 use tokio::io::AsyncRead;
 use tokio_util::io::{ReaderStream, StreamReader};
 
-use super::{ImageRequestOptions, ImageUploadOptions};
+use super::{ImageRequestOptions, ImageUploadOptions, RatingUpdateBody};
 
 
 pub fn routes(mc: ModelController) -> Router {
@@ -30,6 +30,8 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/seasons/:season/episodes/:number/medias", get(handler_medias))
 		.route("/seasons/:season/episodes/:number/progress", get(handler_progress_get))
 		.route("/seasons/:season/episodes/:number/progress", post(handler_progress_set))
+		.route("/seasons/:season/episodes/:number/rating", get(handler_rating_get))
+		.route("/seasons/:season/episodes/:number/rating", patch(handler_rating_set))
 		.route("/seasons/:season/episodes/:number/watched", get(handler_watched_get))
 		.route("/seasons/:season/episodes/:number/watched", post(handler_watched_set))
 		.route("/seasons/:season/episodes/:number/watched", delete(handler_watched_delete))
@@ -166,6 +168,18 @@ async fn handler_progress_set(Path((library_id, serie_id, season, number)): Path
 	mc.add_view_progress(progress, &user, Some(library_id)).await?;
 
 	Ok(())
+}
+
+async fn handler_rating_get(Path((library_id, serie_id, season, number)): Path<(String, String, u32, u32)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+	let episode_ref = format!("{}:{}:{}", serie_id, season, number);
+	let rating = mc.get_media_rating(&library_id, ElementType::Episode, episode_ref, &user).await?;
+	Ok(Json(json!(rating)))
+}
+
+async fn handler_rating_set(Path((library_id, serie_id, season, number)): Path<(String, String, u32, u32)>, State(mc): State<ModelController>, user: ConnectedUser, Json(body): Json<RatingUpdateBody>) -> Result<Json<Value>> {
+	let episode_ref = format!("{}:{}:{}", serie_id, season, number);
+	let rating = mc.set_media_rating(&library_id, ElementType::Episode, episode_ref, body.rating, &user).await?;
+	Ok(Json(json!(rating)))
 }
 
 async fn handler_watched_get(Path((library_id, serie_id, season, number)): Path<(String, String, u32, u32)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {

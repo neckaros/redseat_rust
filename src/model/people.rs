@@ -39,7 +39,9 @@ use crate::{
     },
 };
 use rs_plugin_common_interfaces::{
-    domain::{other_ids::OtherIds, rs_ids::RsIds}, url::RsLink, ExternalImage, Gender, ImageType,
+    domain::{other_ids::OtherIds, rs_ids::RsIds},
+    lookup::{RsLookupMetadataResult, RsLookupMetadataResultWrapper, RsLookupMetadataResults, RsLookupMovie, RsLookupPerson, RsLookupQuery},
+    url::RsLink, ExternalImage, Gender, ImageType,
 };
 use tokio_util::io::StreamReader;
 
@@ -596,6 +598,121 @@ impl ModelController {
         let mut images = self.tmdb.person_images(ids.clone()).await?;
         Ok(images)
     }
+
+    pub async fn search_person(
+        &self,
+        library_id: &str,
+        query: RsLookupMovie,
+        sources: Option<Vec<String>>,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Vec<(String, String, RsLookupMetadataResults)>> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        let mut groups: Vec<(String, String, RsLookupMetadataResults)> = Vec::new();
+
+        let include_trakt = sources.as_deref().map_or(true, |s| s.iter().any(|id| id == "trakt"));
+        if include_trakt {
+            let trakt_results = self.trakt.search_person(&query).await?;
+            let trakt_entries: Vec<RsLookupMetadataResultWrapper> = trakt_results
+                .into_iter()
+                .map(|person| RsLookupMetadataResultWrapper {
+                    metadata: RsLookupMetadataResult::Person(person),
+                    ..Default::default()
+                })
+                .collect();
+            if !trakt_entries.is_empty() {
+                groups.push((
+                    "trakt".to_string(),
+                    "trakt".to_string(),
+                    RsLookupMetadataResults { results: trakt_entries, next_page_key: None },
+                ));
+            }
+        }
+
+        let lookup_query = RsLookupQuery::Person(RsLookupPerson {
+            name: query.name,
+            ids: query.ids,
+            page_key: query.page_key,
+        });
+        let plugin_results = self
+            .exec_lookup_metadata_grouped(
+                lookup_query,
+                Some(library_id.to_string()),
+                requesting_user,
+                None,
+                sources.as_deref(),
+            )
+            .await?;
+
+        for (id, name, RsLookupMetadataResults { results, next_page_key }) in plugin_results {
+            let filtered: Vec<_> = results.into_iter().filter(|result| matches!(result.metadata, RsLookupMetadataResult::Person(_))).collect();
+            if !filtered.is_empty() {
+                groups.push((id, name, RsLookupMetadataResults { results: filtered, next_page_key }));
+            }
+        }
+
+        Ok(groups)
+    }
+
+    pub async fn search_person_stream(
+        &self,
+        library_id: &str,
+        query: RsLookupMovie,
+        sources: Option<Vec<String>>,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<tokio::sync::mpsc::Receiver<(String, String, RsLookupMetadataResults)>> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+
+        let include_trakt = sources.as_deref().map_or(true, |s| s.iter().any(|id| id == "trakt"));
+        if include_trakt {
+            let trakt_results = self.trakt.search_person(&query).await?;
+            let trakt_entries: Vec<RsLookupMetadataResultWrapper> = trakt_results
+                .into_iter()
+                .map(|person| RsLookupMetadataResultWrapper {
+                    metadata: RsLookupMetadataResult::Person(person),
+                    ..Default::default()
+                })
+                .collect();
+            if !trakt_entries.is_empty() {
+                let _ = tx.send((
+                    "trakt".to_string(),
+                    "trakt".to_string(),
+                    RsLookupMetadataResults { results: trakt_entries, next_page_key: None },
+                )).await;
+            }
+        }
+
+        let lookup_query = RsLookupQuery::Person(RsLookupPerson {
+            name: query.name,
+            ids: query.ids,
+            page_key: query.page_key,
+        });
+        let mut plugin_rx = self
+            .exec_lookup_metadata_stream_grouped(
+                lookup_query,
+                Some(library_id.to_string()),
+                requesting_user,
+                None,
+                sources.as_deref(),
+            )
+            .await?;
+
+        tokio::spawn(async move {
+            while let Some((id, name, entries)) = plugin_rx.recv().await {
+                let RsLookupMetadataResults { results, next_page_key } = entries;
+                let filtered: Vec<_> = results.into_iter().filter(|result| matches!(result.metadata, RsLookupMetadataResult::Person(_))).collect();
+                if !filtered.is_empty() {
+                    if tx.send((id, name, RsLookupMetadataResults { results: filtered, next_page_key })).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+
+        Ok(rx)
+    }
+
     pub async fn download_person_image(
         &self,
         ids: &RsIds,

@@ -76,3 +76,8 @@ pub struct ImageUploadOptions {
     #[serde(rename = "type")]
     kind: ImageType,
 }
+
+#[derive(Debug, Deserialize)]
+pub struct RatingUpdateBody {
+    pub rating: f64,
+}

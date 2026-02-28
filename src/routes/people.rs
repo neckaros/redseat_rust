@@ -1,31 +1,44 @@
-use crate::Error;
+use std::{convert::Infallible, time::Duration};
+
 use crate::{
+    error::RsError,
     model::{
         people::{PeopleQuery, PersonForAdd, PersonForUpdate},
         users::ConnectedUser,
         ModelController,
     },
-    Result,
+    plugins::sources::error::SourcesError,
+    Error, Result,
 };
 use axum::{
     body::Body,
     debug_handler,
     extract::{Multipart, Path, Query, State},
-    response::{IntoResponse, Response},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Response,
+    },
     routing::{delete, get, patch, post},
     Json, Router,
 };
-use futures::TryStreamExt;
+use futures::{Stream, TryStreamExt};
+use rs_plugin_common_interfaces::{
+    domain::rs_ids::RsIds,
+    lookup::RsLookupMovie,
+    ElementType, ExternalImage, ImageType,
+};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio_util::io::{ReaderStream, StreamReader};
 
-use super::ImageRequestOptions;
+use super::{ImageRequestOptions, RatingUpdateBody, SearchQuery, SearchResultGroup, SseSearchEvent};
 
 pub fn routes(mc: ModelController) -> Router {
     Router::new()
         .route("/", get(handler_list))
         .route("/", post(handler_post))
+        .route("/search", get(handler_search_people))
+        .route("/searchstream", get(handler_search_people_stream))
         .route("/faces/detect", post(handler_detect_faces_in_media))
         .route("/faces/cluster", post(handler_cluster_unassigned_faces))
         .route("/faces/unassigned", get(handler_get_unassigned_faces))
@@ -42,6 +55,11 @@ pub fn routes(mc: ModelController) -> Router {
         .route("/:id", delete(handler_delete))
         .route("/:id/image", get(handler_image))
         .route("/:id/image", post(handler_post_image))
+        .route("/:id/image/search", get(handler_image_search))
+        .route("/:id/image/fetch", post(handler_image_fetch))
+        .route("/:id/image/refresh", get(handler_image_refresh))
+        .route("/:id/rating", get(handler_rating_get))
+        .route("/:id/rating", patch(handler_rating_set))
         .route("/:id/faces", get(handler_get_person_faces))
         .route("/faces/:face_id", delete(handler_delete_face))
         .route("/faces/:face_id/image", get(handler_get_face_image))
@@ -136,6 +154,115 @@ async fn handler_post(
     let credential = mc.add_pesron(&library_id, tag, &user).await?;
     let body = Json(json!(credential));
     Ok(body)
+}
+
+async fn handler_search_people(
+    Path(library_id): Path<String>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Query(query): Query<SearchQuery<RsLookupMovie>>,
+) -> Result<Json<Value>> {
+    let sources = query.sources();
+    let groups = mc.search_person(&library_id, query.lookup, sources, &user).await?;
+    let body: Vec<SearchResultGroup> = groups
+        .into_iter()
+        .map(|(source_id, source_name, data)| SearchResultGroup { source_id, source_name, data })
+        .collect();
+    Ok(Json(json!(body)))
+}
+
+async fn handler_search_people_stream(
+    Path(library_id): Path<String>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Query(query): Query<SearchQuery<RsLookupMovie>>,
+) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>> {
+    let sources = query.sources();
+    let mut rx = mc.search_person_stream(&library_id, query.lookup, sources, &user).await?;
+
+    let stream = async_stream::stream! {
+        while let Some((source_id, source_name, batch)) = rx.recv().await {
+            if let Ok(data) = serde_json::to_string(&SseSearchEvent {
+                source_id: &source_id,
+                source_name: &source_name,
+                data: &batch,
+            }) {
+                yield Ok(Event::default().event("results").data(data));
+            }
+        }
+    };
+
+    Ok(Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(30))
+            .text("ping"),
+    ))
+}
+
+async fn handler_image_search(
+    Path((library_id, person_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Query(_query): Query<ImageRequestOptions>,
+) -> Result<Json<Value>> {
+    let person = mc.get_person(&library_id, person_id.clone(), &user).await?
+        .ok_or(SourcesError::UnableToFindPerson(
+            library_id.clone(),
+            person_id,
+            "handler_image_search".to_string(),
+        ))?;
+    let ids: RsIds = person.into();
+    let result = mc.get_person_images(&ids).await?;
+    Ok(Json(json!(result)))
+}
+
+async fn handler_image_fetch(
+    Path((library_id, person_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Json(external_image): Json<ExternalImage>,
+) -> Result<Json<Value>> {
+    let request = external_image.url;
+    let kind = external_image
+        .kind
+        .ok_or(RsError::Error("Missing image type".to_string()))?;
+
+    let reader = mc.request_to_reader(&library_id, request, &user).await?;
+
+    mc.update_person_image(&library_id, &person_id, &Some(kind), reader.stream, &user)
+        .await?;
+
+    Ok(Json(json!({"data": "ok"})))
+}
+
+async fn handler_image_refresh(
+    Path((library_id, person_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Query(query): Query<ImageRequestOptions>,
+) -> Result<Json<Value>> {
+    let kind = query.kind;
+    mc.refresh_person_image(&library_id, &person_id, &kind, &user).await?;
+    Ok(Json(json!({"data": "ok"})))
+}
+
+async fn handler_rating_get(
+    Path((library_id, person_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<Json<Value>> {
+    let rating = mc.get_media_rating(&library_id, ElementType::Person, person_id, &user).await?;
+    Ok(Json(json!(rating)))
+}
+
+async fn handler_rating_set(
+    Path((library_id, person_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Json(body): Json<RatingUpdateBody>,
+) -> Result<Json<Value>> {
+    let rating = mc.set_media_rating(&library_id, ElementType::Person, person_id, body.rating, &user).await?;
+    Ok(Json(json!(rating)))
 }
 
 // FACE RECOGNITION

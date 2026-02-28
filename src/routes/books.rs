@@ -13,7 +13,7 @@ use axum::{
 use futures::{Stream, TryStreamExt};
 use rs_plugin_common_interfaces::domain::{rs_ids::RsIds, ItemWithRelations};
 use rs_plugin_common_interfaces::lookup::{RsLookupBook, RsLookupQuery};
-use rs_plugin_common_interfaces::{ExternalImage, ImageType};
+use rs_plugin_common_interfaces::{ElementType, ExternalImage, ImageType};
 use serde_json::{json, Value};
 use tokio_util::io::{ReaderStream, StreamReader};
 
@@ -22,7 +22,7 @@ use serde::Deserialize;
 use crate::{
     domain::book::{Book, BookForUpdate},
     model::{books::BookQuery, medias::MediaQuery, users::ConnectedUser, ModelController},
-    routes::{ImageRequestOptions, ImageUploadOptions, SearchQuery, SearchResultGroup, SseSearchEvent},
+    routes::{ImageRequestOptions, ImageUploadOptions, RatingUpdateBody, SearchQuery, SearchResultGroup, SseSearchEvent},
     Error, Result,
 };
 
@@ -41,6 +41,8 @@ pub fn routes(mc: ModelController) -> Router {
         .route("/:id/image/fetch", post(handler_image_fetch))
         .route("/:id/image/refresh", get(handler_image_refresh))
         .route("/:id/image", post(handler_post_image))
+        .route("/:id/rating", get(handler_rating_get))
+        .route("/:id/rating", patch(handler_rating_set))
         .route("/:id/search", get(handler_lookup))
         .with_state(mc)
 }
@@ -145,6 +147,16 @@ async fn handler_search_books_stream(
             .interval(Duration::from_secs(30))
             .text("ping"),
     ))
+}
+
+async fn handler_rating_get(Path((library_id, book_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
+    let rating = mc.get_media_rating(&library_id, ElementType::Book, book_id, &user).await?;
+    Ok(Json(json!(rating)))
+}
+
+async fn handler_rating_set(Path((library_id, book_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(body): Json<RatingUpdateBody>) -> Result<Json<Value>> {
+    let rating = mc.set_media_rating(&library_id, ElementType::Book, book_id, body.rating, &user).await?;
+    Ok(Json(json!(rating)))
 }
 
 async fn handler_lookup(
