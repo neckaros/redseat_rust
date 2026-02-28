@@ -70,14 +70,15 @@ pub struct BookQuery {
 
 impl ModelController {
     fn select_book_image_url(images: Vec<ExternalImage>, kind: &ImageType) -> Option<RsRequest> {
-        let first_kind_match = images
+        let exact_images: Vec<_> = images.into_iter().filter(|image| image.match_type.is_some()).collect();
+        let first_kind_match = exact_images
             .iter()
             .find(|image| image.kind.as_ref() == Some(kind))
             .map(|image| image.url.clone());
         if first_kind_match.is_some() {
             first_kind_match
         } else {
-            images.into_iter().next().map(|image| image.url)
+            exact_images.into_iter().next().map(|image| image.url)
         }
     }
 

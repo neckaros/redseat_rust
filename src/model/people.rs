@@ -614,8 +614,9 @@ impl ModelController {
             let trakt_results = self.trakt.search_person(&query).await?;
             let trakt_entries: Vec<RsLookupMetadataResultWrapper> = trakt_results
                 .into_iter()
-                .map(|person| RsLookupMetadataResultWrapper {
+                .map(|(person, match_type)| RsLookupMetadataResultWrapper {
                     metadata: RsLookupMetadataResult::Person(person),
+                    match_type,
                     ..Default::default()
                 })
                 .collect();
@@ -669,8 +670,9 @@ impl ModelController {
             let trakt_results = self.trakt.search_person(&query).await?;
             let trakt_entries: Vec<RsLookupMetadataResultWrapper> = trakt_results
                 .into_iter()
-                .map(|person| RsLookupMetadataResultWrapper {
+                .map(|(person, match_type)| RsLookupMetadataResultWrapper {
                     metadata: RsLookupMetadataResult::Person(person),
+                    match_type,
                     ..Default::default()
                 })
                 .collect();

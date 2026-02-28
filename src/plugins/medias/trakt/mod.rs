@@ -1,7 +1,7 @@
 use chrono::{DateTime, FixedOffset};
 use http::{header::USER_AGENT, HeaderMap, HeaderValue};
 use reqwest::{Client, Response, Url};
-use rs_plugin_common_interfaces::{domain::rs_ids::{RsIds, RsIdsError}, lookup::RsLookupMovie};
+use rs_plugin_common_interfaces::{domain::rs_ids::{RsIds, RsIdsError}, lookup::{RsLookupMatchType, RsLookupMovie}};
 use serde::de::DeserializeOwned;
 use tower::Service;
 use trakt_people::{TraktActorsResult, TraktPeopleSearchElement, TraktPerson};
@@ -91,7 +91,7 @@ impl TraktContext {
         Ok(show_nous)
     }
 
-    pub async fn search_show(&self, search: &RsLookupMovie) -> crate::Result<Vec<Serie>> {
+    pub async fn search_show(&self, search: &RsLookupMovie) -> crate::Result<Vec<(Serie, Option<RsLookupMatchType>)>> {
         let query = search.name.as_deref().unwrap_or_default();
         let url = self
             .base_url
@@ -100,8 +100,11 @@ impl TraktContext {
 
         let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
 
-        let shows: Vec<Serie> = r.json::<Vec<TraktShowSearchElement>>().await?.into_iter().map(|m| Serie::from(m.show)).collect();
-      
+        let shows = r.json::<Vec<TraktShowSearchElement>>().await?.into_iter().map(|m| {
+            let match_type = if m.score >= 1000.0 && m.show.title.to_lowercase() == query.to_lowercase() { Some(RsLookupMatchType::ExactText) } else { None };
+            (Serie::from(m.show), match_type)
+        }).collect();
+
         Ok(shows)
     }
 
@@ -205,7 +208,7 @@ impl TraktContext {
         Ok(movie_nous)
     }
 
-    pub async fn search_movie(&self, search: &RsLookupMovie) -> crate::Result<Vec<Movie>> {
+    pub async fn search_movie(&self, search: &RsLookupMovie) -> crate::Result<Vec<(Movie, Option<RsLookupMatchType>)>> {
         let query = search.name.as_deref().unwrap_or_default();
         let url = self
             .base_url
@@ -213,8 +216,11 @@ impl TraktContext {
             .unwrap();
 
         let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
-        let movies: Vec<Movie> = r.json::<Vec<TraktMovieSearchElement>>().await?.into_iter().map(|m| Movie::from(m.movie)).collect();
-      
+        let movies = r.json::<Vec<TraktMovieSearchElement>>().await?.into_iter().map(|m| {
+            let match_type = if m.score >= 1000.0 && m.movie.title.to_lowercase() == query.to_lowercase() { Some(RsLookupMatchType::ExactText) } else { None };
+            (Movie::from(m.movie), match_type)
+        }).collect();
+
         Ok(movies)
     }
 
@@ -266,7 +272,7 @@ impl TraktContext {
         Ok(person)
     }
 
-    pub async fn search_person(&self, search: &RsLookupMovie) -> crate::Result<Vec<Person>> {
+    pub async fn search_person(&self, search: &RsLookupMovie) -> crate::Result<Vec<(Person, Option<RsLookupMatchType>)>> {
         let query = search.name.as_deref().unwrap_or_default();
         let url = self
             .base_url
@@ -274,9 +280,12 @@ impl TraktContext {
             .unwrap();
 
         let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
-        let movies: Vec<Person> = r.json::<Vec<TraktPeopleSearchElement>>().await?.into_iter().map(|m| Person::from(m.person)).collect();
-      
-        Ok(movies)
+        let people = r.json::<Vec<TraktPeopleSearchElement>>().await?.into_iter().map(|m| {
+            let match_type = if m.score >= 1000.0 && m.person.name.to_lowercase() == query.to_lowercase() { Some(RsLookupMatchType::ExactText) } else { None };
+            (Person::from(m.person), match_type)
+        }).collect();
+
+        Ok(people)
     }
 }
 
@@ -313,12 +322,12 @@ mod tests {
         let search_result = trakt.search_person(&RsLookupMovie { name: Some("jessica alba".to_string()), ids: None, page_key: None }).await?;
         
         println!("{:?}", search_result.first());
-        let person_serach = search_result.into_iter().next().unwrap();
+        let (person_serach, match_type) = search_result.into_iter().next().unwrap();
         assert_eq!(person_serach.gender, Some(Gender::Female));
         assert_eq!(person_serach.imdb, Some("nm0004695".to_string()));
+        assert_eq!(match_type, Some(RsLookupMatchType::ExactText));
         let id = RsIds { trakt: person_serach.trakt, ..Default::default() };
         let queried = trakt.get_person(&id).await?;
-
 
         assert_eq!(person_serach.imdb, queried.imdb);
 

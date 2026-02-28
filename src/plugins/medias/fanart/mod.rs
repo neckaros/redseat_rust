@@ -2,6 +2,7 @@
 use reqwest::{Client, RequestBuilder};
 use rs_plugin_common_interfaces::{
     domain::rs_ids::RsIds,
+    lookup::RsLookupMatchType,
     request::{RsRequest, RsRequestStatus},
     ExternalImage, ImageType,
 };
@@ -72,6 +73,7 @@ impl FanArtImage {
             vote_average: None,
             vote_count: None,
             width: None,
+            match_type: Some(RsLookupMatchType::ExactId),
         }
     }
 }

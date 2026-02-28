@@ -90,14 +90,15 @@ impl ExternalMovieImages {
 
 impl ModelController {
     pub(crate) fn select_external_image_url(images: Vec<ExternalImage>, kind: &ImageType) -> Option<RsRequest> {
-        let first_kind_match = images
+        let exact_images: Vec<_> = images.into_iter().filter(|image| image.match_type.is_some()).collect();
+        let first_kind_match = exact_images
             .iter()
             .find(|image| image.kind.as_ref() == Some(kind))
             .map(|image| image.url.clone());
         if first_kind_match.is_some() {
             first_kind_match
         } else {
-            images.into_iter().next().map(|image| image.url)
+            exact_images.into_iter().next().map(|image| image.url)
         }
     }
 
@@ -172,8 +173,9 @@ impl ModelController {
         let include_trakt = sources.as_deref().map_or(true, |s| s.iter().any(|id| id == "trakt"));
         if include_trakt {
             let trakt_results = self.trakt.search_movie(&query).await?;
-            let trakt_entries: Vec<RsLookupMetadataResultWrapper> = trakt_results.into_iter().map(|movie| RsLookupMetadataResultWrapper {
+            let trakt_entries: Vec<RsLookupMetadataResultWrapper> = trakt_results.into_iter().map(|(movie, match_type)| RsLookupMetadataResultWrapper {
                 metadata: RsLookupMetadataResult::Movie(movie),
+                match_type,
                 ..Default::default()
             }).collect();
             if !trakt_entries.is_empty() {
@@ -210,8 +212,9 @@ impl ModelController {
         let include_trakt = sources.as_deref().map_or(true, |s| s.iter().any(|id| id == "trakt"));
         if include_trakt {
             let trakt_results = self.trakt.search_movie(&query).await?;
-            let trakt_entries: Vec<RsLookupMetadataResultWrapper> = trakt_results.into_iter().map(|movie| RsLookupMetadataResultWrapper {
+            let trakt_entries: Vec<RsLookupMetadataResultWrapper> = trakt_results.into_iter().map(|(movie, match_type)| RsLookupMetadataResultWrapper {
                 metadata: RsLookupMetadataResult::Movie(movie),
+                match_type,
                 ..Default::default()
             }).collect();
             if !trakt_entries.is_empty() {

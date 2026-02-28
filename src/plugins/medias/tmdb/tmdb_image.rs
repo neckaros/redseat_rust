@@ -1,4 +1,5 @@
 use rs_plugin_common_interfaces::{
+    lookup::RsLookupMatchType,
     request::{RsRequest, RsRequestStatus},
     ExternalImage, ImageType,
 };
@@ -77,6 +78,7 @@ impl TmdbImage {
             vote_average: Some(self.vote_average),
             vote_count: Some(self.vote_count),
             width: Some(self.width),
+            match_type: Some(RsLookupMatchType::ExactId),
         }
     }
 }

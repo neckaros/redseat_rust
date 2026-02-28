@@ -324,8 +324,9 @@ impl ModelController {
         let include_trakt = sources.as_deref().map_or(true, |s| s.iter().any(|id| id == "trakt"));
         if !is_books_library && include_trakt {
             let trakt_results = self.trakt.search_show(&query).await?;
-            let trakt_entries: Vec<RsLookupMetadataResultWrapper> = trakt_results.into_iter().map(|serie| RsLookupMetadataResultWrapper {
+            let trakt_entries: Vec<RsLookupMetadataResultWrapper> = trakt_results.into_iter().map(|(serie, match_type)| RsLookupMetadataResultWrapper {
                 metadata: RsLookupMetadataResult::Serie(serie),
+                match_type,
                 ..Default::default()
             }).collect();
             if !trakt_entries.is_empty() {
@@ -381,8 +382,9 @@ impl ModelController {
         let include_trakt = sources.as_deref().map_or(true, |s| s.iter().any(|id| id == "trakt"));
         if !is_books_library && include_trakt {
             let trakt_results = self.trakt.search_show(&query).await?;
-            let trakt_entries: Vec<RsLookupMetadataResultWrapper> = trakt_results.into_iter().map(|serie| RsLookupMetadataResultWrapper {
+            let trakt_entries: Vec<RsLookupMetadataResultWrapper> = trakt_results.into_iter().map(|(serie, match_type)| RsLookupMetadataResultWrapper {
                 metadata: RsLookupMetadataResult::Serie(serie),
+                match_type,
                 ..Default::default()
             }).collect();
             if !trakt_entries.is_empty() {
