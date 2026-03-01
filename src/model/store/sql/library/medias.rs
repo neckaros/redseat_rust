@@ -1187,7 +1187,7 @@ impl SqliteLibraryStore {
     pub async fn remove_media(&self, media_id: String) -> Result<()> {
         self.connection
             .call(move |conn| {
-                conn.execute("DELETE FROM ratings WHERE media_ref = ?", params![media_id])?;
+                conn.execute("DELETE FROM ratings WHERE type = 'media' AND ref = ?", params![media_id])?;
                 conn.execute(
                     "DELETE FROM media_tag_mapping WHERE media_ref = ?",
                     params![media_id],
