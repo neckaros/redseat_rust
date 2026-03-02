@@ -417,7 +417,7 @@ impl SqliteLibraryStore {
         if !query.types.is_empty() {
             let mut types = vec![];
             for kind in query.types {
-                types.push(SqlWhereType::Equal("type".to_owned(), Box::new(kind)));
+                types.push(SqlWhereType::Equal("m.type".to_owned(), Box::new(kind)));
             }
             where_query.add_where(SqlWhereType::Or(types));
         }
