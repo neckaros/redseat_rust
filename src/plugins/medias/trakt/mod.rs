@@ -37,6 +37,20 @@ pub struct TraktContext {
     client: Client
 }
 
+/// Returns the best ID string for use with the Trakt API.
+/// Prefers slug, then imdb, then trakt numeric ID.
+fn as_id_for_trakt(ids: &RsIds) -> Option<String> {
+    if let Some(slug) = ids.slug() {
+        Some(slug.to_string())
+    } else if let Some(imdb) = ids.imdb() {
+        Some(imdb.to_string())
+    } else if let Some(trakt) = ids.trakt() {
+        Some(trakt.to_string())
+    } else {
+        None
+    }
+}
+
 impl TraktContext {
     pub fn new(client_id: String) -> Self {
         let base_url = reqwest::Url::parse("https://api.trakt.tv").unwrap();
@@ -81,7 +95,7 @@ impl TraktContext {
 
     pub async fn get_serie(&self, id: &RsIds) -> crate::Result<Serie> {
 
-        let id = id.as_id_for_trakt().ok_or(RsIdsError::NoMediaIdRequired(Box::new(id.clone())))?;
+        let id = as_id_for_trakt(id).ok_or(RsIdsError::NoMediaIdRequired(Box::new(id.clone())))?;
 
         let url = self.base_url.join(&format!("shows/{}?extended=full", id)).unwrap();
         let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
@@ -117,7 +131,7 @@ impl TraktContext {
     }
 
     pub async fn all_episodes(&self, id: &RsIds) -> crate::Result<Vec<Episode>> {
-        let serie_id = id.clone().as_id_for_trakt().ok_or(Error::Error(format!("Unable to request trakt. No imdb or trakt id for: {:?}", id)))?;
+        let serie_id = as_id_for_trakt(id).ok_or(Error::Error(format!("Unable to request trakt. No imdb or trakt id for: {:?}", id)))?;
         let url = self.base_url.join(&format!("shows/{}/seasons?extended=full,episodes", serie_id)).unwrap();
         let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
         let best_serie_id = id.clone().into_best().unwrap_or(serie_id.to_owned());
@@ -128,9 +142,9 @@ impl TraktContext {
 
     pub async fn episode(&self, id: &RsIds, season: u32, episode: u32) -> crate::Result<Episode> {
 
-        let id = if let Some(imdb) = &id.imdb {
+        let id = if let Some(imdb) = id.imdb() {
             Ok(imdb.to_string())
-        } else if let Some(trakt) = &id.trakt {
+        } else if let Some(trakt) = id.trakt() {
             Ok(trakt.to_string())
         } else {
             Err(RsIdsError::NoMediaIdRequired(Box::new(id.clone())))
@@ -167,7 +181,7 @@ impl TraktContext {
 
     pub async fn get_movie_releases(&self, id: &RsIds) -> crate::Result<Vec<TraktRelease>> {
 
-        let id = id.as_id_for_trakt().ok_or(RsIdsError::NoMediaIdRequired(Box::new(id.clone())))?;
+        let id = as_id_for_trakt(id).ok_or(RsIdsError::NoMediaIdRequired(Box::new(id.clone())))?;
 
         let url = self.base_url.join(&format!("movies/{}/releases", id)).unwrap();
 
@@ -178,7 +192,7 @@ impl TraktContext {
 
     pub async fn get_movie_actors(&self, id: &RsIds) -> crate::Result<TraktActorsResult> {
 
-        let id = id.as_id_for_trakt().ok_or(RsIdsError::NoMediaIdRequired(Box::new(id.clone())))?;
+        let id = as_id_for_trakt(id).ok_or(RsIdsError::NoMediaIdRequired(Box::new(id.clone())))?;
 
         let url = self.base_url.join(&format!("movies/{}/people", id)).unwrap();
 
@@ -189,7 +203,7 @@ impl TraktContext {
 
     pub async fn get_movie(&self, ids: &RsIds) -> crate::Result<Movie> {
 
-        let id = ids.as_id_for_trakt().ok_or(RsIdsError::NoMediaIdRequired(Box::new(ids.clone())))?;
+        let id = as_id_for_trakt(ids).ok_or(RsIdsError::NoMediaIdRequired(Box::new(ids.clone())))?;
 
         let url = self.base_url.join(&format!("movies/{}?extended=full", id)).unwrap();
 
@@ -262,7 +276,7 @@ impl TraktContext {
 
     pub async fn get_person(&self, ids: &RsIds) -> crate::Result<Person> {
 
-        let id = ids.as_id_for_trakt().ok_or(RsIdsError::NoMediaIdRequired(Box::new(ids.clone())))?;
+        let id = as_id_for_trakt(ids).ok_or(RsIdsError::NoMediaIdRequired(Box::new(ids.clone())))?;
 
         let url = self.base_url.join(&format!("people/{}?extended=full", id)).unwrap();
 
@@ -326,7 +340,11 @@ mod tests {
         assert_eq!(person_serach.gender, Some(Gender::Female));
         assert_eq!(person_serach.imdb, Some("nm0004695".to_string()));
         assert_eq!(match_type, Some(RsLookupMatchType::ExactText));
-        let id = RsIds { trakt: person_serach.trakt, ..Default::default() };
+        let id = {
+            let mut ids = RsIds::default();
+            if let Some(trakt) = person_serach.trakt { ids.set("trakt", trakt); }
+            ids
+        };
         let queried = trakt.get_person(&id).await?;
 
         assert_eq!(person_serach.imdb, queried.imdb);

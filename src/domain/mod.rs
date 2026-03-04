@@ -20,32 +20,11 @@ pub trait RsIdsExt {
 
 impl RsIdsExt for RsIds {
     fn into_all_external(self) -> Vec<String> {
-        let mut ids = Vec::new();
-        if let Some(imdb) = self.imdb {
-            ids.push(format!("imdb:{}", imdb));
-        }
-        if let Some(trakt) = self.trakt {
-            ids.push(format!("trakt:{}", trakt));
-        }
-        if let Some(tmdb) = self.tmdb {
-            ids.push(format!("tmdb:{}", tmdb));
-        }
-        if let Some(tvdb) = self.tvdb {
-            ids.push(format!("tvdb:{}", tvdb));
-        }
-        if let Some(slug) = self.slug {
-            ids.push(format!("slug:{}", slug));
-        }
-        ids
+        self.as_all_external_ids()
     }
 
     fn into_all_external_or_local(self) -> Vec<String> {
-        let redseat = self.redseat.clone();
-        let mut ids = self.into_all_external();
-        if let Some(redseat) = redseat {
-            ids.push(format!("redseat:{}", redseat));
-        }
-        ids
+        self.as_all_ids()
     }
 }
 

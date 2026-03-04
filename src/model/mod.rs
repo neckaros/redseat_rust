@@ -9,6 +9,8 @@ pub mod users;
 
 pub mod books;
 pub mod deleted;
+pub mod entity_images;
+pub mod entity_search;
 pub mod episodes;
 pub mod media_progresses;
 pub mod media_ratings;
@@ -26,9 +28,7 @@ use crate::{
     },
     error::{RsError, RsResult},
     plugins::{
-        medias::{
-            fanart::FanArtContext, imdb::ImdbContext, tmdb::TmdbContext, trakt::TraktContext,
-        },
+        medias::{imdb::ImdbContext, trakt::TraktContext},
         sources::{
             error::SourcesError, local_provider_for_library, path_provider::PathProvider,
             AsyncReadPinBox, FileStreamResult, Source, SourceRead,
@@ -123,8 +123,6 @@ pub struct ModelController {
     store: Arc<SqliteStore>,
     pub plugin_manager: Arc<PluginManager>,
     pub trakt: Arc<TraktContext>,
-    pub tmdb: Arc<TmdbContext>,
-    pub fanart: Arc<FanArtContext>,
     pub imdb: Arc<ImdbContext>,
     pub scheduler: Arc<RsScheduler>,
 
@@ -144,8 +142,6 @@ pub struct ModelController {
 // Constructor
 impl ModelController {
     pub async fn new(store: SqliteStore, plugin_manager: PluginManager) -> crate::Result<Self> {
-        let tmdb = TmdbContext::new("4a01db3a73eed5cf17e9c7c27fd9d008".to_string()).await?;
-        let fanart = FanArtContext::new("a6eb2f1acb7b54550e498a9b37a574fa".to_string());
         let scheduler = RsScheduler::new();
         let (sse_tx, _) = broadcast::channel::<SseEvent>(1024);
 
@@ -155,8 +151,6 @@ impl ModelController {
             trakt: Arc::new(TraktContext::new(
                 "fcb0d3a87a808a5a0897291350e23cddbbef14502ccb91f1f7bf9c339cb93bcb".to_string(),
             )),
-            tmdb: Arc::new(tmdb),
-            fanart: Arc::new(fanart),
             imdb: Arc::new(ImdbContext::new()),
             scheduler: Arc::new(scheduler),
             chache_libraries: Arc::new(RwLock::new(HashMap::new())),

@@ -1,26 +1,22 @@
 
 
 
-use std::{collections::HashMap, io::{Cursor, Read}, pin::Pin};
+use std::{collections::HashMap, io::Cursor};
 
 use async_recursion::async_recursion;
-use futures::TryStreamExt;
 use nanoid::nanoid;
 use rs_plugin_common_interfaces::{
     domain::rs_ids::RsIds,
     lookup::{RsLookupMetadataResult, RsLookupMetadataResultWrapper, RsLookupMetadataResults, RsLookupMovie, RsLookupQuery},
-    request::{RsRequest, RsRequestStatus},
     ExternalImage, ImageType, MediaType,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use strum_macros::EnumString;
-use tokio::{fs::File, io::{AsyncRead, AsyncWriteExt, BufReader}};
 
+use crate::{domain::{ElementAction, MediaElement, deleted::RsDeleted, library::LibraryRole, movie::{Movie, MovieExt, MovieForUpdate, MovieWithAction, MoviesMessage}}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{AsyncReadPinBox, FileStreamResult, error::SourcesError}}, tools::image_tools::{convert_image_reader, ImageSize}};
 
-use crate::{domain::{ElementAction, MediaElement, deleted::RsDeleted, library::LibraryRole, movie::{Movie, MovieExt, MovieForUpdate, MovieWithAction, MoviesMessage}, people::{PeopleMessage, Person}}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{AsyncReadPinBox, FileStreamResult, Source, SourceRead, error::SourcesError, path_provider::PathProvider}}, server::get_server_folder_path_array, tools::{image_tools::{ImageSize, convert_image_reader, resize_image_reader}, log::log_info}};
-
-use super::{error::{Error, Result}, store::sql::SqlOrder, users::{ConnectedUser, HistoryQuery}, ModelController};
+use super::{entity_images::EntityImageConfig, error::{Error, Result}, store::sql::SqlOrder, users::{ConnectedUser, HistoryQuery}, ModelController};
 use crate::routes::sse::SseEvent;
 
 
@@ -65,43 +61,7 @@ impl MovieQuery {
 }
 
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ExternalMovieImages {
-    pub backdrop: Option<String>,
-    pub logo: Option<String>,
-    pub poster: Option<String>,
-    pub still: Option<String>,
-}
-
-impl ExternalMovieImages {
-    pub fn into_kind(self, kind: ImageType) -> Option<String> {
-        match kind {
-            ImageType::Poster => self.poster,
-            ImageType::Background => self.backdrop,
-            ImageType::Still => self.still,
-            ImageType::Card => None,
-            ImageType::ClearLogo => self.logo,
-            ImageType::ClearArt => None,
-            ImageType::Custom(_) => None,
-        }
-    }
-}
-
-
 impl ModelController {
-    pub(crate) fn select_external_image_url(images: Vec<ExternalImage>, kind: &ImageType) -> Option<RsRequest> {
-        let exact_images: Vec<_> = images.into_iter().filter(|image| image.match_type.is_some()).collect();
-        let first_kind_match = exact_images
-            .iter()
-            .find(|image| image.kind.as_ref() == Some(kind))
-            .map(|image| image.url.clone());
-        if first_kind_match.is_some() {
-            first_kind_match
-        } else {
-            exact_images.into_iter().next().map(|image| image.url)
-        }
-    }
-
 	pub async fn get_movies(&self, library_id: &str, query: MovieQuery, requesting_user: &ConnectedUser) -> RsResult<Vec<Movie>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id)?;
@@ -167,85 +127,49 @@ impl ModelController {
 
     
     pub async fn search_movie(&self, library_id: &str, query: RsLookupMovie, sources: Option<Vec<String>>, requesting_user: &ConnectedUser) -> RsResult<Vec<(String, String, RsLookupMetadataResults)>> {
-        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
-        let mut groups: Vec<(String, String, RsLookupMetadataResults)> = Vec::new();
-
         let include_trakt = sources.as_deref().map_or(true, |s| s.iter().any(|id| id == "trakt"));
-        if include_trakt {
+        let trakt_entries = if include_trakt {
             let trakt_results = self.trakt.search_movie(&query).await?;
-            let trakt_entries: Vec<RsLookupMetadataResultWrapper> = trakt_results.into_iter().map(|(movie, match_type)| RsLookupMetadataResultWrapper {
+            Some(trakt_results.into_iter().map(|(movie, match_type)| RsLookupMetadataResultWrapper {
                 metadata: RsLookupMetadataResult::Movie(movie),
                 match_type,
                 ..Default::default()
-            }).collect();
-            if !trakt_entries.is_empty() {
-                groups.push(("trakt".to_string(), "trakt".to_string(), RsLookupMetadataResults { results: trakt_entries, next_page_key: None }));
-            }
-        }
+            }).collect())
+        } else {
+            None
+        };
 
-        let lookup_query = RsLookupQuery::Movie(query);
-        let plugin_results = self
-            .exec_lookup_metadata_grouped(
-                lookup_query,
-                Some(library_id.to_string()),
-                requesting_user,
-                None,
-                sources.as_deref(),
-            )
-            .await?;
-
-        for (id, name, RsLookupMetadataResults { results, next_page_key }) in plugin_results {
-            let filtered: Vec<_> = results.into_iter().filter(|result| matches!(result.metadata, RsLookupMetadataResult::Movie(_))).collect();
-            if !filtered.is_empty() {
-                groups.push((id, name, RsLookupMetadataResults { results: filtered, next_page_key }));
-            }
-        }
-
-        Ok(groups)
+        self.search_entity(
+            library_id,
+            RsLookupQuery::Movie(query),
+            |r| matches!(r.metadata, RsLookupMetadataResult::Movie(_)),
+            trakt_entries,
+            sources,
+            requesting_user,
+        ).await
 	}
 
     pub async fn search_movie_stream(&self, library_id: &str, query: RsLookupMovie, sources: Option<Vec<String>>, requesting_user: &ConnectedUser) -> RsResult<tokio::sync::mpsc::Receiver<(String, String, RsLookupMetadataResults)>> {
-        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
-
-        let (tx, rx) = tokio::sync::mpsc::channel(16);
-
         let include_trakt = sources.as_deref().map_or(true, |s| s.iter().any(|id| id == "trakt"));
-        if include_trakt {
+        let trakt_entries = if include_trakt {
             let trakt_results = self.trakt.search_movie(&query).await?;
-            let trakt_entries: Vec<RsLookupMetadataResultWrapper> = trakt_results.into_iter().map(|(movie, match_type)| RsLookupMetadataResultWrapper {
+            Some(trakt_results.into_iter().map(|(movie, match_type)| RsLookupMetadataResultWrapper {
                 metadata: RsLookupMetadataResult::Movie(movie),
                 match_type,
                 ..Default::default()
-            }).collect();
-            if !trakt_entries.is_empty() {
-                let _ = tx.send(("trakt".to_string(), "trakt".to_string(), RsLookupMetadataResults { results: trakt_entries, next_page_key: None })).await;
-            }
-        }
+            }).collect())
+        } else {
+            None
+        };
 
-        let lookup_query = RsLookupQuery::Movie(query);
-        let mut plugin_rx = self
-            .exec_lookup_metadata_stream_grouped(
-                lookup_query,
-                Some(library_id.to_string()),
-                requesting_user,
-                None,
-                sources.as_deref(),
-            )
-            .await?;
-
-        tokio::spawn(async move {
-            while let Some((id, name, entries)) = plugin_rx.recv().await {
-                let RsLookupMetadataResults { results, next_page_key } = entries;
-                let filtered: Vec<_> = results.into_iter().filter(|result| matches!(result.metadata, RsLookupMetadataResult::Movie(_))).collect();
-                if !filtered.is_empty() {
-                    if tx.send((id, name, RsLookupMetadataResults { results: filtered, next_page_key })).await.is_err() {
-                        break;
-                    }
-                }
-            }
-        });
-
-        Ok(rx)
+        self.search_entity_stream(
+            library_id,
+            RsLookupQuery::Movie(query),
+            |r| matches!(r.metadata, RsLookupMetadataResult::Movie(_)),
+            trakt_entries,
+            sources,
+            requesting_user,
+        ).await
     }
 
     pub async fn fill_movie_watched(&self, movie: &mut Movie, requesting_user: &ConnectedUser, library_id: Option<String>) -> RsResult<()> {
@@ -441,172 +365,60 @@ impl ModelController {
     #[async_recursion]
 	pub async fn movie_image(&self, library_id: &str, movie_id: &str, kind: Option<ImageType>, size: Option<ImageSize>, requesting_user: &ConnectedUser) -> crate::Result<FileStreamResult<AsyncReadPinBox>> {
         let kind = kind.unwrap_or(ImageType::Poster);
+        let config = EntityImageConfig { folder: ".movies", cache_prefix: "movie" };
         if RsIds::is_id(movie_id) {
             let mut movie_ids: RsIds = movie_id.to_string().try_into()?;
             let store = self.store.get_library_store(library_id)?;
             let existing_movie = store.get_movie_by_external_id(movie_ids.clone()).await?;
             if let Some(existing_movie) = existing_movie {
-                let image = self.movie_image(library_id, &existing_movie.id, Some(kind), size, requesting_user).await?;
-                Ok(image)
-            } else {
-
-                let local_provider = self.library_source_for_library(library_id).await?;
-                let mut lookup_name = String::new();
-                if movie_ids.tmdb.is_none() {
-                    let movie = self.trakt.get_movie(&movie_ids).await?;
-                    lookup_name = movie.name.clone();
-                    movie_ids = movie.into();
-                }
-                let image_path = format!("cache/movie-{}-{}.avif", movie_id.replace(':', "-"), kind);
-
-                if !local_provider.exists(&image_path).await {
-                    let lookup_query = RsLookupMovie {
-                        name: if lookup_name.is_empty() { None } else { Some(lookup_name) },
-                        ids: Some(movie_ids.clone()),
-                        page_key: None,
-                    };
-                    let image_request = self
-                        .get_movie_image_url(
-                            lookup_query,
-                            Some(library_id.to_string()),
-                            &kind,
-                            &None,
-                            requesting_user,
-                        )
-                        .await?
-                        .ok_or(crate::Error::NotFound(format!("Unable to get movie image url: {:?}",movie_ids)))?;
-                    let (_, mut writer) = local_provider.get_file_write_stream(&image_path).await?;
-                    let mut image_reader = SourceRead::Request(image_request)
-                        .into_reader(
-                            Some(library_id),
-                            None,
-                            None,
-                            Some((self.clone(), requesting_user)),
-                            None,
-                        )
-                        .await?;
-                    let resized = resize_image_reader(image_reader.stream, ImageSize::Large.to_size(), image::ImageFormat::Avif, Some(70), false).await?;
-
-                    writer.write_all(&resized).await?;
-                }
-
-                let source = local_provider.get_file(&image_path, None).await?;
-                match source {
-                    crate::plugins::sources::SourceRead::Stream(s) => Ok(s),
-                    crate::plugins::sources::SourceRead::Request(_) => Err(crate::Error::GenericRedseatError),
-                }
+                return self.movie_image(library_id, &existing_movie.id, Some(kind), size, requesting_user).await;
             }
+            // Enrich IDs via Trakt if needed
+            let mut lookup_name = String::new();
+            if movie_ids.tmdb().is_none() {
+                let movie = self.trakt.get_movie(&movie_ids).await?;
+                lookup_name = movie.name.clone();
+                movie_ids = movie.into();
+            }
+            let lookup_query = RsLookupQuery::Movie(RsLookupMovie {
+                name: if lookup_name.is_empty() { None } else { Some(lookup_name) },
+                ids: Some(movie_ids),
+                page_key: None,
+            });
+            self.serve_cached_entity_image(library_id, movie_id, lookup_query, &kind, &config, requesting_user).await
         } else {
-            if !self.has_library_image(library_id, ".movies", movie_id, Some(kind.clone()), requesting_user).await? {
-                log_info(crate::tools::log::LogServiceType::Source, format!("Updating movie image: {}", movie_id));
-                self.refresh_movie_image(library_id, movie_id, &kind, requesting_user).await?;
-            }
-            
-            let image = self.library_image(library_id, ".movies", movie_id, Some(kind), size, requesting_user).await?;
-            Ok(image)
+            self.serve_local_entity_image(
+                library_id, movie_id, &kind, size, &config, requesting_user,
+                self.refresh_movie_image(library_id, movie_id, &kind, requesting_user),
+            ).await
         }
 	}
 
-    /// fetch the plugins to get images for this movie
     pub async fn get_movie_images(&self, query: RsLookupMovie, library_id: Option<String>, requesting_user: &ConnectedUser) -> RsResult<Vec<ExternalImage>> {
-        let lookup_query = RsLookupQuery::Movie(query.clone());
-        let mut images = match self.exec_lookup_images(lookup_query, library_id, requesting_user, None).await {
-            Ok(images) => images,
-            Err(error) => {
-                crate::tools::log::log_error(crate::tools::log::LogServiceType::Plugin, format!("movie image lookup failed: {:#}", error));
-                Vec::new()
-            }
-        };
-
-        if let Some(ids) = query.ids {
-            let mut tmdb = self.tmdb.movie_images(ids.clone()).await;
-            let mut fanart = self.fanart.movie_images(ids).await;
-             if let Ok(tmdb) = &mut tmdb {
-                images.append(tmdb)
-            }
-            if let Ok(fanart) = &mut fanart {
-                images.append(fanart)
-            }
-        }
-
-        Ok(images)
+        self.get_entity_images(RsLookupQuery::Movie(query), library_id, requesting_user).await
     }
 
-    /// download and update image
     pub async fn refresh_movie_image(&self, library_id: &str, movie_id: &str, kind: &ImageType, requesting_user: &ConnectedUser) -> RsResult<()> {
         let movie = self.get_movie(library_id, movie_id.to_string(), requesting_user).await?;
         let ids: RsIds = movie.clone().into();
-        let lookup_query = RsLookupMovie {
+        let lookup_query = RsLookupQuery::Movie(RsLookupMovie {
             name: Some(movie.name.clone()),
-            ids: Some(ids.clone()),
+            ids: Some(ids),
             page_key: None,
-        };
+        });
         let reader = self
-            .download_movie_image(
-                lookup_query,
-                Some(library_id.to_string()),
-                kind,
-                &movie.lang,
-                requesting_user,
-            )
+            .download_entity_image(lookup_query, Some(library_id.to_string()), kind, requesting_user)
             .await?;
         self.update_movie_image(library_id, movie_id, kind, reader, &ConnectedUser::ServerAdmin).await?;
         Ok(())
 	}
 
-    pub async fn get_movie_image_url(&self, query: RsLookupMovie, library_id: Option<String>, kind: &ImageType, lang: &Option<String>, requesting_user: &ConnectedUser) -> RsResult<Option<RsRequest>> {
-        if let Some(request) = Self::select_external_image_url(
-            self.get_movie_images(query.clone(), library_id, requesting_user).await?,
-            kind,
-        ) {
-            return Ok(Some(request));
-        }
-
-        if let Some(ids) = query.ids {
-            println!("Movie image ids {:?}", ids);
-            let images = if kind == &ImageType::Card {
-                None
-            } else {
-                self.tmdb.movie_image(ids.clone(), lang).await?.into_kind(kind.clone())
-            };
-            if images.is_none() {
-                let images = self.fanart.movie_image(ids.clone()).await?.into_kind(kind.clone());
-                Ok(images.map(|url| RsRequest {
-                    url,
-                    status: RsRequestStatus::FinalPublic,
-                    ..Default::default()
-                }))
-            } else {
-                Ok(images.map(|url| RsRequest {
-                    url,
-                    status: RsRequestStatus::FinalPublic,
-                    ..Default::default()
-                }))
-            }
-        } else {
-            Ok(None)
-        }
+    pub async fn get_movie_image_url(&self, query: RsLookupMovie, library_id: Option<String>, kind: &ImageType, _lang: &Option<String>, requesting_user: &ConnectedUser) -> RsResult<Option<rs_plugin_common_interfaces::RsRequest>> {
+        self.get_entity_image_url(RsLookupQuery::Movie(query), library_id, kind, requesting_user).await
     }
 
-
-    pub async fn download_movie_image(&self, query: RsLookupMovie, library_id: Option<String>, kind: &ImageType, lang: &Option<String>, requesting_user: &ConnectedUser) -> crate::Result<AsyncReadPinBox> {
-        let request = self
-            .get_movie_image_url(query.clone(), library_id.clone(), kind, lang, requesting_user)
-            .await?
-            .ok_or(crate::Error::NotFound(format!(
-                "Unable to download movie image url: {:?} kind: {:?}",
-                query.ids, kind
-            )))?;
-        let reader = SourceRead::Request(request)
-            .into_reader(
-                library_id.as_deref(),
-                None,
-                None,
-                Some((self.clone(), requesting_user)),
-                None,
-            )
-            .await?;
-        Ok(reader.stream)
+    pub async fn download_movie_image(&self, query: RsLookupMovie, library_id: Option<String>, kind: &ImageType, _lang: &Option<String>, requesting_user: &ConnectedUser) -> crate::Result<AsyncReadPinBox> {
+        self.download_entity_image(RsLookupQuery::Movie(query), library_id, kind, requesting_user).await
     }
 
     pub async fn update_movie_image(&self, library_id: &str, movie_id: &str, kind: &ImageType, reader: AsyncReadPinBox, requesting_user: &ConnectedUser) -> RsResult<()> {

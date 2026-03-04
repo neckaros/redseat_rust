@@ -118,7 +118,7 @@ impl SqliteLibraryStore {
             WHERE 
             imdb = ? or slug = ? or tmdb = ? or trakt = ?")?;
             let row = query.query_row(
-            params![ids.imdb.unwrap_or("zz".to_string()), ids.slug.unwrap_or("zz".to_string()), ids.tmdb.unwrap_or(0), ids.trakt.unwrap_or(0)],Self::row_to_movie).optional()?;
+            params![ids.imdb().unwrap_or("zz").to_string(), ids.slug().unwrap_or("zz").to_string(), ids.tmdb().unwrap_or(0), ids.trakt().unwrap_or(0)],Self::row_to_movie).optional()?;
             Ok(row)
         }).await?;
         Ok(row)

@@ -1,14 +1,12 @@
 use std::io::Cursor;
 
 use async_recursion::async_recursion;
-use futures::TryStreamExt;
 use nanoid::nanoid;
 use rs_plugin_common_interfaces::{
-    ExternalImage, ImageType, domain::{ItemWithRelations, other_ids::OtherIds, rs_ids::{ApplyRsIds, RsIds}}, lookup::{RsLookupBook, RsLookupMetadataResult, RsLookupQuery}, request::RsRequest
+    ExternalImage, ImageType, domain::{ItemWithRelations, other_ids::OtherIds, rs_ids::{ApplyRsIds, RsIds}}, lookup::{RsLookupBook, RsLookupMetadataResult, RsLookupQuery},
 };
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
-use tokio::io::AsyncWriteExt;
 
 use crate::{
     domain::{
@@ -23,13 +21,14 @@ use crate::{
         tags::TagForAdd,
     },
     plugins::sources::{
-        error::SourcesError, AsyncReadPinBox, FileStreamResult, Source, SourceRead,
+        error::SourcesError, AsyncReadPinBox, FileStreamResult,
     },
     routes::sse::SseEvent,
-    tools::image_tools::{convert_image_reader, resize_image_reader, ImageSize},
+    tools::image_tools::{convert_image_reader, ImageSize},
 };
 
 use super::{
+    entity_images::EntityImageConfig,
     error::{Error, Result},
     store::sql::SqlOrder,
     users::ConnectedUser,
@@ -69,19 +68,6 @@ pub struct BookQuery {
 }
 
 impl ModelController {
-    fn select_book_image_url(images: Vec<ExternalImage>, kind: &ImageType) -> Option<RsRequest> {
-        let exact_images: Vec<_> = images.into_iter().filter(|image| image.match_type.is_some()).collect();
-        let first_kind_match = exact_images
-            .iter()
-            .find(|image| image.kind.as_ref() == Some(kind))
-            .map(|image| image.url.clone());
-        if first_kind_match.is_some() {
-            first_kind_match
-        } else {
-            exact_images.into_iter().next().map(|image| image.url)
-        }
-    }
-
     pub async fn get_books(
         &self,
         library_id: &str,
@@ -217,11 +203,11 @@ impl ModelController {
         new_book.apply_rs_ids(&ids);
         println!("Adding book with ids: {:?}", ids);
         println!("Adding book {:?}", new_book);
-        if ids.isbn13.is_some()
-            || ids.openlibrary_edition_id.is_some()
-            || ids.openlibrary_work_id.is_some()
-            || ids.google_books_volume_id.is_some()
-            || ids.asin.is_some()
+        if ids.isbn13().is_some()
+            || ids.openlibrary_edition_id().is_some()
+            || ids.openlibrary_work_id().is_some()
+            || ids.google_books_volume_id().is_some()
+            || ids.asin().is_some()
         {
             if let Some(existing) = self
                 .get_book_by_external_id(library_id, ids, requesting_user)
@@ -449,99 +435,25 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> RsResult<FileStreamResult<AsyncReadPinBox>> {
         let target_kind = kind.unwrap_or(ImageType::Poster);
-
+        let config = EntityImageConfig { folder: ".books", cache_prefix: "book" };
         if RsIds::is_id(book_id) {
             let book_ids: RsIds = book_id.to_string().try_into()?;
             let store = self.store.get_library_store(library_id)?;
             let existing_book = store.get_book_by_external_id(book_ids.clone()).await?;
-
             if let Some(existing_book) = existing_book {
-                self.book_image(
-                    library_id,
-                    &existing_book.item.id,
-                    Some(target_kind),
-                    size,
-                    requesting_user,
-                )
-                .await
-            } else {
-                // Book not in DB — fetch image from plugin lookup and cache it
-                let local_provider = self.library_source_for_library(library_id).await?;
-                let image_path = format!(
-                    "cache/book-{}-{}.avif",
-                    book_id.replace(':', "-"),
-                    target_kind
-                );
-
-                if !local_provider.exists(&image_path).await {
-                    let lookup_query = RsLookupBook {
-                        name: None,
-                        ids: Some(book_ids),
-                        page_key: None,
-                    };
-                    let image_request = self
-                        .get_book_image_url(
-                            lookup_query,
-                            Some(library_id.to_string()),
-                            &target_kind,
-                            requesting_user,
-                        )
-                        .await?
-                        .ok_or(crate::Error::NotFound(format!(
-                            "Unable to get book image url: {} kind {:?}",
-                            book_id, target_kind
-                        )))?;
-                    let (_, mut writer) = local_provider.get_file_write_stream(&image_path).await?;
-                    let image_reader = SourceRead::Request(image_request)
-                        .into_reader(
-                            Some(library_id),
-                            None,
-                            None,
-                            Some((self.clone(), requesting_user)),
-                            None,
-                        )
-                        .await?;
-                    let resized = resize_image_reader(
-                        image_reader.stream,
-                        ImageSize::Large.to_size(),
-                        image::ImageFormat::Avif,
-                        Some(70),
-                        false,
-                    )
-                    .await?;
-                    writer.write_all(&resized).await?;
-                }
-
-                let source = local_provider.get_file(&image_path, None).await?;
-                match source {
-                    SourceRead::Stream(s) => Ok(s),
-                    SourceRead::Request(_) => Err(crate::Error::GenericRedseatError),
-                }
+                return self.book_image(library_id, &existing_book.item.id, Some(target_kind), size, requesting_user).await;
             }
+            let lookup_query = RsLookupQuery::Book(RsLookupBook {
+                name: None,
+                ids: Some(book_ids),
+                page_key: None,
+            });
+            self.serve_cached_entity_image(library_id, book_id, lookup_query, &target_kind, &config, requesting_user).await
         } else {
-            if !self
-                .has_library_image(
-                    library_id,
-                    ".books",
-                    book_id,
-                    Some(target_kind.clone()),
-                    requesting_user,
-                )
-                .await?
-            {
-                self.refresh_book_image(library_id, book_id, &target_kind, requesting_user)
-                    .await?;
-            }
-
-            self.library_image(
-                library_id,
-                ".books",
-                book_id,
-                Some(target_kind),
-                size,
-                requesting_user,
-            )
-            .await
+            self.serve_local_entity_image(
+                library_id, book_id, &target_kind, size, &config, requesting_user,
+                async { self.refresh_book_image(library_id, book_id, &target_kind, requesting_user).await.map(|_| ()) },
+            ).await
         }
     }
 
@@ -551,24 +463,7 @@ impl ModelController {
         library_id: Option<String>,
         requesting_user: &ConnectedUser,
     ) -> RsResult<Vec<ExternalImage>> {
-        let lookup_query = RsLookupQuery::Book(query);
-        println!("Executing book image lookup with query: {:?}", lookup_query);
-        let images = match self
-            .exec_lookup_images(lookup_query, library_id, requesting_user, None)
-            .await
-        {
-            Ok(images) => images,
-            Err(error) => {
-                crate::tools::log::log_error(
-                    crate::tools::log::LogServiceType::Plugin,
-                    format!("book image lookup failed: {:#}", error),
-                );
-                Vec::new()
-            }
-        };
-
-        //println!("result: {:?}", images);
-        Ok(images)
+        self.get_entity_images(RsLookupQuery::Book(query), library_id, requesting_user).await
     }
 
     pub async fn get_book_image_url(
@@ -577,11 +472,8 @@ impl ModelController {
         library_id: Option<String>,
         kind: &ImageType,
         requesting_user: &ConnectedUser,
-    ) -> RsResult<Option<RsRequest>> {
-        let images = self
-            .get_book_images(query, library_id, requesting_user)
-            .await?;
-        Ok(Self::select_book_image_url(images, kind))
+    ) -> RsResult<Option<rs_plugin_common_interfaces::RsRequest>> {
+        self.get_entity_image_url(RsLookupQuery::Book(query), library_id, kind, requesting_user).await
     }
 
     pub async fn download_book_image(
@@ -591,23 +483,7 @@ impl ModelController {
         kind: &ImageType,
         requesting_user: &ConnectedUser,
     ) -> RsResult<AsyncReadPinBox> {
-        let request = self
-            .get_book_image_url(query, library_id.clone(), kind, requesting_user)
-            .await?
-            .ok_or(crate::Error::NotFound(format!(
-                "Unable to get book image url for kind: {:?}",
-                kind
-            )))?;
-        let reader = SourceRead::Request(request)
-            .into_reader(
-                library_id.as_deref(),
-                None,
-                None,
-                Some((self.clone(), requesting_user)),
-                None,
-            )
-            .await?;
-        Ok(reader.stream)
+        self.download_entity_image(RsLookupQuery::Book(query), library_id, kind, requesting_user).await
     }
 
     pub async fn refresh_book_image(
@@ -622,31 +498,16 @@ impl ModelController {
             .await?
             .item;
         let ids: RsIds = book.clone().into();
-        let lookup_query = RsLookupBook {
+        let lookup_query = RsLookupQuery::Book(RsLookupBook {
             name: Some(book.name.clone()),
             ids: Some(ids),
             page_key: None,
-        };
+        });
         let reader = self
-            .download_book_image(
-                lookup_query,
-                Some(library_id.to_string()),
-                kind,
-                requesting_user,
-            )
+            .download_entity_image(lookup_query, Some(library_id.to_string()), kind, requesting_user)
             .await?;
-        self.update_book_image(
-            library_id,
-            &book.id,
-            kind,
-            reader,
-            &ConnectedUser::ServerAdmin,
-        )
-        .await?;
-        Ok(self
-            .get_book(library_id, book.id, requesting_user)
-            .await?
-            .item)
+        self.update_book_image(library_id, &book.id, kind, reader, &ConnectedUser::ServerAdmin).await?;
+        Ok(self.get_book(library_id, book.id, requesting_user).await?.item)
     }
 
     pub async fn update_book_image(

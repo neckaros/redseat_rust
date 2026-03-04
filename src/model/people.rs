@@ -5,17 +5,13 @@ use std::{
 };
 
 use async_recursion::async_recursion;
-use futures::TryStreamExt;
 use lazy_static::lazy_static;
 use nanoid::nanoid;
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use strum_macros::EnumString;
-use tokio::{
-    fs::File,
-    io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader},
-};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
 use crate::{
     domain::{
@@ -41,7 +37,7 @@ use crate::{
 use rs_plugin_common_interfaces::{
     domain::{other_ids::OtherIds, rs_ids::RsIds},
     lookup::{RsLookupMetadataResult, RsLookupMetadataResultWrapper, RsLookupMetadataResults, RsLookupMovie, RsLookupPerson, RsLookupQuery},
-    request::RsRequest, url::RsLink, ExternalImage, Gender, ImageType,
+    url::RsLink, ExternalImage, Gender, ImageType,
 };
 use tokio_util::io::StreamReader;
 
@@ -638,28 +634,8 @@ impl ModelController {
         Ok(person)
     }
 
-    /// fetch the plugins to get images for this person
     pub async fn get_person_images(&self, query: RsLookupPerson, library_id: Option<String>, requesting_user: &ConnectedUser) -> RsResult<Vec<ExternalImage>> {
-        let lookup_query = RsLookupQuery::Person(query.clone());
-        let mut images = match self.exec_lookup_images(lookup_query, library_id, requesting_user, None).await {
-            Ok(images) => images,
-            Err(error) => {
-                crate::tools::log::log_error(
-                    crate::tools::log::LogServiceType::Plugin,
-                    format!("person image lookup failed: {:#}", error),
-                );
-                Vec::new()
-            }
-        };
-
-        if let Some(ids) = query.ids {
-            let mut tmdb = self.tmdb.person_images(ids.clone()).await;
-            if let Ok(tmdb) = &mut tmdb {
-                images.append(tmdb)
-            }
-        }
-
-        Ok(images)
+        self.get_entity_images(RsLookupQuery::Person(query), library_id, requesting_user).await
     }
 
     pub async fn search_person(
@@ -669,52 +645,31 @@ impl ModelController {
         sources: Option<Vec<String>>,
         requesting_user: &ConnectedUser,
     ) -> RsResult<Vec<(String, String, RsLookupMetadataResults)>> {
-        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
-        let mut groups: Vec<(String, String, RsLookupMetadataResults)> = Vec::new();
-
         let include_trakt = sources.as_deref().map_or(true, |s| s.iter().any(|id| id == "trakt"));
-        if include_trakt {
+        let trakt_entries = if include_trakt {
             let trakt_results = self.trakt.search_person(&query).await?;
-            let trakt_entries: Vec<RsLookupMetadataResultWrapper> = trakt_results
-                .into_iter()
-                .map(|(person, match_type)| RsLookupMetadataResultWrapper {
-                    metadata: RsLookupMetadataResult::Person(person),
-                    match_type,
-                    ..Default::default()
-                })
-                .collect();
-            if !trakt_entries.is_empty() {
-                groups.push((
-                    "trakt".to_string(),
-                    "trakt".to_string(),
-                    RsLookupMetadataResults { results: trakt_entries, next_page_key: None },
-                ));
-            }
-        }
+            Some(trakt_results.into_iter().map(|(person, match_type)| RsLookupMetadataResultWrapper {
+                metadata: RsLookupMetadataResult::Person(person),
+                match_type,
+                ..Default::default()
+            }).collect())
+        } else {
+            None
+        };
 
         let lookup_query = RsLookupQuery::Person(RsLookupPerson {
             name: query.name,
             ids: query.ids,
             page_key: query.page_key,
         });
-        let plugin_results = self
-            .exec_lookup_metadata_grouped(
-                lookup_query,
-                Some(library_id.to_string()),
-                requesting_user,
-                None,
-                sources.as_deref(),
-            )
-            .await?;
-
-        for (id, name, RsLookupMetadataResults { results, next_page_key }) in plugin_results {
-            let filtered: Vec<_> = results.into_iter().filter(|result| matches!(result.metadata, RsLookupMetadataResult::Person(_))).collect();
-            if !filtered.is_empty() {
-                groups.push((id, name, RsLookupMetadataResults { results: filtered, next_page_key }));
-            }
-        }
-
-        Ok(groups)
+        self.search_entity(
+            library_id,
+            lookup_query,
+            |r| matches!(r.metadata, RsLookupMetadataResult::Person(_)),
+            trakt_entries,
+            sources,
+            requesting_user,
+        ).await
     }
 
     pub async fn search_person_stream(
@@ -724,58 +679,31 @@ impl ModelController {
         sources: Option<Vec<String>>,
         requesting_user: &ConnectedUser,
     ) -> RsResult<tokio::sync::mpsc::Receiver<(String, String, RsLookupMetadataResults)>> {
-        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
-
-        let (tx, rx) = tokio::sync::mpsc::channel(16);
-
         let include_trakt = sources.as_deref().map_or(true, |s| s.iter().any(|id| id == "trakt"));
-        if include_trakt {
+        let trakt_entries = if include_trakt {
             let trakt_results = self.trakt.search_person(&query).await?;
-            let trakt_entries: Vec<RsLookupMetadataResultWrapper> = trakt_results
-                .into_iter()
-                .map(|(person, match_type)| RsLookupMetadataResultWrapper {
-                    metadata: RsLookupMetadataResult::Person(person),
-                    match_type,
-                    ..Default::default()
-                })
-                .collect();
-            if !trakt_entries.is_empty() {
-                let _ = tx.send((
-                    "trakt".to_string(),
-                    "trakt".to_string(),
-                    RsLookupMetadataResults { results: trakt_entries, next_page_key: None },
-                )).await;
-            }
-        }
+            Some(trakt_results.into_iter().map(|(person, match_type)| RsLookupMetadataResultWrapper {
+                metadata: RsLookupMetadataResult::Person(person),
+                match_type,
+                ..Default::default()
+            }).collect())
+        } else {
+            None
+        };
 
         let lookup_query = RsLookupQuery::Person(RsLookupPerson {
             name: query.name,
             ids: query.ids,
             page_key: query.page_key,
         });
-        let mut plugin_rx = self
-            .exec_lookup_metadata_stream_grouped(
-                lookup_query,
-                Some(library_id.to_string()),
-                requesting_user,
-                None,
-                sources.as_deref(),
-            )
-            .await?;
-
-        tokio::spawn(async move {
-            while let Some((id, name, entries)) = plugin_rx.recv().await {
-                let RsLookupMetadataResults { results, next_page_key } = entries;
-                let filtered: Vec<_> = results.into_iter().filter(|result| matches!(result.metadata, RsLookupMetadataResult::Person(_))).collect();
-                if !filtered.is_empty() {
-                    if tx.send((id, name, RsLookupMetadataResults { results: filtered, next_page_key })).await.is_err() {
-                        break;
-                    }
-                }
-            }
-        });
-
-        Ok(rx)
+        self.search_entity_stream(
+            library_id,
+            lookup_query,
+            |r| matches!(r.metadata, RsLookupMetadataResult::Person(_)),
+            trakt_entries,
+            sources,
+            requesting_user,
+        ).await
     }
 
     pub async fn download_person_image(
@@ -785,42 +713,17 @@ impl ModelController {
         kind: &ImageType,
         requesting_user: &ConnectedUser,
     ) -> crate::Result<AsyncReadPinBox> {
-        let request = self
-            .get_person_image_url(query, library_id.clone(), kind, requesting_user)
-            .await?
-            .ok_or(crate::Error::NotFound(format!(
-                "Unable to get person image url for kind: {:?}",
-                kind
-            )))?;
-        let reader = crate::plugins::sources::SourceRead::Request(request)
-            .into_reader(
-                library_id.as_deref(),
-                None,
-                None,
-                Some((self.clone(), requesting_user)),
-                None,
-            )
-            .await?;
-        Ok(reader.stream)
+        self.download_entity_image(RsLookupQuery::Person(query), library_id, kind, requesting_user).await
     }
+
     pub async fn get_person_image_url(
         &self,
         query: RsLookupPerson,
         library_id: Option<String>,
         kind: &ImageType,
         requesting_user: &ConnectedUser,
-    ) -> RsResult<Option<RsRequest>> {
-        let images = self.get_person_images(query, library_id, requesting_user).await?;
-        let exact_images: Vec<_> = images.into_iter().filter(|image| image.match_type.is_some()).collect();
-        let first_kind_match = exact_images
-            .iter()
-            .find(|image| image.kind.as_ref() == Some(kind))
-            .map(|image| image.url.clone());
-        if first_kind_match.is_some() {
-            Ok(first_kind_match)
-        } else {
-            Ok(exact_images.into_iter().next().map(|image| image.url))
-        }
+    ) -> RsResult<Option<rs_plugin_common_interfaces::RsRequest>> {
+        self.get_entity_image_url(RsLookupQuery::Person(query), library_id, kind, requesting_user).await
     }
 
     /// download and update image

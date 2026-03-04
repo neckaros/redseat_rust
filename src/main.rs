@@ -20,7 +20,6 @@ use model::{server::AuthMessage, store::SqliteStore, ModelController};
 use plugins::{
     medias::{
         imdb::ImdbContext,
-        tmdb::{tmdb_configuration::TmdbConfiguration, TmdbContext},
         trakt::TraktContext,
     },
     PluginManager,

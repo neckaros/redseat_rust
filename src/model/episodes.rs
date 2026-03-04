@@ -1,20 +1,18 @@
 
 
 
-use std::{collections::HashMap, io::{self, Read}, num, pin::Pin};
+use std::collections::HashMap;
 
 use async_recursion::async_recursion;
-use futures::TryStreamExt;
 use nanoid::nanoid;
 use query_external_ip::SourceError;
-use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, ImageType, MediaType};
+use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, lookup::{RsLookupEpisode, RsLookupQuery}, ImageType, MediaType};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::{fs::File, io::{AsyncRead, AsyncWriteExt, BufReader}};
-use tokio_util::io::StreamReader;
+use tokio::io::AsyncRead;
 
 
-use crate::{domain::{ElementAction, deleted::RsDeleted, episode::{self, Episode, EpisodeExt, EpisodeWithAction, EpisodeWithShow, EpisodesMessage}, library::LibraryRole, people::{PeopleMessage, Person}, serie::{self, Serie, SeriesMessage}}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{AsyncReadPinBox, FileStreamResult, Source, error::SourcesError}}, tools::{array_tools::Dedup, clock::now, image_tools::{ImageSize, resize_image_reader}, log::log_info}};
+use crate::{domain::{ElementAction, deleted::RsDeleted, episode::{self, Episode, EpisodeExt, EpisodeWithAction, EpisodeWithShow, EpisodesMessage}, library::LibraryRole, people::{PeopleMessage, Person}, serie::{self, Serie, SeriesMessage}}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{AsyncReadPinBox, FileStreamResult, error::SourcesError}}, tools::{array_tools::Dedup, clock::now, image_tools::ImageSize}};
 
 use super::{error::{Error, Result}, medias::{RsSort, RsSortOrder}, store::sql::SqlOrder, users::{ConnectedUser, HistoryQuery}, ModelController};
 use crate::routes::sse::SseEvent;
@@ -237,54 +235,38 @@ impl ModelController {
 
     #[async_recursion]
 	pub async fn episode_image(&self, library_id: &str, serie_id: &str, season: &u32, episode: &u32, size: Option<ImageSize>, requesting_user: &ConnectedUser) -> RsResult<FileStreamResult<AsyncReadPinBox>> {
+        use super::entity_images::EntityImageConfig;
+
         if RsIds::is_id(serie_id) {
             let mut serie_ids: RsIds = serie_id.to_string().try_into()?;
-
             let store = self.store.get_library_store_optional(library_id).ok_or(Error::LibraryStoreNotFoundFor(library_id.clone().to_string(), "episode_image".to_string()))?;
             let existing_serie = store.get_serie_by_external_id(serie_ids.clone()).await?;
             if let Some(existing_serie) = existing_serie {
-                self.episode_image(library_id, &existing_serie.item.id, season,  episode, size, requesting_user).await
-            } else {
-
-                let local_provider = self.library_source_for_library(library_id).await?;
-                
-                if serie_ids.tmdb.is_none() {
-                    let serie = self.trakt.get_serie(&serie_ids).await?;
-                    serie_ids = serie.into();
-                }
-                let image_path = format!("cache/serie-{}-episode-{}x{}.avif", serie_id.replace(':', "-"), season, episode);
-
-                if !local_provider.exists(&image_path).await {
-                    let images = self.tmdb.episode_image(serie_ids, season, episode, &None).await?.into_kind(ImageType::Still).ok_or(crate::Error::ImageRemoteNotFound("tmdb".to_string(), format!("episode: {} {} {}", serie_id, season, episode ) , "episode_image".to_string()))?;
-                    let (_, mut writer) = local_provider.get_file_write_stream(&image_path).await?;
-                    let image_reader = reqwest::get(images).await?;
-                    let stream = image_reader.bytes_stream();
-                    let body_with_io_error = stream.map_err(|err| io::Error::new(io::ErrorKind::Other, err));
-                    let mut body_reader = StreamReader::new(body_with_io_error);
-                    let resized = resize_image_reader(Box::pin(body_reader), ImageSize::Large.to_size(), image::ImageFormat::Avif, Some(60), false).await?;
-
-                    writer.write_all(&resized).await?;
-                }
-
-                let source = local_provider.get_file(&image_path, None).await?;
-                match source {
-                    crate::plugins::sources::SourceRead::Stream(s) => Ok(s),
-                    crate::plugins::sources::SourceRead::Request(_) => Err(crate::Error::GenericRedseatError),
-                }
+                return self.episode_image(library_id, &existing_serie.item.id, season, episode, size, requesting_user).await;
             }
+            // Enrich IDs via Trakt if needed
+            if serie_ids.tmdb().is_none() {
+                let serie = self.trakt.get_serie(&serie_ids).await?;
+                serie_ids = serie.into();
+            }
+            let composite_id = format!("{}-episode-{}x{}", serie_id, season, episode);
+            let query = RsLookupQuery::Episode(RsLookupEpisode {
+                ids: Some(serie_ids),
+                season: *season,
+                number: Some(*episode),
+                ..Default::default()
+            });
+            let config = EntityImageConfig { folder: ".series", cache_prefix: "serie" };
+            self.serve_cached_entity_image(library_id, &composite_id, query, &ImageType::Still, &config, requesting_user).await
         } else {
-            if !self.has_library_image(library_id, &format!(".series/{}", serie_id), &format!("{}.{}", season, episode), None, requesting_user).await? {
-                log_info(crate::tools::log::LogServiceType::Source, format!("Updating episode image: {}", serie_id));
-                let r = self.refresh_episode_image(library_id, serie_id, season, episode, requesting_user).await;
-                if let Err(r) = r {
-                    println!("Error fetching episode image: {:?}", r);
-                }
-            }
-            
-            let image = self.library_image(library_id, &format!(".series/{}", serie_id), &format!("{}.{}", season, episode), None, size, requesting_user).await?;
-            Ok(image)
+            let folder = format!(".series/{}", serie_id);
+            let entity_id = format!("{}.{}", season, episode);
+            let config = EntityImageConfig { folder: &folder, cache_prefix: "episode" };
+            self.serve_local_entity_image(
+                library_id, &entity_id, &ImageType::Still, size, &config, requesting_user,
+                self.refresh_episode_image(library_id, serie_id, season, episode, requesting_user),
+            ).await
         }
-        
 	}
 
     pub async fn get_episode_ids(&self, library_id: &str, serie_id: &str, season: u32, episode: u32, requesting_user: &ConnectedUser) -> RsResult<RsIds> {
@@ -295,21 +277,16 @@ impl ModelController {
 
     /// download and update image
     pub async fn refresh_episode_image(&self, library_id: &str, serie_id: &str, season: &u32, episode: &u32, requesting_user: &ConnectedUser) -> RsResult<()> {
-        let episode_ids: RsIds = self.get_episode_ids(library_id, serie_id, *season, *episode, requesting_user).await?;
-        
         let serie_ids: RsIds = self.get_serie_ids(library_id, serie_id, requesting_user).await?;
-
-        let reader = self.download_episode_image(&serie_ids, &episode_ids, season, episode, &None).await?;
+        let query = RsLookupQuery::Episode(RsLookupEpisode {
+            ids: Some(serie_ids),
+            season: *season,
+            number: Some(*episode),
+            ..Default::default()
+        });
+        let reader = self.download_entity_image(query, Some(library_id.to_string()), &ImageType::Still, requesting_user).await?;
         self.update_episode_image(library_id, serie_id, season, episode, reader, &ConnectedUser::ServerAdmin).await?;
         Ok(())
-    }
-    pub async fn download_episode_image(&self, serie_ids: &RsIds, episodes_ids: &RsIds, season: &u32, episode: &u32, lang: &Option<String>) -> crate::Result<AsyncReadPinBox> {
-        let images = self.tmdb.episode_image(serie_ids.clone(), season, episode, lang).await?.into_kind(ImageType::Still).ok_or(crate::Error::ImageRemoteKindNotAvailable(ImageType::Still, format!("{:?} {} {}", serie_ids, season, episode), "download_episode_image".to_string()))?;
-        let image_reader = reqwest::get(images).await?;
-        let stream = image_reader.bytes_stream();
-        let body_with_io_error = stream.map_err(|err| io::Error::new(io::ErrorKind::Other, err));
-        let body_reader = StreamReader::new(body_with_io_error);
-        Ok(Box::pin(body_reader))
     }
 
     pub async fn update_episode_image<T: AsyncRead>(&self, library_id: &str, serie_id: &str, season: &u32, episode: &u32, reader: T, requesting_user: &ConnectedUser) -> Result<()> {

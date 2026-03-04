@@ -173,12 +173,12 @@ impl SqliteLibraryStore {
                 let direct_row = direct_statement
                     .query_row(
                         params![
-                            ids.redseat.clone().unwrap_or("zz".to_string()),
-                            ids.isbn13.clone().unwrap_or("zz".to_string()),
-                            ids.openlibrary_edition_id.clone().unwrap_or("zz".to_string()),
-                            ids.openlibrary_work_id.clone().unwrap_or("zz".to_string()),
-                            ids.google_books_volume_id.clone().unwrap_or("zz".to_string()),
-                            ids.asin.clone().unwrap_or("zz".to_string()),
+                            ids.redseat().unwrap_or("zz").to_string(),
+                            ids.isbn13().unwrap_or("zz").to_string(),
+                            ids.openlibrary_edition_id().unwrap_or("zz").to_string(),
+                            ids.openlibrary_work_id().unwrap_or("zz").to_string(),
+                            ids.google_books_volume_id().unwrap_or("zz").to_string(),
+                            ids.asin().unwrap_or("zz").to_string(),
                         ],
                         Self::row_to_book,
                     )
@@ -186,8 +186,8 @@ impl SqliteLibraryStore {
 
                 let volume_matches = |iwr: &ItemWithRelations<Book>| {
                     let book = &iwr.item;
-                    ids.volume.map(|v| Some(v) == book.volume).unwrap_or(true)
-                        && ids.chapter.map(|c| Some(c) == book.chapter).unwrap_or(true)
+                    ids.find_detail_f64("volume").map(|v| Some(v) == book.volume).unwrap_or(true)
+                        && ids.find_detail_f64("chapter").map(|c| Some(c) == book.chapter).unwrap_or(true)
                 };
 
                 if let Some(book) = direct_row {
@@ -196,10 +196,10 @@ impl SqliteLibraryStore {
                     }
                 }
 
-                let has_series_identity = ids.openlibrary_work_id.is_some()
-                    || ids.anilist_manga_id.is_some()
-                    || ids.mangadex_manga_uuid.is_some()
-                    || ids.myanimelist_manga_id.is_some();
+                let has_series_identity = ids.openlibrary_work_id().is_some()
+                    || ids.anilist_manga_id().is_some()
+                    || ids.mangadex_manga_uuid().is_some()
+                    || ids.myanimelist_manga_id().is_some();
                 if !has_series_identity {
                     return Ok(None);
                 }
@@ -227,12 +227,12 @@ impl SqliteLibraryStore {
                 let by_series_row = by_series_statement
                     .query_row(
                         params![
-                            ids.openlibrary_work_id.clone(),
-                            ids.anilist_manga_id,
-                            ids.mangadex_manga_uuid.clone(),
-                            ids.myanimelist_manga_id,
-                            ids.volume,
-                            ids.chapter,
+                            ids.openlibrary_work_id().map(str::to_string),
+                            ids.anilist_manga_id(),
+                            ids.mangadex_manga_uuid().map(str::to_string),
+                            ids.myanimelist_manga_id(),
+                            ids.find_detail_f64("volume"),
+                            ids.find_detail_f64("chapter"),
                         ],
                         Self::row_to_book,
                     )
@@ -556,22 +556,20 @@ mod tests {
             .await
             .unwrap();
 
+        let mut isbn_ids = RsIds::default();
+        isbn_ids.set("isbn13", "9783161484100");
         let found = store
-            .get_book_by_external_id(RsIds {
-                isbn13: Some("9783161484100".to_string()),
-                ..Default::default()
-            })
+            .get_book_by_external_id(isbn_ids)
             .await
             .unwrap();
         assert!(found.is_some());
 
+        let mut manga_ids = RsIds::default();
+        manga_ids.set("anilist", 12345u64);
+        manga_ids.set("mangadex", "mangadex-id");
+        manga_ids.set("mal", 67890u64);
         let not_found = store
-            .get_book_by_external_id(RsIds {
-                anilist_manga_id: Some(12345),
-                mangadex_manga_uuid: Some("mangadex-id".to_string()),
-                myanimelist_manga_id: Some(67890),
-                ..Default::default()
-            })
+            .get_book_by_external_id(manga_ids)
             .await
             .unwrap();
         assert!(not_found.is_none());
@@ -615,13 +613,12 @@ mod tests {
             .await
             .unwrap();
 
+        let mut lookup_ids = RsIds::default();
+        lookup_ids.set("anilist", 4242u64);
+        lookup_ids.set("volume", 2.0f64);
+        lookup_ids.set("chapter", 10.0f64);
         let found = store
-            .get_book_by_external_id(RsIds {
-                anilist_manga_id: Some(4242),
-                volume: Some(2.0),
-                chapter: Some(10.0),
-                ..Default::default()
-            })
+            .get_book_by_external_id(lookup_ids)
             .await
             .unwrap();
 

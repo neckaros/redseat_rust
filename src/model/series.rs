@@ -1,18 +1,12 @@
-use std::{
-    collections::HashMap,
-    io::{Cursor, Read},
-    pin::Pin,
-};
+use std::{collections::HashMap, io::Cursor};
 
 use async_recursion::async_recursion;
-use futures::TryStreamExt;
 use nanoid::nanoid;
 use rs_plugin_common_interfaces::{
     ExternalImage,
     ImageType,
     domain::{rs_ids::RsIds, serie::SerieStatus, ItemWithRelations},
     lookup::{RsLookupMetadataResult, RsLookupMetadataResultWrapper, RsLookupMetadataResults, RsLookupMovie, RsLookupQuery, RsLookupSerie},
-    request::{RsRequest, RsRequestStatus},
 };
 use rusqlite::{
     types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef},
@@ -20,10 +14,6 @@ use rusqlite::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::{
-    fs::File,
-    io::{AsyncRead, AsyncWriteExt, BufReader},
-};
 
 use crate::{
     domain::{
@@ -32,24 +22,20 @@ use crate::{
         deleted::RsDeleted,
         episode::EpisodeExt,
         library::{LibraryRole, LibraryType},
-        people::{PeopleMessage, Person},
         serie::{Serie, SerieExt, SerieWithAction, SeriesMessage},
     },
     error::RsResult,
     plugins::{
         medias::imdb::ImdbContext,
         sources::{
-            AsyncReadPinBox, FileStreamResult, Source, SourceRead, error::SourcesError, path_provider::PathProvider
+            AsyncReadPinBox, FileStreamResult, error::SourcesError,
         },
     },
-    server::get_server_folder_path_array,
-    tools::{
-        image_tools::{ImageSize, convert_image_reader, resize_image_reader},
-        log::log_info,
-    },
+    tools::image_tools::{convert_image_reader, ImageSize},
 };
 
 use super::{
+    entity_images::EntityImageConfig,
     episodes::{EpisodeForUpdate, EpisodeQuery},
     error::{Error, Result},
     medias::{MediaQuery, RsSort},
@@ -126,31 +112,6 @@ impl SerieForUpdate {
         self != &SerieForUpdate::default()
     }
 }
-
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
-pub struct ExternalSerieImages {
-    pub backdrop: Option<String>,
-    pub logo: Option<String>,
-    pub poster: Option<String>,
-    pub still: Option<String>,
-    pub card: Option<String>,
-    pub portraits: Option<String>,
-}
-
-impl ExternalSerieImages {
-    pub fn into_kind(self, kind: ImageType) -> Option<String> {
-        match kind {
-            ImageType::Poster => self.poster,
-            ImageType::Background => self.backdrop,
-            ImageType::Still => self.still,
-            ImageType::Card => self.card,
-            ImageType::ClearLogo => self.logo,
-            ImageType::ClearArt => None,
-            ImageType::Custom(_) => None,
-        }
-    }
-}
-
 
 impl ModelController {
     pub async fn get_series(
@@ -309,54 +270,32 @@ impl ModelController {
         sources: Option<Vec<String>>,
         requesting_user: &ConnectedUser,
     ) -> RsResult<Vec<(String, String, RsLookupMetadataResults)>> {
-        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
-        let mut groups: Vec<(String, String, RsLookupMetadataResults)> = Vec::new();
-
-        let is_books_library = if let Some(library) = self.cache_get_library(library_id).await {
-            library.kind == LibraryType::Books
-        } else {
-            self.get_internal_library(library_id)
-                .await?
-                .map(|library| library.kind == LibraryType::Books)
-                .unwrap_or(false)
-        };
-
-        let include_trakt = sources.as_deref().map_or(true, |s| s.iter().any(|id| id == "trakt"));
-        if !is_books_library && include_trakt {
+        let is_books_library = self.is_books_library(library_id).await;
+        let include_trakt = !is_books_library && sources.as_deref().map_or(true, |s| s.iter().any(|id| id == "trakt"));
+        let trakt_entries = if include_trakt {
             let trakt_results = self.trakt.search_show(&query).await?;
-            let trakt_entries: Vec<RsLookupMetadataResultWrapper> = trakt_results.into_iter().map(|(serie, match_type)| RsLookupMetadataResultWrapper {
+            Some(trakt_results.into_iter().map(|(serie, match_type)| RsLookupMetadataResultWrapper {
                 metadata: RsLookupMetadataResult::Serie(serie),
                 match_type,
                 ..Default::default()
-            }).collect();
-            if !trakt_entries.is_empty() {
-                groups.push(("trakt".to_string(), "trakt".to_string(), RsLookupMetadataResults { results: trakt_entries, next_page_key: None }));
-            }
-        }
+            }).collect())
+        } else {
+            None
+        };
 
         let lookup_query = RsLookupQuery::Serie(RsLookupSerie {
             name: query.name,
             ids: query.ids,
             page_key: query.page_key,
         });
-        let plugin_results = self
-            .exec_lookup_metadata_grouped(
-                lookup_query,
-                Some(library_id.to_string()),
-                requesting_user,
-                None,
-                sources.as_deref(),
-            )
-            .await?;
-
-        for (id, name, RsLookupMetadataResults { results, next_page_key }) in plugin_results {
-            let filtered: Vec<_> = results.into_iter().filter(|result| matches!(result.metadata, RsLookupMetadataResult::Serie(_))).collect();
-            if !filtered.is_empty() {
-                groups.push((id, name, RsLookupMetadataResults { results: filtered, next_page_key }));
-            }
-        }
-
-        Ok(groups)
+        self.search_entity(
+            library_id,
+            lookup_query,
+            |r| matches!(r.metadata, RsLookupMetadataResult::Serie(_)),
+            trakt_entries,
+            sources,
+            requesting_user,
+        ).await
     }
 
     pub async fn search_serie_stream(
@@ -366,60 +305,45 @@ impl ModelController {
         sources: Option<Vec<String>>,
         requesting_user: &ConnectedUser,
     ) -> RsResult<tokio::sync::mpsc::Receiver<(String, String, RsLookupMetadataResults)>> {
-        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
-
-        let (tx, rx) = tokio::sync::mpsc::channel(16);
-
-        let is_books_library = if let Some(library) = self.cache_get_library(library_id).await {
-            library.kind == LibraryType::Books
-        } else {
-            self.get_internal_library(library_id)
-                .await?
-                .map(|library| library.kind == LibraryType::Books)
-                .unwrap_or(false)
-        };
-
-        let include_trakt = sources.as_deref().map_or(true, |s| s.iter().any(|id| id == "trakt"));
-        if !is_books_library && include_trakt {
+        let is_books_library = self.is_books_library(library_id).await;
+        let include_trakt = !is_books_library && sources.as_deref().map_or(true, |s| s.iter().any(|id| id == "trakt"));
+        let trakt_entries = if include_trakt {
             let trakt_results = self.trakt.search_show(&query).await?;
-            let trakt_entries: Vec<RsLookupMetadataResultWrapper> = trakt_results.into_iter().map(|(serie, match_type)| RsLookupMetadataResultWrapper {
+            Some(trakt_results.into_iter().map(|(serie, match_type)| RsLookupMetadataResultWrapper {
                 metadata: RsLookupMetadataResult::Serie(serie),
                 match_type,
                 ..Default::default()
-            }).collect();
-            if !trakt_entries.is_empty() {
-                let _ = tx.send(("trakt".to_string(), "trakt".to_string(), RsLookupMetadataResults { results: trakt_entries, next_page_key: None })).await;
-            }
-        }
+            }).collect())
+        } else {
+            None
+        };
 
         let lookup_query = RsLookupQuery::Serie(RsLookupSerie {
             name: query.name,
             ids: query.ids,
             page_key: query.page_key,
         });
-        let mut plugin_rx = self
-            .exec_lookup_metadata_stream_grouped(
-                lookup_query,
-                Some(library_id.to_string()),
-                requesting_user,
-                None,
-                sources.as_deref(),
-            )
-            .await?;
+        self.search_entity_stream(
+            library_id,
+            lookup_query,
+            |r| matches!(r.metadata, RsLookupMetadataResult::Serie(_)),
+            trakt_entries,
+            sources,
+            requesting_user,
+        ).await
+    }
 
-        tokio::spawn(async move {
-            while let Some((id, name, entries)) = plugin_rx.recv().await {
-                let RsLookupMetadataResults { results, next_page_key } = entries;
-                let filtered: Vec<_> = results.into_iter().filter(|result| matches!(result.metadata, RsLookupMetadataResult::Serie(_))).collect();
-                if !filtered.is_empty() {
-                    if tx.send((id, name, RsLookupMetadataResults { results: filtered, next_page_key })).await.is_err() {
-                        break;
-                    }
-                }
-            }
-        });
-
-        Ok(rx)
+    async fn is_books_library(&self, library_id: &str) -> bool {
+        if let Some(library) = self.cache_get_library(library_id).await {
+            library.kind == LibraryType::Books
+        } else {
+            self.get_internal_library(library_id)
+                .await
+                .ok()
+                .flatten()
+                .map(|library| library.kind == LibraryType::Books)
+                .unwrap_or(false)
+        }
     }
 
     pub async fn update_serie(
@@ -729,120 +653,36 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> crate::Result<FileStreamResult<AsyncReadPinBox>> {
         let kind = kind.unwrap_or(ImageType::Poster);
+        let config = EntityImageConfig { folder: ".series", cache_prefix: "serie" };
         if RsIds::is_id(serie_id) {
             let mut serie_ids: RsIds = serie_id.to_string().try_into()?;
-
             let store = self.store.get_library_store(library_id)?;
             let existing_serie = store.get_serie_by_external_id(serie_ids.clone()).await?;
             if let Some(existing_serie) = existing_serie {
-                let image = self
-                    .serie_image(
-                        library_id,
-                        &existing_serie.item.id,
-                        Some(kind),
-                        size,
-                        requesting_user,
-                    )
-                    .await?;
-                Ok(image)
-            } else {
-                let local_provider = self.library_source_for_library(library_id).await?;
-                let mut lookup_name = String::new();
-
-                if serie_ids.tmdb.is_none() {
-                    let serie = self.trakt.get_serie(&serie_ids).await;
-                    if let Ok(serie) = serie {
-                        lookup_name = serie.name.clone();
-                        serie_ids = serie.into();
-                    }
-                    
-                }
-                let image_path =
-                    format!("cache/serie-{}-{}.avif", serie_id.replace(':', "-"), kind);
-
-                if !local_provider.exists(&image_path).await {
-                    let lookup_query = RsLookupSerie {
-                        name: if lookup_name.is_empty() { None } else { Some(lookup_name) },
-                        ids: Some(serie_ids.clone()),
-                        page_key: None,
-                    };
-                    let image_request = self
-                        .get_serie_image_url(
-                            lookup_query,
-                            Some(library_id.to_string()),
-                            &kind,
-                            &None,
-                            requesting_user,
-                        )
-                        .await?
-                        .ok_or(crate::Error::NotFound(format!(
-                            "Unable to get series image url: {:?} kind {:?}",
-                            serie_ids, kind
-                        )))?;
-                    let (_, mut writer) = local_provider.get_file_write_stream(&image_path).await?;
-                    let mut image_reader = SourceRead::Request(image_request)
-                        .into_reader(
-                            Some(library_id),
-                            None,
-                            None,
-                            Some((self.clone(), requesting_user)),
-                            None,
-                        )
-                        .await?;
-                    let resized = resize_image_reader(
-                        image_reader.stream,
-                        ImageSize::Large.to_size(),
-                        image::ImageFormat::Avif,
-                        Some(70),
-                        false,
-                    )
-                    .await?;
-
-                    writer.write_all(&resized).await?;
-                }
-
-                let source = local_provider.get_file(&image_path, None).await?;
-                match source {
-                    crate::plugins::sources::SourceRead::Stream(s) => Ok(s),
-                    crate::plugins::sources::SourceRead::Request(_) => {
-                        Err(crate::Error::GenericRedseatError)
-                    }
+                return self.serie_image(library_id, &existing_serie.item.id, Some(kind), size, requesting_user).await;
+            }
+            // Enrich IDs via Trakt if needed
+            let mut lookup_name = String::new();
+            if serie_ids.tmdb().is_none() {
+                if let Ok(serie) = self.trakt.get_serie(&serie_ids).await {
+                    lookup_name = serie.name.clone();
+                    serie_ids = serie.into();
                 }
             }
+            let lookup_query = RsLookupQuery::Serie(RsLookupSerie {
+                name: if lookup_name.is_empty() { None } else { Some(lookup_name) },
+                ids: Some(serie_ids),
+                page_key: None,
+            });
+            self.serve_cached_entity_image(library_id, serie_id, lookup_query, &kind, &config, requesting_user).await
         } else {
-            if !self
-                .has_library_image(
-                    library_id,
-                    ".series",
-                    serie_id,
-                    Some(kind.clone()),
-                    requesting_user,
-                )
-                .await?
-            {
-                log_info(
-                    crate::tools::log::LogServiceType::Source,
-                    format!("Updating serie image: {}", serie_id),
-                );
-                self.refresh_serie_image(library_id, serie_id, &kind, requesting_user)
-                    .await?;
-            }
-
-            let image = self
-                .library_image(
-                    library_id,
-                    ".series",
-                    serie_id,
-                    Some(kind),
-                    size,
-                    requesting_user,
-                )
-                .await?;
-            Ok(image)
+            self.serve_local_entity_image(
+                library_id, serie_id, &kind, size, &config, requesting_user,
+                self.refresh_serie_image(library_id, serie_id, &kind, requesting_user),
+            ).await
         }
     }
 
-    /// download and update image
     pub async fn refresh_serie_image(
         &self,
         library_id: &str,
@@ -860,28 +700,15 @@ impl ModelController {
             ))?;
         let serie_name = serie.item.name.clone();
         let ids: RsIds = serie.item.into();
-        let lookup_query = RsLookupSerie {
+        let lookup_query = RsLookupQuery::Serie(RsLookupSerie {
             name: Some(serie_name),
-            ids: Some(ids.clone()),
+            ids: Some(ids),
             page_key: None,
-        };
+        });
         let reader = self
-            .download_serie_image(
-                lookup_query,
-                Some(library_id.to_string()),
-                kind,
-                &None,
-                requesting_user,
-            )
+            .download_entity_image(lookup_query, Some(library_id.to_string()), kind, requesting_user)
             .await?;
-        self.update_serie_image(
-            library_id,
-            serie_id,
-            kind,
-            reader,
-            &ConnectedUser::ServerAdmin,
-        )
-        .await?;
+        self.update_serie_image(library_id, serie_id, kind, reader, &ConnectedUser::ServerAdmin).await?;
         Ok(())
     }
 
@@ -890,46 +717,10 @@ impl ModelController {
         query: RsLookupSerie,
         library_id: Option<String>,
         kind: &ImageType,
-        lang: &Option<String>,
+        _lang: &Option<String>,
         requesting_user: &ConnectedUser,
-    ) -> RsResult<Option<RsRequest>> {
-        if let Some(request) = Self::select_external_image_url(
-            self.get_serie_images(query.clone(), library_id, requesting_user).await?,
-            kind,
-        ) {
-            return Ok(Some(request));
-        }
-
-        if let Some(ids) = query.ids {
-            let images = if kind == &ImageType::Card {
-                None
-            } else {
-                self.tmdb
-                    .serie_image(ids.clone(), lang)
-                    .await?
-                    .into_kind(kind.clone())
-            };
-            if images.is_none() {
-                let images = self
-                    .fanart
-                    .serie_image(ids.clone())
-                    .await?
-                    .into_kind(kind.clone());
-                Ok(images.map(|url| RsRequest {
-                    url,
-                    status: RsRequestStatus::FinalPublic,
-                    ..Default::default()
-                }))
-            } else {
-                Ok(images.map(|url| RsRequest {
-                    url,
-                    status: RsRequestStatus::FinalPublic,
-                    ..Default::default()
-                }))
-            }
-        } else {
-            Ok(None)
-        }
+    ) -> RsResult<Option<rs_plugin_common_interfaces::RsRequest>> {
+        self.get_entity_image_url(RsLookupQuery::Serie(query), library_id, kind, requesting_user).await
     }
 
     pub async fn get_serie_images(
@@ -938,29 +729,7 @@ impl ModelController {
         library_id: Option<String>,
         requesting_user: &ConnectedUser,
     ) -> RsResult<Vec<ExternalImage>> {
-        let lookup_query = RsLookupQuery::Serie(query.clone());
-        //println!("lookup_query: {:?}", lookup_query);
-        let mut images = match self.exec_lookup_images(lookup_query, library_id, requesting_user, None).await {
-            Ok(images) => images,
-            Err(error) => {
-                crate::tools::log::log_error(crate::tools::log::LogServiceType::Plugin, format!("serie image lookup failed: {:#}", error));
-                Vec::new()
-            }
-        };
-        //print!("images from plugins: {:?}", images);
-
-        if let Some(ids) = query.ids {
-            let mut tmdb = self.tmdb.serie_images(ids.clone()).await;
-            let mut fanart = self.fanart.serie_images(ids).await;
-            if let Ok(tmdb) = &mut tmdb {
-                images.append(tmdb)
-            }
-            if let Ok(fanart) = &mut fanart {
-                images.append(fanart)
-            }
-        }
-
-        Ok(images)
+        self.get_entity_images(RsLookupQuery::Serie(query), library_id, requesting_user).await
     }
 
     pub async fn download_serie_image(
@@ -968,26 +737,10 @@ impl ModelController {
         query: RsLookupSerie,
         library_id: Option<String>,
         kind: &ImageType,
-        lang: &Option<String>,
+        _lang: &Option<String>,
         requesting_user: &ConnectedUser,
     ) -> crate::Result<AsyncReadPinBox> {
-        let request = self
-            .get_serie_image_url(query.clone(), library_id.clone(), kind, lang, requesting_user)
-            .await?
-            .ok_or(crate::Error::NotFound(format!(
-                "Unable to get series image url: {:?} kind {:?}",
-                query.ids, kind
-            )))?;
-        let reader = SourceRead::Request(request)
-            .into_reader(
-                library_id.as_deref(),
-                None,
-                None,
-                Some((self.clone(), requesting_user)),
-                None,
-            )
-            .await?;
-        Ok(reader.stream)
+        self.download_entity_image(RsLookupQuery::Serie(query), library_id, kind, requesting_user).await
     }
 
     pub async fn update_serie_image(

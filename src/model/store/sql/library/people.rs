@@ -105,17 +105,16 @@ else 0 end) as score", q, q, q, q, q, q);
                 "trakt = ?".to_string(),
             ];
             let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
-                Box::new(ids.imdb.clone().unwrap_or("zz".to_string())),
-                Box::new(ids.slug.clone().unwrap_or("zz".to_string())),
-                Box::new(ids.tmdb.unwrap_or(0)),
-                Box::new(ids.trakt.unwrap_or(0)),
+                Box::new(ids.imdb().unwrap_or("zz").to_string()),
+                Box::new(ids.slug().unwrap_or("zz").to_string()),
+                Box::new(ids.tmdb().unwrap_or(0)),
+                Box::new(ids.trakt().unwrap_or(0)),
             ];
 
-            if let Some(other_ids) = &ids.other_ids {
-                for entry in other_ids.as_slice() {
-                    conditions.push("otherids LIKE ?".to_string());
-                    params_vec.push(Box::new(format!("%\"{}\"%" , entry)));
-                }
+            // Check all external IDs against otherids column
+            for ext_id in ids.as_all_external_ids() {
+                conditions.push("otherids LIKE ?".to_string());
+                params_vec.push(Box::new(format!("%\"{}\"%" , ext_id)));
             }
 
             let where_clause = conditions.join(" OR ");

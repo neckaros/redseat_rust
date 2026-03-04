@@ -129,16 +129,16 @@ impl SqliteLibraryStore {
             id = ? or imdb = ? or slug = ? or tmdb = ? or trakt = ? or tvdb = ? or openlibrary_work_id = ? or anilist_manga_id = ? or mangadex_manga_uuid = ? or myanimelist_manga_id = ?", SERIE_SQL_FIELDS))?;
             let row = query.query_row(
             params![
-                ids.redseat.unwrap_or("zz".to_string()),
-                ids.imdb.unwrap_or("zz".to_string()),
-                ids.slug.unwrap_or("zz".to_string()),
-                ids.tmdb.unwrap_or(0),
-                ids.trakt.unwrap_or(0),
-                ids.tvdb.unwrap_or(0),
-                ids.openlibrary_work_id.unwrap_or("zz".to_string()),
-                ids.anilist_manga_id.unwrap_or(0),
-                ids.mangadex_manga_uuid.unwrap_or("zz".to_string()),
-                ids.myanimelist_manga_id.unwrap_or(0)
+                ids.redseat().unwrap_or("zz").to_string(),
+                ids.imdb().unwrap_or("zz").to_string(),
+                ids.slug().unwrap_or("zz").to_string(),
+                ids.tmdb().unwrap_or(0),
+                ids.trakt().unwrap_or(0),
+                ids.tvdb().unwrap_or(0),
+                ids.openlibrary_work_id().unwrap_or("zz").to_string(),
+                ids.anilist_manga_id().unwrap_or(0),
+                ids.mangadex_manga_uuid().unwrap_or("zz").to_string(),
+                ids.myanimelist_manga_id().unwrap_or(0)
             ],Self::row_to_serie).optional()?;
             Ok(row)
         }).await?;

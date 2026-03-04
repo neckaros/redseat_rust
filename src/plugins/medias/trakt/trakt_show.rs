@@ -81,12 +81,12 @@ pub struct TraktIds {
 impl From<RsIds> for TraktIds {
     fn from(value: RsIds) -> Self {
         TraktIds {
-            trakt: value.trakt,
-            slug: value.slug,
-            tvdb: value.tvdb,
-            imdb: value.imdb,
-            tmdb: value.tmdb,
-            tvrage: value.tvrage,
+            trakt: value.trakt(),
+            slug: value.slug().map(str::to_string),
+            tvdb: value.tvdb(),
+            imdb: value.imdb().map(str::to_string),
+            tmdb: value.tmdb(),
+            tvrage: value.tvrage(),
         }
     }
 }
