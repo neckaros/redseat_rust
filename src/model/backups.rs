@@ -10,7 +10,7 @@ use http::{header, request, HeaderMap};
 use nanoid::nanoid;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha256::try_async_digest;
+use sha2::{Sha256, Digest};
 use tokio::{fs::{self, File}, io::{copy, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader}, sync::mpsc};
 use tokio_stream::StreamExt;
 use tokio_util::io::{ReaderStream, StreamReader};
@@ -506,7 +506,17 @@ impl ModelController {
 	}
 
     pub async fn upload_backup_path(&self, backup_info: Backup, file_id: &str, path: PathBuf, name: String, library: Option<ServerLibrary>) -> RsResult<BackupFile> {
-        let sourcehash = try_async_digest(&path).await?;
+        let sourcehash = {
+            let mut file = File::open(&path).await?;
+            let mut hasher = Sha256::new();
+            let mut buf = vec![0u8; 1024 * 1024];
+            loop {
+                let n = tokio::io::AsyncReadExt::read(&mut file, &mut buf).await?;
+                if n == 0 { break; }
+                hasher.update(&buf[..n]);
+            }
+            format!("{:x}", hasher.finalize())
+        };
         let id = nanoid!();
         let existing_db_bakcups = self.get_backup_media_backup_files(&backup_info.id, file_id, &ConnectedUser::ServerAdmin).await?;
 

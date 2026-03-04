@@ -7,7 +7,7 @@ use chrono::{Datelike, Utc};
 use futures::Stream;
 use human_bytes::human_bytes;
 use query_external_ip::SourceError;
-use sha256::try_async_digest;
+use sha2::{Sha256, Digest};
 use tokio::{fs::{create_dir_all, remove_file, File}, io::{copy, AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter}};
 
 use crate::{domain::{backup::Backup, library::ServerLibrary, media::MediaForUpdate}, error::{RsError, RsResult}, model::ModelController, routes::mw_range::RangeDefinition, tools::{file_tools::get_mime_from_filename, image_tools::resize_image_reader, log::{log_error, log_info, LogServiceType}}};
@@ -173,10 +173,18 @@ impl Source for PathProvider {
         let path = self.get_full_path(&source);
         let metadata = path.metadata()?;
         infos.size = Some(metadata.len());
-        let md5 = try_async_digest(&path).await;
-        if let Ok(md5) = md5 {
-            infos.md5 = Some(md5);
-        } 
+        let hash = {
+            let mut file = File::open(&path).await?;
+            let mut hasher = Sha256::new();
+            let mut buf = vec![0u8; 1024 * 1024];
+            loop {
+                let n = file.read(&mut buf).await?;
+                if n == 0 { break; }
+                hasher.update(&buf[..n]);
+            }
+            format!("{:x}", hasher.finalize())
+        };
+        infos.md5 = Some(hash); 
         let mime = get_mime_from_filename(source);
         if let Some(mime) = mime {
             infos.mimetype = Some(mime);

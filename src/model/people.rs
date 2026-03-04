@@ -41,7 +41,7 @@ use crate::{
 use rs_plugin_common_interfaces::{
     domain::{other_ids::OtherIds, rs_ids::RsIds},
     lookup::{RsLookupMetadataResult, RsLookupMetadataResultWrapper, RsLookupMetadataResults, RsLookupMovie, RsLookupPerson, RsLookupQuery},
-    url::RsLink, ExternalImage, Gender, ImageType,
+    request::RsRequest, url::RsLink, ExternalImage, Gender, ImageType,
 };
 use tokio_util::io::StreamReader;
 
@@ -233,8 +233,46 @@ impl ModelController {
         let store = self.store.get_library_store_optional(library_id).ok_or(
             Error::LibraryStoreNotFoundFor(library_id.to_string(), "get_person".to_string()),
         )?;
-        let tag = store.get_person(&tag_id).await?;
-        Ok(tag)
+
+        if RsIds::is_id(&tag_id) {
+            let ids: RsIds = tag_id.clone().try_into().map_err(|_| {
+                SourcesError::UnableToFindPerson(
+                    library_id.to_string(),
+                    tag_id.clone(),
+                    "get_person".to_string(),
+                )
+            })?;
+            if let Some(person) = store.get_person_by_external_id(ids.clone()).await? {
+                Ok(Some(person))
+            } else {
+                let lookup_query = RsLookupQuery::Person(RsLookupPerson {
+                    name: Some(String::new()),
+                    ids: Some(ids.clone()),
+                    page_key: None,
+                });
+                let plugin_results = self
+                    .exec_lookup_metadata_grouped(
+                        lookup_query,
+                        Some(library_id.to_string()),
+                        requesting_user,
+                        None,
+                        None,
+                    )
+                    .await
+                    .map_err(|e| Error::ServiceError(format!("{:?}", e), None))?;
+                let plugin_person = plugin_results
+                    .into_iter()
+                    .flat_map(|(_, _, r)| r.results)
+                    .find_map(|result| match result.metadata {
+                        RsLookupMetadataResult::Person(person) => Some(person),
+                        _ => None,
+                    });
+                Ok(plugin_person)
+            }
+        } else {
+            let tag = store.get_person(&tag_id).await?;
+            Ok(tag)
+        }
     }
 
     pub async fn update_person(
@@ -396,37 +434,44 @@ impl ModelController {
                     .await?;
                 Ok(image)
             } else {
+                let target_kind = kind.unwrap_or(ImageType::Poster);
                 let local_provider = self.library_source_for_library(library_id).await?;
-                if person_ids.tmdb.is_none() {
-                    let person = self.trakt.get_person(&person_ids).await?;
-                    person_ids = person.into();
-                }
                 let image_path = format!(
                     "cache/person-{}-{}.avif",
                     person_id.replace(':', "-"),
-                    kind.as_ref().unwrap_or(&ImageType::Poster)
+                    target_kind
                 );
 
                 if !local_provider.exists(&image_path).await {
-                    let images = self
+                    let lookup_query = RsLookupPerson {
+                        name: Some(String::new()),
+                        ids: Some(person_ids.clone()),
+                        page_key: None,
+                    };
+                    let image_request = self
                         .get_person_image_url(
-                            &person_ids,
-                            kind.as_ref().unwrap_or(&ImageType::Poster),
-                            &None,
+                            lookup_query,
+                            Some(library_id.to_string()),
+                            &target_kind,
+                            requesting_user,
                         )
                         .await?
                         .ok_or(crate::Error::NotFound(format!(
                             "Unable to get person image url: {:?} kind {:?}",
-                            person_ids, kind
+                            person_ids, target_kind
                         )))?;
                     let (_, mut writer) = local_provider.get_file_write_stream(&image_path).await?;
-                    let image_reader = reqwest::get(images).await?;
-                    let stream = image_reader.bytes_stream();
-                    let body_with_io_error =
-                        stream.map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err));
-                    let mut body_reader = StreamReader::new(body_with_io_error);
+                    let image_reader = crate::plugins::sources::SourceRead::Request(image_request)
+                        .into_reader(
+                            Some(library_id),
+                            None,
+                            None,
+                            Some((self.clone(), requesting_user)),
+                            None,
+                        )
+                        .await?;
                     let resized = resize_image_reader(
-                        Box::pin(body_reader),
+                        image_reader.stream,
                         ImageSize::Large.to_size(),
                         image::ImageFormat::Avif,
                         Some(70),
@@ -594,8 +639,26 @@ impl ModelController {
     }
 
     /// fetch the plugins to get images for this person
-    pub async fn get_person_images(&self, ids: &RsIds) -> RsResult<Vec<ExternalImage>> {
-        let mut images = self.tmdb.person_images(ids.clone()).await?;
+    pub async fn get_person_images(&self, query: RsLookupPerson, library_id: Option<String>, requesting_user: &ConnectedUser) -> RsResult<Vec<ExternalImage>> {
+        let lookup_query = RsLookupQuery::Person(query.clone());
+        let mut images = match self.exec_lookup_images(lookup_query, library_id, requesting_user, None).await {
+            Ok(images) => images,
+            Err(error) => {
+                crate::tools::log::log_error(
+                    crate::tools::log::LogServiceType::Plugin,
+                    format!("person image lookup failed: {:#}", error),
+                );
+                Vec::new()
+            }
+        };
+
+        if let Some(ids) = query.ids {
+            let mut tmdb = self.tmdb.person_images(ids.clone()).await;
+            if let Ok(tmdb) = &mut tmdb {
+                images.append(tmdb)
+            }
+        }
+
         Ok(images)
     }
 
@@ -717,39 +780,47 @@ impl ModelController {
 
     pub async fn download_person_image(
         &self,
-        ids: &RsIds,
-        kind: &Option<ImageType>,
-        lang: &Option<String>,
+        query: RsLookupPerson,
+        library_id: Option<String>,
+        kind: &ImageType,
+        requesting_user: &ConnectedUser,
     ) -> crate::Result<AsyncReadPinBox> {
-        let images = self
-            .get_person_image_url(ids, kind.as_ref().unwrap_or(&ImageType::Poster), lang)
+        let request = self
+            .get_person_image_url(query, library_id.clone(), kind, requesting_user)
             .await?
             .ok_or(crate::Error::NotFound(format!(
-                "Unable to get person image url: {:?} kind {:?}",
-                ids, kind
+                "Unable to get person image url for kind: {:?}",
+                kind
             )))?;
-        let image_reader = reqwest::get(images).await?;
-        let stream = image_reader.bytes_stream();
-        let body_with_io_error =
-            stream.map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err));
-        let body_reader = StreamReader::new(body_with_io_error);
-        Ok(Box::pin(body_reader))
+        let reader = crate::plugins::sources::SourceRead::Request(request)
+            .into_reader(
+                library_id.as_deref(),
+                None,
+                None,
+                Some((self.clone(), requesting_user)),
+                None,
+            )
+            .await?;
+        Ok(reader.stream)
     }
     pub async fn get_person_image_url(
         &self,
-        ids: &RsIds,
+        query: RsLookupPerson,
+        library_id: Option<String>,
         kind: &ImageType,
-        lang: &Option<String>,
-    ) -> RsResult<Option<String>> {
-        let images = if kind == &ImageType::Poster {
-            None
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Option<RsRequest>> {
+        let images = self.get_person_images(query, library_id, requesting_user).await?;
+        let exact_images: Vec<_> = images.into_iter().filter(|image| image.match_type.is_some()).collect();
+        let first_kind_match = exact_images
+            .iter()
+            .find(|image| image.kind.as_ref() == Some(kind))
+            .map(|image| image.url.clone());
+        if first_kind_match.is_some() {
+            Ok(first_kind_match)
         } else {
-            self.tmdb
-                .person_image(ids.clone(), lang)
-                .await?
-                .into_kind(kind.clone())
-        };
-        Ok(images)
+            Ok(exact_images.into_iter().next().map(|image| image.url))
+        }
     }
 
     /// download and update image
@@ -765,7 +836,18 @@ impl ModelController {
             .await?
             .ok_or(RsError::NotFoundPerson(person_id.to_string()))?;
         let ids: RsIds = person.clone().into();
-        let reader = self.download_person_image(&ids, kind, &None).await?;
+        let lookup_query = RsLookupPerson {
+            name: Some(person.name.clone()),
+            ids: Some(ids),
+            page_key: None,
+        };
+        let target_kind = kind.as_ref().unwrap_or(&ImageType::Poster);
+        let reader = self.download_person_image(
+            lookup_query,
+            Some(library_id.to_string()),
+            target_kind,
+            requesting_user,
+        ).await?;
         self.update_person_image(
             library_id,
             person_id,

@@ -24,7 +24,7 @@ use axum::{
 use futures::{Stream, TryStreamExt};
 use rs_plugin_common_interfaces::{
     domain::rs_ids::RsIds,
-    lookup::RsLookupMovie,
+    lookup::{RsLookupMovie, RsLookupPerson},
     ElementType, ExternalImage, ImageType,
 };
 use serde::Deserialize;
@@ -212,7 +212,12 @@ async fn handler_image_search(
             "handler_image_search".to_string(),
         ))?;
     let ids: RsIds = person.into();
-    let result = mc.get_person_images(&ids).await?;
+    let lookup_query = RsLookupPerson {
+        name: Some(String::new()),
+        ids: Some(ids),
+        page_key: None,
+    };
+    let result = mc.get_person_images(lookup_query, Some(library_id), &user).await?;
     Ok(Json(json!(result)))
 }
 

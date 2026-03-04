@@ -456,8 +456,6 @@ async fn handler_post(
                 .and_then(|len| len.to_str().ok())
                 .and_then(|len_str| len_str.parse::<u64>().ok());
 
-            println!("Expected file length: {:?}", size);
-
             info.name = info.name.or(Some(filename.clone()));
             info.mimetype = mime;
             info.size = size;
