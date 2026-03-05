@@ -284,7 +284,9 @@ impl ModelController {
             .filter(|p| sources.map_or(true, |s| s.iter().any(|id| id == &p.plugin.path)))
             .collect();
 
-        self.plugin_manager.lookup_metadata_grouped(query, plugins, target).await
+        let mut results = self.plugin_manager.lookup_metadata_grouped(query, plugins, target).await?;
+        crate::model::entity_search::merge_result_ids(&mut results);
+        Ok(results)
     }
 
     pub async fn exec_lookup_images_grouped(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<HashMap<String, Vec<ExternalImage>>> {
