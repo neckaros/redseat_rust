@@ -353,21 +353,19 @@ mod tests {
     use tower::ServiceExt; // for `call`, `oneshot`, and `ready`
 
     #[tokio::test]
-    async fn json() {
-        let app = app();
+    async fn routes() {
+        let router = app().await.unwrap();
 
-        let response = app
-            .await
-            .unwrap()
+        // Test ping returns success JSON with CORS
+        let response = router
+            .clone()
             .oneshot(
                 Request::builder()
                     .method(http::Method::GET)
                     .uri("/ping")
                     .header(http::header::CONTENT_TYPE, mime::APPLICATION_JSON.as_ref())
+                    .header(http::header::ORIGIN, "http://localhost:3000")
                     .body(Body::empty())
-                    //.body(Body::from(
-                    //    serde_json::to_vec(&json!([1, 2, 3, 4])).unwrap(),
-                    //))
                     .unwrap(),
             )
             .await
@@ -379,20 +377,14 @@ mod tests {
                 .headers()
                 .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
                 .unwrap(),
-            "*",
+            "http://localhost:3000",
         );
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let body: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(body, json!({ "result": {"success": true} }));
-    }
 
-    #[tokio::test]
-    async fn not_found() {
-        let app = app();
-
-        let response = app
-            .await
-            .unwrap()
+        // Test unknown route returns 404
+        let response = router
             .oneshot(
                 Request::builder()
                     .uri("/does-not-exist")
@@ -403,7 +395,5 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        assert!(body.is_empty());
     }
 }

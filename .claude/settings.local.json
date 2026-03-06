@@ -7,7 +7,8 @@
       "Bash(cargo check:*)",
       "Bash(find:*)",
       "Bash(cargo test:*)",
-      "Bash(dir:*)"
+      "Bash(dir:*)",
+      "Bash(ls:*)"
     ]
   }
 }

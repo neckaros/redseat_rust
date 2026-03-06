@@ -46,7 +46,7 @@ impl ServerConfig {
     }
 }
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Default)]
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// Force server id
@@ -83,7 +83,7 @@ pub async fn initialize_config() -> ServerConfig {
 }
 
 pub async fn get_server_local_path() -> Result<PathBuf> {
-    let args = Args::parse();
+    let args = Args::try_parse().unwrap_or_default();
     
     let dir_path = if let Some(argdir) = args.dir {
         PathBuf::from(&argdir)
@@ -219,7 +219,7 @@ pub async fn check_unregistered() -> Result<()> {
 }
 
 pub async fn get_config_with_overrides() -> Result<ServerConfig> {
-    let args = Args::parse();
+    let args = Args::try_parse().unwrap_or_default();
     let mut config = get_raw_config().await?;
 
     if let Some(id) = get_config_override_serverid() {

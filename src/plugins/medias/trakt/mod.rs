@@ -318,6 +318,7 @@ mod tests {
         RsIds::from_imdb("tt1160419".to_owned())
     }
     #[tokio::test]
+    #[ignore] // requires network + valid Trakt API key
     async fn trakt_releases() -> RsResult<()> {
         let trakt = TraktContext::new("455f81b3409a8dd140a941e9250ff22b2ed92d68003491c3976363fe752a9024".to_owned());
 
@@ -330,6 +331,7 @@ mod tests {
 
 
     #[tokio::test]
+    #[ignore] // requires network + valid Trakt API key
     async fn trakt_search_person() -> RsResult<()> {
         let trakt = TraktContext::new("455f81b3409a8dd140a941e9250ff22b2ed92d68003491c3976363fe752a9024".to_owned());
 

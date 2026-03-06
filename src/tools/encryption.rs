@@ -747,14 +747,20 @@ mod tests {
     async fn encrypt() {
         let key = derive_key("test".to_string());
         let iv = random_iv();
-        //c:\\Devs\\test.png
-        ///Users/arnaudjezequel/Documents/video.mp4
-       encrypt_file("/Users/arnaudjezequel/Documents/video.mp4", "/Users/arnaudjezequel/Documents/video.enc", &key, &iv).await.unwrap();
-       decrypt_file("/Users/arnaudjezequel/Documents/video.enc", "/Users/arnaudjezequel/Documents/video.enc.mp4", &key, None).await.unwrap();
-       //test_file("/Users/arnaudjezequel/Documents/video.mp4","/Users/arnaudjezequel/Documents/video.mp4.enc", "/Users/arnaudjezequel/Documents/video.mp4.dec.mp4", &key, &iv).await.unwrap();
 
-       //decrypt_file("/Users/arnaudjezequel/Downloads/U-AqTolcHF-H0vBi8mtpHQ", "/Users/arnaudjezequel/Downloads/U-AqTolcHF-H0vBi8mtpHQ.heic", &key, None).await.unwrap();
+        let input_path = "test_data/image.jpg";
+        let enc_path = "test_data/image.enc";
+        let dec_path = "test_data/image.dec.jpg";
 
+        encrypt_file(input_path, enc_path, &key, &iv).await.unwrap();
+        decrypt_file(enc_path, dec_path, &key, None).await.unwrap();
+
+        let original = tokio::fs::read(input_path).await.unwrap();
+        let decrypted = tokio::fs::read(dec_path).await.unwrap();
+        assert_eq!(original, decrypted);
+
+        let _ = tokio::fs::remove_file(enc_path).await;
+        let _ = tokio::fs::remove_file(dec_path).await;
     }
 
     #[tokio::test]

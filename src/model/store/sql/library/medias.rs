@@ -1184,6 +1184,35 @@ impl SqliteLibraryStore {
         Ok(())
     }
 
+    pub async fn copy_media_relations(&self, source_id: String, target_id: String) -> Result<()> {
+        self.connection.call(move |conn| {
+            conn.execute(
+                "INSERT OR IGNORE INTO media_tag_mapping (media_ref, tag_ref, confidence)
+                 SELECT ?, tag_ref, confidence FROM media_tag_mapping WHERE media_ref = ?",
+                params![target_id, source_id],
+            )?;
+            conn.execute(
+                "INSERT OR IGNORE INTO media_people_mapping (media_ref, people_ref, confidence)
+                 SELECT ?, people_ref, confidence FROM media_people_mapping WHERE media_ref = ?",
+                params![target_id, source_id],
+            )?;
+            conn.execute(
+                "INSERT OR IGNORE INTO media_serie_mapping (media_ref, serie_ref, season, episode)
+                 SELECT ?, serie_ref, season, episode FROM media_serie_mapping WHERE media_ref = ?",
+                params![target_id, source_id],
+            )?;
+            conn.execute(
+                "UPDATE medias SET
+                    movie = COALESCE((SELECT movie FROM medias WHERE id = ?1), movie),
+                    book = COALESCE((SELECT book FROM medias WHERE id = ?1), book)
+                 WHERE id = ?2",
+                params![source_id, target_id],
+            )?;
+            Ok(())
+        }).await?;
+        Ok(())
+    }
+
     pub async fn remove_media(&self, media_id: String) -> Result<()> {
         self.connection
             .call(move |conn| {

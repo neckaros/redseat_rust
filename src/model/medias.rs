@@ -2554,6 +2554,7 @@ impl ModelController {
             let request_clone = request.clone();
             let lib_progress = library_id.to_string(); // adjust based on your actual type
             let name_progress = filename.clone();
+            let media_id_progress = media_id.to_string();
             let media_progress: MediaForUpdate = media.into();
             // Spawn background task
             tokio::spawn(async move {
@@ -2664,6 +2665,12 @@ impl ModelController {
                                         // Note: Can't use self here, need to use mc_progress
                                         match media_result {
                                             Ok(media) => {
+                                                if let Ok(store) = mc_progress.store.get_library_store(&lib_progress) {
+                                                    if let Err(e) = store.copy_media_relations(media_id_progress.clone(), media.id.clone()).await {
+                                                        tracing::warn!("Failed to copy relations to converted media: {:?}", e);
+                                                    }
+                                                }
+
                                                 log_info(
                                                     crate::tools::log::LogServiceType::Source,
                                                     format!(
@@ -2897,6 +2904,10 @@ impl ModelController {
         local.remove(&dest_source).await?;
         match media {
             Ok(media) => {
+                if let Err(e) = store.copy_media_relations(element.media.clone(), media.id.clone()).await {
+                    tracing::warn!("Failed to copy relations to converted media: {:?}", e);
+                }
+
                 let existing_thumb = self
                     .media_image(
                         &element.library,

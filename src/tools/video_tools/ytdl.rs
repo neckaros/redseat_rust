@@ -415,6 +415,7 @@ mod tests {
 
         
     #[tokio::test]
+    #[ignore] // requires network + yt-dlp binary
     async fn test_run_with_cache() -> RsResult<()> {
         let (tx_progress, mut rx_progress) = mpsc::channel::<RsProgress>(100);
 
@@ -439,6 +440,7 @@ mod tests {
     
         
     #[tokio::test]
+    #[ignore] // requires network + yt-dlp binary
     async fn test_run_infos() -> RsResult<()> {
 
         let path = YtDlCommandBuilder::new("https://www.youtube.com/watch?v=-t7Aa6Dr4pI").infos().await?;
