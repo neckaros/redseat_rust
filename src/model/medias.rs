@@ -2229,7 +2229,7 @@ impl ModelController {
             &None,
             &None,
             thumb.as_slice(),
-            requesting_user,
+            &ConnectedUser::ServerAdmin,
         )
         .await?;
 

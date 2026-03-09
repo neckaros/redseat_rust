@@ -431,7 +431,7 @@ impl ModelController {
                             &kind,
                             &size,
                             image.as_slice(),
-                            requesting_user,
+                            &ConnectedUser::ServerAdmin,
                         )
                         .await?;
 
