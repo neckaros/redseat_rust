@@ -1,4 +1,4 @@
-use rs_plugin_common_interfaces::{lookup::RsLookupMetadataResults, ImageType};
+use rs_plugin_common_interfaces::{lookup::{RsLookupMatchType, RsLookupMetadataResults}, request::{RsGroupDownload, RsRequest}, ImageType};
 use serde::{Deserialize, Serialize};
 
 use crate::tools::image_tools::ImageSize;
@@ -58,6 +58,35 @@ impl<T> SearchQuery<T> {
                 .filter(|s| !s.is_empty())
                 .collect()
         })
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SseLookupSearchEvent<'a> {
+    pub source_id: &'a str,
+    pub source_name: &'a str,
+    pub results: &'a [SseLookupSearchResult],
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SseLookupSearchResult {
+    pub request: RsRequest,
+    pub match_type: Option<RsLookupMatchType>,
+}
+
+impl SseLookupSearchResult {
+    pub fn from_groups(groups: Vec<RsGroupDownload>) -> Vec<Self> {
+        groups.into_iter().flat_map(|group| {
+            let match_type = group.match_type;
+            group.requests.into_iter().map(move |request| {
+                SseLookupSearchResult {
+                    request,
+                    match_type: match_type.clone(),
+                }
+            })
+        }).collect()
     }
 }
 

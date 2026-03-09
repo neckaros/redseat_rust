@@ -357,6 +357,84 @@ impl PluginManager {
         Ok(results)
     }
 
+    pub async fn lookup_stream_grouped(self: &std::sync::Arc<Self>, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<tokio::sync::mpsc::Receiver<(String, String, Vec<RsGroupDownload>)>> {
+        let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+
+        let tasks: Vec<_> = {
+            let plugins_guard = self.plugins.read().await;
+            plugins.into_iter().filter_map(|plugin_with_cred| {
+                plugins_guard.iter()
+                    .find(|p| p.filename == plugin_with_cred.plugin.path)
+                    .filter(|p| p.infos.capabilities.contains(&PluginType::Lookup))
+                    .map(|p| {
+                        let plugin_arc = p.plugin.clone();
+                        let plugin_id = plugin_with_cred.plugin.path.clone();
+                        let plugin_name = plugin_with_cred.plugin.name.clone();
+                        let wrapped_query = RsLookupWrapper {
+                            query: query.clone(),
+                            credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
+                            params: build_plugin_params(&plugin_with_cred),
+                        };
+                        (plugin_arc, plugin_id, plugin_name, wrapped_query)
+                    })
+            }).collect()
+        };
+
+        tokio::spawn(async move {
+            let mut pending: futures::stream::FuturesUnordered<_> = tasks.into_iter().map(|(plugin_arc, plugin_id, plugin_name, wrapped_query)| {
+                tokio::task::spawn_blocking(move || {
+                    let mut plugin_m = plugin_arc.lock().unwrap();
+                    println!("Executing lookup stream for plugin {} ...", plugin_name);
+                    let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<RsLookupSourceResult>>("lookup", Json(wrapped_query));
+                    (plugin_id, plugin_name, res)
+                })
+            }).collect();
+
+            while let Some(handle_result) = pending.next().await {
+                match handle_result {
+                    Ok((plugin_id, plugin_name, Ok(Json(RsLookupSourceResult::GroupRequest(mut groups))))) => {
+                        log_info(crate::tools::log::LogServiceType::Plugin, format!("Lookup stream result from plugin {}", plugin_name));
+                        for group in &mut groups {
+                            for req in &mut group.requests {
+                                req.plugin_id = Some(plugin_id.clone());
+                                req.plugin_name = Some(plugin_name.clone());
+                            }
+                        }
+                        if tx.send((plugin_id, plugin_name, groups)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok((plugin_id, plugin_name, Ok(Json(RsLookupSourceResult::Requests(request))))) => {
+                        log_info(crate::tools::log::LogServiceType::Plugin, format!("Lookup stream result from plugin {}", plugin_name));
+                        let groups: Vec<RsGroupDownload> = request.into_iter().map(|mut req| {
+                            req.plugin_id = Some(plugin_id.clone());
+                            req.plugin_name = Some(plugin_name.clone());
+                            RsGroupDownload {
+                                requests: vec![req],
+                                group: false,
+                                ..Default::default()
+                            }
+                        }).collect();
+                        if tx.send((plugin_id, plugin_name, groups)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok((_, _, Ok(_))) => {}
+                    Ok((_, _, Err((error, code)))) => {
+                        if code != 404 {
+                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request lookup stream {} {:?}", code, error));
+                        }
+                    }
+                    Err(e) => {
+                        log_error(crate::tools::log::LogServiceType::Plugin, format!("Plugin task panicked: {:?}", e));
+                    }
+                }
+            }
+        });
+        Ok(rx)
+    }
+
     pub async fn lookup_metadata(&self, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<RsLookupMetadataResults> {
         let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
 

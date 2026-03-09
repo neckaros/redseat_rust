@@ -22,7 +22,7 @@ use serde::Deserialize;
 use crate::{
     domain::book::{Book, BookForUpdate},
     model::{books::BookQuery, medias::MediaQuery, users::ConnectedUser, ModelController},
-    routes::{ImageRequestOptions, ImageUploadOptions, RatingUpdateBody, SearchQuery, SearchResultGroup, SseSearchEvent},
+    routes::{ImageRequestOptions, ImageUploadOptions, RatingUpdateBody, SearchQuery, SearchResultGroup, SseLookupSearchEvent, SseLookupSearchResult, SseSearchEvent},
     Error, Result,
 };
 
@@ -44,6 +44,7 @@ pub fn routes(mc: ModelController) -> Router {
         .route("/:id/rating", get(handler_rating_get))
         .route("/:id/rating", patch(handler_rating_set))
         .route("/:id/search", get(handler_lookup))
+        .route("/:id/searchstream", get(handler_lookup_stream))
         .with_state(mc)
 }
 
@@ -175,6 +176,37 @@ async fn handler_lookup(
     print!("Executing lookup with query: {:?}", query);
     let results = mc.exec_lookup(query, Some(library_id), &user, None).await?;
     Ok(Json(json!(results)))
+}
+
+async fn handler_lookup_stream(
+    Path((library_id, book_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>> {
+    let book = mc.get_book(&library_id, book_id, &user).await?;
+    let name = book.item.name.clone();
+    let ids: RsIds = book.item.into();
+    let query = RsLookupQuery::Book(RsLookupBook {
+        name: Some(name),
+        ids: Some(ids),
+        page_key: None,
+    });
+    let mut rx = mc.exec_lookup_stream_grouped(query, Some(library_id), &user, None, None).await?;
+
+    let stream = async_stream::stream! {
+        while let Some((source_id, source_name, groups)) = rx.recv().await {
+            let results = SseLookupSearchResult::from_groups(groups);
+            if let Ok(data) = serde_json::to_string(&SseLookupSearchEvent { source_id: &source_id, source_name: &source_name, results: &results }) {
+                yield Ok(Event::default().event("results").data(data));
+            }
+        }
+    };
+
+    Ok(Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(30))
+            .text("ping"),
+    ))
 }
 
 async fn handler_medias(

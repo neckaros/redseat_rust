@@ -1,15 +1,17 @@
 
 use std::io::Cursor;
 
+use std::{convert::Infallible, time::Duration};
+
 use crate::{domain::{episode::{self, Episode}, media::{FileEpisode, Media, MediaForUpdate}, progress, view_progress::{ViewProgressForAdd, ViewProgressLigh}, watched::{WatchedForAdd, WatchedForDelete, WatchedLight}, RsIdsExt}, error::RsError, model::{episodes::{EpisodeForUpdate, EpisodeQuery}, medias::MediaQuery, users::{ConnectedUser, HistoryQuery}, ModelController}, plugins::sources::error::SourcesError, Error, Result};
-use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
-use futures::TryStreamExt;
+use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{sse::{Event, KeepAlive, Sse}, IntoResponse, Response}, routing::{delete, get, patch, post}, Json, Router};
+use futures::{Stream, TryStreamExt};
 use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, lookup::{RsLookupEpisode, RsLookupQuery}, request::{RsGroupDownload, RsRequest}, ElementType, ImageType, MediaType};
 use serde_json::{json, ser, Value};
 use tokio::io::AsyncRead;
 use tokio_util::io::{ReaderStream, StreamReader};
 
-use super::{ImageRequestOptions, ImageUploadOptions, RatingUpdateBody};
+use super::{ImageRequestOptions, ImageUploadOptions, RatingUpdateBody, SseLookupSearchEvent, SseLookupSearchResult};
 
 
 pub fn routes(mc: ModelController) -> Router {
@@ -19,6 +21,7 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/episodes/refresh", get(handler_refresh))
 		
 		.route("/seasons/:season/search", get(handler_lookup_season))
+		.route("/seasons/:season/searchstream", get(handler_lookup_season_stream))
 		.route("/seasons/:season/episodes", get(handler_list_season_episodes))
 		.route("/seasons/:season/episodes/:number", get(handler_get))
 		.route("/seasons/:season/episodes/:number", post(handler_post_episode))
@@ -26,6 +29,7 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/seasons/:season/episodes/:number", delete(handler_delete))
 		.route("/seasons/:season/episodes/:number/image", get(handler_image))
 		.route("/seasons/:season/episodes/:number/search", get(handler_lookup))
+		.route("/seasons/:season/episodes/:number/searchstream", get(handler_lookup_stream))
 		.route("/seasons/:season/episodes/:number/search", post(handler_lookup_add))
 		.route("/seasons/:season/episodes/:number/medias", get(handler_medias))
 		.route("/seasons/:season/episodes/:number/progress", get(handler_progress_get))
@@ -118,6 +122,67 @@ async fn handler_lookup(Path((library_id, serie_id, season, number)): Path<(Stri
 	let library = mc.exec_lookup(query, Some(library_id), &user, None).await?;
 	let body = Json(json!(library));
 	Ok(body)
+}
+
+async fn handler_lookup_stream(Path((library_id, serie_id, season, number)): Path<(String, String, u32, u32)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>> {
+	let episode = mc.get_episode(&library_id, serie_id.clone(), season, number, &user).await?;
+	let serie = mc.get_serie(&library_id, serie_id.clone(), &user).await?.ok_or(SourcesError::UnableToFindSerie(library_id.to_string(), serie_id.to_string(), "handler_lookup_stream".to_string()))?;
+	let name = serie.item.name.clone();
+	let ids: RsIds = serie.item.into();
+	let query_episode = RsLookupEpisode {
+		name: Some(name),
+		ids: Some(ids),
+		season: episode.season,
+		number: Some(episode.number),
+		page_key: None,
+	};
+	let query = RsLookupQuery::Episode(query_episode);
+	let mut rx = mc.exec_lookup_stream_grouped(query, Some(library_id), &user, None, None).await?;
+
+	let stream = async_stream::stream! {
+		while let Some((source_id, source_name, groups)) = rx.recv().await {
+			let results = SseLookupSearchResult::from_groups(groups);
+			if let Ok(data) = serde_json::to_string(&SseLookupSearchEvent { source_id: &source_id, source_name: &source_name, results: &results }) {
+				yield Ok(Event::default().event("results").data(data));
+			}
+		}
+	};
+
+	Ok(Sse::new(stream).keep_alive(
+		KeepAlive::new()
+			.interval(Duration::from_secs(30))
+			.text("ping"),
+	))
+}
+
+async fn handler_lookup_season_stream(Path((library_id, serie_id, season)): Path<(String, String, u32)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>> {
+	let serie = mc.get_serie(&library_id.clone(), serie_id.clone(), &user).await?.ok_or(SourcesError::UnableToFindSerie(library_id.to_string(), serie_id.to_string(), "handler_lookup_season_stream".to_string()))?;
+	let name = serie.item.name.clone();
+	let ids: RsIds = serie.item.into();
+	let query_episode = RsLookupEpisode {
+		name: Some(name),
+		ids: Some(ids),
+		season,
+		number: None,
+		page_key: None,
+	};
+	let query = RsLookupQuery::Episode(query_episode);
+	let mut rx = mc.exec_lookup_stream_grouped(query, Some(library_id), &user, None, None).await?;
+
+	let stream = async_stream::stream! {
+		while let Some((source_id, source_name, groups)) = rx.recv().await {
+			let results = SseLookupSearchResult::from_groups(groups);
+			if let Ok(data) = serde_json::to_string(&SseLookupSearchEvent { source_id: &source_id, source_name: &source_name, results: &results }) {
+				yield Ok(Event::default().event("results").data(data));
+			}
+		}
+	};
+
+	Ok(Sse::new(stream).keep_alive(
+		KeepAlive::new()
+			.interval(Duration::from_secs(30))
+			.text("ping"),
+	))
 }
 
 async fn handler_lookup_add(Path((library_id, serie_id, season, number)): Path<(String, String, u32, u32)>, State(mc): State<ModelController>, user: ConnectedUser, Json(mut request): Json<RsRequest>) -> Result<Json<Value>> {

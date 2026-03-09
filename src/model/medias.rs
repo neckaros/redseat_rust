@@ -2671,6 +2671,22 @@ impl ModelController {
                                                     }
                                                 }
 
+                                                if let Ok(existing_thumb) = mc_progress.media_image(
+                                                    &lib_progress,
+                                                    &media_id_progress,
+                                                    None,
+                                                    &ConnectedUser::ServerAdmin,
+                                                ).await {
+                                                    if let Err(e) = mc_progress.update_media_image(
+                                                        &lib_progress,
+                                                        &media.id,
+                                                        existing_thumb.stream,
+                                                        &ConnectedUser::ServerAdmin,
+                                                    ).await {
+                                                        tracing::warn!("Failed to copy thumbnail to converted media: {:?}", e);
+                                                    }
+                                                }
+
                                                 log_info(
                                                     crate::tools::log::LogServiceType::Source,
                                                     format!(
