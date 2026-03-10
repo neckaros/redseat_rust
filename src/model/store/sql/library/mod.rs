@@ -12,6 +12,7 @@ use tokio_rusqlite::Connection;
 use super::Result;
 
 pub mod books;
+pub mod channels;
 pub mod deleted;
 pub mod episodes;
 pub mod media_progress;
@@ -261,6 +262,27 @@ impl SqliteLibraryStore {
                     );
                 }
 
+                if version < 47 {
+                    let initial = String::from_utf8_lossy(include_bytes!("047 - IPTV CHANNELS.sql"));
+                    conn.execute_batch(&initial)?;
+                    version = 47;
+                    conn.pragma_update(None, "user_version", version)?;
+                    log_info(
+                        LogServiceType::Database,
+                        format!("Update Library Database to version: {}", version),
+                    );
+                }
+                if version < 48 {
+                    let initial = String::from_utf8_lossy(include_bytes!("048 - CHANNEL POSTERV.sql"));
+                    conn.execute_batch(&initial)?;
+                    version = 48;
+                    conn.pragma_update(None, "user_version", version)?;
+                    log_info(
+                        LogServiceType::Database,
+                        format!("Update Library Database to version: {}", version),
+                    );
+                }
+
                 conn.execute("VACUUM;", params![])?;
                 conn.execute("DELETE FROM media_people_mapping where people_ref not in (select id from people) or media_ref not in (select id from medias);", []);
                 conn.execute("DELETE FROM media_tag_mapping where tag_ref not in (select id from tags) or media_ref not in (select id from medias);", []);
@@ -340,7 +362,7 @@ mod tests {
 
         let store = SqliteLibraryStore::new(connection).await.unwrap();
         let version = store.migrate().await.unwrap();
-        assert_eq!(version, 46);
+        assert_eq!(version, 48);
 
         store
             .connection

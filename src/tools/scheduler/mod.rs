@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
-use self::{ip::RefreshIpTask, refresh::RefreshTask, series::SerieTask, face_recognition::FaceRecognitionTask, request_progress::RequestProgressTask, encrypt_library::EncryptLibraryTask};
+use self::{ip::RefreshIpTask, iptv_refresh::IptvRefreshTask, refresh::RefreshTask, series::SerieTask, face_recognition::FaceRecognitionTask, request_progress::RequestProgressTask, encrypt_library::EncryptLibraryTask};
 
 use super::{get_time, log::{log_error, log_info}};
 
@@ -14,6 +14,7 @@ pub mod refresh;
 pub mod ip;
 pub mod backup;
 pub mod face_recognition;
+pub mod iptv_refresh;
 pub mod request_progress;
 pub mod encrypt_library;
 
@@ -164,6 +165,7 @@ pub enum RsTaskType {
     Face,
     RequestProgress,
     EncryptLibrary,
+    IptvRefresh,
 }
 
 
@@ -194,6 +196,10 @@ impl RsSchedulerItem {
             },
             RsTaskType::EncryptLibrary => {
                 let deserialized: EncryptLibraryTask = serde_json::from_str(&self.task)?;
+                Ok(Box::pin(deserialized))
+            },
+            RsTaskType::IptvRefresh => {
+                let deserialized: IptvRefreshTask = serde_json::from_str(&self.task)?;
                 Ok(Box::pin(deserialized))
             },
         }

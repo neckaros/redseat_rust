@@ -13,6 +13,7 @@ use crate::{
     domain::{
         backup::{BackupFileProgress, BackupMessage},
         book::BooksMessage,
+        channel::ChannelMessage,
         episode::EpisodesMessage,
         library::{LibraryMessage, LibraryRole, LibraryStatusMessage},
         media::{ConvertMessage, MediasMessage, UploadProgressMessage},
@@ -51,6 +52,7 @@ pub enum SseEvent {
     Watched(Watched),
     Unwatched(Unwatched),
     RequestProcessing(RequestProcessingMessage),
+    Channels(ChannelMessage),
 }
 
 impl SseEvent {
@@ -75,6 +77,7 @@ impl SseEvent {
             SseEvent::Watched(_) => "watched",
             SseEvent::Unwatched(_) => "unwatched",
             SseEvent::RequestProcessing(_) => "request_processing",
+            SseEvent::Channels(_) => "channels",
         }
     }
 
@@ -99,6 +102,7 @@ impl SseEvent {
             SseEvent::Watched(_) => None,
             SseEvent::Unwatched(_) => None,
             SseEvent::RequestProcessing(m) => Some(&m.library),
+            SseEvent::Channels(m) => Some(&m.library),
         }
     }
 

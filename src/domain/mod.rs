@@ -30,6 +30,7 @@ impl RsIdsExt for RsIds {
 
 pub mod backup;
 pub mod book;
+pub mod channel;
 pub mod credential;
 pub mod deleted;
 pub mod episode;

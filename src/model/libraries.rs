@@ -469,10 +469,15 @@ impl ModelController {
     ) -> RsResult<Option<super::libraries::ServerLibraryForRead>> {
         requesting_user.check_role(&UserRole::Admin)?;
         let library_id = nanoid!();
+        let source = if library_for_add.kind == LibraryType::Iptv {
+            "virtual".to_string()
+        } else {
+            library_for_add.source
+        };
         let library = ServerLibrary {
             id: library_id.clone(),
             name: library_for_add.name,
-            source: library_for_add.source,
+            source,
             root: library_for_add.root,
             kind: library_for_add.kind,
             crypt: library_for_add.crypt,
@@ -649,15 +654,15 @@ impl ModelController {
         let local_root = local.get_full_path("");
         Self::remove_directory_if_exists(&local_root).await?;
 
+        self.cache_remove_library(library_id).await;
+        self.store.remove_library(library_id.to_string()).await?;
         self.store.remove_library_from_store(library_id)?;
+
         self.send_library_status(LibraryStatusMessage {
             message: "delete-cleaning-database-files".to_string(),
             library: library_id.to_string(),
         });
         self.remove_library_database_files(library_id).await?;
-
-        self.cache_remove_library(library_id).await;
-        self.store.remove_library(library_id.to_string()).await?;
         self.send_library(LibraryMessage {
             action: crate::domain::ElementAction::Deleted,
             library,

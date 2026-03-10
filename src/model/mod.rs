@@ -8,6 +8,7 @@ pub mod store;
 pub mod users;
 
 pub mod books;
+pub mod channels;
 pub mod deleted;
 pub mod entity_images;
 pub mod entity_search;
@@ -41,7 +42,8 @@ use crate::{
         image_tools::{resize_image_reader, ImageSize},
         log::log_info,
         scheduler::{
-            self, face_recognition::FaceRecognitionTask, ip::RefreshIpTask, refresh::RefreshTask,
+            self, face_recognition::FaceRecognitionTask, ip::RefreshIpTask,
+            iptv_refresh::IptvRefreshTask, refresh::RefreshTask,
             request_progress::RequestProgressTask, RsScheduler, RsTaskType,
         },
     },
@@ -194,6 +196,15 @@ impl ModelController {
                 RsTaskType::RequestProgress,
                 scheduler::RsSchedulerWhen::Every(30),
                 RequestProgressTask::new(),
+            )
+            .await?;
+        scheduler
+            .add(
+                RsTaskType::IptvRefresh,
+                scheduler::RsSchedulerWhen::Every(SECONDS_IN_HOUR * 24),
+                IptvRefreshTask {
+                    specific_library: None,
+                },
             )
             .await?;
         //scheduler.add(RsTaskType::Face, scheduler::RsSchedulerWhen::Every(SECONDS_IN_HOUR * 3), FaceRecognitionTask {specific_library:None} ).await?;

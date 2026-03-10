@@ -21,6 +21,7 @@ pub mod serialization_tools;
 pub mod clock;
 pub mod compression;
 pub mod download_external_libs;
+pub mod m3u_parser;
 pub mod test_sample;
 pub mod zip_range;
 

@@ -15,6 +15,7 @@ pub mod sse;
 pub mod users;
 
 pub mod books;
+pub mod channels;
 pub mod episodes;
 pub mod library_plugins;
 pub mod medias;

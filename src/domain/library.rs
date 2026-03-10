@@ -113,6 +113,10 @@ pub struct ServerLibrarySettings {
     pub map_progress: Option<Vec<UserMapping>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data_path: Option<String>,
+
+    // IPTV settings
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub epg_url: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

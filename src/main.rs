@@ -255,6 +255,10 @@ async fn app() -> Result<Router> {
             routes::books::routes(mc.clone()),
         )
         .nest(
+            "/libraries/:libraryid/channels",
+            routes::channels::routes(mc.clone()),
+        )
+        .nest(
             "/libraries/:libraryid/plugins",
             routes::library_plugins::routes(mc.clone()),
         )
