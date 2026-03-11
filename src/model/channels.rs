@@ -587,10 +587,38 @@ impl ModelController {
         let response = reqwest::get(&logo_url)
             .await
             .map_err(|e| crate::Error::Error(format!("Failed to fetch channel logo: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(crate::Error::Error(format!(
+                "Failed to fetch channel logo for {}: HTTP {}",
+                channel_id,
+                response.status()
+            )));
+        }
+
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if !content_type.is_empty() && !content_type.starts_with("image/") {
+            return Err(crate::Error::Error(format!(
+                "Channel logo for {} is not an image: content-type {}",
+                channel_id, content_type
+            )));
+        }
+
         let bytes = response
             .bytes()
             .await
             .map_err(|e| crate::Error::Error(format!("Failed to read channel logo bytes: {}", e)))?;
+
+        if bytes.is_empty() {
+            return Err(crate::Error::Error(format!(
+                "Channel logo for {} returned empty response",
+                channel_id
+            )));
+        }
 
         let reader: AsyncReadPinBox = Box::pin(Cursor::new(bytes.to_vec()));
         self.update_channel_image(
