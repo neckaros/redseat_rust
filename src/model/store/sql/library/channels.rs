@@ -31,8 +31,10 @@ impl SqliteLibraryStore {
             channel_ref: row.get(1)?,
             quality: row.get(2)?,
             stream_url: row.get(3)?,
-            modified: row.get(4)?,
-            added: row.get(5)?,
+            name: row.get(4)?,
+            tvg_name: row.get(5)?,
+            modified: row.get(6)?,
+            added: row.get(7)?,
         })
     }
 
@@ -294,7 +296,7 @@ impl SqliteLibraryStore {
             .connection
             .call(move |conn| {
                 let mut statement = conn.prepare(
-                    "SELECT id, channel_ref, quality, stream_url, modified, added FROM channel_variants WHERE channel_ref = ? ORDER BY quality ASC",
+                    "SELECT id, channel_ref, quality, stream_url, name, tvg_name, modified, added FROM channel_variants WHERE channel_ref = ? ORDER BY quality ASC",
                 )?;
                 let rows = statement.query_map([channel_ref], Self::row_to_variant)?;
                 let variants = rows.collect::<std::result::Result<Vec<ChannelVariant>, rusqlite::Error>>()?;
@@ -308,12 +310,14 @@ impl SqliteLibraryStore {
         self.connection
             .call(move |conn| {
                 conn.execute(
-                    "INSERT OR REPLACE INTO channel_variants (id, channel_ref, quality, stream_url) VALUES (?, ?, ?, ?)",
+                    "INSERT OR REPLACE INTO channel_variants (id, channel_ref, quality, stream_url, name, tvg_name) VALUES (?, ?, ?, ?, ?, ?)",
                     params![
                         variant.id,
                         variant.channel_ref,
                         variant.quality,
                         variant.stream_url,
+                        variant.name,
+                        variant.tvg_name,
                     ],
                 )?;
                 Ok(())
@@ -322,26 +326,37 @@ impl SqliteLibraryStore {
         Ok(())
     }
 
-    pub async fn get_channel_variant_by_quality(
+    pub async fn get_channel_variant_by_tvg_name(
         &self,
         channel_ref: &str,
-        quality: &str,
+        tvg_name: &str,
     ) -> Result<Option<ChannelVariant>> {
         let channel_ref = channel_ref.to_string();
-        let quality = quality.to_string();
+        let tvg_name = tvg_name.to_string();
         let row = self
             .connection
             .call(move |conn| {
                 let mut statement = conn.prepare(
-                    "SELECT id, channel_ref, quality, stream_url, modified, added FROM channel_variants WHERE channel_ref = ? AND quality = ? LIMIT 1",
+                    "SELECT id, channel_ref, quality, stream_url, name, tvg_name, modified, added FROM channel_variants WHERE channel_ref = ? AND tvg_name = ? LIMIT 1",
                 )?;
                 let row = statement
-                    .query_row(params![channel_ref, quality], Self::row_to_variant)
+                    .query_row(params![channel_ref, tvg_name], Self::row_to_variant)
                     .optional()?;
                 Ok(row)
             })
             .await?;
         Ok(row)
+    }
+
+    pub async fn remove_channel_variant(&self, variant_id: &str) -> Result<()> {
+        let variant_id = variant_id.to_string();
+        self.connection
+            .call(move |conn| {
+                conn.execute("DELETE FROM channel_variants WHERE id = ?", [&variant_id])?;
+                Ok(())
+            })
+            .await?;
+        Ok(())
     }
 
     pub async fn remove_channel_variants_for_channel(&self, channel_ref: &str) -> Result<()> {

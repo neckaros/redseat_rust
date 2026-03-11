@@ -6,16 +6,12 @@ pub const QUALITY_ORDER: &[&str] = &["4K", "FHD", "HEVC", "HD", "SD", "FHD BKP",
 
 lazy_static! {
     static ref RE_COUNTRY_PREFIX: Regex = Regex::new(r"^\|[A-Z]+\|\s*").unwrap();
-    static ref RE_QUALITY_SUFFIX: Regex = Regex::new(r"(?i)\s*(4K\s*HDR?\s*(UHD)?|UHD|FHD\+*|FULL\s*HD|FHD|HD|SD|LOW|HEVC)(\s*BKP)?\s*(\(.*?\))?\s*$").unwrap();
+    static ref RE_QUALITY_SUFFIX: Regex = Regex::new(r"(?i)\s*(4K\s*HDR?\s*(UHD)?|UHD|FHD\+*|FULL\s*HD|FHD|HD|SD|LOW|HEVC|H265)(\s*BKP)?\s*(\(.*?\))?\s*$").unwrap();
     static ref RE_SEASON_EPISODE: Regex = Regex::new(r"S(\d+)\s*E(\d+)").unwrap();
     static ref RE_SEASON_EPISODE_TAIL: Regex = Regex::new(r"\s*S\d+\s*E\d+.*$").unwrap();
     static ref RE_TRAILING_YEAR: Regex = Regex::new(r"\s+(\d{4})\s*$").unwrap();
     static ref RE_LANG_TAG: Regex = Regex::new(r"(?i)\s*\((?:MULTI|VF|VOSTFR|FR|EN)\)\s*").unwrap();
-    static ref RE_QUALITY_TAG: Regex = Regex::new(r"(?i)\s*(4K|UHD|FHD|HD|SD|LOW|HEVC)(\s*BKP)?\s*$").unwrap();
-    /// Matches decorative Unicode block characters used in IPTV separator entries
-    static ref RE_SEPARATOR_CHARS: Regex = Regex::new(r"[▀▄═━★◉▬■□●○▼▲]{2,}").unwrap();
-    /// Matches dash-based separator lines like "------▼|FR|-SPORTS-|FR|▼------"
-    static ref RE_SEPARATOR_DASHES: Regex = Regex::new(r"^-{3,}").unwrap();
+    static ref RE_QUALITY_TAG: Regex = Regex::new(r"(?i)\s*(4K|UHD|FHD|HD|SD|LOW|HEVC|H265)(\s*BKP)?\s*$").unwrap();
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,15 +41,6 @@ pub enum M3uContentType {
 }
 
 impl M3uEntry {
-    /// Returns true if this entry is a separator/category header rather than a real channel.
-    /// IPTV providers use decorative entries like "▀▄▀▄▀ [ EDUCATION ] ▀▄▀▄▀" or
-    /// "------▼|FR|-SPORTS-|FR|▼------" as visual dividers in their playlists.
-    pub fn is_separator(&self) -> bool {
-        let name = self.tvg_name.as_deref().unwrap_or(&self.display_name);
-        let stripped = RE_COUNTRY_PREFIX.replace(name, "");
-        RE_SEPARATOR_CHARS.is_match(&stripped) || RE_SEPARATOR_DASHES.is_match(name.trim())
-    }
-
     pub fn content_type(&self) -> M3uContentType {
         if self.url.contains("/movie/") {
             M3uContentType::Vod
@@ -70,7 +57,7 @@ impl M3uEntry {
         let is_bkp = upper.contains(" BKP");
         if upper.contains("4K") || upper.contains("UHD") {
             Some("4K".to_string())
-        } else if upper.contains("HEVC") {
+        } else if upper.contains("HEVC") || upper.contains("H265") {
             Some("HEVC".to_string())
         } else if upper.contains("FHD") || upper.contains("FULL HD") {
             Some(if is_bkp { "FHD BKP" } else { "FHD" }.to_string())
@@ -83,6 +70,12 @@ impl M3uEntry {
         } else {
             None
         }
+    }
+
+    /// Returns a display-friendly variant name by stripping the country prefix (e.g., `|FR|`).
+    pub fn variant_name(&self) -> String {
+        let name = self.tvg_name.as_deref().unwrap_or(&self.display_name);
+        RE_COUNTRY_PREFIX.replace(name, "").trim().to_string()
     }
 
     /// Returns a cleaned channel name for grouping variants of the same channel.
@@ -354,27 +347,13 @@ http://host:80/user/pass/55555"#;
     }
 
     #[test]
-    fn separator_detection() {
-        let separators = vec![
-            r#"#EXTM3U
-#EXTINF:-1 tvg-id="" tvg-name="|AR| ▀▄▀▄▀ [ EDUCATION ] ▀▄▀▄▀" tvg-logo="" group-title="ARABES",|AR| ▀▄▀▄▀ [ EDUCATION ] ▀▄▀▄▀
-http://host:80/user/pass/1"#,
-            r#"#EXTM3U
-#EXTINF:-1 tvg-id="" tvg-name="------▼|FR|-SPORTS-|FR|▼------" tvg-logo="" group-title="FR",------▼|FR|-SPORTS-|FR|▼------
-http://host:80/user/pass/2"#,
-            r#"#EXTM3U
-#EXTINF:-1 tvg-id="" tvg-name="▀▄ FR ▀▄▀▄  CINEMA  ▄▀▄▀▄" tvg-logo="" group-title="FR",▀▄ FR ▀▄▀▄  CINEMA  ▄▀▄▀▄
-http://host:80/user/pass/3"#,
-        ];
-        for m3u in &separators {
-            let result = parse_m3u(m3u);
-            assert!(result.entries[0].is_separator(), "Should be separator: {:?}", result.entries[0].tvg_name);
-        }
-
-        // Real channels should not be separators
-        let result = parse_m3u(SAMPLE);
-        for entry in &result.entries {
-            assert!(!entry.is_separator(), "Should NOT be separator: {:?}", entry.tvg_name);
-        }
+    fn h265_quality_detection() {
+        let m3u = r#"#EXTM3U
+#EXTINF:-1 tvg-id="CANALplus.fr" tvg-name="|FR| CANAL+  H265" tvg-logo="" group-title="FR TV HD",|FR| CANAL+  H265
+http://host:80/user/pass/7183"#;
+        let result = parse_m3u(m3u);
+        let entry = &result.entries[0];
+        assert_eq!(entry.quality(), Some("HEVC".to_string()));
+        assert_eq!(entry.channel_key(), "CANAL+");
     }
 }

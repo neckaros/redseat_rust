@@ -292,6 +292,16 @@ impl SqliteLibraryStore {
                         format!("Update Library Database to version: {}", version),
                     );
                 }
+                if version < 50 {
+                    let initial = String::from_utf8_lossy(include_bytes!("050 - CHANNEL VARIANT NAME.sql"));
+                    conn.execute_batch(&initial)?;
+                    version = 50;
+                    conn.pragma_update(None, "user_version", version)?;
+                    log_info(
+                        LogServiceType::Database,
+                        format!("Update Library Database to version: {}", version),
+                    );
+                }
 
                 conn.execute("VACUUM;", params![])?;
                 conn.execute("DELETE FROM media_people_mapping where people_ref not in (select id from people) or media_ref not in (select id from medias);", []);

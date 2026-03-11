@@ -35,6 +35,10 @@ pub struct ChannelVariant {
     pub quality: Option<String>,
     pub stream_url: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tvg_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub modified: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub added: Option<i64>,

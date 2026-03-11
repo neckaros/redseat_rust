@@ -210,11 +210,12 @@ impl ModelController {
         let mut _series_entries: Vec<M3uEntry> = Vec::new();
 
         for entry in parse_result.entries {
-            if entry.is_separator() {
-                continue;
-            }
             match entry.content_type() {
-                M3uContentType::Live => live_entries.push(entry),
+                M3uContentType::Live => {
+                    if entry.tvg_id.is_some() {
+                        live_entries.push(entry);
+                    }
+                }
                 M3uContentType::Vod => _vod_entries.push(entry),
                 M3uContentType::Series => _series_entries.push(entry),
             }
@@ -238,15 +239,12 @@ impl ModelController {
         // --- Import Live Channels ---
         let store = self.store.get_library_store(library_id)?;
 
-        // Group live entries by channel identity
+        // Group live entries by tvg_id
         let mut channel_groups: HashMap<String, Vec<M3uEntry>> = HashMap::new();
         for entry in &live_entries {
-            let key = if let Some(ref tvg_id) = entry.tvg_id {
-                tvg_id.clone()
-            } else {
-                entry.channel_key()
-            };
-            channel_groups.entry(key).or_default().push(entry.clone());
+            if let Some(ref tvg_id) = entry.tvg_id {
+                channel_groups.entry(tvg_id.clone()).or_default().push(entry.clone());
+            }
         }
 
         // Pre-create tags for all unique group-titles
@@ -291,12 +289,8 @@ impl ModelController {
 
             let channel_name = rep.channel_key();
 
-            // Try to find existing channel
-            let existing = if let Some(ref tvg_id) = rep.tvg_id {
-                store.get_channel_by_tvg_id(tvg_id).await?
-            } else {
-                store.get_channel_by_name(&channel_name).await?
-            };
+            // Try to find existing channel by tvg_id
+            let existing = store.get_channel_by_tvg_id(channel_key).await?;
 
             let (channel_id, is_new) = if let Some(existing) = existing {
                 // Update if needed
@@ -361,39 +355,48 @@ impl ModelController {
                 store.remove_channel_auto_tag(&channel_id, tag_id).await?;
             }
 
-            // Upsert variants
+            // Upsert variants by tvg_name
+            let mut seen_tvg_names: HashSet<String> = HashSet::new();
             for entry in entries {
                 let quality = entry.quality().unwrap_or_else(|| "default".to_string());
+                let tvg_name = entry.tvg_name.as_deref().unwrap_or(&entry.display_name).to_string();
+                let variant_name = entry.variant_name();
 
                 let existing_variant = store
-                    .get_channel_variant_by_quality(&channel_id, &quality)
+                    .get_channel_variant_by_tvg_name(&channel_id, &tvg_name)
                     .await?;
 
-                if let Some(existing_variant) = existing_variant {
-                    // Update URL if changed
-                    if existing_variant.stream_url != entry.url {
-                        store
-                            .add_channel_variant(ChannelVariant {
-                                id: existing_variant.id,
-                                channel_ref: channel_id.clone(),
-                                quality: Some(quality),
-                                stream_url: entry.url.clone(),
-                                modified: None,
-                                added: None,
-                            })
-                            .await?;
-                    }
-                } else {
+                let variant_id = existing_variant.as_ref().map(|v| v.id.clone()).unwrap_or_else(|| nanoid!());
+                let needs_update = existing_variant
+                    .as_ref()
+                    .map(|v| v.stream_url != entry.url || v.quality.as_deref() != Some(&quality) || v.name.as_deref() != Some(&variant_name))
+                    .unwrap_or(true);
+
+                if needs_update {
                     store
                         .add_channel_variant(ChannelVariant {
-                            id: nanoid!(),
+                            id: variant_id,
                             channel_ref: channel_id.clone(),
                             quality: Some(quality),
                             stream_url: entry.url.clone(),
+                            name: Some(variant_name),
+                            tvg_name: Some(tvg_name.clone()),
                             modified: None,
                             added: None,
                         })
                         .await?;
+                }
+
+                seen_tvg_names.insert(tvg_name);
+            }
+
+            // Remove stale variants no longer in playlist
+            let existing_variants = store.get_channel_variants(&channel_id).await?;
+            for variant in &existing_variants {
+                if let Some(ref name) = variant.tvg_name {
+                    if !seen_tvg_names.contains(name) {
+                        store.remove_channel_variant(&variant.id).await?;
+                    }
                 }
             }
 
