@@ -117,6 +117,8 @@ pub struct ServerLibrarySettings {
     // IPTV settings
     #[serde(skip_serializing_if = "Option::is_none")]
     pub epg_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_streams: Option<u32>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

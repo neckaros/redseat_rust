@@ -5,18 +5,22 @@ use crate::domain::channel::{Channel, ChannelForUpdate, ChannelVariant};
 
 use super::{Result, SqliteLibraryStore};
 
+const CHANNEL_SELECT: &str = "SELECT c.id, c.name, c.tvg_id, c.logo, c.channel_number, c.posterv, c.modified, c.added, (SELECT GROUP_CONCAT(tag_ref) FROM channel_tag_mapping WHERE channel_ref = c.id) AS tags FROM channels c";
+
 impl SqliteLibraryStore {
     fn row_to_channel(row: &Row) -> rusqlite::Result<Channel> {
+        let tags_raw: Option<String> = row.get(8)?;
+        let tags = tags_raw.map(|s| s.split(',').map(|t| t.to_string()).collect::<Vec<_>>());
         Ok(Channel {
             id: row.get(0)?,
             name: row.get(1)?,
             tvg_id: row.get(2)?,
             logo: row.get(3)?,
-            group_tag: row.get(4)?,
-            channel_number: row.get(5)?,
-            posterv: row.get(6)?,
-            modified: row.get(7)?,
-            added: row.get(8)?,
+            tags,
+            channel_number: row.get(4)?,
+            posterv: row.get(5)?,
+            modified: row.get(6)?,
+            added: row.get(7)?,
             variants: None,
         })
     }
@@ -34,22 +38,22 @@ impl SqliteLibraryStore {
 
     pub async fn get_channels(
         &self,
-        group_tag: Option<String>,
+        tag: Option<String>,
         name_filter: Option<String>,
     ) -> Result<Vec<Channel>> {
         let rows = self
             .connection
             .call(move |conn| {
-                let mut sql = "SELECT id, name, tvg_id, logo, group_tag, channel_number, posterv, modified, added FROM channels".to_string();
+                let mut sql = CHANNEL_SELECT.to_string();
                 let mut conditions: Vec<String> = Vec::new();
                 let mut values: Vec<Box<dyn rusqlite::types::ToSql + Send>> = Vec::new();
 
-                if let Some(ref gt) = group_tag {
-                    conditions.push(format!("group_tag = ?{}", conditions.len() + 1));
-                    values.push(Box::new(gt.clone()));
+                if let Some(ref t) = tag {
+                    conditions.push(format!("c.id IN (SELECT channel_ref FROM channel_tag_mapping WHERE tag_ref = ?{})", conditions.len() + 1));
+                    values.push(Box::new(t.clone()));
                 }
                 if let Some(ref name) = name_filter {
-                    conditions.push(format!("name LIKE ?{}", conditions.len() + 1));
+                    conditions.push(format!("c.name LIKE ?{}", conditions.len() + 1));
                     values.push(Box::new(format!("%{}%", name)));
                 }
 
@@ -57,7 +61,7 @@ impl SqliteLibraryStore {
                     sql.push_str(" WHERE ");
                     sql.push_str(&conditions.join(" AND "));
                 }
-                sql.push_str(" ORDER BY channel_number ASC, name ASC");
+                sql.push_str(" ORDER BY c.channel_number ASC, c.name ASC");
 
                 let mut statement = conn.prepare(&sql)?;
                 let params: Vec<&dyn rusqlite::types::ToSql> = values.iter().map(|v| v.as_ref() as &dyn rusqlite::types::ToSql).collect();
@@ -74,9 +78,8 @@ impl SqliteLibraryStore {
         let row = self
             .connection
             .call(move |conn| {
-                let mut statement = conn.prepare(
-                    "SELECT id, name, tvg_id, logo, group_tag, channel_number, posterv, modified, added FROM channels WHERE id = ?",
-                )?;
+                let sql = format!("{} WHERE c.id = ?", CHANNEL_SELECT);
+                let mut statement = conn.prepare(&sql)?;
                 let row = statement
                     .query_row([channel_id], Self::row_to_channel)
                     .optional()?;
@@ -91,9 +94,8 @@ impl SqliteLibraryStore {
         let row = self
             .connection
             .call(move |conn| {
-                let mut statement = conn.prepare(
-                    "SELECT id, name, tvg_id, logo, group_tag, channel_number, posterv, modified, added FROM channels WHERE tvg_id = ? LIMIT 1",
-                )?;
+                let sql = format!("{} WHERE c.tvg_id = ? LIMIT 1", CHANNEL_SELECT);
+                let mut statement = conn.prepare(&sql)?;
                 let row = statement
                     .query_row([tvg_id], Self::row_to_channel)
                     .optional()?;
@@ -108,9 +110,8 @@ impl SqliteLibraryStore {
         let row = self
             .connection
             .call(move |conn| {
-                let mut statement = conn.prepare(
-                    "SELECT id, name, tvg_id, logo, group_tag, channel_number, posterv, modified, added FROM channels WHERE name = ? LIMIT 1",
-                )?;
+                let sql = format!("{} WHERE c.name = ? LIMIT 1", CHANNEL_SELECT);
+                let mut statement = conn.prepare(&sql)?;
                 let row = statement
                     .query_row([name], Self::row_to_channel)
                     .optional()?;
@@ -124,13 +125,12 @@ impl SqliteLibraryStore {
         self.connection
             .call(move |conn| {
                 conn.execute(
-                    "INSERT OR REPLACE INTO channels (id, name, tvg_id, logo, group_tag, channel_number) VALUES (?, ?, ?, ?, ?, ?)",
+                    "INSERT OR REPLACE INTO channels (id, name, tvg_id, logo, channel_number) VALUES (?, ?, ?, ?, ?)",
                     params![
                         channel.id,
                         channel.name,
                         channel.tvg_id,
                         channel.logo,
-                        channel.group_tag,
                         channel.channel_number,
                     ],
                 )?;
@@ -161,11 +161,6 @@ impl SqliteLibraryStore {
                 if let Some(ref logo) = update.logo {
                     sets.push(format!("logo = ?{}", idx));
                     values.push(Box::new(logo.clone()));
-                    idx += 1;
-                }
-                if let Some(ref group_tag) = update.group_tag {
-                    sets.push(format!("group_tag = ?{}", idx));
-                    values.push(Box::new(group_tag.clone()));
                     idx += 1;
                 }
                 if let Some(channel_number) = update.channel_number {
@@ -206,6 +201,7 @@ impl SqliteLibraryStore {
     pub async fn remove_channel(&self, channel_id: String) -> Result<()> {
         self.connection
             .call(move |conn| {
+                conn.execute("DELETE FROM channel_tag_mapping WHERE channel_ref = ?", [&channel_id])?;
                 conn.execute("DELETE FROM channel_variants WHERE channel_ref = ?", [&channel_id])?;
                 conn.execute("DELETE FROM channels WHERE id = ?", [&channel_id])?;
                 Ok(())
@@ -225,6 +221,69 @@ impl SqliteLibraryStore {
             })
             .await?;
         Ok(ids)
+    }
+
+    // --- Channel Tag Mapping ---
+
+    pub async fn add_channel_tag(&self, channel_id: &str, tag_id: &str, confidence: Option<i32>) -> Result<()> {
+        let channel_id = channel_id.to_string();
+        let tag_id = tag_id.to_string();
+        self.connection
+            .call(move |conn| {
+                conn.execute(
+                    "INSERT OR IGNORE INTO channel_tag_mapping (channel_ref, tag_ref, confidence) VALUES (?, ?, ?)",
+                    params![channel_id, tag_id, confidence],
+                )?;
+                Ok(())
+            })
+            .await?;
+        Ok(())
+    }
+
+    pub async fn remove_channel_tag(&self, channel_id: &str, tag_id: &str) -> Result<()> {
+        let channel_id = channel_id.to_string();
+        let tag_id = tag_id.to_string();
+        self.connection
+            .call(move |conn| {
+                conn.execute(
+                    "DELETE FROM channel_tag_mapping WHERE channel_ref = ? AND tag_ref = ?",
+                    params![channel_id, tag_id],
+                )?;
+                Ok(())
+            })
+            .await?;
+        Ok(())
+    }
+
+    pub async fn get_channel_auto_tag_ids(&self, channel_id: &str) -> Result<Vec<String>> {
+        let channel_id = channel_id.to_string();
+        let ids = self
+            .connection
+            .call(move |conn| {
+                let mut statement = conn.prepare(
+                    "SELECT tag_ref FROM channel_tag_mapping WHERE channel_ref = ? AND confidence = 0",
+                )?;
+                let rows = statement.query_map([channel_id], |row| row.get(0))?;
+                let ids = rows.collect::<std::result::Result<Vec<String>, rusqlite::Error>>()?;
+                Ok(ids)
+            })
+            .await?;
+        Ok(ids)
+    }
+
+    pub async fn remove_channel_auto_tag(&self, channel_id: &str, tag_id: &str) -> Result<()> {
+        let channel_id = channel_id.to_string();
+        let tag_id = tag_id.to_string();
+        self.connection
+            .call(move |conn| {
+                conn.execute(
+                    "DELETE FROM channel_tag_mapping WHERE channel_ref = ? AND tag_ref = ? AND confidence = 0",
+                    params![channel_id, tag_id],
+                )?;
+                Ok(())
+            })
+            .await?;
+        Ok(())
     }
 
     // --- Channel Variants ---

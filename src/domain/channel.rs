@@ -12,7 +12,7 @@ pub struct Channel {
     #[serde(skip_serializing)]
     pub logo: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub group_tag: Option<String>,
+    pub tags: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channel_number: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -49,7 +49,7 @@ pub struct ChannelForAdd {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub logo: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub group_tag: Option<String>,
+    pub tags: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channel_number: Option<i32>,
 }
@@ -63,8 +63,6 @@ pub struct ChannelForUpdate {
     pub tvg_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub logo: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub group_tag: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channel_number: Option<i32>,
 }

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, io::Cursor};
+use std::{collections::{HashMap, HashSet}, io::Cursor};
 
 use nanoid::nanoid;
 use rs_plugin_common_interfaces::ImageType;
@@ -25,7 +25,8 @@ use super::{entity_images::EntityImageConfig, tags::TagForAdd, users::ConnectedU
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ChannelQuery {
-    pub group_tag: Option<String>,
+    #[serde(alias = "groupTag")]
+    pub tag: Option<String>,
     pub name: Option<String>,
 }
 
@@ -50,7 +51,7 @@ impl ModelController {
     ) -> RsResult<Vec<Channel>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id)?;
-        let mut channels = store.get_channels(query.group_tag, query.name).await?;
+        let mut channels = store.get_channels(query.tag, query.name).await?;
 
         // Attach variants to each channel
         for channel in &mut channels {
@@ -276,7 +277,7 @@ impl ModelController {
 
         // Track existing channels for removal detection
         let existing_channel_ids: Vec<String> = store.get_all_channel_ids().await?;
-        let mut seen_channel_ids: Vec<String> = Vec::new();
+        let mut seen_channel_ids: HashSet<String> = HashSet::new();
         let mut channel_actions: Vec<ChannelWithAction> = Vec::new();
 
         // Upsert channels and variants
@@ -289,7 +290,6 @@ impl ModelController {
                 .unwrap_or(&entries[0]);
 
             let channel_name = rep.channel_key();
-            let group_tag_id = rep.group_title.as_ref().and_then(|gt| tag_cache.get(gt)).cloned();
 
             // Try to find existing channel
             let existing = if let Some(ref tvg_id) = rep.tvg_id {
@@ -298,7 +298,7 @@ impl ModelController {
                 store.get_channel_by_name(&channel_name).await?
             };
 
-            let channel_id = if let Some(existing) = existing {
+            let (channel_id, is_new) = if let Some(existing) = existing {
                 // Update if needed
                 store
                     .update_channel(
@@ -306,20 +306,13 @@ impl ModelController {
                         ChannelForUpdate {
                             name: Some(channel_name.clone()),
                             logo: rep.tvg_logo.clone(),
-                            group_tag: group_tag_id,
                             tvg_id: rep.tvg_id.clone(),
                             ..Default::default()
                         },
                     )
                     .await?;
                 result.channels_updated += 1;
-                if let Some(updated) = store.get_channel(&existing.id).await? {
-                    channel_actions.push(ChannelWithAction {
-                        action: ElementAction::Updated,
-                        channel: updated,
-                    });
-                }
-                existing.id
+                (existing.id, false)
             } else {
                 // Create new channel
                 let id = nanoid!();
@@ -329,7 +322,7 @@ impl ModelController {
                         name: channel_name.clone(),
                         tvg_id: rep.tvg_id.clone(),
                         logo: rep.tvg_logo.clone(),
-                        group_tag: group_tag_id,
+                        tags: None,
                         channel_number: None,
                         posterv: None,
                         modified: None,
@@ -338,16 +331,35 @@ impl ModelController {
                     })
                     .await?;
                 result.channels_added += 1;
-                if let Some(added) = store.get_channel(&id).await? {
-                    channel_actions.push(ChannelWithAction {
-                        action: ElementAction::Added,
-                        channel: added,
-                    });
-                }
-                id
+                (id, true)
             };
 
-            seen_channel_ids.push(channel_id.clone());
+            seen_channel_ids.insert(channel_id.clone());
+
+            // Diff-based tag sync: collect desired tag IDs from all entries
+            let desired_tag_ids: HashSet<String> = entries
+                .iter()
+                .filter_map(|e| e.group_title.as_ref())
+                .filter_map(|gt| tag_cache.get(gt))
+                .cloned()
+                .collect();
+
+            // Get current auto-imported tags
+            let current_auto_tags: HashSet<String> = store
+                .get_channel_auto_tag_ids(&channel_id)
+                .await?
+                .into_iter()
+                .collect();
+
+            // Add new auto tags
+            for tag_id in desired_tag_ids.difference(&current_auto_tags) {
+                store.add_channel_tag(&channel_id, tag_id, Some(0)).await?;
+            }
+
+            // Remove stale auto tags
+            for tag_id in current_auto_tags.difference(&desired_tag_ids) {
+                store.remove_channel_auto_tag(&channel_id, tag_id).await?;
+            }
 
             // Upsert variants
             for entry in entries {
@@ -383,6 +395,14 @@ impl ModelController {
                         })
                         .await?;
                 }
+            }
+
+            // Fetch updated channel for SSE (after tag sync)
+            if let Some(updated) = store.get_channel(&channel_id).await? {
+                channel_actions.push(ChannelWithAction {
+                    action: if is_new { ElementAction::Added } else { ElementAction::Updated },
+                    channel: updated,
+                });
             }
         }
 
@@ -437,6 +457,53 @@ impl ModelController {
         );
 
         Ok(result)
+    }
+
+    // -- Channel tag management --
+
+    pub async fn add_channel_tag(
+        &self,
+        library_id: &str,
+        channel_id: &str,
+        tag_id: &str,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<()> {
+        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        let store = self.store.get_library_store(library_id)?;
+        // confidence = NULL means user-assigned
+        store.add_channel_tag(channel_id, tag_id, None).await?;
+
+        let channel = self.get_channel(library_id, channel_id, requesting_user).await?;
+        self.broadcast_sse(SseEvent::Channels(ChannelMessage {
+            library: library_id.to_string(),
+            channels: vec![ChannelWithAction {
+                action: ElementAction::Updated,
+                channel,
+            }],
+        }));
+        Ok(())
+    }
+
+    pub async fn remove_channel_tag(
+        &self,
+        library_id: &str,
+        channel_id: &str,
+        tag_id: &str,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<()> {
+        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        let store = self.store.get_library_store(library_id)?;
+        store.remove_channel_tag(channel_id, tag_id).await?;
+
+        let channel = self.get_channel(library_id, channel_id, requesting_user).await?;
+        self.broadcast_sse(SseEvent::Channels(ChannelMessage {
+            library: library_id.to_string(),
+            channels: vec![ChannelWithAction {
+                action: ElementAction::Updated,
+                channel,
+            }],
+        }));
+        Ok(())
     }
 
     pub async fn channel_image(
@@ -509,7 +576,7 @@ impl ModelController {
         &self,
         library_id: &str,
         channel_id: &str,
-        _kind: &ImageType,
+        kind: &ImageType,
         requesting_user: &ConnectedUser,
     ) -> RsResult<()> {
         let channel = self.get_channel(library_id, channel_id, requesting_user).await?;
@@ -529,11 +596,153 @@ impl ModelController {
         self.update_channel_image(
             library_id,
             channel_id,
-            &ImageType::Poster,
+            kind,
             reader,
             &ConnectedUser::ServerAdmin,
         )
         .await?;
+
+        Ok(())
+    }
+
+    // -- Stream slot management (concurrent stream limiting) --
+
+    pub async fn acquire_stream_slot(
+        &self,
+        library_id: &str,
+        channel_id: &str,
+    ) -> RsResult<()> {
+        let library = self.cache_get_library(library_id).await
+            .ok_or(crate::Error::NotFound(format!("Library {} not found", library_id)))?;
+        let max_streams = library.settings.max_streams.unwrap_or(1) as usize;
+
+        let mut streams = self.active_streams.write().await;
+        let channels = streams.entry(library_id.to_string()).or_default();
+
+        // Same channel is allowed (doesn't count as extra)
+        if channels.contains(channel_id) {
+            return Ok(());
+        }
+
+        if channels.len() >= max_streams {
+            // Evict the oldest HLS session for this library to make room
+            let oldest = {
+                let sessions = self.hls_sessions.read().await;
+                sessions
+                    .values()
+                    .filter(|s| s.library_id == library_id)
+                    .min_by_key(|s| s.last_active.load(std::sync::atomic::Ordering::Relaxed))
+                    .map(|s| (s.key.clone(), s.channel_id.clone()))
+            };
+
+            if let Some((key, old_channel_id)) = oldest {
+                log_info(LogServiceType::Source, format!(
+                    "IPTV stream limit reached for library {}, evicting oldest session (channel {})",
+                    library_id, old_channel_id
+                ));
+                // Drop the streams lock before stopping the session (stop_session needs hls_sessions lock only)
+                drop(streams);
+                crate::tools::hls_session::stop_session(&key, &self.hls_sessions).await;
+                // Re-acquire and update active_streams
+                let mut streams = self.active_streams.write().await;
+                if let Some(channels) = streams.get_mut(library_id) {
+                    channels.remove(&old_channel_id);
+                }
+                let channels = streams.entry(library_id.to_string()).or_default();
+                channels.insert(channel_id.to_string());
+            } else {
+                // No HLS session to evict (e.g., all slots taken by MPEG2-TS proxies)
+                return Err(crate::Error::Error(format!(
+                    "Maximum concurrent streams reached for this library ({}). Stop another stream first.",
+                    max_streams
+                )));
+            }
+        } else {
+            channels.insert(channel_id.to_string());
+        }
+
+        Ok(())
+    }
+
+    pub async fn release_stream_slot(
+        &self,
+        library_id: &str,
+        channel_id: &str,
+    ) {
+        let mut streams = self.active_streams.write().await;
+        if let Some(channels) = streams.get_mut(library_id) {
+            channels.remove(channel_id);
+            if channels.is_empty() {
+                streams.remove(library_id);
+            }
+        }
+    }
+
+    // -- HLS session management --
+
+    pub async fn get_or_create_hls_session(
+        &self,
+        library_id: &str,
+        channel_id: &str,
+        quality: Option<String>,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<(std::path::PathBuf, std::path::PathBuf)> {
+        let quality_key = quality.as_deref().unwrap_or("best");
+        let key = format!("{}:{}:{}", library_id, channel_id, quality_key);
+
+        // Check if session already exists and is alive
+        {
+            let sessions = self.hls_sessions.read().await;
+            if let Some(session) = sessions.get(&key) {
+                session.touch();
+                return Ok((session.output_dir.clone(), session.playlist_path.clone()));
+            }
+        }
+
+        // Acquire stream slot (enforces max_streams)
+        self.acquire_stream_slot(library_id, channel_id).await?;
+
+        // Resolve the stream URL
+        let stream_url = self.get_channel_stream_url(library_id, channel_id, quality, requesting_user).await?;
+
+        // Create the session
+        match crate::tools::hls_session::create_session(
+            key.clone(),
+            library_id.to_string(),
+            channel_id.to_string(),
+            stream_url,
+            self.hls_sessions.clone(),
+        ).await {
+            Ok(result) => Ok(result),
+            Err(e) => {
+                // Release slot on failure
+                self.release_stream_slot(library_id, channel_id).await;
+                Err(e)
+            }
+        }
+    }
+
+    pub async fn stop_hls_session(
+        &self,
+        library_id: &str,
+        channel_id: &str,
+    ) -> RsResult<()> {
+        let keys_to_stop: Vec<String> = {
+            let sessions = self.hls_sessions.read().await;
+            sessions
+                .keys()
+                .filter(|k| k.starts_with(&format!("{}:{}:", library_id, channel_id)))
+                .cloned()
+                .collect()
+        };
+
+        for key in &keys_to_stop {
+            crate::tools::hls_session::stop_session(key, &self.hls_sessions).await;
+        }
+
+        if !keys_to_stop.is_empty() {
+            self.release_stream_slot(library_id, channel_id).await;
+        }
 
         Ok(())
     }

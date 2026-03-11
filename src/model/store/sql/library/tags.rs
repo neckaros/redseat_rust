@@ -139,6 +139,8 @@ impl SqliteLibraryStore {
                 tx.execute("UPDATE or IGNORE media_tag_mapping SET tag_ref = ? where tag_ref = ?", params![&migrate_to, id])?;
                 println!("MIGRATE: UPDATE media_tag_mapping SET tag_ref = {} where tag_ref = {}", id, migrate_to);
                 tx.execute("DELETE FROM media_tag_mapping  WHERE tag_ref = ?", [&id])?;
+                tx.execute("UPDATE OR IGNORE channel_tag_mapping SET tag_ref = ? WHERE tag_ref = ?", params![&migrate_to, id])?;
+                tx.execute("DELETE FROM channel_tag_mapping WHERE tag_ref = ?", [&id])?;
             }
             
             if let Some(new_name) = &update.name {
@@ -238,6 +240,7 @@ impl SqliteLibraryStore {
             tx.execute("DELETE FROM tags WHERE id = ?", &[&tag_id])?;
             tx.execute("DELETE FROM book_tag_mapping  WHERE tag_ref = ?", &[&tag_id])?;
             tx.execute("DELETE FROM media_tag_mapping  WHERE tag_ref = ?", &[&tag_id])?;
+            tx.execute("DELETE FROM channel_tag_mapping WHERE tag_ref = ?", &[&tag_id])?;
             tx.execute("DELETE FROM tags WHERE path like ?", &[&format!("{}%", existing.childs_path())])?;
 
             tx.commit()?;

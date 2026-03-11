@@ -272,14 +272,14 @@ impl VideoCommandBuilder {
     }
 
     #[cfg(target_os = "windows")]
-    fn get_ffmpeg_path() -> PathBuf {
+    pub(crate) fn get_ffmpeg_path() -> PathBuf {
         let mut exec_dir = executable_dir().unwrap_or(PathBuf::from("./"));
         exec_dir.push("ffmpeg.exe");
         return exec_dir;
     }
 
     #[cfg(not(target_os = "windows"))]
-    fn get_ffmpeg_path() -> PathBuf {
+    pub(crate) fn get_ffmpeg_path() -> PathBuf {
         let mut exec_dir = executable_dir().unwrap_or(PathBuf::from("./"));
         exec_dir.push("ffmpeg");
         return exec_dir;

@@ -139,6 +139,11 @@ pub struct ModelController {
 
     /// Broadcast channel for SSE events
     pub sse_tx: broadcast::Sender<SseEvent>,
+
+    /// HLS session manager: key = "library:channel:quality"
+    pub hls_sessions: Arc<RwLock<HashMap<String, crate::tools::hls_session::HlsSession>>>,
+    /// Active IPTV streams per library: library_id → set of channel_ids currently streaming
+    pub active_streams: Arc<RwLock<HashMap<String, HashSet<String>>>>,
 }
 
 // Constructor
@@ -163,6 +168,9 @@ impl ModelController {
 
             backup_processes: Arc::new(RwLock::new(vec![])),
             sse_tx,
+
+            hls_sessions: Arc::new(RwLock::new(HashMap::new())),
+            active_streams: Arc::new(RwLock::new(HashMap::new())),
         };
 
         let pm_forload = mc.plugin_manager.clone();
@@ -210,6 +218,24 @@ impl ModelController {
         //scheduler.add(RsTaskType::Face, scheduler::RsSchedulerWhen::Every(SECONDS_IN_HOUR * 3), FaceRecognitionTask {specific_library:None} ).await?;
         //scheduler.add(RsTaskType::Refresh, scheduler::RsSchedulerWhen::At(0), RefreshTask {specific_library:None} ).await?;
         //scheduler.tick(mc.clone()).await;
+
+        // Clean up orphaned HLS directories from previous crashes
+        tokio::spawn(async {
+            crate::tools::hls_session::cleanup_orphaned_dirs().await;
+        });
+
+        // Spawn HLS session cleanup loop
+        let mc_cleanup = mc.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                let released = crate::tools::hls_session::cleanup_stale_sessions(&mc_cleanup.hls_sessions).await;
+                for (library_id, channel_id) in released {
+                    mc_cleanup.release_stream_slot(&library_id, &channel_id).await;
+                }
+            }
+        });
+
         Ok(mc)
     }
 }
