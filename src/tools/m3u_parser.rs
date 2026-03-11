@@ -2,16 +2,16 @@ use lazy_static::lazy_static;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-pub const QUALITY_ORDER: &[&str] = &["4K", "FHD", "HD", "SD"];
+pub const QUALITY_ORDER: &[&str] = &["4K", "FHD", "HEVC", "HD", "SD", "FHD BKP", "HD BKP", "LOW"];
 
 lazy_static! {
     static ref RE_COUNTRY_PREFIX: Regex = Regex::new(r"^\|[A-Z]+\|\s*").unwrap();
-    static ref RE_QUALITY_SUFFIX: Regex = Regex::new(r"(?i)\s*(4K\s*HDR?\s*(UHD)?|UHD|FHD\+*|FULL\s*HD|FHD|HD|SD)\s*(\(.*?\))?\s*$").unwrap();
+    static ref RE_QUALITY_SUFFIX: Regex = Regex::new(r"(?i)\s*(4K\s*HDR?\s*(UHD)?|UHD|FHD\+*|FULL\s*HD|FHD|HD|SD|LOW|HEVC)(\s*BKP)?\s*(\(.*?\))?\s*$").unwrap();
     static ref RE_SEASON_EPISODE: Regex = Regex::new(r"S(\d+)\s*E(\d+)").unwrap();
     static ref RE_SEASON_EPISODE_TAIL: Regex = Regex::new(r"\s*S\d+\s*E\d+.*$").unwrap();
     static ref RE_TRAILING_YEAR: Regex = Regex::new(r"\s+(\d{4})\s*$").unwrap();
     static ref RE_LANG_TAG: Regex = Regex::new(r"(?i)\s*\((?:MULTI|VF|VOSTFR|FR|EN)\)\s*").unwrap();
-    static ref RE_QUALITY_TAG: Regex = Regex::new(r"(?i)\s*(4K|UHD|FHD|HD|SD)\s*$").unwrap();
+    static ref RE_QUALITY_TAG: Regex = Regex::new(r"(?i)\s*(4K|UHD|FHD|HD|SD|LOW|HEVC)(\s*BKP)?\s*$").unwrap();
     /// Matches decorative Unicode block characters used in IPTV separator entries
     static ref RE_SEPARATOR_CHARS: Regex = Regex::new(r"[▀▄═━★◉▬■□●○▼▲]{2,}").unwrap();
     /// Matches dash-based separator lines like "------▼|FR|-SPORTS-|FR|▼------"
@@ -67,14 +67,19 @@ impl M3uEntry {
     pub fn quality(&self) -> Option<String> {
         let name = self.tvg_name.as_deref().unwrap_or(&self.display_name);
         let upper = name.to_uppercase();
+        let is_bkp = upper.contains(" BKP");
         if upper.contains("4K") || upper.contains("UHD") {
             Some("4K".to_string())
+        } else if upper.contains("HEVC") {
+            Some("HEVC".to_string())
         } else if upper.contains("FHD") || upper.contains("FULL HD") {
-            Some("FHD".to_string())
+            Some(if is_bkp { "FHD BKP" } else { "FHD" }.to_string())
         } else if upper.contains(" HD") {
-            Some("HD".to_string())
+            Some(if is_bkp { "HD BKP" } else { "HD" }.to_string())
         } else if upper.contains(" SD") {
             Some("SD".to_string())
+        } else if upper.contains(" LOW") {
+            Some("LOW".to_string())
         } else {
             None
         }
@@ -229,6 +234,14 @@ http://host:80/user/pass/1
 http://host:80/user/pass/1149
 #EXTINF:-1 tvg-id="" tvg-name="|FR| TF1 4K HDR UHD (Résolution Exclus)" tvg-logo="https://i.imgur.com/UlG9dS2.png" group-title="FR TV FULL HD|4K  (France)",|FR| TF1 4K HDR UHD (Résolution Exclus)
 http://host:80/user/pass/37744
+#EXTINF:-1 tvg-id="TF1.fr" tvg-name="|FR| TF1 LOW" tvg-logo="https://i.imgur.com/LMxTAzY.png" group-title="FR TV LOW (France)",|FR| TF1 LOW
+http://host:80/user/pass/99999
+#EXTINF:-1 tvg-id="beinSports1.fr" tvg-name="|FR| BEIN SPORTS 1 HEVC" tvg-logo="" group-title="FR SPORTS",|FR| BEIN SPORTS 1 HEVC
+http://host:80/user/pass/88888
+#EXTINF:-1 tvg-id="beinSports1.fr" tvg-name="|FR| BEIN SPORTS 1 HD BKP" tvg-logo="" group-title="FR SPORTS",|FR| BEIN SPORTS 1 HD BKP
+http://host:80/user/pass/77777
+#EXTINF:-1 tvg-id="RMCSport1.fr" tvg-name="|FR| RMC SPORT 1 FHD BKP" tvg-logo="" group-title="FR SPORTS",|FR| RMC SPORT 1 FHD BKP
+http://host:80/user/pass/66666
 #EXTINF:-1 tvg-id="" tvg-name="Killer Whale (MULTI) FHD 2026" tvg-logo="https://image.tmdb.org/t/p/w600_and_h900_bestv2/xC6zdIoIHjhOIFmjNyGgtzhuhiF.jpg" group-title="FILMS RÉCEMMENT AJOUTÉS",Killer Whale (MULTI) FHD 2026
 http://host:80/movie/user/pass/197831.mkv
 #EXTINF:-1 tvg-id="" tvg-name="Le Monde incroyable de Gumball (MULTI) FHD S01 E02" tvg-logo="https://image.tmdb.org/t/p/w185/pVpRzjI9lA8M0SzaHVE6bJWL9wE.jpg" group-title="ANIMATION",Le Monde incroyable de Gumball (MULTI) FHD S01 E02
@@ -237,7 +250,7 @@ http://host:80/series/user/pass/197898.mkv"#;
     #[test]
     fn parse_basic_m3u() {
         let result = parse_m3u(SAMPLE);
-        assert_eq!(result.entries.len(), 6);
+        assert_eq!(result.entries.len(), 10);
     }
 
     #[test]
@@ -247,9 +260,9 @@ http://host:80/series/user/pass/197898.mkv"#;
         assert_eq!(result.entries[0].content_type(), M3uContentType::Live);
         assert_eq!(result.entries[1].content_type(), M3uContentType::Live);
         // Movie
-        assert_eq!(result.entries[4].content_type(), M3uContentType::Vod);
+        assert_eq!(result.entries[8].content_type(), M3uContentType::Vod);
         // Series
-        assert_eq!(result.entries[5].content_type(), M3uContentType::Series);
+        assert_eq!(result.entries[9].content_type(), M3uContentType::Series);
     }
 
     #[test]
@@ -259,6 +272,10 @@ http://host:80/series/user/pass/197898.mkv"#;
         assert_eq!(result.entries[1].quality(), Some("HD".to_string()));
         assert_eq!(result.entries[2].quality(), Some("FHD".to_string()));
         assert_eq!(result.entries[3].quality(), Some("4K".to_string()));
+        assert_eq!(result.entries[4].quality(), Some("LOW".to_string()));
+        assert_eq!(result.entries[5].quality(), Some("HEVC".to_string()));
+        assert_eq!(result.entries[6].quality(), Some("HD BKP".to_string()));
+        assert_eq!(result.entries[7].quality(), Some("FHD BKP".to_string()));
     }
 
     #[test]
@@ -268,22 +285,29 @@ http://host:80/series/user/pass/197898.mkv"#;
         let key0 = result.entries[0].channel_key();
         let key1 = result.entries[1].channel_key();
         let key2 = result.entries[2].channel_key();
+        let key_low = result.entries[4].channel_key();
         assert_eq!(key0, "TF1");
         assert_eq!(key1, "TF1");
         assert_eq!(key2, "TF1");
+        assert_eq!(key_low, "TF1");
+
+        // HEVC and BKP variants should also strip quality
+        assert_eq!(result.entries[5].channel_key(), "BEIN SPORTS 1");
+        assert_eq!(result.entries[6].channel_key(), "BEIN SPORTS 1");
+        assert_eq!(result.entries[7].channel_key(), "RMC SPORT 1");
     }
 
     #[test]
     fn season_episode_parsing() {
         let result = parse_m3u(SAMPLE);
-        let series = &result.entries[5];
+        let series = &result.entries[9];
         assert_eq!(series.parse_season_episode(), Some((1, 2)));
     }
 
     #[test]
     fn movie_name_and_year() {
         let result = parse_m3u(SAMPLE);
-        let movie = &result.entries[4];
+        let movie = &result.entries[8];
         let (name, year) = movie.parse_name_and_year();
         assert_eq!(name, "Killer Whale");
         assert_eq!(year, Some(2026));
@@ -292,7 +316,7 @@ http://host:80/series/user/pass/197898.mkv"#;
     #[test]
     fn series_name_parsing() {
         let result = parse_m3u(SAMPLE);
-        let series = &result.entries[5];
+        let series = &result.entries[9];
         let name = series.parse_series_name();
         assert_eq!(name, "Le Monde incroyable de Gumball");
     }
@@ -315,6 +339,18 @@ http://host:80/series/user/pass/197898.mkv"#;
         let result = parse_m3u(SAMPLE);
         // Entry with tvg-id="" should be None
         assert_eq!(result.entries[3].tvg_id, None);
+    }
+
+    #[test]
+    fn quality_low_with_parenthetical() {
+        let m3u = r#"#EXTM3U
+#EXTINF:-1 tvg-id="" tvg-name="|LIGUE 1+| MATCH DU DIMANCHE SOIR LOW (MULTI AUDIO StadiumFX)" tvg-logo="" group-title="FR SPORTS",|LIGUE 1+| MATCH DU DIMANCHE SOIR LOW (MULTI AUDIO StadiumFX)
+http://host:80/user/pass/55555"#;
+        let result = parse_m3u(m3u);
+        let entry = &result.entries[0];
+        assert_eq!(entry.quality(), Some("LOW".to_string()));
+        // |LIGUE 1+| is not a simple country prefix, so it stays
+        assert_eq!(entry.channel_key(), "|LIGUE 1+| MATCH DU DIMANCHE SOIR");
     }
 
     #[test]

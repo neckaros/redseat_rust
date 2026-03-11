@@ -97,9 +97,7 @@ async fn spawn_ffmpeg(
         // I/O timeout: 15 seconds
         .args(["-rw_timeout", "15000000"])
         // Regenerate PTS from source and discard corrupt frames
-        .args(["-fflags", "+genpts+discardcorrupt+nobuffer"])
-        // Use wall clock timestamps to prevent going back in time
-        .args(["-use_wallclock_as_timestamps", "1"])
+        .args(["-fflags", "+genpts+discardcorrupt"])
         // Handle timestamp overflows from unstable sources
         .args(["-correct_ts_overflow", "1"])
         // Normalize negative timestamps

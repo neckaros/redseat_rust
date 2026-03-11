@@ -6,7 +6,7 @@ use axum::{
     Json, Router,
 };
 use futures::StreamExt;
-use http::header::{CONTENT_TYPE, TRANSFER_ENCODING};
+use http::header::{CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, TRANSFER_ENCODING};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio_util::io::ReaderStream;
@@ -279,6 +279,7 @@ async fn handler_hls_playlist(
 
     let response = Response::builder()
         .header(CONTENT_TYPE, "application/vnd.apple.mpegurl")
+        .header(CACHE_CONTROL, "no-cache, no-store")
         .body(Body::from(rewritten))
         .map_err(|e| Error::Error(format!("Failed to build response: {}", e)))?;
 
@@ -292,7 +293,7 @@ async fn handler_hls_segment(
     Query(query): Query<HlsQuery>,
 ) -> Result<Response> {
     // Validate segment filename to prevent path traversal
-    let is_valid = segment.len() == 13
+    let is_valid = segment.len() == 12
         && segment.starts_with("seg_")
         && segment.ends_with(".ts")
         && segment[4..9].bytes().all(|b| b.is_ascii_digit());
@@ -325,11 +326,20 @@ async fn handler_hls_segment(
             _ => Error::Error(format!("Failed to open segment: {}", e)),
         })?;
 
+    let file_size = file.metadata().await
+        .map(|m| m.len())
+        .unwrap_or(0);
+
     let stream = ReaderStream::new(file);
     let body = Body::from_stream(stream);
 
-    let response = Response::builder()
+    let mut response_builder = Response::builder()
         .header(CONTENT_TYPE, "video/mp2t")
+        .header(CACHE_CONTROL, "public, max-age=60");
+    if file_size > 0 {
+        response_builder = response_builder.header(CONTENT_LENGTH, file_size);
+    }
+    let response = response_builder
         .body(body)
         .map_err(|e| Error::Error(format!("Failed to build response: {}", e)))?;
 
