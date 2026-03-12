@@ -309,10 +309,13 @@ impl SourceRead {
 
 
                     },
+                    RsRequestStatus::NeedFileSelection => {
+                        Err(Error::NeedFileSelection(request).into())
+                    },
                     _ => Err(Error::InvalidRsRequestStatus(request.status).into())
                 }
 
-                
+
             },
         }
     }
@@ -394,10 +397,13 @@ impl SourceRead {
                         let body = Body::empty();
                         Ok((status, headers, body).into_response())
                     },
+                    RsRequestStatus::NeedFileSelection => {
+                        Err(Error::NeedFileSelection(request).into())
+                    },
                     _ => Err(Error::InvalidRsRequestStatus(request.status).into())
                 }
 
-                
+
             },
         }
     }

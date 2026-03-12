@@ -1851,14 +1851,19 @@ impl ModelController {
             self.plugin_manager.fill_infos(&mut request).await;
 
             let mut infos: MediaForUpdate = request.clone().into();
-            infos.origin = origin.clone();
+            infos.origin = origin.clone().or_else(|| Some(RsLink {
+                platform: "link".to_owned(),
+                kind: Some(RsLinkType::Post),
+                id: request.url.clone(),
+                ..Default::default()
+            }));
 
             let tx_progress =
                 self.create_progress_sender(library_id.to_owned(), Some(upload_id.clone()));
 
             // Check for origin duplicate
             if let Some(origin) = &mut infos.origin {
-                let origin_filename = filename_from_path(&request.url);
+                let origin_filename = request.selected_file.clone().or_else(|| filename_from_path(&request.url));
                 self.check_origin_duplicate(
                     store,
                     origin,

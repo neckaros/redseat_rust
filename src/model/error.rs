@@ -56,6 +56,7 @@ pub enum Error {
     //RsRequest
     UnableToFormatHeaders,
     InvalidRsRequestStatus(RsRequestStatus),
+    NeedFileSelection(RsRequest),
     RequestNeedsModelControllerForResolution(RsRequest),
     RequestNeedsLibraryIdForResolution(RsRequest),
 
@@ -153,6 +154,11 @@ impl Error {
             Error::InvalidIdForAction(action, id) => (
                 StatusCode::BAD_REQUEST,
                 ClientError::Custom { message: format!("Invalid id {} for {}", id, action) },
+            ),
+
+            Error::NeedFileSelection(_) => (
+                StatusCode::CONFLICT,
+                ClientError::Custom { message: "File selection required".to_string() },
             ),
 
             Error::ServiceError(_, _) => (

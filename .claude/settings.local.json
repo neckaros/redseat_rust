@@ -9,7 +9,8 @@
       "Bash(cargo test:*)",
       "Bash(dir:*)",
       "Bash(ls:*)",
-      "WebFetch(domain:r365mail.fit)"
+      "WebFetch(domain:r365mail.fit)",
+      "Bash(npx svelte-check:*)"
     ]
   }
 }

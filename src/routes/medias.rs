@@ -615,10 +615,19 @@ async fn handler_download(
 
         Ok(Json(json!({"downloading": true})))
     } else {
-        let body = mc
+        match mc
             .download_library_url(&library_id, download, &user)
-            .await?;
-        Ok(Json(json!(body)))
+            .await
+        {
+            Ok(body) => Ok(Json(json!(body))),
+            Err(crate::Error::Model(crate::model::error::Error::NeedFileSelection(request))) => {
+                Ok(Json(json!({
+                    "needFileSelection": true,
+                    "request": request
+                })))
+            }
+            Err(e) => Err(e),
+        }
     }
 }
 
