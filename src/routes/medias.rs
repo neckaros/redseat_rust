@@ -4,8 +4,8 @@ use super::{mw_range::RangeDefinition, ImageRequestOptions, ImageUploadOptions};
 use crate::{
     domain::{
         media::{
-            self, ItemWithRelations, MediaForUpdate, MediaItemReference,
-            MediaWithAction, MediasMessage,
+            self, ConvertMessage, ConvertProgress, ItemWithRelations, MediaForUpdate,
+            MediaItemReference, MediaWithAction, MediasMessage, VideoMergeRequest,
         },
         ElementAction,
     },
@@ -35,7 +35,7 @@ use axum::{
 use axum_extra::extract::Query;
 use futures::TryStreamExt;
 use hyper::{header::ACCEPT_RANGES, StatusCode};
-use rs_plugin_common_interfaces::{request::{RsGroupDownload, RsRequest}, video::VideoConvertRequest};
+use rs_plugin_common_interfaces::{request::{RsGroupDownload, RsRequest}, video::{RsVideoTranscodeStatus, VideoConvertRequest}};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -51,6 +51,7 @@ pub fn routes(mc: ModelController) -> Router {
         .route("/", patch(handler_multi_patch))
         .route("/exist", get(handler_exist))
         .route("/download", post(handler_download))
+        .route("/merge", post(handler_merge))
         .route("/request", post(handler_add_request))
         .route("/transfert/:destination", post(handler_transfert))
         .route("/:id/split", get(handler_split))
@@ -325,6 +326,51 @@ async fn handler_convert_plugin(
 
     Ok(Json(json!(query)))
 }
+
+async fn handler_merge(
+    Path(library_id): Path<String>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Json(request): Json<VideoMergeRequest>,
+) -> Result<Json<Value>> {
+    if request.items.len() < 2 {
+        return Err(Error::Error("Merge requires at least 2 items".to_string()));
+    }
+
+    let response_id = request.id.clone();
+    let request_id = request.id.clone();
+    let library_id_clone = library_id.clone();
+    let mc_clone = mc.clone();
+    let user_clone = user.clone();
+
+    tokio::spawn(async move {
+        if let Err(e) = mc_clone
+            .merge_videos(&library_id_clone, request, &user_clone)
+            .await
+        {
+            log_error(
+                crate::tools::log::LogServiceType::Other,
+                format!("Merge failed: {:?}", e),
+            );
+            mc_clone.send_convert_progress(ConvertMessage {
+                library: library_id_clone,
+                progress: ConvertProgress {
+                    id: request_id,
+                    filename: String::new(),
+                    converted_id: None,
+                    done: true,
+                    percent: 0.0,
+                    status: RsVideoTranscodeStatus::Failed,
+                    estimated_remaining_seconds: None,
+                    request: None,
+                },
+            });
+        }
+    });
+
+    Ok(Json(json!({"id": response_id})))
+}
+
 async fn handler_get_file(
     Path((library_id, media_id)): Path<(String, String)>,
     State(mc): State<ModelController>,

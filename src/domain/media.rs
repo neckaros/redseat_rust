@@ -182,3 +182,17 @@ pub struct ConvertMessage {
     pub library: String,
     pub progress: ConvertProgress,
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoMergeItem {
+    pub media_id: String,
+    pub request: VideoConvertRequest,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoMergeRequest {
+    pub id: String,
+    pub items: Vec<VideoMergeItem>,
+}

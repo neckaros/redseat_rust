@@ -521,6 +521,16 @@ impl VideoCommandBuilder {
         self
     }
 
+    /// Scale video to fit within width x height while preserving aspect ratio,
+    /// then pad with black bars to exactly width x height, centering the video.
+    pub fn set_pad_to_resolution(&mut self, width: u32, height: u32) -> &mut Self {
+        self.add_video_effect(format!(
+            "scale={}:{}:force_original_aspect_ratio=decrease,pad={}:{}:(ow-iw)/2:(oh-ih)/2:color=black",
+            width, height, width, height
+        ));
+        self
+    }
+
     pub fn set_crf(&mut self, crf: u16) -> &mut Self {
         self.add_out_option("-crf");
         self.add_out_option(crf.to_string());
@@ -1263,6 +1273,61 @@ pub async fn convert(uri: &str, to: &str, args: Option<Vec<String>>) {
 fn round(x: f64, decimals: u32) -> f64 {
     let y = 10i32.pow(decimals) as f64;
     (x * y).round() / y
+}
+
+/// Concatenate multiple video segment files into a single output file using
+/// FFmpeg's concat demuxer. All segments must have matching codecs, resolution,
+/// and stream parameters. Uses `-c copy` (no re-encoding).
+pub async fn concat_videos(segments: &[String], output: &str) -> RsResult<()> {
+    let list_path = get_server_temp_file_path().await?;
+    let list_path_str = list_path
+        .to_str()
+        .ok_or(RsError::Error("Invalid temp file path for concat list".to_string()))?;
+
+    let mut content = String::new();
+    for segment in segments {
+        // Escape single quotes in file paths for the concat demuxer format
+        let escaped = segment.replace('\'', "'\\''");
+        content.push_str(&format!("file '{}'\n", escaped));
+    }
+    tokio::fs::write(&list_path, &content).await?;
+
+    let ffmpeg = VideoCommandBuilder::get_ffmpeg_path();
+    let mut cmd = Command::new(ffmpeg);
+    cmd.arg("-f")
+        .arg("concat")
+        .arg("-safe")
+        .arg("0")
+        .arg("-i")
+        .arg(list_path_str)
+        .arg("-c")
+        .arg("copy")
+        .arg("-y")
+        .arg(output)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    println!("Concat command: {:?}", cmd);
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| RsError::Error(format!("Failed to spawn ffmpeg concat: {:?}", e)))?;
+
+    let stderr = child.stderr.take().unwrap();
+    let reader = BufReader::new(stderr);
+    let mut lines = reader.lines();
+    while let Some(line) = lines.next_line().await.unwrap_or(None) {
+        println!("ffmpeg concat: {}", line);
+    }
+
+    let status = child.wait().await?;
+    let _ = tokio::fs::remove_file(&list_path).await;
+
+    if !status.success() {
+        Err(RsError::Error("FFmpeg concat failed".to_string()))
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

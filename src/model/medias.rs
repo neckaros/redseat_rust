@@ -48,7 +48,9 @@ use crate::{
     domain::{
         deleted::RsDeleted,
         library::LibraryType,
-        media::{self, ConvertMessage, ConvertProgress, RsGpsPosition, DEFAULT_MIME},
+        media::{
+            self, ConvertMessage, ConvertProgress, RsGpsPosition, VideoMergeRequest, DEFAULT_MIME,
+        },
         plugin, MediaElement,
     },
     error::RsError,
@@ -92,7 +94,7 @@ use crate::{
         image_tools::{self, resize_image_reader, ImageSize},
         log::{log_error, log_info, log_warn, LogServiceType},
         prediction::{predict_net, preload_model, PredictionTagResult},
-        video_tools::{self, probe_video, VideoTime},
+        video_tools::{self, concat_videos, probe_video, VideoTime},
         zip_range::extract_zip_page_from_request,
     },
 };
@@ -2959,6 +2961,303 @@ impl ModelController {
                 Ok(media)
             }
             Err(err) => Err(err),
+        }
+    }
+
+    pub async fn merge_videos(
+        &self,
+        library_id: &str,
+        request: VideoMergeRequest,
+        requesting_user: &ConnectedUser,
+    ) -> crate::Result<Media> {
+        let store = self.store.get_library_store(library_id)?;
+        let m = self.source_for_library(library_id).await?;
+        let local = self.library_source_for_library(library_id).await?;
+        let first_request = &request.items[0].request;
+        let output_format = first_request.format.clone();
+        let output_codec = first_request.codec.clone();
+        let output_no_audio = first_request.no_audio;
+        let total_segments = request.items.len();
+
+        // Validate all medias upfront and resolve local paths
+        let mut media_paths: Vec<(Media, String)> = Vec::new();
+        for item in &request.items {
+            requesting_user.check_file_role(library_id, &item.media_id, LibraryRole::Write)?;
+            let media = store
+                .get_media(&item.media_id, None)
+                .await?
+                .ok_or(SourcesError::UnableToFindMedia(
+                    library_id.to_string(),
+                    item.media_id.to_string(),
+                    "merge_videos".to_string(),
+                ))?
+                .item;
+            let path = m
+                .local_path(media.source.as_ref().ok_or(Error::ServiceError(
+                    "Merge".to_owned(),
+                    Some("Unable to merge video without source".to_owned()),
+                ))?)
+                .ok_or(Error::ServiceError(
+                    "Merge".to_owned(),
+                    Some("Unable to merge video that is not local".to_owned()),
+                ))?;
+            let path_str = path
+                .to_str()
+                .ok_or(RsError::Error(format!(
+                    "Unable to convert video path to string: {:?}",
+                    path
+                )))?
+                .to_string();
+            media_paths.push((media, path_str));
+        }
+
+        let first_media = &media_paths[0].0;
+        let output_filename = format!("{}.{}", remove_extension(&first_media.name), output_format);
+
+        // Send initial pending progress
+        let message = ConvertMessage {
+            library: library_id.to_string(),
+            progress: ConvertProgress {
+                id: request.id.clone(),
+                filename: output_filename.clone(),
+                converted_id: None,
+                done: false,
+                percent: 0.0,
+                status: RsVideoTranscodeStatus::Pending,
+                estimated_remaining_seconds: None,
+                request: None,
+            },
+        };
+        self.send_convert_progress(message);
+
+        let mut segment_paths: Vec<String> = Vec::new();
+
+        // Process first segment
+        {
+            let (_, ref source_path) = media_paths[0];
+            let segment_dest_source = format!(".cache/merge_{}_{}.{}", request.id, 0, output_format);
+            let segment_dest = local.get_full_path(&segment_dest_source);
+            PathProvider::ensure_filepath(&segment_dest).await?;
+
+            let mc_progress = self.clone();
+            let lib_progress = library_id.to_string();
+            let request_id = request.id.clone();
+            let (tx_progress, mut rx_progress) = mpsc::channel::<f64>(100);
+            let segment_total = total_segments;
+            tokio::spawn(async move {
+                while let Some(percent) = rx_progress.recv().await {
+                    let overall = percent * 0.9 / segment_total as f64;
+                    let message = ConvertMessage {
+                        library: lib_progress.clone(),
+                        progress: ConvertProgress {
+                            percent: overall,
+                            converted_id: None,
+                            filename: String::new(),
+                            done: false,
+                            status: RsVideoTranscodeStatus::Processing,
+                            id: request_id.clone(),
+                            request: None,
+                            estimated_remaining_seconds: None,
+                        },
+                    };
+                    mc_progress.send_convert_progress(message);
+                }
+            });
+
+            let mut video_builder = VideoCommandBuilder::new(source_path.clone()).await;
+            video_builder.set_progress(tx_progress);
+            video_builder
+                .set_request(request.items[0].request.clone())
+                .await?;
+            video_builder
+                .run_file(segment_dest.to_str().unwrap())
+                .await?;
+
+            segment_paths.push(
+                segment_dest
+                    .to_str()
+                    .unwrap()
+                    .to_string(),
+            );
+        }
+
+        // Probe first segment to get canvas dimensions
+        let probe = probe_video(segment_paths[0].as_str()).await?;
+        let (canvas_w, canvas_h) = probe.size();
+        let canvas_w = canvas_w.unwrap_or(1920);
+        let canvas_h = canvas_h.unwrap_or(1080);
+        // Ensure even dimensions
+        let canvas_w = canvas_w & !1;
+        let canvas_h = canvas_h & !1;
+
+        // Process subsequent segments
+        for (i, item) in request.items.iter().enumerate().skip(1) {
+            let (_, ref source_path) = media_paths[i];
+            let segment_dest_source =
+                format!(".cache/merge_{}_{}.{}", request.id, i, output_format);
+            let segment_dest = local.get_full_path(&segment_dest_source);
+            PathProvider::ensure_filepath(&segment_dest).await?;
+
+            let mc_progress = self.clone();
+            let lib_progress = library_id.to_string();
+            let request_id = request.id.clone();
+            let segment_index = i;
+            let segment_total = total_segments;
+            let (tx_progress, mut rx_progress) = mpsc::channel::<f64>(100);
+            tokio::spawn(async move {
+                while let Some(percent) = rx_progress.recv().await {
+                    let overall =
+                        (segment_index as f64 + percent) * 0.9 / segment_total as f64;
+                    let message = ConvertMessage {
+                        library: lib_progress.clone(),
+                        progress: ConvertProgress {
+                            percent: overall,
+                            converted_id: None,
+                            filename: String::new(),
+                            done: false,
+                            status: RsVideoTranscodeStatus::Processing,
+                            id: request_id.clone(),
+                            request: None,
+                            estimated_remaining_seconds: None,
+                        },
+                    };
+                    mc_progress.send_convert_progress(message);
+                }
+            });
+
+            // Override format, codec, and no_audio to match first segment
+            let mut seg_request = item.request.clone();
+            seg_request.format = output_format.clone();
+            seg_request.codec = output_codec.clone();
+            seg_request.no_audio = output_no_audio;
+
+            let mut video_builder = VideoCommandBuilder::new(source_path.clone()).await;
+            video_builder.set_progress(tx_progress);
+            video_builder.set_request(seg_request).await?;
+            // Pad to match canvas after all other filters
+            video_builder.set_pad_to_resolution(canvas_w, canvas_h);
+            video_builder
+                .run_file(segment_dest.to_str().unwrap())
+                .await?;
+
+            segment_paths.push(
+                segment_dest
+                    .to_str()
+                    .unwrap()
+                    .to_string(),
+            );
+        }
+
+        // Concat all segments
+        let concat_dest_source = format!(".cache/merge_{}_final.{}", request.id, output_format);
+        let concat_dest = local.get_full_path(&concat_dest_source);
+        PathProvider::ensure_filepath(&concat_dest).await?;
+
+        self.send_convert_progress(ConvertMessage {
+            library: library_id.to_string(),
+            progress: ConvertProgress {
+                id: request.id.clone(),
+                filename: output_filename.clone(),
+                converted_id: None,
+                done: false,
+                percent: 0.95,
+                status: RsVideoTranscodeStatus::Processing,
+                estimated_remaining_seconds: None,
+                request: None,
+            },
+        });
+
+        concat_videos(&segment_paths, concat_dest.to_str().unwrap()).await?;
+
+        // Clean up segment temp files
+        for seg_path in &segment_paths {
+            let _ = tokio::fs::remove_file(seg_path).await;
+        }
+
+        // Import the merged file as a new media
+        let first_media_info: MediaForUpdate = media_paths[0].0.clone().into();
+        let reader = File::open(&concat_dest).await?;
+        let media = self
+            .add_library_file(
+                library_id,
+                &output_filename,
+                Some(first_media_info),
+                reader,
+                requesting_user,
+            )
+            .await;
+
+        // Clean up concat output
+        let _ = tokio::fs::remove_file(&concat_dest).await;
+
+        match media {
+            Ok(media) => {
+                // Copy relations from first source media
+                if let Err(e) = store
+                    .copy_media_relations(
+                        media_paths[0].0.id.clone(),
+                        media.id.clone(),
+                    )
+                    .await
+                {
+                    tracing::warn!("Failed to copy relations to merged media: {:?}", e);
+                }
+
+                // Copy thumbnail from first source media
+                let existing_thumb = self
+                    .media_image(
+                        library_id,
+                        &media_paths[0].0.id,
+                        None,
+                        &ConnectedUser::ServerAdmin,
+                    )
+                    .await;
+                if let Ok(existing_thumb) = existing_thumb {
+                    if let Err(e) = self
+                        .update_media_image(
+                            library_id,
+                            &media.id,
+                            existing_thumb.stream,
+                            &ConnectedUser::ServerAdmin,
+                        )
+                        .await
+                    {
+                        tracing::warn!("Failed to copy thumbnail to merged media: {:?}", e);
+                    }
+                }
+
+                self.send_convert_progress(ConvertMessage {
+                    library: library_id.to_string(),
+                    progress: ConvertProgress {
+                        id: request.id.clone(),
+                        filename: output_filename,
+                        converted_id: Some(media.id.clone()),
+                        done: true,
+                        percent: 1.0,
+                        status: RsVideoTranscodeStatus::Completed,
+                        estimated_remaining_seconds: None,
+                        request: None,
+                    },
+                });
+
+                Ok(media)
+            }
+            Err(err) => {
+                self.send_convert_progress(ConvertMessage {
+                    library: library_id.to_string(),
+                    progress: ConvertProgress {
+                        id: request.id.clone(),
+                        filename: output_filename,
+                        converted_id: None,
+                        done: true,
+                        percent: 0.0,
+                        status: RsVideoTranscodeStatus::Failed,
+                        estimated_remaining_seconds: None,
+                        request: None,
+                    },
+                });
+                Err(err)
+            }
         }
     }
 
