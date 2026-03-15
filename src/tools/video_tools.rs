@@ -942,6 +942,60 @@ impl VideoCommandBuilder {
         Ok(())
     }
 
+    /// Apply common FFmpeg args: input options, inputs, filter complex, output options.
+    fn apply_common_args(&mut self) {
+        for input in &self.input_options {
+            self.cmd.arg(input);
+        }
+
+        self.cmd.arg("-i").arg(&self.path);
+
+        for input in &self.inputs {
+            self.cmd.arg("-i").arg(input);
+        }
+
+        if !self.video_effects.is_empty() {
+            self.cmd
+                .arg("-filter_complex")
+                .arg(self.video_effects.join(""));
+        }
+
+        for arg in &self.output_options {
+            self.cmd.arg(arg);
+        }
+    }
+
+    /// Build an FFmpeg command configured for HLS output (VOD event mode).
+    /// Applies all builder settings (codec, filters, overlays) but outputs
+    /// to HLS segments instead of a single file.
+    pub fn build_command_for_hls(
+        &mut self,
+        output_dir: &std::path::Path,
+        playlist_path: &std::path::Path,
+        segment_duration: u32,
+    ) -> &mut Command {
+        self.apply_common_args();
+
+        let segment_pattern = output_dir.join("seg_%05d.ts");
+
+        self.cmd
+            .arg("-y")
+            .args(["-f", "hls"])
+            .args(["-hls_time", &segment_duration.to_string()])
+            .args(["-hls_playlist_type", "event"])
+            .args(["-hls_flags", "temp_file+append_list"])
+            .args([
+                "-hls_segment_filename",
+                &segment_pattern.to_string_lossy(),
+            ])
+            .args(["-hls_allow_cache", "1"])
+            .arg(playlist_path.to_string_lossy().as_ref())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        &mut self.cmd
+    }
+
     pub async fn run_file(&mut self, to: &str) -> RsResult<()> {
         let path = self.path.to_string();
         let probe = self.get_probe_result().await.ok();
@@ -966,26 +1020,7 @@ impl VideoCommandBuilder {
         //let fr_ration = if let Some(target_fr) =
 
         println!("=> {:?}", frames);
-        for input in &self.input_options {
-            self.cmd.arg(input);
-        }
-
-        self.cmd.arg("-i").arg(&self.path);
-
-        for input in &self.inputs {
-            self.cmd.arg("-i").arg(input);
-        }
-
-        if !self.video_effects.is_empty() {
-            println!("-filter_complex {}", self.video_effects.join(""));
-            self.cmd
-                .arg("-filter_complex")
-                .arg(self.video_effects.join(""));
-        }
-
-        for arg in &self.output_options {
-            self.cmd.arg(arg);
-        }
+        self.apply_common_args();
 
         if let Some(format) = &self.format {
             self.cmd.arg("-f").arg(format.to_string());

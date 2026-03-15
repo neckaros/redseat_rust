@@ -64,6 +64,10 @@ pub fn routes(mc: ModelController) -> Router {
             "/:id/convert/plugin/:plugin_id",
             post(handler_convert_plugin),
         )
+        .route("/:id/hls", post(handler_media_hls_start))
+        .route("/:id/hls", delete(handler_media_hls_stop))
+        .route("/:id/hls/playlist.m3u8", get(handler_media_hls_playlist))
+        .route("/:id/hls/:segment", get(handler_media_hls_segment))
         .route("/:id", get(handler_get_file))
         .route("/:id/backup/last", get(handler_get_last_backup))
         .route("/:id/backup/:backupid", get(handler_get_backup))
@@ -735,4 +739,184 @@ async fn handler_process_media_faces(
         .await?;
 
     Ok(Json(json!(detected_faces)))
+}
+
+// -- Media HLS handlers --
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct MediaHlsStartRequest {
+    convert: Option<VideoConvertRequest>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct MediaHlsQuery {
+    /// Session key returned by the start endpoint, used to look up the right session
+    /// when multiple transcode variants exist for the same media
+    key: Option<String>,
+}
+
+/// Look up a media HLS session by exact key or by library:media prefix.
+/// Touches the session to reset inactivity timeout.
+fn find_media_hls_session<'a>(
+    sessions: &'a std::collections::HashMap<String, crate::tools::media_hls_session::MediaHlsSession>,
+    query_key: &Option<String>,
+    library_id: &str,
+    media_id: &str,
+) -> Option<&'a crate::tools::media_hls_session::MediaHlsSession> {
+    let session = if let Some(ref session_key) = query_key {
+        sessions.get(session_key)
+    } else {
+        let prefix = format!("{}:{}:", library_id, media_id);
+        sessions.values().find(|s| s.key.starts_with(&prefix))
+    };
+    if let Some(s) = session {
+        s.touch();
+    }
+    session
+}
+
+async fn handler_media_hls_start(
+    Path((library_id, media_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Json(body): Json<MediaHlsStartRequest>,
+) -> Result<Json<Value>> {
+    let key = mc
+        .get_or_create_media_hls_session(&library_id, &media_id, body.convert, &user)
+        .await?;
+
+    Ok(Json(json!({
+        "key": key,
+        "playlistUrl": format!("/libraries/{}/medias/{}/hls/playlist.m3u8?key={}", library_id, media_id, key)
+    })))
+}
+
+async fn handler_media_hls_playlist(
+    Path((library_id, media_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    _user: ConnectedUser,
+    Query(query): Query<MediaHlsQuery>,
+) -> Result<Response> {
+    use http::header::{CACHE_CONTROL, CONTENT_TYPE};
+    use crate::tools::media_hls_session::MEDIA_PLAYLIST_READY_TIMEOUT_MS;
+
+    // Find the session
+    let (playlist_path, key) = {
+        let sessions = mc.media_hls_sessions.read().await;
+        let session = find_media_hls_session(&sessions, &query.key, &library_id, &media_id)
+            .ok_or_else(|| Error::NotFound("Media HLS session not found".to_string()))?;
+        (session.playlist_path.clone(), session.key.clone())
+    };
+
+    // Wait for the playlist file to be created by FFmpeg
+    let deadline = tokio::time::Instant::now()
+        + std::time::Duration::from_millis(MEDIA_PLAYLIST_READY_TIMEOUT_MS);
+
+    loop {
+        if let Ok(meta) = tokio::fs::metadata(&playlist_path).await {
+            if meta.len() > 0 {
+                break;
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(Error::Error(
+                "Timed out waiting for HLS playlist to be ready".to_string(),
+            ));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+
+    // Read and rewrite the playlist
+    let content = tokio::fs::read_to_string(&playlist_path)
+        .await
+        .map_err(|e| Error::Error(format!("Failed to read HLS playlist: {}", e)))?;
+
+    // Rewrite segment filenames to proxy URLs
+    let rewritten: String = content
+        .lines()
+        .map(|line| {
+            if line.ends_with(".ts") && !line.starts_with('#') {
+                format!(
+                    "/libraries/{}/medias/{}/hls/{}?key={}",
+                    library_id, media_id, line, key
+                )
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let response = Response::builder()
+        .header(CONTENT_TYPE, "application/vnd.apple.mpegurl")
+        .header(CACHE_CONTROL, "no-cache, no-store")
+        .body(Body::from(rewritten))
+        .map_err(|e| Error::Error(format!("Failed to build response: {}", e)))?;
+
+    Ok(response)
+}
+
+async fn handler_media_hls_segment(
+    Path((library_id, media_id, segment)): Path<(String, String, String)>,
+    State(mc): State<ModelController>,
+    _user: ConnectedUser,
+    Query(query): Query<MediaHlsQuery>,
+) -> Result<Response> {
+    use http::header::{CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE};
+
+    // Validate segment filename to prevent path traversal
+    let is_valid = segment.len() == 12
+        && segment.starts_with("seg_")
+        && segment.ends_with(".ts")
+        && segment[4..9].bytes().all(|b| b.is_ascii_digit());
+    if !is_valid {
+        return Err(Error::NotFound(format!("Invalid segment: {}", segment)));
+    }
+
+    let output_dir = {
+        let sessions = mc.media_hls_sessions.read().await;
+        let session = find_media_hls_session(&sessions, &query.key, &library_id, &media_id)
+            .ok_or_else(|| Error::NotFound("Media HLS session not found".to_string()))?;
+        session.output_dir.clone()
+    };
+
+    let segment_path = output_dir.join(&segment);
+    let file = tokio::fs::File::open(&segment_path)
+        .await
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => {
+                Error::NotFound(format!("Segment not found: {}", segment))
+            }
+            _ => Error::Error(format!("Failed to open segment: {}", e)),
+        })?;
+
+    let file_size = file.metadata().await.map(|m| m.len()).unwrap_or(0);
+
+    let stream = ReaderStream::new(file);
+    let body = Body::from_stream(stream);
+
+    // VOD segments are immutable — cache for 1 hour
+    let mut response_builder = Response::builder()
+        .header(CONTENT_TYPE, "video/mp2t")
+        .header(CACHE_CONTROL, "public, max-age=3600");
+    if file_size > 0 {
+        response_builder = response_builder.header(CONTENT_LENGTH, file_size);
+    }
+    let response = response_builder
+        .body(body)
+        .map_err(|e| Error::Error(format!("Failed to build response: {}", e)))?;
+
+    Ok(response)
+}
+
+async fn handler_media_hls_stop(
+    Path((library_id, media_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<Json<Value>> {
+    user.check_library_role(&library_id, crate::domain::library::LibraryRole::Read)?;
+    mc.stop_media_hls_session(&library_id, &media_id).await?;
+    Ok(Json(json!({"status": "ok"})))
 }

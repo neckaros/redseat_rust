@@ -144,6 +144,9 @@ pub struct ModelController {
     pub hls_sessions: Arc<RwLock<HashMap<String, crate::tools::hls_session::HlsSession>>>,
     /// Active IPTV streams per library: library_id → set of channel_ids currently streaming
     pub active_streams: Arc<RwLock<HashMap<String, HashSet<String>>>>,
+
+    /// Media HLS sessions: key = "library:media:convert_hash"
+    pub media_hls_sessions: Arc<RwLock<HashMap<String, crate::tools::media_hls_session::MediaHlsSession>>>,
 }
 
 // Constructor
@@ -171,6 +174,8 @@ impl ModelController {
 
             hls_sessions: Arc::new(RwLock::new(HashMap::new())),
             active_streams: Arc::new(RwLock::new(HashMap::new())),
+
+            media_hls_sessions: Arc::new(RwLock::new(HashMap::new())),
         };
 
         let pm_forload = mc.plugin_manager.clone();
@@ -224,7 +229,7 @@ impl ModelController {
             crate::tools::hls_session::cleanup_orphaned_dirs().await;
         });
 
-        // Spawn HLS session cleanup loop
+        // Spawn HLS session cleanup loop (channels)
         let mc_cleanup = mc.clone();
         tokio::spawn(async move {
             loop {
@@ -233,6 +238,15 @@ impl ModelController {
                 for (library_id, channel_id) in released {
                     mc_cleanup.release_stream_slot(&library_id, &channel_id).await;
                 }
+            }
+        });
+
+        // Spawn media HLS session cleanup loop
+        let mc_media_cleanup = mc.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                crate::tools::media_hls_session::cleanup_stale_sessions(&mc_media_cleanup.media_hls_sessions).await;
             }
         });
 

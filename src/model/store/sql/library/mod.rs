@@ -302,12 +302,18 @@ impl SqliteLibraryStore {
                         format!("Update Library Database to version: {}", version),
                     );
                 }
+                if version < 51 {
+                    let initial = String::from_utf8_lossy(include_bytes!("051 - CASCADE DELETE.sql"));
+                    conn.execute_batch(&initial)?;
+                    version = 51;
+                    conn.pragma_update(None, "user_version", version)?;
+                    log_info(
+                        LogServiceType::Database,
+                        format!("Update Library Database to version: {}", version),
+                    );
+                }
 
                 conn.execute("VACUUM;", params![])?;
-                conn.execute("DELETE FROM media_people_mapping where people_ref not in (select id from people) or media_ref not in (select id from medias);", []);
-                conn.execute("DELETE FROM media_tag_mapping where tag_ref not in (select id from tags) or media_ref not in (select id from medias);", []);
-                conn.execute("DELETE FROM media_serie_mapping where serie_ref not in (select id from series) or media_ref not in (select id from medias);", []);
-                conn.execute("UPDATE medias SET book = NULL where book not in (select id from books);", []);
                 Ok((initial_version, version))
             })
             .await?;
@@ -352,52 +358,48 @@ mod tests {
     use super::SqliteLibraryStore;
 
     #[tokio::test]
-    async fn migrate_to_version_41_from_40() {
+    async fn cascade_delete_triggers() {
         let connection = tokio_rusqlite::Connection::open_in_memory().await.unwrap();
-        connection
-            .call(|conn| {
-                let initial = String::from_utf8_lossy(include_bytes!("001 - INITIAL.sql"));
-                conn.execute_batch(&initial)?;
-                conn.execute_batch(&String::from_utf8_lossy(include_bytes!("029 - TAGPATH.sql")))?;
-                conn.execute_batch(&String::from_utf8_lossy(include_bytes!("030 - INSERT TRIGGERS.sql")))?;
-                conn.execute_batch(&String::from_utf8_lossy(include_bytes!("031 - MEDIAS INDEX.sql")))?;
-                conn.execute_batch(&String::from_utf8_lossy(include_bytes!("032 - PROGRESS.sql")))?;
-                conn.execute_batch(&String::from_utf8_lossy(include_bytes!("033 - ORIGINAL.sql")))?;
-                conn.execute_batch(&String::from_utf8_lossy(include_bytes!("034 - PEOPLE IDS.sql")))?;
-                conn.execute_batch(&String::from_utf8_lossy(include_bytes!("035 - FACE RECOGNITION.sql")))?;
-                conn.execute_batch(&String::from_utf8_lossy(include_bytes!("036 - PEOPLE FACE REF.sql")))?;
-                conn.execute_batch(&String::from_utf8_lossy(include_bytes!("037 - ADD SIMILARITY TO PEOPLE FACES.sql")))?;
-                conn.execute_batch(&String::from_utf8_lossy(include_bytes!("038 - ADD FACE RECOGNITION ERROR.sql")))?;
-                conn.execute_batch(&String::from_utf8_lossy(include_bytes!("039 - REQUEST PROCESSING.sql")))?;
-                conn.execute_batch(&String::from_utf8_lossy(include_bytes!("040 - BOOK IDS.sql")))?;
-                conn.pragma_update(None, "user_version", 40)?;
-                conn.execute(
-                    "INSERT INTO medias (id, name, type, mimetype) VALUES ('m1', 'media-1', 'archive', 'application/octet-stream')",
-                    [],
-                )?;
-                Ok(())
-            })
-            .await
-            .unwrap();
-
         let store = SqliteLibraryStore::new(connection).await.unwrap();
         let version = store.migrate().await.unwrap();
-        assert_eq!(version, 49);
+        assert_eq!(version, 51);
 
+        // Set up: insert a book and a media attached to it
         store
             .connection
             .call(|conn| {
                 conn.execute(
-                    "UPDATE medias SET book = 'missing-book' WHERE id = 'm1'",
+                    "INSERT INTO books (id, name) VALUES ('book-1', 'Test Book')",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO medias (id, name, type, mimetype, book) VALUES ('m1', 'media-1', 'archive', 'application/octet-stream', 'book-1')",
+                    [],
+                )?;
+                // Insert a movie and a media attached to it
+                conn.execute(
+                    "INSERT INTO movies (id, name) VALUES ('movie-1', 'Test Movie')",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO medias (id, name, type, mimetype, movie) VALUES ('m2', 'media-2', 'video', 'video/mp4', 'movie-1')",
                     [],
                 )?;
                 Ok(())
             })
             .await
             .unwrap();
-        store.migrate().await.unwrap();
 
-        let media = store.get_media("m1", None).await.unwrap().unwrap();
-        assert!(media.relations.as_ref().and_then(|r| r.books.as_ref()).is_none());
+        // Verify medias exist
+        assert!(store.get_media("m1", None).await.unwrap().is_some());
+        assert!(store.get_media("m2", None).await.unwrap().is_some());
+
+        // Cascade delete: deleting book-1 should delete m1
+        store.remove_book("book-1".to_string()).await.unwrap();
+        assert!(store.get_media("m1", None).await.unwrap().is_none(), "media should be cascade deleted when book is deleted");
+
+        // Cascade delete: deleting movie-1 should delete m2
+        store.remove_movie("movie-1".to_string()).await.unwrap();
+        assert!(store.get_media("m2", None).await.unwrap().is_none(), "media should be cascade deleted when movie is deleted");
     }
 }

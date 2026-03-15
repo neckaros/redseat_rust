@@ -2309,25 +2309,7 @@ impl ModelController {
     ) -> crate::error::Result<Vec<u8>> {
         requesting_user.check_file_role(library_id, media_id, LibraryRole::Read)?;
 
-        let store = self.store.get_library_store(library_id)?;
-        let source =
-            store
-                .get_media_source(&media_id)
-                .await?
-                .ok_or(SourcesError::UnableToFindSource(
-                    library_id.to_string(),
-                    media_id.to_string(),
-                    format!("mediaid: {}", media_id),
-                    "get_video_thumb".to_string(),
-                ))?;
-
-        let m = self.source_for_library(&library_id).await?;
-        let local_path = m.local_path(&source.source);
-        let uri = if let Some(local_path) = local_path {
-            local_path.to_str().unwrap().to_string()
-        } else {
-            ModelController::get_temporary_local_read_url(library_id, media_id, None).await?
-        };
+        let uri = self.get_media_uri(library_id, media_id, None).await?;
         let thumb = video_tools::thumb_video(&uri, time).await?;
         let mut cursor = std::io::Cursor::new(thumb);
         let thumb = resize_image_reader(Box::pin(cursor), 512, format, quality, false).await?;
@@ -2388,6 +2370,110 @@ impl ModelController {
             token
         );
         Ok(uri)
+    }
+
+    /// Returns a local file path (for local sources) or a temporary authenticated URL
+    /// (for plugin/virtual sources) that can be used as FFmpeg input.
+    pub async fn get_media_uri(
+        &self,
+        library_id: &str,
+        media_id: &str,
+        delay: Option<u64>,
+    ) -> crate::error::Result<String> {
+        let store = self.store.get_library_store(library_id)?;
+        let source =
+            store
+                .get_media_source(&media_id)
+                .await?
+                .ok_or(SourcesError::UnableToFindSource(
+                    library_id.to_string(),
+                    media_id.to_string(),
+                    format!("mediaid: {}", media_id),
+                    "get_media_uri".to_string(),
+                ))?;
+
+        let m = self.source_for_library(library_id).await?;
+        let local_path = m.local_path(&source.source);
+        if let Some(local_path) = local_path {
+            Ok(local_path.to_string_lossy().to_string())
+        } else {
+            Ok(ModelController::get_temporary_local_read_url(library_id, media_id, delay).await?)
+        }
+    }
+
+    // -- Media HLS session management --
+
+    pub async fn get_or_create_media_hls_session(
+        &self,
+        library_id: &str,
+        media_id: &str,
+        convert_request: Option<VideoConvertRequest>,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<String> {
+        requesting_user.check_file_role(library_id, media_id, LibraryRole::Read)?;
+
+        // Crypt libraries are not supported for HLS
+        if self.cache_get_library_crypt(library_id).await {
+            return Err(crate::Error::UnavailableForCryptedLibraries);
+        }
+
+        // Compute session key
+        let convert_hash = if let Some(ref req) = convert_request {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let json = serde_json::to_string(req).unwrap_or_default();
+            let mut hasher = DefaultHasher::new();
+            json.hash(&mut hasher);
+            format!("{:x}", hasher.finish())
+        } else {
+            "default".to_string()
+        };
+        let key = format!("{}:{}:{}", library_id, media_id, convert_hash);
+
+        // Fast path: check if session already exists
+        {
+            let sessions = self.media_hls_sessions.read().await;
+            if let Some(session) = sessions.get(&key) {
+                session.touch();
+                return Ok(key);
+            }
+        }
+
+        // Resolve input: local path or temp URL (12 hours for movie sessions)
+        let uri = self.get_media_uri(library_id, media_id, Some(43200)).await?;
+
+        // Create and start the session
+        crate::tools::media_hls_session::start_media_hls_session(
+            key.clone(),
+            library_id.to_string(),
+            media_id.to_string(),
+            &uri,
+            convert_request,
+            self.media_hls_sessions.clone(),
+        )
+        .await?;
+
+        Ok(key)
+    }
+
+    pub async fn stop_media_hls_session(
+        &self,
+        library_id: &str,
+        media_id: &str,
+    ) -> RsResult<()> {
+        let keys_to_stop: Vec<String> = {
+            let sessions = self.media_hls_sessions.read().await;
+            sessions
+                .keys()
+                .filter(|k| k.starts_with(&format!("{}:{}:", library_id, media_id)))
+                .cloned()
+                .collect()
+        };
+
+        for key in &keys_to_stop {
+            crate::tools::media_hls_session::stop_session(key, &self.media_hls_sessions).await;
+        }
+        Ok(())
     }
 
     pub async fn get_file_share_token(
@@ -3275,25 +3361,7 @@ impl ModelController {
     ) -> crate::Result<()> {
         requesting_user.check_file_role(library_id, media_id, LibraryRole::Read)?;
 
-        let store = self.store.get_library_store(library_id)?;
-        let source =
-            store
-                .get_media_source(&media_id)
-                .await?
-                .ok_or(SourcesError::UnableToFindSource(
-                    library_id.to_string(),
-                    media_id.to_string(),
-                    format!("mediaid: {}", media_id),
-                    "update_video_infos".to_string(),
-                ))?;
-
-        let m = self.source_for_library(&library_id).await?;
-        let local_path = m.local_path(&source.source);
-        let uri = if let Some(local_path) = local_path {
-            local_path.to_str().unwrap().to_string()
-        } else {
-            ModelController::get_temporary_local_read_url(library_id, media_id, Some(240)).await?
-        };
+        let uri = self.get_media_uri(library_id, media_id, Some(240)).await?;
 
         let videos_infos = probe_video(&uri).await?;
 
