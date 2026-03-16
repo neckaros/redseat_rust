@@ -1,6 +1,7 @@
 use crate::{domain::{view_progress::ViewProgressForAdd, watched::{Watched, WatchedForAdd, WatchedForDelete}}, model::{users::{ConnectedUser, HistoryQuery, InvitationRedeemer, UserRole, ViewProgressQuery}, ModelController}, Result};
 use axum::{extract::{Path, State}, middleware, routing::{delete, get, post}, Json, Router};
 use axum_extra::extract::Query;
+use serde::Deserialize;
 use serde_json::{json, Value};
 use tower_http::trace::TraceLayer;
 
@@ -26,6 +27,9 @@ pub fn routes(mc: ModelController) -> Router {
 		.route("/me/history", delete(handler_delete_history))
 		.route("/me/history/progress/:id", get(handler_get_progress))
 		.route("/me/history/progress", post(handler_add_progress))
+
+		.route("/me/hidelibrary", post(handler_hide_library))
+		.route("/me/unhidelibrary", post(handler_unhide_library))
 
 		.route("/invitation", get(handler_invitation))
 		.merge(admin_routes)
@@ -108,6 +112,21 @@ async fn handler_add_progress(State(mc): State<ModelController>, user: Connected
 }
 
 
+
+async fn handler_hide_library(State(mc): State<ModelController>, user: ConnectedUser, Json(body): Json<HideLibraryRequest>) -> Result<Json<Value>> {
+	mc.hide_library(body.library, &user).await?;
+	Ok(Json(json!({"ok": true})))
+}
+
+async fn handler_unhide_library(State(mc): State<ModelController>, user: ConnectedUser, Json(body): Json<HideLibraryRequest>) -> Result<Json<Value>> {
+	mc.unhide_library(body.library, &user).await?;
+	Ok(Json(json!({"ok": true})))
+}
+
+#[derive(Debug, Deserialize)]
+struct HideLibraryRequest {
+	library: String,
+}
 
 async fn handler_invitation(State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<InvitationRedeemer>) -> Result<Json<Value>> {
 	let library =  mc.redeem_invitation(query.code, user.clone()).await?;

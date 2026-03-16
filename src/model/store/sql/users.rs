@@ -189,7 +189,7 @@ impl SqliteStore {
     
                 if let Some(preferences) = update_user.preferences {
                     conn.execute(
-                        "UPDATE Users SET role = ?1 WHERE ID = ?2",
+                        "UPDATE Users SET preferences = ?1 WHERE ID = ?2",
                         (serde_json::to_string(&preferences).map_err(|err| tokio_rusqlite::Error::Other(Box::new(err)))?, &update_user.id),
                     )?;
                 }

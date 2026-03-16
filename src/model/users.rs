@@ -409,6 +409,36 @@ pub struct ViewProgressQuery {
 
 
 impl ModelController {
+    pub async fn hide_library(&self, library_id: String, user: &ConnectedUser) -> RsResult<()> {
+        let server_user = user.check_registered()?;
+        let mut preferences = server_user.preferences.clone();
+        if !preferences.hidden_libraries.contains(&library_id) {
+            preferences.hidden_libraries.push(library_id);
+        }
+        let update = ServerUserForUpdate {
+            id: server_user.id.clone(),
+            name: None,
+            role: None,
+            preferences: Some(preferences),
+        };
+        self.store.update_user(&server_user, update).await?;
+        Ok(())
+    }
+
+    pub async fn unhide_library(&self, library_id: String, user: &ConnectedUser) -> RsResult<()> {
+        let server_user = user.check_registered()?;
+        let mut preferences = server_user.preferences.clone();
+        preferences.hidden_libraries.retain(|id| id != &library_id);
+        let update = ServerUserForUpdate {
+            id: server_user.id.clone(),
+            name: None,
+            role: None,
+            preferences: Some(preferences),
+        };
+        self.store.update_user(&server_user, update).await?;
+        Ok(())
+    }
+
     pub async fn get_watched(&self, query: HistoryQuery, user: &ConnectedUser, library_id: Option<String>) -> RsResult<Vec<Watched>> {
         user.check_role(&UserRole::Read)?;
         if matches!(user, ConnectedUser::ServerAdmin) {
