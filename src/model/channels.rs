@@ -722,10 +722,12 @@ impl ModelController {
         let key = format!("{}:{}:{}", library_id, channel_id, quality_key);
 
         // Check if session already exists and is alive
+        // Note: we intentionally do NOT touch() here — only segment requests
+        // should keep the session alive. Otherwise, a client polling the playlist
+        // while FFmpeg is stalled (reconnecting) would prevent cleanup forever.
         {
             let sessions = self.hls_sessions.read().await;
             if let Some(session) = sessions.get(&key) {
-                session.touch();
                 return Ok((session.output_dir.clone(), session.playlist_path.clone()));
             }
         }
@@ -743,6 +745,7 @@ impl ModelController {
             channel_id.to_string(),
             stream_url,
             self.hls_sessions.clone(),
+            self.clone(),
         ).await {
             Ok(result) => Ok(result),
             Err(e) => {

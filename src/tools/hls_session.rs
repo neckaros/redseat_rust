@@ -31,6 +31,14 @@ pub const PLAYLIST_READY_TIMEOUT_MS: u64 = 15000;
 const FFMPEG_RESTART_DELAY_MS: u64 = 2000;
 /// If FFmpeg runs longer than this, consider it a successful run and reset the restart counter
 const STABLE_RUN_SECS: u64 = 60;
+/// If no new segment is produced for this long, consider FFmpeg stalled and kill it
+const OUTPUT_STALL_TIMEOUT_SECS: u64 = 90;
+/// If no segment is produced at all within this time after spawn, consider startup failed
+const STARTUP_STALL_TIMEOUT_SECS: u64 = 60;
+/// How often to check for new segments in the stall detector
+const STALL_CHECK_INTERVAL_SECS: u64 = 15;
+/// Timeout for child.kill() to prevent supervisor from hanging
+const KILL_TIMEOUT_SECS: u64 = 5;
 
 pub struct HlsSession {
     pub key: String,
@@ -126,14 +134,36 @@ async fn spawn_ffmpeg(
     cmd.spawn()
 }
 
+/// Kill an FFmpeg child process with a timeout, falling back to start_kill if it hangs
+async fn kill_ffmpeg(child: &mut tokio::process::Child, session_key: &str) {
+    let kill_result = tokio::time::timeout(
+        std::time::Duration::from_secs(KILL_TIMEOUT_SECS),
+        child.kill(),
+    )
+    .await;
+    if kill_result.is_err() {
+        log_error(
+            LogServiceType::Other,
+            format!(
+                "HLS [{}]: FFmpeg kill timed out after {}s, forcing",
+                session_key, KILL_TIMEOUT_SECS
+            ),
+        );
+        let _ = child.start_kill();
+    }
+}
+
 /// Supervisor loop: manages FFmpeg lifecycle with restart logic
 async fn supervisor_loop(
     session_key: String,
+    library_id: String,
+    channel_id: String,
     stream_url: String,
     output_dir: PathBuf,
     playlist_path: PathBuf,
     cancel_token: CancellationToken,
     hls_sessions: Arc<RwLock<HashMap<String, HlsSession>>>,
+    mc: crate::model::ModelController,
 ) {
     let mut restart_count = 0u32;
 
@@ -181,7 +211,35 @@ async fn supervisor_loop(
             });
         }
 
-        // Wait for FFmpeg to exit or cancellation
+        // Stall detector: monitors segment production and fires if FFmpeg stops producing output
+        let stall_detector = {
+            let output_dir = output_dir.clone();
+            async move {
+                let mut last_seg_num = start_number;
+                let mut last_seg_change = get_time().as_secs();
+                let mut first_segment_seen = start_number > 0;
+
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(STALL_CHECK_INTERVAL_SECS)).await;
+                    let current = find_next_segment_number(&output_dir).await;
+                    if current > last_seg_num {
+                        last_seg_num = current;
+                        last_seg_change = get_time().as_secs();
+                        first_segment_seen = true;
+                    } else if first_segment_seen
+                        && get_time().as_secs().saturating_sub(last_seg_change) > OUTPUT_STALL_TIMEOUT_SECS
+                    {
+                        break;
+                    } else if !first_segment_seen
+                        && get_time().as_secs().saturating_sub(last_seg_change) > STARTUP_STALL_TIMEOUT_SECS
+                    {
+                        break;
+                    }
+                }
+            }
+        };
+
+        // Wait for FFmpeg to exit, cancellation, or stall detection
         tokio::select! {
             status = child.wait() => {
                 if cancel_token.is_cancelled() {
@@ -225,16 +283,30 @@ async fn supervisor_loop(
                 tokio::time::sleep(std::time::Duration::from_millis(FFMPEG_RESTART_DELAY_MS)).await;
             }
             _ = cancel_token.cancelled() => {
-                let _ = child.kill().await;
+                kill_ffmpeg(&mut child, &session_key).await;
+                break;
+            }
+            _ = stall_detector => {
+                log_info(
+                    LogServiceType::Other,
+                    format!(
+                        "HLS [{}]: No new segments produced, killing stalled FFmpeg",
+                        session_key
+                    ),
+                );
+                kill_ffmpeg(&mut child, &session_key).await;
                 break;
             }
         }
     }
 
-    // Cleanup: remove temp directory and session from map
+    // Cleanup: remove temp directory, session from map, and release stream slot
     let _ = tokio::fs::remove_dir_all(&output_dir).await;
-    let mut sessions = hls_sessions.write().await;
-    sessions.remove(&session_key);
+    {
+        let mut sessions = hls_sessions.write().await;
+        sessions.remove(&session_key);
+    }
+    mc.release_stream_slot(&library_id, &channel_id).await;
     log_info(
         LogServiceType::Other,
         format!("HLS [{}]: Session cleaned up", session_key),
@@ -248,6 +320,7 @@ pub async fn create_session(
     channel_id: String,
     stream_url: String,
     hls_sessions: Arc<RwLock<HashMap<String, HlsSession>>>,
+    mc: crate::model::ModelController,
 ) -> crate::error::RsResult<(PathBuf, PathBuf)> {
     let dir_name = format!("hls_{}", nanoid::nanoid!());
     let output_dir = get_server_folder_path_array(vec![".cache", &dir_name]).await?;
@@ -258,11 +331,14 @@ pub async fn create_session(
 
     let supervisor_handle = tokio::spawn(supervisor_loop(
         key.clone(),
+        library_id.clone(),
+        channel_id.clone(),
         stream_url.clone(),
         output_dir.clone(),
         playlist_path.clone(),
         cancel_token.clone(),
         hls_sessions.clone(),
+        mc,
     ));
 
     let session = HlsSession {
