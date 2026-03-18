@@ -10,7 +10,15 @@
       "Bash(dir:*)",
       "Bash(ls:*)",
       "WebFetch(domain:r365mail.fit)",
-      "Bash(npx svelte-check:*)"
+      "Bash(npx svelte-check:*)",
+      "Bash(cargo clean:*)",
+      "Bash(cargo tree:*)",
+      "Bash(cargo update:*)",
+      "mcp__plugin_context7_context7__resolve-library-id",
+      "mcp__plugin_context7_context7__query-docs",
+      "WebFetch(domain:crates.io)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)"
     ]
   }
 }

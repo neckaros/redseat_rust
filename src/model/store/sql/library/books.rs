@@ -1,7 +1,7 @@
 use rs_plugin_common_interfaces::domain::{
     media::{FileEpisode, MediaItemReference}, other_ids::OtherIds, rs_ids::RsIds, ItemWithRelations, Relations,
 };
-use rusqlite::{params, OptionalExtension, Row};
+use rusqlite::{params, params_from_iter, OptionalExtension, Row, ToSql};
 
 use crate::{
     domain::book::Book,
@@ -161,25 +161,44 @@ impl SqliteLibraryStore {
         let row = self
             .connection
             .call(move |conn| {
-                let mut direct_statement = conn.prepare(
-                    "SELECT
-                    b.id, b.name, b.type, b.serie_ref, b.volume, b.chapter, b.year, b.airdate, b.overview, b.pages, b.params, b.lang, b.original,
+                let select_fields = "b.id, b.name, b.type, b.serie_ref, b.volume, b.chapter, b.year, b.airdate, b.overview, b.pages, b.params, b.lang, b.original,
                     b.isbn13, b.openlibrary_edition_id, b.openlibrary_work_id, b.google_books_volume_id, b.asin, b.otherids, b.modified, b.added,
                     (SELECT GROUP_CONCAT(tag_ref || '|' || IFNULL(confidence, 100)) FROM book_tag_mapping WHERE book_ref = b.id) AS tags,
-                    (SELECT GROUP_CONCAT(people_ref) FROM book_people_mapping WHERE book_ref = b.id) AS people
-                    FROM books b
-                    WHERE b.id = ? or b.isbn13 = ? or b.openlibrary_edition_id = ? or b.openlibrary_work_id = ? or b.google_books_volume_id = ? or b.asin = ?",
-                )?;
+                    (SELECT GROUP_CONCAT(people_ref) FROM book_people_mapping WHERE book_ref = b.id) AS people";
+
+                // Build WHERE clause with otherids LIKE conditions for external IDs
+                let mut conditions = vec![
+                    "b.id = ?".to_string(),
+                    "b.isbn13 = ?".to_string(),
+                    "b.openlibrary_edition_id = ?".to_string(),
+                    "b.openlibrary_work_id = ?".to_string(),
+                    "b.google_books_volume_id = ?".to_string(),
+                    "b.asin = ?".to_string(),
+                ];
+                let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
+                    Box::new(ids.redseat().unwrap_or("zz").to_string()),
+                    Box::new(ids.isbn13().unwrap_or("zz").to_string()),
+                    Box::new(ids.openlibrary_edition_id().unwrap_or("zz").to_string()),
+                    Box::new(ids.openlibrary_work_id().unwrap_or("zz").to_string()),
+                    Box::new(ids.google_books_volume_id().unwrap_or("zz").to_string()),
+                    Box::new(ids.asin().unwrap_or("zz").to_string()),
+                ];
+
+                for ext_id in ids.as_all_external_ids() {
+                    conditions.push("b.otherids LIKE ?".to_string());
+                    params_vec.push(Box::new(format!("%\"{}\"%" , ext_id)));
+                }
+
+                let sql = format!(
+                    "SELECT {} FROM books b WHERE {}",
+                    select_fields,
+                    conditions.join(" OR ")
+                );
+                let mut direct_statement = conn.prepare(&sql)?;
+                let params_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
                 let direct_row = direct_statement
                     .query_row(
-                        params![
-                            ids.redseat().unwrap_or("zz").to_string(),
-                            ids.isbn13().unwrap_or("zz").to_string(),
-                            ids.openlibrary_edition_id().unwrap_or("zz").to_string(),
-                            ids.openlibrary_work_id().unwrap_or("zz").to_string(),
-                            ids.google_books_volume_id().unwrap_or("zz").to_string(),
-                            ids.asin().unwrap_or("zz").to_string(),
-                        ],
+                        params_from_iter(params_refs),
                         Self::row_to_book,
                     )
                     .optional()?;

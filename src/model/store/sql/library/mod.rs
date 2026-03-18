@@ -312,6 +312,16 @@ impl SqliteLibraryStore {
                         format!("Update Library Database to version: {}", version),
                     );
                 }
+                if version < 52 {
+                    let initial = String::from_utf8_lossy(include_bytes!("052 - CLEAN PLUGIN IDS.sql"));
+                    conn.execute_batch(&initial)?;
+                    version = 52;
+                    conn.pragma_update(None, "user_version", version)?;
+                    log_info(
+                        LogServiceType::Database,
+                        format!("Update Library Database to version: {}", version),
+                    );
+                }
 
                 conn.execute("VACUUM;", params![])?;
                 Ok((initial_version, version))

@@ -1,7 +1,7 @@
 use std::u64;
 
 use chrono::Utc;
-use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, url::RsLink};
+use rs_plugin_common_interfaces::{domain::{other_ids::OtherIds, rs_ids::RsIds}, url::RsLink};
 use rusqlite::{
     params, params_from_iter,
     types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef},
@@ -963,9 +963,66 @@ impl SqliteLibraryStore {
             }
         }
 
-        self.connection.call( move |conn| { 
+        // Resolve plugin IDs (containing ':') in add_people/add_tags/book to internal IDs.
+        // Plugins like nhentai provide both lookup names (people_lookup/tags_lookup) which resolve
+        // correctly above, AND add_people/add_tags with plugin-specific IDs (e.g. "nhentai-artist:X")
+        // that get merged in. These plugin IDs don't exist in the people/tags/books tables and would
+        // create broken references in the mapping tables.
+        if let Some(ref mut add_people) = update.add_people {
+            let mut resolved = Vec::new();
+            for person in add_people.drain(..) {
+                if !person.id.contains(':') {
+                    resolved.push(person);
+                } else {
+                    let mut ids = RsIds::default();
+                    let parts: Vec<&str> = person.id.splitn(2, ':').collect();
+                    if parts.len() == 2 {
+                        ids.set(parts[0], parts[1]);
+                    }
+                    if let Ok(Some(found)) = self.get_person_by_external_id(ids).await {
+                        resolved.push(MediaItemReference { id: found.id, conf: person.conf });
+                    }
+                }
+            }
+            *add_people = resolved;
+        }
+
+        if let Some(ref mut add_tags) = update.add_tags {
+            let mut resolved = Vec::new();
+            for tag in add_tags.drain(..) {
+                if !tag.id.contains(':') {
+                    resolved.push(tag);
+                } else {
+                    let other_ids = OtherIds::from(vec![tag.id.clone()]);
+                    if let Ok(Some(found)) = self.get_tag_by_otherids(other_ids).await {
+                        resolved.push(MediaItemReference { id: found.id, conf: tag.conf });
+                    }
+                }
+            }
+            *add_tags = resolved;
+        }
+
+        if let Some(ref book_id) = update.book {
+            if book_id.contains(':') {
+                let existing = self.get_book(book_id).await?;
+                if existing.is_none() {
+                    let mut ids = RsIds::default();
+                    let parts: Vec<&str> = book_id.splitn(2, ':').collect();
+                    if parts.len() == 2 {
+                        ids.set(parts[0], parts[1]);
+                    }
+                    if let Ok(Some(found)) = self.get_book_by_external_id(ids).await {
+                        update.book = Some(found.item.id);
+                    } else {
+                        update.book = None;
+                    }
+                }
+            }
+        }
+
+        self.connection.call( move |conn| {
             let mut where_query = QueryBuilder::new();
-            
+
 
             where_query.add_update(&update.name, "name");
             where_query.add_update(&update.description, "description");
