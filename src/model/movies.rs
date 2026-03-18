@@ -16,7 +16,7 @@ use strum_macros::EnumString;
 
 use crate::{domain::{ElementAction, MediaElement, deleted::RsDeleted, library::LibraryRole, movie::{Movie, MovieExt, MovieForUpdate, MovieWithAction, MoviesMessage}}, error::RsResult, plugins::{medias::imdb::ImdbContext, sources::{AsyncReadPinBox, FileStreamResult, error::SourcesError}}, tools::image_tools::{convert_image_reader, ImageSize}};
 
-use super::{entity_images::EntityImageConfig, error::{Error, Result}, store::sql::SqlOrder, users::{ConnectedUser, HistoryQuery}, ModelController};
+use super::{entity_images::EntityImageConfig, entity_search::merge_result_ids, error::{Error, Result}, store::sql::SqlOrder, users::{ConnectedUser, HistoryQuery}, ModelController};
 use crate::routes::sse::SseEvent;
 
 
@@ -275,7 +275,7 @@ impl ModelController {
 
 
     pub async fn add_movie(&self, library_id: &str, mut new_movie: Movie, requesting_user: &ConnectedUser) -> RsResult<Movie> {
-        requesting_user.check_library_role(library_id, LibraryRole::Write)?;        
+        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         let ids: RsIds = new_movie.clone().into();
         let existing = self.get_movie_by_external_id(library_id, ids, requesting_user).await;
         if let Ok(existing) = existing {
@@ -287,8 +287,69 @@ impl ModelController {
 		store.add_movie(new_movie).await?;
         let new_person = self.get_movie(library_id, id, requesting_user).await?;
         self.send_movie(MoviesMessage { library: library_id.to_string(), movies: vec![MovieWithAction {action: ElementAction::Added, movie: new_person.clone()}] });
+
+        let mc = self.clone();
+        let lib_id = library_id.to_string();
+        let mid = new_person.id.clone();
+        let user = requesting_user.clone();
+        tokio::spawn(async move {
+            let _ = mc.enrich_movie_ids(&lib_id, &mid, &user).await;
+        });
+
 		Ok(new_person)
 	}
+
+    pub async fn enrich_movie_ids(&self, library_id: &str, movie_id: &str, requesting_user: &ConnectedUser) -> RsResult<()> {
+        let movie = self.get_movie(library_id, movie_id.to_string(), requesting_user).await?;
+        let ids: RsIds = movie.clone().into();
+        if ids.as_all_external_ids().is_empty() {
+            return Ok(());
+        }
+
+        let lookup_query = RsLookupQuery::Movie(RsLookupMovie {
+            name: None,
+            ids: Some(ids.clone()),
+            page_key: None,
+        });
+        let mut groups = self.exec_lookup_metadata_grouped(
+            lookup_query,
+            Some(library_id.to_string()),
+            requesting_user,
+            None,
+            None,
+        ).await?;
+        merge_result_ids(&mut groups);
+
+        let matched = groups.into_iter()
+            .flat_map(|(_, _, r)| r.results)
+            .find_map(|result| {
+                if let RsLookupMetadataResult::Movie(m) = result.metadata {
+                    let result_ids: RsIds = m.clone().into();
+                    if result_ids.has_common_id(&ids) {
+                        Some(m)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            });
+
+        if let Some(matched) = matched {
+            let mut updates = MovieForUpdate::default();
+            if movie.imdb.is_none() { updates.imdb = matched.imdb; }
+            if movie.tmdb.is_none() { updates.tmdb = matched.tmdb; }
+            if movie.trakt.is_none() { updates.trakt = matched.trakt; }
+            if movie.slug.is_none() { updates.slug = matched.slug; }
+            if movie.year.is_none() { updates.year = matched.year.map(|y| y as u32); }
+            if movie.overview.is_none() { updates.overview = matched.overview; }
+            if movie.status.is_none() { updates.status = matched.status; }
+            if updates.has_update() {
+                self.update_movie(library_id, movie_id.to_string(), updates, &ConnectedUser::ServerAdmin).await?;
+            }
+        }
+        Ok(())
+    }
 
 
     pub async fn remove_movie(&self, library_id: &str, movie_id: &str, requesting_user: &ConnectedUser) -> RsResult<Movie> {

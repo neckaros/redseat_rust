@@ -36,6 +36,7 @@ use crate::{
 
 use super::{
     entity_images::EntityImageConfig,
+    entity_search::merge_result_ids,
     episodes::{EpisodeForUpdate, EpisodeQuery},
     error::{Error, Result},
     medias::{MediaQuery, RsSort},
@@ -444,8 +445,68 @@ impl ModelController {
             mc.refresh_episodes(&library_id, &inserted_serie_id, &requesting_user)
                 .await
                 .unwrap();
+            let _ = mc.enrich_serie_ids(&library_id, &inserted_serie_id, &requesting_user).await;
         });
         Ok(inserted_serie)
+    }
+
+    pub async fn enrich_serie_ids(&self, library_id: &str, serie_id: &str, requesting_user: &ConnectedUser) -> RsResult<()> {
+        let serie = self.get_serie(library_id, serie_id.to_string(), requesting_user)
+            .await?
+            .ok_or(SourcesError::UnableToFindSerie(library_id.to_string(), serie_id.to_string(), "enrich_serie_ids".to_string()))?
+            .item;
+        let ids: RsIds = serie.clone().into();
+        if ids.as_all_external_ids().is_empty() {
+            return Ok(());
+        }
+
+        let lookup_query = RsLookupQuery::Serie(RsLookupSerie {
+            name: None,
+            ids: Some(ids.clone()),
+            page_key: None,
+        });
+        let mut groups = self.exec_lookup_metadata_grouped(
+            lookup_query,
+            Some(library_id.to_string()),
+            requesting_user,
+            None,
+            None,
+        ).await?;
+        merge_result_ids(&mut groups);
+
+        let matched = groups.into_iter()
+            .flat_map(|(_, _, r)| r.results)
+            .find_map(|result| {
+                if let RsLookupMetadataResult::Serie(s) = result.metadata {
+                    let result_ids: RsIds = s.clone().into();
+                    if result_ids.has_common_id(&ids) {
+                        Some(s)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            });
+
+        if let Some(matched) = matched {
+            let mut updates = SerieForUpdate::default();
+            if serie.imdb.is_none() { updates.imdb = matched.imdb; }
+            if serie.tmdb.is_none() { updates.tmdb = matched.tmdb; }
+            if serie.trakt.is_none() { updates.trakt = matched.trakt; }
+            if serie.tvdb.is_none() { updates.tvdb = matched.tvdb; }
+            if serie.slug.is_none() { updates.slug = matched.slug; }
+            if serie.openlibrary_work_id.is_none() { updates.openlibrary_work_id = matched.openlibrary_work_id; }
+            if serie.anilist_manga_id.is_none() { updates.anilist_manga_id = matched.anilist_manga_id; }
+            if serie.mangadex_manga_uuid.is_none() { updates.mangadex_manga_uuid = matched.mangadex_manga_uuid; }
+            if serie.myanimelist_manga_id.is_none() { updates.myanimelist_manga_id = matched.myanimelist_manga_id; }
+            if serie.year.is_none() { updates.year = matched.year; }
+            if serie.status.is_none() { updates.status = matched.status; }
+            if updates.has_update() {
+                self.update_serie(library_id, serie_id.to_string(), updates, &ConnectedUser::ServerAdmin).await?;
+            }
+        }
+        Ok(())
     }
 
     pub async fn remove_serie(

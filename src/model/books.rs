@@ -29,6 +29,7 @@ use crate::{
 
 use super::{
     entity_images::EntityImageConfig,
+    entity_search::merge_result_ids,
     error::{Error, Result},
     store::sql::SqlOrder,
     users::ConnectedUser,
@@ -325,7 +326,69 @@ impl ModelController {
                 book: inserted.clone(),
             }],
         });
+
+        let mc = self.clone();
+        let lib_id = library_id.to_string();
+        let bid = inserted.id.clone();
+        tokio::spawn(async move {
+            let _ = mc.enrich_book_ids(&lib_id, &bid, &ConnectedUser::ServerAdmin).await;
+        });
+
         Ok(inserted)
+    }
+
+    pub async fn enrich_book_ids(&self, library_id: &str, book_id: &str, requesting_user: &ConnectedUser) -> RsResult<()> {
+        let book = self.get_book(library_id, book_id.to_string(), requesting_user)
+            .await?
+            .item;
+        let ids: RsIds = book.clone().into();
+        if ids.as_all_external_ids().is_empty() {
+            return Ok(());
+        }
+
+        let lookup_query = RsLookupQuery::Book(RsLookupBook {
+            name: None,
+            ids: Some(ids.clone()),
+            page_key: None,
+        });
+        let mut groups = self.exec_lookup_metadata_grouped(
+            lookup_query,
+            Some(library_id.to_string()),
+            requesting_user,
+            None,
+            None,
+        ).await?;
+        merge_result_ids(&mut groups);
+
+        let matched = groups.into_iter()
+            .flat_map(|(_, _, r)| r.results)
+            .find_map(|result| {
+                if let RsLookupMetadataResult::Book(b) = result.metadata {
+                    let result_ids: RsIds = b.clone().into();
+                    if result_ids.has_common_id(&ids) {
+                        Some(b)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            });
+
+        if let Some(matched) = matched {
+            let mut updates = BookForUpdate::default();
+            if book.isbn13.is_none() { updates.isbn13 = matched.isbn13; }
+            if book.openlibrary_edition_id.is_none() { updates.openlibrary_edition_id = matched.openlibrary_edition_id; }
+            if book.openlibrary_work_id.is_none() { updates.openlibrary_work_id = matched.openlibrary_work_id; }
+            if book.google_books_volume_id.is_none() { updates.google_books_volume_id = matched.google_books_volume_id; }
+            if book.asin.is_none() { updates.asin = matched.asin; }
+            if book.year.is_none() { updates.year = matched.year; }
+            if book.overview.is_none() { updates.overview = matched.overview; }
+            if updates.has_update() {
+                self.update_book(library_id, book_id.to_string(), updates, &ConnectedUser::ServerAdmin).await?;
+            }
+        }
+        Ok(())
     }
 
     pub async fn update_book(
