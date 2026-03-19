@@ -754,7 +754,7 @@ struct MediaHlsStartRequest {
 struct MediaHlsQuery {
     /// Session key returned by the start endpoint, used to look up the right session
     /// when multiple transcode variants exist for the same media
-    key: Option<String>,
+    session: Option<String>,
 }
 
 /// Look up a media HLS session by exact key or by library:media prefix.
@@ -789,7 +789,7 @@ async fn handler_media_hls_start(
 
     Ok(Json(json!({
         "key": key,
-        "playlistUrl": format!("/libraries/{}/medias/{}/hls/playlist.m3u8?key={}", library_id, media_id, key)
+        "playlistUrl": format!("/libraries/{}/medias/{}/hls/playlist.m3u8?session={}", library_id, media_id, key)
     })))
 }
 
@@ -804,7 +804,7 @@ async fn handler_media_hls_playlist(
     // Find the session
     let (playlist_path, key) = {
         let sessions = mc.media_hls_sessions.read().await;
-        let session = find_media_hls_session(&sessions, &query.key, &library_id, &media_id)
+        let session = find_media_hls_session(&sessions, &query.session, &library_id, &media_id)
             .ok_or_else(|| Error::NotFound("Media HLS session not found".to_string()))?;
         (session.playlist_path.clone(), session.key.clone())
     };
@@ -838,7 +838,7 @@ async fn handler_media_hls_playlist(
         .map(|line| {
             if line.ends_with(".ts") && !line.starts_with('#') {
                 format!(
-                    "/libraries/{}/medias/{}/hls/{}?key={}",
+                    "/libraries/{}/medias/{}/hls/{}?session={}",
                     library_id, media_id, line, key
                 )
             } else {
@@ -875,7 +875,7 @@ async fn handler_media_hls_segment(
 
     let output_dir = {
         let sessions = mc.media_hls_sessions.read().await;
-        let session = find_media_hls_session(&sessions, &query.key, &library_id, &media_id)
+        let session = find_media_hls_session(&sessions, &query.session, &library_id, &media_id)
             .ok_or_else(|| Error::NotFound("Media HLS session not found".to_string()))?;
         session.output_dir.clone()
     };
