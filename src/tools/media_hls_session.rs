@@ -19,7 +19,7 @@ use crate::{
     tools::{
         get_time,
         log::{log_error, log_info, LogServiceType},
-        video_tools::VideoCommandBuilder,
+        video_tools::{probe_video, VideoCommandBuilder},
     },
 };
 
@@ -54,6 +54,7 @@ impl MediaHlsSession {
 }
 
 /// Spawn FFmpeg in copy mode (no transcoding) for HLS VOD output
+#[cfg(test)]
 fn build_copy_mode_command(
     input_uri: &str,
     output_dir: &Path,
@@ -83,6 +84,83 @@ fn build_copy_mode_command(
         .stderr(std::process::Stdio::piped());
 
     cmd
+}
+
+/// Probe source codecs and spawn FFmpeg with H.264 + AAC compatibility for HLS.
+/// - Video: copy if already H.264, otherwise transcode to H.264
+/// - Audio: copy if already AAC, otherwise transcode to AAC 128k
+/// - Subtitles: stripped (HLS .ts doesn't support most formats)
+async fn spawn_compatible_hls(
+    input_uri: &str,
+    output_dir: &Path,
+    playlist_path: &Path,
+) -> crate::error::RsResult<tokio::process::Child> {
+    let probe = probe_video(input_uri).await?;
+
+    let video_codec = probe.video_stream().and_then(|s| s.codec_name.as_deref());
+    let audio_codec = probe.audio_stream().and_then(|s| s.codec_name.as_deref());
+
+    let video_is_h264 = video_codec.map_or(false, |c| {
+        c.eq_ignore_ascii_case("h264") || c.eq_ignore_ascii_case("x264")
+    });
+    let audio_is_aac = audio_codec.map_or(true, |c| c.eq_ignore_ascii_case("aac"));
+
+    let video_needs_transcode = !video_is_h264;
+    let audio_needs_transcode = !audio_is_aac;
+
+    // Skip CUDA/hardware detection when everything can be copied
+    let mut builder = if video_needs_transcode {
+        VideoCommandBuilder::new(input_uri.to_string()).await
+    } else {
+        VideoCommandBuilder::new_copy_only(input_uri.to_string())
+    };
+
+    if video_needs_transcode {
+        builder.add_out_option("-c:v");
+        if builder.has_cuda_support() {
+            builder.add_out_option("h264_nvenc");
+            builder.add_out_option("-preset:v");
+            builder.add_out_option("p7");
+            builder.add_out_option("-tune:v");
+            builder.add_out_option("hq");
+            builder.add_out_option("-rc:v");
+            builder.add_out_option("vbr");
+            builder.add_out_option("-cq:v");
+            builder.add_out_option("23");
+            builder.add_out_option("-b:v");
+            builder.add_out_option("0");
+            builder.add_out_option("-profile:v");
+            builder.add_out_option("high");
+        } else {
+            builder.add_out_option("libx264");
+            builder.add_out_option("-preset");
+            builder.add_out_option("medium");
+            builder.add_out_option("-crf:v");
+            builder.add_out_option("23");
+            builder.add_out_option("-profile:v");
+            builder.add_out_option("high");
+            builder.add_out_option("-level");
+            builder.add_out_option("4.1");
+        }
+        builder.add_out_option("-pix_fmt");
+        builder.add_out_option("yuv420p");
+    } else {
+        builder.add_out_option("-c:v");
+        builder.add_out_option("copy");
+    }
+
+    if audio_needs_transcode {
+        builder.set_audio_codec_aac("128k");
+    } else if audio_codec.is_some() {
+        builder.copy_audio();
+    }
+
+    builder.add_out_option("-sn");
+
+    let cmd = builder.build_command_for_hls(output_dir, playlist_path, MEDIA_HLS_SEGMENT_DURATION);
+    cmd.spawn().map_err(|e| {
+        crate::error::RsError::Error(format!("Failed to spawn FFmpeg for HLS compatible mode: {}", e))
+    })
 }
 
 /// Supervisor loop for media HLS: runs FFmpeg once (no restart logic for VOD)
@@ -179,10 +257,7 @@ async fn build_and_spawn_media_hls(
             crate::error::RsError::Error(format!("Failed to spawn FFmpeg for HLS transcode: {}", e))
         })
     } else {
-        let mut cmd = build_copy_mode_command(input_uri, &output_dir, &playlist_path);
-        cmd.spawn().map_err(|e| {
-            crate::error::RsError::Error(format!("Failed to spawn FFmpeg for HLS copy: {}", e))
-        })
+        spawn_compatible_hls(input_uri, &output_dir, &playlist_path).await
     };
 
     match spawn_result {

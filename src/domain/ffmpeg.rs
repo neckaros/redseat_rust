@@ -31,6 +31,10 @@ impl FfprobeResult {
 		self.streams.iter().find(|x| x.codec_type == CodecType::Video)
 	}
 
+	pub fn audio_stream(&self) ->  Option<&FfprobeStream> {
+		self.streams.iter().find(|x| x.codec_type == CodecType::Audio)
+	}
+
 
 	pub fn duration(&self) ->  Option<f64>{
 		let ivalue = self.format.duration.parse::<f64>().ok();

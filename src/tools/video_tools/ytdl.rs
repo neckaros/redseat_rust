@@ -399,7 +399,7 @@ mod tests {
     #[tokio::test]
     async fn test_stream2() -> RsResult<()> {
         let mut reader = YtDlCommandBuilder::new("https://www.youtube.com/watch?v=8kGIlALKO-s").run().await?;
-        let mut file: File = File::create("C:\\Users\\arnau\\AppData\\Local\\redseat\\.cache\\test1.webm").await?;
+        let mut file: File = File::create(std::env::temp_dir().join("test1.webm")).await?;
 
 
         while let Some(data) = reader.next().await {

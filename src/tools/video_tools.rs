@@ -163,6 +163,32 @@ impl VideoCommandBuilder {
         }
     }
 
+    /// Lightweight constructor that skips CUDA/hardware detection.
+    /// Use when no video transcoding is needed (copy-only scenarios).
+    pub fn new_copy_only(path: String) -> Self {
+        let ffmpeg = VideoCommandBuilder::get_ffmpeg_path();
+        let cmd = Command::new(ffmpeg);
+
+        Self {
+            path,
+            cmd,
+            inputs: Vec::new(),
+            current_input: 0,
+            expected_start: None,
+            expected_duration: None,
+            input_options: Vec::new(),
+            output_options: Vec::new(),
+            video_effects: Vec::new(),
+            current_effect_input: "0".to_string(),
+            current_effect_count: 0,
+            format: None,
+            progress: None,
+            cuda_support: false,
+            probe: None,
+            cleanup_files: vec![],
+        }
+    }
+
     pub async fn version() -> RsResult<Option<String>> {
         // Run the "ffmpeg -version" command
         let _lock = FFMPEG_LOCK.read().await;
@@ -442,6 +468,10 @@ impl VideoCommandBuilder {
         self
     }
 
+    pub fn has_cuda_support(&self) -> bool {
+        self.cuda_support
+    }
+
     pub fn add_input_option<S: Into<String>>(&mut self, value: S) -> &mut Self {
         self.input_options.push(value.into());
         self
@@ -544,6 +574,20 @@ impl VideoCommandBuilder {
 
     pub fn remove_audio(&mut self) -> &mut Self {
         self.add_out_option("-an");
+        self
+    }
+
+    pub fn set_audio_codec_aac(&mut self, bitrate: &str) -> &mut Self {
+        self.add_out_option("-c:a");
+        self.add_out_option("aac");
+        self.add_out_option("-b:a");
+        self.add_out_option(bitrate);
+        self
+    }
+
+    pub fn copy_audio(&mut self) -> &mut Self {
+        self.add_out_option("-c:a");
+        self.add_out_option("copy");
         self
     }
 
