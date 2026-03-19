@@ -796,7 +796,6 @@ async fn handler_media_hls_start(
 async fn handler_media_hls_playlist(
     Path((library_id, media_id)): Path<(String, String)>,
     State(mc): State<ModelController>,
-    _user: ConnectedUser,
     Query(query): Query<MediaHlsQuery>,
 ) -> Result<Response> {
     use http::header::{CACHE_CONTROL, CONTENT_TYPE};
@@ -861,7 +860,6 @@ async fn handler_media_hls_playlist(
 async fn handler_media_hls_segment(
     Path((library_id, media_id, segment)): Path<(String, String, String)>,
     State(mc): State<ModelController>,
-    _user: ConnectedUser,
     Query(query): Query<MediaHlsQuery>,
 ) -> Result<Response> {
     use http::header::{CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE};
