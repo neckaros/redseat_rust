@@ -26,3 +26,4 @@ yt-dlp
 .redseat/**.*
 ffmpeg.exe
 ffprobe.exe
+.cache/

@@ -63,6 +63,12 @@ mod tools;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
+    // Rustls 0.23+ requires an explicit crypto provider when both aws-lc-rs and ring are available.
+    // Ring is used here for cross-platform compatibility (aws-lc-rs has build issues on Windows).
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install rustls crypto provider");
+
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
     log_info(
