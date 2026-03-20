@@ -189,14 +189,8 @@ async fn app() -> Result<Router> {
     let plugin_manager = PluginManager::new().await?;
     let mut mc = ModelController::new(store, plugin_manager).await?;
 
-    let origins = [
-        "http://localhost:3000".parse().unwrap(),
-        "https://www.redseat.cloud".parse().unwrap(),
-    ];
-
     let cors: CorsLayer = CorsLayer::new()
         .max_age(Duration::from_secs(3600))
-        // allow `GET` and `POST` when accessing the resource
         .allow_methods(vec![
             Method::GET,
             Method::PATCH,
@@ -213,7 +207,9 @@ async fn app() -> Result<Router> {
             REFERRER_POLICY,
             REFERER,
         ])
-        .allow_origin(origins)
+        // Allow any origin: auth is token/session-based (not cookies),
+        // and Chromecast HLS playback requires CORS from Google's receiver domain
+        .allow_origin(Any)
         .allow_credentials(true);
 
     let server_id = get_server_id().await;
