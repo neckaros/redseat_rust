@@ -209,8 +209,7 @@ async fn app() -> Result<Router> {
         ])
         // Allow any origin: auth is token/session-based (not cookies),
         // and Chromecast HLS playback requires CORS from Google's receiver domain
-        .allow_origin(Any)
-        .allow_credentials(true);
+        .allow_origin(Any);
 
     let server_id = get_server_id().await;
     let admin_users = mc
