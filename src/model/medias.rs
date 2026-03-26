@@ -69,7 +69,7 @@ use crate::{
 use rs_plugin_common_interfaces::domain::ItemWithRelations;
 use crate::{
     domain::{
-        library::LibraryRole,
+        library::{LibraryLimits, LibraryRole},
         media::{
             FileType, Media, MediaForAdd, MediaForInsert, MediaForUpdate, MediaItemReference,
             MediaWithAction, MediasMessage, UploadProgressMessage,
@@ -161,6 +161,8 @@ pub struct MediaQuery {
     pub max_size: Option<u64>,
 
     pub vcodec: Option<String>,
+
+    pub uploadkey: Option<String>,
 
     pub page_key: Option<String>,
 
@@ -451,9 +453,17 @@ impl ModelController {
     pub async fn get_medias(
         &self,
         library_id: &str,
-        query: MediaQuery,
+        mut query: MediaQuery,
         requesting_user: &ConnectedUser,
     ) -> RsResult<Vec<ItemWithRelations<Media>>> {
+        if let Ok(key) = requesting_user.check_upload_key(library_id) {
+            // UploadKey: can only see medias uploaded with this key
+            query.uploadkey = Some(key.id.clone());
+            let limits = LibraryLimits::default();
+            let store = self.store.get_library_store(library_id)?;
+            let medias = store.get_medias(query, limits).await?;
+            return Ok(medias);
+        }
         let progress_user = self
             .get_library_mapped_user(library_id, requesting_user.user_id()?)
             .await
@@ -461,16 +471,23 @@ impl ModelController {
         let mut limits = requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         limits.user_id = progress_user;
         let store = self.store.get_library_store(library_id)?;
-        let people = store.get_medias(query, limits).await?;
-        Ok(people)
+        let medias = store.get_medias(query, limits).await?;
+        Ok(medias)
     }
 
     pub async fn count_medias(
         &self,
         library_id: &str,
-        query: MediaQuery,
+        mut query: MediaQuery,
         requesting_user: &ConnectedUser,
     ) -> RsResult<u64> {
+        if let Ok(key) = requesting_user.check_upload_key(library_id) {
+            query.uploadkey = Some(key.id.clone());
+            let limits = LibraryLimits::default();
+            let store = self.store.get_library_store(library_id)?;
+            let count = store.count_medias(query, limits).await?;
+            return Ok(count);
+        }
         let limits = requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id)?;
         let count = store.count_medias(query, limits).await?;
@@ -1308,7 +1325,11 @@ impl ModelController {
         reader: T,
         requesting_user: &ConnectedUser,
     ) -> RsResult<Media> {
-        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        if requesting_user.check_upload_key(library_id).is_ok() {
+            // UploadKey: allowed to write medias
+        } else {
+            requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        }
         let store = self.store.get_library_store(library_id)?;
         let mut infos = infos.unwrap_or_default();
         let upload_id = infos.upload_id.clone().unwrap_or_else(|| nanoid!());
@@ -1371,6 +1392,11 @@ impl ModelController {
             }
         }
 
+        let upload_key_id = if let Ok(key) = requesting_user.check_upload_key(library_id) {
+            Some(key.id.clone())
+        } else {
+            None
+        };
         let mut new_file = MediaForAdd {
             name: filename.to_string(),
             source: Some(source.to_string()),
@@ -1383,6 +1409,7 @@ impl ModelController {
             iv: infos.iv.clone(),
             thumbsize: infos.thumbsize,
             uploader: requesting_user.user_id().ok(),
+            uploadkey: upload_key_id,
             ..Default::default()
         };
 

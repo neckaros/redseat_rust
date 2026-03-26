@@ -1,0 +1,1 @@
+ALTER TABLE uploadkeys ADD COLUMN people INTEGER DEFAULT "0";

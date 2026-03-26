@@ -211,7 +211,11 @@ impl ModelController {
         query: PeopleQuery,
         requesting_user: &ConnectedUser,
     ) -> Result<Vec<Person>> {
-        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        if let Ok(key) = requesting_user.check_upload_key(library_id) {
+            if !key.people { return Err(Error::ShareTokenInsufficient); }
+        } else {
+            requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        }
         let store = self.store.get_library_store_optional(library_id).ok_or(
             Error::LibraryStoreNotFoundFor(library_id.to_string(), "get_people".to_string()),
         )?;
@@ -278,7 +282,18 @@ impl ModelController {
         mut update: PersonForUpdate,
         requesting_user: &ConnectedUser,
     ) -> RsResult<Person> {
-        requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
+        if let Ok(key) = requesting_user.check_upload_key(library_id) {
+            if !key.people { return Err(Error::ShareTokenInsufficient.into()); }
+            // Upload keys can only add alts and links, nothing else
+            update = PersonForUpdate {
+                add_alts: update.add_alts,
+                add_social_url: update.add_social_url,
+                add_socials: update.add_socials,
+                ..Default::default()
+            };
+        } else {
+            requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
+        }
         let store = self.store.get_library_store_optional(library_id).ok_or(
             Error::LibraryStoreNotFoundFor(library_id.to_string(), "update_person".to_string()),
         )?;
@@ -323,7 +338,11 @@ impl ModelController {
         new_person: PersonForAdd,
         requesting_user: &ConnectedUser,
     ) -> Result<Person> {
-        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        if let Ok(key) = requesting_user.check_upload_key(library_id) {
+            if !key.people { return Err(Error::ShareTokenInsufficient); }
+        } else {
+            requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        }
         let store = self.store.get_library_store_optional(library_id).ok_or(
             Error::LibraryStoreNotFoundFor(library_id.to_string(), "add_pesron".to_string()),
         )?;

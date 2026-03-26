@@ -271,6 +271,7 @@ async fn app() -> Result<Router> {
         .nest("/library", routes::libraries::routes(mc.clone())) // duplicate for legacy
         .nest("/users", routes::users::routes(mc.clone()))
         .nest("/credentials", routes::credentials::routes(mc.clone()))
+        .nest("/uploadkeys", routes::upload_keys::routes(mc.clone()))
         .nest("/backups", routes::backups::routes(mc.clone()))
         .nest("/plugins", routes::plugins::routes(mc.clone()))
         .nest("/sse", routes::sse::routes(mc.clone()))

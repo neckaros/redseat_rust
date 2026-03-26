@@ -204,6 +204,7 @@ impl Error {
                 requested_user: _,
             } => (StatusCode::FORBIDDEN, ClientError::FORBIDDEN),
             Error::UserListNotAuth { user: _ } => (StatusCode::FORBIDDEN, ClientError::FORBIDDEN),
+            Error::ShareTokenInsufficient => (StatusCode::FORBIDDEN, ClientError::FORBIDDEN),
             Error::UserUpdateNotAuthorized {
                 user: _,
                 update_user: _,

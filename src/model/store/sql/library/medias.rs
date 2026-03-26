@@ -499,6 +499,13 @@ impl SqliteLibraryStore {
             ));
         }
 
+        if let Some(key) = query.uploadkey {
+            where_query.add_where(SqlWhereType::Equal(
+                "uploadkey".to_string(),
+                Box::new(key),
+            ));
+        }
+
         where_query.add_oder(OrderBuilder::new(sort.to_owned(), query.order.clone()));
         if sort == "rating" {
             where_query.add_oder(OrderBuilder::new("m.added".to_owned(), SqlOrder::DESC));
@@ -1068,7 +1075,7 @@ impl SqliteLibraryStore {
             where_query.add_update(&update.lang, "lang");
 
             where_query.add_update(&update.uploader, "uploader");
-            where_query.add_update(&update.uploadkey, "uploaderkey");
+            where_query.add_update(&update.uploadkey, "uploadkey");
             
             where_query.add_update(&update.original_hash, "originalhash");
             where_query.add_update(&update.original_id, "originalid");

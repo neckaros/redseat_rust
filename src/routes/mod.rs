@@ -12,6 +12,7 @@ pub mod mw_range;
 pub mod ping;
 pub mod plugins;
 pub mod sse;
+pub mod upload_keys;
 pub mod users;
 
 pub mod books;

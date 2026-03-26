@@ -100,7 +100,11 @@ impl TagQuery {
 impl ModelController {
 
 	pub async fn get_tags(&self, library_id: &str, query: TagQuery, requesting_user: &ConnectedUser) -> RsResult<Vec<Tag>> {
-        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        if let Ok(key) = requesting_user.check_upload_key(library_id) {
+            if !key.tags { return Err(crate::Error::Forbiden.into()); }
+        } else {
+            requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        }
         let store = self.store.get_library_store(library_id)?;
 		let tags = store.get_tags(query).await?;
 		Ok(tags)
@@ -290,7 +294,11 @@ impl ModelController {
 
 
     pub async fn add_tag(&self, library_id: &str, new_tag: TagForAdd, requesting_user: &ConnectedUser) -> RsResult<Tag> {
-        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        if let Ok(key) = requesting_user.check_upload_key(library_id) {
+            if !key.tags { return Err(crate::Error::Forbiden.into()); }
+        } else {
+            requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        }
         let store = self.store.get_library_store(library_id)?;
         let backup = TagForInsert {
             id: nanoid!(),

@@ -83,7 +83,11 @@ pub async fn parse_auth_message(auth: &AuthMessage, mc: &ModelController) -> Res
 
     } else if let Some(key) = &auth.key {
         let uploadkey = mc.get_upload_key(key.to_owned()).await.map_err(|_| Error::AuthFail)?;
-          
+        if let Some(expiry) = uploadkey.expiry {
+            if expiry < chrono::Utc::now().timestamp_millis() {
+                return Err(Error::AuthFail);
+            }
+        }
         Ok(ConnectedUser::UploadKey(uploadkey))
   
     } else {

@@ -209,7 +209,7 @@ impl SqliteStore {
     pub async fn get_upload_key(&self, key: String) -> Result<UploadKey> {
         let keyc = key.clone();
         let row = self.server_store.call( move |conn| { 
-            let mut query = conn.prepare("SELECT id, library_ref, expiry, tags  FROM uploadkeys where id = ?")?;
+            let mut query = conn.prepare("SELECT id, library_ref, expiry, tags, people FROM uploadkeys where id = ?")?;
 
             let rows = query.query_map(
             params![key], Self::row_to_uploadkey,
@@ -221,13 +221,42 @@ impl SqliteStore {
         Ok(uploadkey.clone())
     }
 
+    pub async fn get_upload_keys(&self) -> Result<Vec<UploadKey>> {
+        let row = self.server_store.call(move |conn| {
+            let mut query = conn.prepare("SELECT id, library_ref, expiry, tags, people FROM uploadkeys")?;
+            let rows = query.query_map([], Self::row_to_uploadkey)?;
+            let keys: Vec<UploadKey> = rows.collect::<std::result::Result<Vec<UploadKey>, rusqlite::Error>>()?;
+            Ok(keys)
+        }).await?;
+        Ok(row)
+    }
+
+    pub async fn add_upload_key(&self, key: UploadKey) -> Result<()> {
+        self.server_store.call(move |conn| {
+            conn.execute(
+                "INSERT INTO uploadkeys (id, library_ref, expiry, tags, people) VALUES (?, ?, ?, ?, ?)",
+                params![key.id, key.library, key.expiry, key.tags, key.people],
+            )?;
+            Ok(())
+        }).await?;
+        Ok(())
+    }
+
+    pub async fn remove_upload_key(&self, key_id: String) -> Result<()> {
+        self.server_store.call(move |conn| {
+            conn.execute("DELETE FROM uploadkeys WHERE id = ?", &[&key_id])?;
+            Ok(())
+        }).await?;
+        Ok(())
+    }
+
     fn row_to_uploadkey(row: &Row) -> rusqlite::Result<UploadKey> {
         Ok(UploadKey {
             id: row.get(0)?,
             library: row.get(1)?,
             expiry: row.get(2)?,
             tags: row.get(3)?,
-            
+            people: row.get(4)?,
         })
     }
 }

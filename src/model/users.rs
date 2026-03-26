@@ -55,6 +55,18 @@ impl ConnectedUser {
 
 
 
+    pub fn check_upload_key(&self, library_id: &str) -> Result<&UploadKey> {
+        if let ConnectedUser::UploadKey(key) = &self {
+            if key.library == library_id {
+                Ok(key)
+            } else {
+                Err(Error::ShareTokenInsufficient)
+            }
+        } else {
+            Err(Error::NotServerConnected)
+        }
+    }
+
     pub fn user_id(&self) -> Result<String> {
         if let ConnectedUser::Server(user) = &self {
             Ok(user.id.clone())
@@ -118,12 +130,8 @@ impl ConnectedUser {
                 },
                 _ => Err(Error::ShareTokenInsufficient),
             }
-        } else if let ConnectedUser::UploadKey(key) = &self {
-            if key.library == library_id { 
-                Ok(LibraryLimits::default()) 
-            } else {
-                Err(Error::ShareTokenInsufficient)
-            }
+        } else if let ConnectedUser::UploadKey(_) = &self {
+            Err(Error::ShareTokenInsufficient)
         } else {
             Err(Error::NotServerConnected)
         }
@@ -332,6 +340,18 @@ pub struct UploadKey {
     pub expiry: Option<i64>,
     #[serde(default)]
     pub tags: bool,
+    #[serde(default)]
+    pub people: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct UploadKeyForCreate {
+    pub library: String,
+    pub expiry: Option<i64>,
+    #[serde(default)]
+    pub tags: bool,
+    #[serde(default)]
+    pub people: bool,
 }
 
 impl ServerUser {
@@ -579,6 +599,29 @@ impl ModelController {
         Ok(self.store.get_upload_key(key).await?)
     }
 
+    pub async fn get_upload_keys(&self, requesting_user: &ConnectedUser) -> RsResult<Vec<UploadKey>> {
+        requesting_user.check_role(&UserRole::Admin)?;
+        Ok(self.store.get_upload_keys().await?)
+    }
+
+    pub async fn add_upload_key(&self, params: UploadKeyForCreate, requesting_user: &ConnectedUser) -> RsResult<UploadKey> {
+        requesting_user.check_role(&UserRole::Admin)?;
+        let key = UploadKey {
+            id: nanoid::nanoid!(),
+            library: params.library,
+            expiry: params.expiry,
+            tags: params.tags,
+            people: params.people,
+        };
+        self.store.add_upload_key(key.clone()).await?;
+        Ok(key)
+    }
+
+    pub async fn remove_upload_key(&self, key_id: &str, requesting_user: &ConnectedUser) -> RsResult<()> {
+        requesting_user.check_role(&UserRole::Admin)?;
+        self.store.remove_upload_key(key_id.to_string()).await?;
+        Ok(())
+    }
 
     pub async fn redeem_invitation(&self, code: String, user: ConnectedUser) -> RsResult<String> {
         let connected_user = match user {

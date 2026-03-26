@@ -206,7 +206,7 @@ pub(super) fn map_library_for_user(
         ConnectedUser::UploadKey(key) => {
             let mut library_out =
                 ServerLibraryForRead::into_with_role(library, &vec![LibraryRole::Write]);
-            if library_out.id == key.id {
+            if library_out.id == key.library {
                 library_out.root = None;
                 library_out.settings = None;
                 Some(library_out)
