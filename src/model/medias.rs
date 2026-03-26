@@ -1543,7 +1543,9 @@ impl ModelController {
     ) -> RsResult<Vec<Media>> {
         let mut medias: Vec<Media> = vec![];
 
-        for request in files.requests {
+        for mut request in files.requests {
+            request.apply_selected_file_info();
+
             let processed_request = if request.status == RsRequestStatus::Unprocessed {
                 self.exec_request(
                     request.clone(),
@@ -1874,6 +1876,7 @@ impl ModelController {
         let mut medias: Vec<Media> = vec![];
 
         for mut request in files.requests {
+            request.apply_selected_file_info();
             let upload_id = request.upload_id.clone().unwrap_or_else(|| nanoid!());
             self.plugin_manager.fill_infos(&mut request).await;
 
