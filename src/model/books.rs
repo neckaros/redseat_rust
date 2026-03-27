@@ -103,6 +103,7 @@ impl ModelController {
                 let lookup_query = RsLookupQuery::Book(RsLookupBook {
                     name: Some(String::new()),
                     ids: Some(ids.clone()),
+                    author: None,
                     page_key: None,
                 });
                 let plugin_results = self
@@ -348,6 +349,7 @@ impl ModelController {
 
         let lookup_query = RsLookupQuery::Book(RsLookupBook {
             name: None,
+            author: None,
             ids: Some(ids.clone()),
             page_key: None,
         });
@@ -508,6 +510,7 @@ impl ModelController {
             }
             let lookup_query = RsLookupQuery::Book(RsLookupBook {
                 name: None,
+                author: None,
                 ids: Some(book_ids),
                 page_key: None,
             });
@@ -563,6 +566,7 @@ impl ModelController {
         let ids: RsIds = book.clone().into();
         let lookup_query = RsLookupQuery::Book(RsLookupBook {
             name: Some(book.name.clone()),
+            author: None,
             ids: Some(ids),
             page_key: None,
         });

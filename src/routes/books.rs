@@ -11,9 +11,11 @@ use axum::{
     Json, Router,
 };
 use futures::{Stream, TryStreamExt};
-use rs_plugin_common_interfaces::domain::{rs_ids::RsIds, ItemWithRelations};
+use rs_plugin_common_interfaces::domain::{rs_ids::RsIds, Relations, ItemWithRelations};
 use rs_plugin_common_interfaces::lookup::{RsLookupBook, RsLookupQuery};
 use rs_plugin_common_interfaces::{ElementType, ExternalImage, ImageType};
+
+use crate::tools::log::{log_info, LogServiceType};
 use serde_json::{json, Value};
 use tokio_util::io::{ReaderStream, StreamReader};
 
@@ -25,6 +27,19 @@ use crate::{
     routes::{ImageRequestOptions, ImageUploadOptions, RatingUpdateBody, SearchQuery, SearchResultGroup, SseLookupSearchEvent, SseLookupSearchResult, SseSearchEvent},
     Error, Result,
 };
+
+async fn first_person_name(mc: &ModelController, library_id: &str, relations: &Option<Relations>, user: &ConnectedUser) -> Option<String> {
+    let person_id = relations
+        .as_ref()
+        .and_then(|r| r.people.as_ref())
+        .and_then(|people| people.first())
+        .map(|p| p.id.clone())?;
+    mc.get_person(library_id, person_id, user)
+        .await
+        .ok()
+        .flatten()
+        .map(|p| p.name)
+}
 
 pub fn routes(mc: ModelController) -> Router {
     Router::new()
@@ -167,13 +182,15 @@ async fn handler_lookup(
 ) -> Result<Json<Value>> {
     let book = mc.get_book(&library_id, book_id, &user).await?;
     let name = book.item.name.clone();
+    let author = first_person_name(&mc, &library_id, &book.relations, &user).await;
     let ids: RsIds = book.item.into();
     let query = RsLookupQuery::Book(RsLookupBook {
         name: Some(name),
+        author,
         ids: Some(ids),
         page_key: None,
     });
-    print!("Executing lookup with query: {:?}", query);
+    log_info(LogServiceType::Source, format!("Executing lookup with query: {:?}", query));
     let results = mc.exec_lookup(query, Some(library_id), &user, None).await?;
     Ok(Json(json!(results)))
 }
@@ -185,9 +202,11 @@ async fn handler_lookup_stream(
 ) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>> {
     let book = mc.get_book(&library_id, book_id, &user).await?;
     let name = book.item.name.clone();
+    let author = first_person_name(&mc, &library_id, &book.relations, &user).await;
     let ids: RsIds = book.item.into();
     let query = RsLookupQuery::Book(RsLookupBook {
         name: Some(name),
+        author,
         ids: Some(ids),
         page_key: None,
     });
@@ -290,6 +309,7 @@ async fn handler_image_search(
     let ids: RsIds = book.item.into();
     let query = RsLookupBook {
         name: Some(title),
+        author: None,
         ids: Some(ids),
         page_key: None,
     };
