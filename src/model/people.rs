@@ -899,15 +899,15 @@ impl ModelController {
                 // Determine percentages to scan
                 let percents = if duration < 1000 * 60 {
                     // < 1 min
-                    vec![20, 50, 80]
+                    vec![5, 13, 21, 29, 37, 45, 53, 61, 69, 77, 85, 93]
                 } else if duration < 1000 * 60 * 2 {
                     // < 2 min
-                    vec![10, 30, 50, 66, 85]
+                    (2..=98).step_by(5).collect::<Vec<_>>()
                 } else if duration < 1000 * 60 * 10 {
                     // < 10 min
-                    vec![5, 12, 19, 26, 33, 40, 54, 68, 75, 89, 96]
+                    (1..=99).step_by(2).collect::<Vec<_>>()
                 } else {
-                    vec![2, 8, 20, 26, 38, 44, 50, 56, 68, 74, 86, 92, 98]
+                    (1..=99).collect::<Vec<_>>()
                 };
 
                 for percent in percents {

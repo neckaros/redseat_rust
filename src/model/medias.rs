@@ -2568,7 +2568,7 @@ impl ModelController {
 
             let mut images = vec![buffer];
             if media.kind == FileType::Video {
-                let percents = vec![15, 30, 45, 60, 75, 95];
+                let percents: Vec<u32> = (5..=95).step_by(5).collect();
                 //let percents = vec![15];
                 for percent in percents {
                     let thumb = self
