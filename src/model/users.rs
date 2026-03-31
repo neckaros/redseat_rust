@@ -130,13 +130,17 @@ impl ConnectedUser {
                 },
                 _ => Err(Error::ShareTokenInsufficient),
             }
-        } else if let ConnectedUser::UploadKey(_) = &self {
-            Err(Error::ShareTokenInsufficient)
+        } else if let ConnectedUser::UploadKey(key) = &self {
+            if key.library == library_id && role == LibraryRole::Write {
+                Ok(LibraryLimits::default())
+            } else {
+                Err(Error::ShareTokenInsufficient)
+            }
         } else {
             Err(Error::NotServerConnected)
         }
     }
-    
+
     pub fn check_file_role(&self, library_id: &str, file_id: &str, role: LibraryRole) -> Result<()> {
         if self.is_admin() {
             Ok(())
