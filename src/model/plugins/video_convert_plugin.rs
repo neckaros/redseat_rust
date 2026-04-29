@@ -81,9 +81,28 @@ impl ModelController {
         
         let plugin_with_credentials= self.get_plugin_with_credential(plugin_id).await?;
         let temp_url =ModelController::get_temporary_read_url(library_id, media_id, Some(21600)).await?;
+        let media = self
+            .store
+            .get_library_store(library_id)?
+            .get_media(media_id, None)
+            .await?;
+        let source = if let Some(media) = media {
+            RsRequest {
+                url: temp_url,
+                size: media.item.size,
+                mime: Some(media.item.mimetype),
+                filename: Some(media.item.name),
+                ..Default::default()
+            }
+        } else {
+            RsRequest {
+                url: temp_url,
+                ..Default::default()
+            }
+        };
         let jobrequest = RsVideoTranscodeJobPluginRequest {
             job: RsVideoTranscodeJob {
-                source: RsRequest { url: temp_url, ..Default::default() },
+                source,
                 request
             },
             credentials: plugin_with_credentials.credential.clone().map(|r| r.into()).unwrap_or_default(),

@@ -19,6 +19,8 @@ pub struct PathProvider {
     for_local: bool
 }
 
+const FILE_IO_BUFFER_SIZE: usize = 4 * 1024 * 1024;
+
 impl PathProvider {
     pub fn get_full_path(&self, source: &str) -> PathBuf {
         let mut path = self.root.clone();
@@ -99,7 +101,7 @@ impl PathProvider {
         }
     
 
-        let file = BufWriter::new(File::create(&file_path).await?);
+        let file = BufWriter::with_capacity(FILE_IO_BUFFER_SIZE, File::create(&file_path).await?);
         let source = sourcepath.to_str().ok_or(SourcesError::Other("Unable to convert path to string".into()))?.to_string();
         Ok((source.to_string(), Box::pin(file)))
     }
@@ -216,7 +218,7 @@ impl Source for PathProvider {
 
         let total_size = metadata.len();
 
-        let mut filereader = BufReader::new(file);
+        let mut filereader = BufReader::with_capacity(FILE_IO_BUFFER_SIZE, file);
 
         let mut range_response = RangeResponse { size: Some(total_size.clone()), start: None, end: None };
         
@@ -313,7 +315,7 @@ impl Source for PathProvider {
     
     
         let source = sourcepath.to_str().ok_or(SourcesError::Other("Unable to convert path to string".into()))?.to_string();
-        let file = BufWriter::new(File::create(&file_path).await?);
+        let file = BufWriter::with_capacity(FILE_IO_BUFFER_SIZE, File::create(&file_path).await?);
 
         let source = Box::pin(async {
             Ok::<RsResult<String>, RsError>(Ok::<String, RsError>(source))
@@ -365,7 +367,7 @@ impl Source for PathProvider {
     
     
         let source = sourcepath.to_str().ok_or(SourcesError::Other("Unable to convert path to string".into()))?.to_string();
-        let file = BufWriter::new(File::create(&file_path).await?);
+        let file = BufWriter::with_capacity(FILE_IO_BUFFER_SIZE, File::create(&file_path).await?);
 
         Ok((source, Box::pin(file)))
     }
@@ -376,11 +378,19 @@ impl Source for PathProvider {
         let existing = Self::get_all_file_paths(&self.root, false);
         println!("Got {} paths", existing.len());
         let mut total = 0u64;
+        let mut existing_sources: Vec<String> = Vec::with_capacity(existing.len());
         for existing_file in existing.iter() {
-            let existing_as_source = existing_file.replace(&self.root.to_string_lossy().into_owned(), "")[1..].to_string();
-            
+            let path = Path::new(&existing_file);
+            let existing_as_source = match path.strip_prefix(&self.root) {
+                Ok(relative) => relative.to_string_lossy().to_string(),
+                Err(_) => {
+                    log_error(crate::tools::log::LogServiceType::Other, format!("Unable to strip root prefix from {}", existing_file));
+                    continue;
+                }
+            };
+            existing_sources.push(existing_as_source.clone());
+
             if !sources.contains(&existing_as_source) {
-                let path = Path::new(&existing_file);
                 let metadata = path.metadata()?;
                 println!("{} TO DELETE {}", existing_as_source, metadata.len());
                 result.push((path.to_string_lossy().into_owned(), metadata.len()));
@@ -389,9 +399,8 @@ impl Source for PathProvider {
             }
         }
         println!("Total clean: {} ({})", result.len(), human_bytes(total as f64));
-        let existing_files_sources: Vec<String> = existing.into_iter().map(|existing_file| existing_file.replace(&self.root.to_string_lossy().into_owned(), "")[1..].to_string()).collect();
         for source in sources {
-            if !existing_files_sources.contains(&source) {
+            if !existing_sources.contains(&source) {
                 log_error(crate::tools::log::LogServiceType::Other, format!("Unable to find file {}", source));
             }
         }
@@ -411,13 +420,13 @@ impl PathProvider {
         if let Some(p) = path.parent() {
             create_dir_all(&p).await?;
         }
-        let file = BufWriter::new(File::create(&path).await?);
+        let file = BufWriter::with_capacity(FILE_IO_BUFFER_SIZE, File::create(&path).await?);
         Ok(file)
     }
     pub async fn get_file_library(&self, name: &str) -> SourcesResult<BufReader<File>> {
         let mut path = self.root.clone();
         path.push(&name);
-        let file = BufReader::new(File::open(&path).await?);
+        let file = BufReader::with_capacity(FILE_IO_BUFFER_SIZE, File::open(&path).await?);
         Ok(file)
     }
 
@@ -438,13 +447,13 @@ impl PathProvider {
 
             if now.duration_since(modified)? >= one_day {
                 println!("{} TO DELETE {}", path_string, metadata.len());
-                
+
                 result.push((path.to_string_lossy().into_owned(), metadata.len()));
                 total += metadata.len();
+                PathProvider::move_to_trash(path)?;
             } else {
-                println!("{} TOO YOUNG {}", path_string, metadata.len()); 
+                println!("{} TOO YOUNG {}", path_string, metadata.len());
             }
-            PathProvider::move_to_trash(path)?;   
         }
         println!("Total clean: {} ({})", result.len(), human_bytes(total as f64));
 

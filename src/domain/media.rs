@@ -172,7 +172,7 @@ pub struct ConvertProgress {
     pub done: bool,
     pub percent: f64,
     pub status: RsVideoTranscodeStatus,
-    pub estimated_remaining_seconds: Option<u64>,
+    pub remaining_secondes: Option<u64>,
     pub request: Option<VideoConvertRequest>,
 }
 
@@ -195,4 +195,27 @@ pub struct VideoMergeItem {
 pub struct VideoMergeRequest {
     pub id: String,
     pub items: Vec<VideoMergeItem>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn convert_progress_serializes_upload_eta_field_name() {
+        let progress = ConvertProgress {
+            id: "convert-1".to_string(),
+            filename: "video.mp4".to_string(),
+            converted_id: None,
+            done: false,
+            percent: 0.5,
+            status: RsVideoTranscodeStatus::Processing,
+            remaining_secondes: Some(42),
+            request: None,
+        };
+
+        let json = serde_json::to_string(&progress).unwrap();
+        assert!(json.contains("remainingSecondes"));
+        assert!(!json.contains("estimatedRemainingSeconds"));
+    }
 }

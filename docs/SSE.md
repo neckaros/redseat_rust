@@ -122,18 +122,41 @@ interface Relations {
   booksDetails?: Book[];
 }
 
+type RsProgressType =
+  | 'download'
+  | 'transfert'
+  | 'analysing'
+  | 'finished'
+  | { duplicate: string };
+
+interface RsProgress {
+  id: string;
+  total?: number;
+  current?: number;
+  filename?: string;
+  type: RsProgressType;
+}
+
 interface UploadProgressMessage {
   library: string;
-  mediaId: string;
-  progress: number;
-  // ... additional fields
+  progress: RsProgress;
+  remainingSecondes?: number;
+}
+
+interface ConvertProgress {
+  id: string;
+  filename: string;
+  convertedId?: string | null;
+  done: boolean;
+  percent: number;
+  status: string;
+  remainingSecondes?: number | null;
+  request?: VideoConvertRequest | null;
 }
 
 interface ConvertMessage {
   library: string;
-  mediaId: string;
-  progress: number;
-  status: string;
+  progress: ConvertProgress;
 }
 
 // Content events
@@ -314,8 +337,9 @@ eventSource.addEventListener('library-status', (event) => {
 eventSource.addEventListener('convert_progress', (event) => {
   const data: SseEvent = JSON.parse(event.data);
   if ('ConvertProgress' in data) {
-    const { mediaId, progress, status } = data.ConvertProgress;
-    console.log(`Converting ${mediaId}: ${progress}% - ${status}`);
+    const { library, progress } = data.ConvertProgress;
+    const eta = progress.remainingSecondes ? `, ~${progress.remainingSecondes}s remaining` : '';
+    console.log(`Converting in ${library}: ${progress.filename} ${(progress.percent * 100).toFixed(2)}% - ${progress.status}${eta}`);
   }
 });
 

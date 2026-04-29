@@ -2682,6 +2682,8 @@ impl ModelController {
             // Spawn background task
             tokio::spawn(async move {
                 let mut poll_interval = Duration::from_secs(2);
+                let start_time = std::time::Instant::now();
+                let mut remaining = None;
 
                 loop {
                     sleep(poll_interval).await;
@@ -2701,6 +2703,14 @@ impl ModelController {
 
                             let done = is_terminal;
                             let percent = current_status.progress;
+                            if percent > 1.0 {
+                                let percent_ratio = percent / 100.0;
+                                if percent_ratio > 0.01 {
+                                    let duration_from_start = start_time.elapsed().as_secs_f32();
+                                    let remaining_time = duration_from_start / percent_ratio * (1.0 - percent_ratio);
+                                    remaining = Some(remaining_time as u64);
+                                }
+                            }
 
                             let message = ConvertMessage {
                                 library: lib_progress.clone(),
@@ -2712,7 +2722,7 @@ impl ModelController {
                                     status: current_status.status.clone(),
                                     id: request_clone.id.clone(),
                                     request: Some(request_clone.clone()),
-                                    estimated_remaining_seconds: None,
+                                    remaining_secondes: remaining,
                                 },
                             };
                             mc_progress.send_convert_progress(message);
@@ -2745,12 +2755,17 @@ impl ModelController {
                                             {
                                                 Ok(reader) => {
                                                     attempts += 1;
+                                                    let mut converted_infos = media_progress.clone();
+                                                    converted_infos.size = reader.size;
+                                                    if reader.mime.is_some() {
+                                                        converted_infos.mimetype = reader.mime.clone();
+                                                    }
 
                                                     match mc_progress
                                                         .add_library_file(
                                                             &lib_progress,
                                                             &name_progress,
-                                                            Some(media_progress.clone()),
+                                                            Some(converted_infos),
                                                             reader.stream,
                                                             &ConnectedUser::ServerAdmin,
                                                         )
@@ -2773,6 +2788,7 @@ impl ModelController {
                                                     }
                                                 }
                                                 Err(e) => {
+                                                    attempts += 1;
                                                     log_error(
                                                         crate::tools::log::LogServiceType::Source,
                                                         format!("Failed to create reader: {:?}", e),
@@ -2781,6 +2797,9 @@ impl ModelController {
                                                         "Failed to create reader: {:?}",
                                                         e
                                                     );
+                                                    if attempts >= max_attempts {
+                                                        break Err(e);
+                                                    }
                                                 }
                                             }
                                         };
@@ -2981,7 +3000,7 @@ impl ModelController {
                         status: RsVideoTranscodeStatus::Processing,
                         id: request_progress.id.clone(),
                         request: Some(request_progress.clone()),
-                        estimated_remaining_seconds: remaining,
+                        remaining_secondes: remaining,
                     },
                 };
                 mc_progress.send_convert_progress(message);
@@ -3145,7 +3164,7 @@ impl ModelController {
                 done: false,
                 percent: 0.0,
                 status: RsVideoTranscodeStatus::Pending,
-                estimated_remaining_seconds: None,
+                remaining_secondes: None,
                 request: None,
             },
         };
@@ -3178,7 +3197,7 @@ impl ModelController {
                             status: RsVideoTranscodeStatus::Processing,
                             id: request_id.clone(),
                             request: None,
-                            estimated_remaining_seconds: None,
+                            remaining_secondes: None,
                         },
                     };
                     mc_progress.send_convert_progress(message);
@@ -3239,7 +3258,7 @@ impl ModelController {
                             status: RsVideoTranscodeStatus::Processing,
                             id: request_id.clone(),
                             request: None,
-                            estimated_remaining_seconds: None,
+                            remaining_secondes: None,
                         },
                     };
                     mc_progress.send_convert_progress(message);
@@ -3283,7 +3302,7 @@ impl ModelController {
                 done: false,
                 percent: 0.95,
                 status: RsVideoTranscodeStatus::Processing,
-                estimated_remaining_seconds: None,
+                remaining_secondes: None,
                 request: None,
             },
         });
@@ -3356,7 +3375,7 @@ impl ModelController {
                         done: true,
                         percent: 1.0,
                         status: RsVideoTranscodeStatus::Completed,
-                        estimated_remaining_seconds: None,
+                        remaining_secondes: None,
                         request: None,
                     },
                 });
@@ -3373,7 +3392,7 @@ impl ModelController {
                         done: true,
                         percent: 0.0,
                         status: RsVideoTranscodeStatus::Failed,
-                        estimated_remaining_seconds: None,
+                        remaining_secondes: None,
                         request: None,
                     },
                 });

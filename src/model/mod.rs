@@ -109,7 +109,7 @@ impl VideoConvertQueueElement {
                 done: false,
                 percent: 0f64,
                 status: RsVideoTranscodeStatus::Pending,
-                estimated_remaining_seconds: None,
+                remaining_secondes: None,
                 request: Some(request.clone()),
             },
             request,

@@ -26,6 +26,8 @@ pub mod async_reader_progress;
 
 pub type AsyncReadPinBox = Pin<Box<dyn AsyncRead + Send + Sync>>;
 
+const STREAM_BUFFER_SIZE: usize = 4 * 1024 * 1024;
+
 pub trait AsyncSeekableWrite: AsyncWrite + AsyncSeek + Send {}
 
 impl<T> AsyncSeekableWrite for T where T: AsyncWrite + AsyncSeek + Send {}
@@ -327,7 +329,7 @@ impl SourceRead {
         match self {
             SourceRead::Stream(reader) => {
                 let headers = reader.hearders().map_err(|_| Error::UnableToFormatHeaders)?;
-                let stream = ReaderStream::new(reader.stream);
+                let stream = ReaderStream::with_capacity(reader.stream, STREAM_BUFFER_SIZE);
                 let body = Body::from_stream(stream);
                 let status = if reader.range.is_some() { axum::http::StatusCode::PARTIAL_CONTENT } else { axum::http::StatusCode::OK };
                 Ok((status, headers, body).into_response())

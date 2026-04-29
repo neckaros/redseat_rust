@@ -365,7 +365,7 @@ async fn handler_merge(
                     done: true,
                     percent: 0.0,
                     status: RsVideoTranscodeStatus::Failed,
-                    estimated_remaining_seconds: None,
+                    remaining_secondes: None,
                     request: None,
                 },
             });
