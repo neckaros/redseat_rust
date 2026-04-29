@@ -2,13 +2,12 @@ use rs_plugin_common_interfaces::{CredentialType, PluginCredential};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Credential {
     pub id: String,
-	pub name: String,
-	pub source: String,
+    pub name: String,
+    pub source: String,
     #[serde(rename = "type")]
     pub kind: CredentialType,
     pub login: Option<String>,
@@ -29,6 +28,6 @@ impl From<Credential> for PluginCredential {
             user_ref: credential.user_ref,
             refresh_token: credential.refresh_token,
             expires: credential.expires,
-        } 
+        }
     }
 }

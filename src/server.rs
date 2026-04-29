@@ -1,16 +1,34 @@
-use std::{cell::{OnceCell, RefCell}, env, path::PathBuf, sync::OnceLock, time::Duration};
+use crate::{
+    error::{Error, RsError, RsResult},
+    model::{users::ConnectedUser, ModelController},
+    plugins::url,
+    tools::{
+        image_tools::has_image_magick,
+        log::{log_error, log_info, LogServiceType},
+    },
+    RegisterInfo, Result,
+};
 use axum::serve::Serve;
+use clap::Parser;
+use nanoid::nanoid;
 use query_external_ip::Consensus;
 use reqwest::Client;
-use tokio::{fs::{create_dir_all, metadata, read_to_string, File}, io::AsyncWriteExt, sync::Mutex};
 use serde::{Deserialize, Serialize};
-use nanoid::nanoid;
-use clap::Parser;
+use std::{
+    cell::{OnceCell, RefCell},
+    env,
+    path::PathBuf,
+    sync::OnceLock,
+    time::Duration,
+};
+use tokio::{
+    fs::{create_dir_all, metadata, read_to_string, File},
+    io::AsyncWriteExt,
+    sync::Mutex,
+};
 use tracing_subscriber::fmt::format;
-use crate::{RegisterInfo, Result, error::{Error, RsError, RsResult}, model::{ModelController, users::ConnectedUser}, plugins::url, tools::{image_tools::has_image_magick, log::{LogServiceType, log_error, log_info}}};
 
 static CONFIG: OnceLock<Mutex<ServerConfig>> = OnceLock::new();
-
 
 const ENV_SERVERID: &str = "REDSEAT_SERVERID";
 const ENV_HOME: &str = "REDSEAT_HOME";
@@ -32,17 +50,27 @@ pub struct ServerConfig {
     pub local: Option<String>,
     pub token: Option<String>,
     #[serde(default = "default_false")]
-    pub imagesUseIm: bool
+    pub imagesUseIm: bool,
 }
 
 impl ServerConfig {
     pub fn get_server_base_url(&self) -> RsResult<String> {
-        return Ok(format!("https://{}-srv.redseat.cloud:{}", self.id.clone().ok_or(RsError::Error("No id set for this server".to_string()))?, self.get_port().to_string()))
+        return Ok(format!(
+            "https://{}-srv.redseat.cloud:{}",
+            self.id
+                .clone()
+                .ok_or(RsError::Error("No id set for this server".to_string()))?,
+            self.get_port().to_string()
+        ));
     }
 
     pub fn get_port(&self) -> u16 {
         let config_port = self.port;
-        env::var(ENV_PORT).ok().and_then(|p| p.parse::<u16>().ok()).or_else(|| config_port).unwrap_or(8080)
+        env::var(ENV_PORT)
+            .ok()
+            .and_then(|p| p.parse::<u16>().ok())
+            .or_else(|| config_port)
+            .unwrap_or(8080)
     }
 }
 
@@ -64,7 +92,7 @@ struct Args {
     // Don't use certificate creation (if your domain already has ssl via proxy)
     #[arg(short = 'c', long)]
     noCert: Option<bool>,
-    
+
     /// set domain name (ex redseat.myserver.com)
     #[arg(short = 'u', long)]
     domain: Option<String>,
@@ -75,42 +103,57 @@ struct Args {
 }
 
 pub async fn initialize_config() -> ServerConfig {
-    let local_path = get_server_local_path().await.expect("Unable to create local library path");
-    log_info(LogServiceType::Register, format!("LocalPath: {:?}", local_path));
+    let local_path = get_server_local_path()
+        .await
+        .expect("Unable to create local library path");
+    log_info(
+        LogServiceType::Register,
+        format!("LocalPath: {:?}", local_path),
+    );
     let config = get_config_with_overrides().await.unwrap();
     let _ = CONFIG.set(Mutex::new(config.clone()));
-    return config
+    return config;
 }
 
 pub async fn get_server_local_path() -> Result<PathBuf> {
     let args = Args::try_parse().unwrap_or_default();
-    
+
     let dir_path = if let Some(argdir) = args.dir {
         PathBuf::from(&argdir)
-    } else if let Ok(val) =env::var(ENV_DIR) {
+    } else if let Ok(val) = env::var(ENV_DIR) {
         PathBuf::from(&val)
     } else if args.docker {
         PathBuf::from("/config")
     } else {
-        let Some(mut dir_path) = dirs::config_local_dir() else { return Err(Error::ServerUnableToAccessServerLocalFolder); };
+        let Some(mut dir_path) = dirs::config_local_dir() else {
+            return Err(Error::ServerUnableToAccessServerLocalFolder);
+        };
         dir_path.push("redseat");
-        dir_path    
+        dir_path
     };
 
-    
-
-    let Ok(_) = create_dir_all(&dir_path).await else { return Err(Error::ServerUnableToAccessServerLocalFolder); };
+    let Ok(_) = create_dir_all(&dir_path).await else {
+        return Err(Error::ServerUnableToAccessServerLocalFolder);
+    };
 
     return Ok(dir_path);
 }
 
 pub async fn get_server_port() -> u16 {
     let config_port = get_config().await.port;
-    env::var(ENV_PORT).ok().and_then(|p| p.parse::<u16>().ok()).or_else(|| config_port).unwrap_or(8080)
+    env::var(ENV_PORT)
+        .ok()
+        .and_then(|p| p.parse::<u16>().ok())
+        .or_else(|| config_port)
+        .unwrap_or(8080)
 }
 pub async fn get_server_exposed_port() -> u16 {
     let config_port = get_config().await.exp_port;
-    env::var(ENV_EXP_PORT).ok().and_then(|p| p.parse::<u16>().ok()).or_else(|| config_port).unwrap_or(8080)
+    env::var(ENV_EXP_PORT)
+        .ok()
+        .and_then(|p| p.parse::<u16>().ok())
+        .or_else(|| config_port)
+        .unwrap_or(8080)
 }
 
 fn default_serverid() -> String {
@@ -119,17 +162,17 @@ fn default_serverid() -> String {
         return id;
     } else {
         return new_id;
-    } 
-} 
+    }
+}
 
 fn get_config_override_serverid() -> Option<String> {
-    if let Ok(val) =env::var(ENV_SERVERID) {
+    if let Ok(val) = env::var(ENV_SERVERID) {
         return Some(val);
     } else {
         //let args = Args::parse();
         //return args.serverid;
         return None;
-    } 
+    }
 }
 
 pub async fn get_server_id() -> Option<String> {
@@ -146,17 +189,17 @@ fn default_home() -> String {
         return id;
     } else {
         return new_id;
-    } 
-} 
+    }
+}
 
 fn get_config_override_home() -> Option<String> {
-    if let Ok(val) =env::var(ENV_HOME) {
+    if let Ok(val) = env::var(ENV_HOME) {
         return Some(val);
     } else {
         //let args = Args::parse();
         //return args.serverid;
         return None;
-    } 
+    }
 }
 
 pub async fn get_home() -> String {
@@ -167,7 +210,7 @@ pub struct PublicServerInfos {
     pub port: u16,
     pub cert: Option<String>,
     pub id: Option<String>,
-    pub local: Option<String>, 
+    pub local: Option<String>,
 }
 
 impl PublicServerInfos {
@@ -183,10 +226,10 @@ impl PublicServerInfos {
     }
 
     pub async fn current() -> RsResult<Self> {
-	    let public_cert_path = get_server_file_path("cert_chain.pem").await?;
+        let public_cert_path = get_server_file_path("cert_chain.pem").await?;
         let cert = read_to_string(public_cert_path).await.ok();
         let config = get_config().await;
-        
+
         Ok(PublicServerInfos {
             port: get_server_port().await,
             cert,
@@ -195,7 +238,6 @@ impl PublicServerInfos {
         })
     }
 }
-
 
 pub async fn get_config() -> ServerConfig {
     if let Some(config) = CONFIG.get() {
@@ -244,89 +286,99 @@ pub async fn get_config_with_overrides() -> Result<ServerConfig> {
             config.imagesUseIm = true;
         } else {
             config.imagesUseIm = false;
-            log_error(LogServiceType::Other, "Trying to use ImageMagick but not found on computer".to_string());
+            log_error(
+                LogServiceType::Other,
+                "Trying to use ImageMagick but not found on computer".to_string(),
+            );
         }
     } else {
         config.imagesUseIm = false
     }
 
-    return Ok(config)
+    return Ok(config);
 }
 
 pub async fn get_raw_config() -> Result<ServerConfig> {
-    
     let mut dir_path: PathBuf = get_server_local_path().await?;
     dir_path.push("config.json");
 
     if let Ok(data) = read_to_string(dir_path.clone()).await {
-        let Ok(config) = serde_json::from_str::<ServerConfig>(&data) else { return Err(Error::ServerMalformatedConfigFile); };
-        return Ok(config)
+        let Ok(config) = serde_json::from_str::<ServerConfig>(&data) else {
+            return Err(Error::ServerMalformatedConfigFile);
+        };
+        return Ok(config);
     } else {
-
         let new_config: ServerConfig = serde_json::from_str(r#"{}"#).unwrap();
         let new_config_string = serde_json::to_string(&new_config).unwrap();
-        
-        let Ok(mut file) = File::create(dir_path).await else { return Err(Error::ServerNoServerId); };
+
+        let Ok(mut file) = File::create(dir_path).await else {
+            return Err(Error::ServerNoServerId);
+        };
         if file.write_all(new_config_string.as_bytes()).await.is_err() {
             return Err(Error::ServerNoServerId);
         }
-        return Ok(new_config)
-    } 
+        return Ok(new_config);
+    }
 }
 
 pub async fn update_config(config: ServerConfig) -> Result<()> {
     let mut dir_path: PathBuf = get_server_local_path().await?;
     dir_path.push("config.json");
     let new_config_string = serde_json::to_string(&config).unwrap();
-    let Ok(mut file) = File::create(dir_path).await else { return Err(Error::ServerUnableToAccessServerLocalFolder); };
+    let Ok(mut file) = File::create(dir_path).await else {
+        return Err(Error::ServerUnableToAccessServerLocalFolder);
+    };
     file.write_all(new_config_string.as_bytes()).await?;
-    
+
     let mut guard = CONFIG.get().unwrap().lock().await;
     *guard = config;
-    return Ok(())
+    return Ok(());
 }
 
-
 pub async fn get_web_url() -> Result<String> {
-	let config = get_config().await;
+    let config = get_config().await;
     if let Some(id) = config.id {
-	    Ok(format!("https://{}/servers/{}", config.redseat_home, id))
+        Ok(format!("https://{}/servers/{}", config.redseat_home, id))
     } else {
-	    Err(crate::Error::Error("Server not registered".to_owned()))
+        Err(crate::Error::Error("Server not registered".to_owned()))
     }
 }
 
 pub async fn get_install_url() -> Result<String> {
-	let config = get_config().await;
+    let config = get_config().await;
 
-	let mut params = vec![];
-	if let Some(port) = config.port {
-		params.push(format!("port={}", port));
-	}
-	if let Some(local) = config.local {
-		params.push(format!("local={}", local));
-	}
-	if let Some(domain) = config.domain {
-		params.push(format!("domain={}", domain));
-	}
-    
-	if config.noCert {
-		params.push(format!("noCert={}", config.noCert.to_string()));
-	}
-   
-	
-	Ok(format!("https://{}/install?{}", config.redseat_home, params.join("&")))
+    let mut params = vec![];
+    if let Some(port) = config.port {
+        params.push(format!("port={}", port));
+    }
+    if let Some(local) = config.local {
+        params.push(format!("local={}", local));
+    }
+    if let Some(domain) = config.domain {
+        params.push(format!("domain={}", domain));
+    }
+
+    if config.noCert {
+        params.push(format!("noCert={}", config.noCert.to_string()));
+    }
+
+    Ok(format!(
+        "https://{}/install?{}",
+        config.redseat_home,
+        params.join("&")
+    ))
 }
-
 
 pub async fn write_server_file(name: &str, data: &[u8]) -> Result<()> {
     let mut dir_path: PathBuf = get_server_local_path().await?;
     dir_path.push(name);
-    let Ok(mut file) = File::create(dir_path).await else { return Err(Error::ServerUnableToAccessServerLocalFolder); };
+    let Ok(mut file) = File::create(dir_path).await else {
+        return Err(Error::ServerUnableToAccessServerLocalFolder);
+    };
     if file.write_all(&data).await.is_err() {
         return Err(Error::ServerNoServerId);
     } else {
-        return Ok(())
+        return Ok(());
     }
 }
 pub async fn get_server_file_path(name: &str) -> Result<PathBuf> {
@@ -338,7 +390,6 @@ pub async fn get_server_file_path(name: &str) -> Result<PathBuf> {
 pub async fn get_server_temp_file_path() -> Result<PathBuf> {
     get_server_file_path_array(vec![".cache", &nanoid!()]).await
 }
-
 
 pub async fn get_server_file_path_array(mut names: Vec<&str>) -> Result<PathBuf> {
     let mut dir_path: PathBuf = get_server_local_path().await?;
@@ -360,7 +411,6 @@ pub async fn get_server_folder_path_array(names: Vec<&str>) -> Result<PathBuf> {
     return Ok(dir_path);
 }
 
-
 pub async fn has_server_file(name: &str) -> bool {
     if let Ok(path) = get_server_file_path(name).await {
         match metadata(path).await {
@@ -368,9 +418,8 @@ pub async fn has_server_file(name: &str) -> bool {
             Err(_) => false,
         }
     } else {
-        return false
+        return false;
     }
-    
 }
 
 pub async fn get_server_file_string(name: &str) -> Result<Option<String>> {
@@ -379,15 +428,14 @@ pub async fn get_server_file_string(name: &str) -> Result<Option<String>> {
     match read_to_string(dir_path).await {
         Ok(data) => return Ok(Some(data)),
         Err(e) => match e.kind() {
-            std::io::ErrorKind::NotFound =>  {
+            std::io::ErrorKind::NotFound => {
                 return Ok(None);
-            },
+            }
             _ => {
                 return Err(Error::ServerFileNotFound);
-            },
-        }
+            }
+        },
     };
-
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -399,11 +447,11 @@ pub struct ServerIpInfo {
 
 pub async fn get_ipv4() -> Result<String> {
     let client = Client::builder()
-    .timeout(Duration::from_secs(1))
-    .build()
-    .unwrap();
+        .timeout(Duration::from_secs(1))
+        .build()
+        .unwrap();
 
-    let ip =client.get("https://v4.ident.me/").send().await;
+    let ip = client.get("https://v4.ident.me/").send().await;
     if let Ok(ip) = ip {
         if let Ok(ip) = ip.text().await {
             return Ok(ip);
@@ -411,22 +459,19 @@ pub async fn get_ipv4() -> Result<String> {
     }
     let ip = client.get("https://api.ipify.org/").send().await;
     match ip {
-        Ok(ip) => {
-            match ip.text().await {
-                Ok(ip) => return Ok(ip),
-                _ => Err(Error::Error("Unable to get IPV4 no text found".to_string())),
-            }
-        }
+        Ok(ip) => match ip.text().await {
+            Ok(ip) => return Ok(ip),
+            _ => Err(Error::Error("Unable to get IPV4 no text found".to_string())),
+        },
         Err(e) => Err(Error::Error(format!("Unable to get IPV4: {:?}", e))),
     }
-    
 }
 
 pub async fn get_ipv6() -> Result<String> {
     let client = Client::builder()
-    .timeout(Duration::from_secs(1))
-    .build()
-    .unwrap();
+        .timeout(Duration::from_secs(1))
+        .build()
+        .unwrap();
 
     let ip = client.get("https://v6.ident.me/").send().await;
     if let Ok(ip) = ip {
@@ -443,12 +488,14 @@ pub async fn get_ipv6() -> Result<String> {
     Err(Error::Error("Unable to get IPV6".to_string()))
 }
 
-
 pub async fn update_ip() -> Result<ServerIpInfo> {
     log_info(LogServiceType::Register, "Checking public IPs".to_string());
     let config = get_config().await;
-    let request  = if let Some(domain) = &config.domain {
-        log_info(LogServiceType::Register, format!("Using providezd domain: {}", domain));
+    let request = if let Some(domain) = &config.domain {
+        log_info(
+            LogServiceType::Register,
+            format!("Using providezd domain: {}", domain),
+        );
         ServerIpInfo {
             ipv4: None,
             ipv6: None,
@@ -460,7 +507,6 @@ pub async fn update_ip() -> Result<ServerIpInfo> {
             ipv4: Some(ipv4.clone()),
             ipv6: None,
             domain: None,
-
         };
         request
     };
@@ -468,21 +514,32 @@ pub async fn update_ip() -> Result<ServerIpInfo> {
     let token = config.token.ok_or(crate::Error::ServerNotYetRegistered)?;
 
     let client = reqwest::Client::new();
-        
 
-
-    log_info(LogServiceType::Register, format!("Calling: https://{}/servers/{}/register", config.redseat_home, id));
-    log_info(LogServiceType::Register, format!("With content: {:?}", request));
-    let result = client.patch(format!("https://{}/servers/{}/register", config.redseat_home, id))
-    .header("Authorization", format!("Token {}", token))
+    log_info(
+        LogServiceType::Register,
+        format!(
+            "Calling: https://{}/servers/{}/register",
+            config.redseat_home, id
+        ),
+    );
+    log_info(
+        LogServiceType::Register,
+        format!("With content: {:?}", request),
+    );
+    let result = client
+        .patch(format!(
+            "https://{}/servers/{}/register",
+            config.redseat_home, id
+        ))
+        .header("Authorization", format!("Token {}", token))
         .json(&request)
         .send()
         .await?;
 
-    log_info(LogServiceType::Register, format!("Result: {:?}", result.text().await?));
+    log_info(
+        LogServiceType::Register,
+        format!("Result: {:?}", result.text().await?),
+    );
 
-
-    
     Ok(request)
-
 }

@@ -1,8 +1,8 @@
+use super::ElementAction;
+pub use rs_plugin_common_interfaces::domain::book::{Book, BookForUpdate};
 use rs_plugin_common_interfaces::domain::other_ids::OtherIds;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-pub use rs_plugin_common_interfaces::domain::book::{Book, BookForUpdate};
-use super::ElementAction;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]

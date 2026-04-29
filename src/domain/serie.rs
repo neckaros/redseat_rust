@@ -9,7 +9,6 @@ use crate::plugins::medias::imdb::ImdbContext;
 
 use super::ElementAction;
 
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct SerieWithAction {
@@ -23,7 +22,6 @@ pub struct SeriesMessage {
     pub library: String,
     pub series: Vec<SerieWithAction>,
 }
-
 
 #[async_trait::async_trait]
 pub trait SerieExt {

@@ -1,348 +1,610 @@
-
 use std::{convert::Infallible, io::Cursor, time::Duration};
 
-use crate::{domain::{media::MediaForUpdate, movie::{Movie, MovieForUpdate}, view_progress::{ViewProgressForAdd, ViewProgressLigh}, watched::{WatchedForAdd, WatchedForDelete, WatchedLight}, RsIdsExt}, error::RsError, model::{episodes::EpisodeQuery, medias::MediaQuery, movies::{MovieQuery, RsMovieSort}, store::sql::SqlOrder, users::{ConnectedUser, HistoryQuery}, ModelController}, tools::clock::now, Error, Result};
-use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{sse::{Event, KeepAlive, Sse}, IntoResponse, Response}, routing::{delete, get, patch, post, put}, Json, Router};
+use crate::{
+    domain::{
+        media::MediaForUpdate,
+        movie::{Movie, MovieForUpdate},
+        view_progress::{ViewProgressForAdd, ViewProgressLigh},
+        watched::{WatchedForAdd, WatchedForDelete, WatchedLight},
+        RsIdsExt,
+    },
+    error::RsError,
+    model::{
+        episodes::EpisodeQuery,
+        medias::MediaQuery,
+        movies::{MovieQuery, RsMovieSort},
+        store::sql::SqlOrder,
+        users::{ConnectedUser, HistoryQuery},
+        ModelController,
+    },
+    tools::clock::now,
+    Error, Result,
+};
+use axum::{
+    body::Body,
+    debug_handler,
+    extract::{Multipart, Path, Query, State},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Response,
+    },
+    routing::{delete, get, patch, post, put},
+    Json, Router,
+};
 use futures::{Stream, TryStreamExt};
-use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, lookup::{RsLookupMovie, RsLookupQuery}, request::RsGroupDownload, ElementType, ExternalImage, ImageType, MediaType, RsRequest};
+use rs_plugin_common_interfaces::{
+    domain::rs_ids::RsIds,
+    lookup::{RsLookupMovie, RsLookupQuery},
+    request::RsGroupDownload,
+    ElementType, ExternalImage, ImageType, MediaType, RsRequest,
+};
 use serde_json::{json, Value};
 use tokio::io::AsyncRead;
 use tokio_util::io::{ReaderStream, StreamReader};
 
-use super::{ImageRequestOptions, ImageUploadOptions, RatingUpdateBody, SearchQuery, SearchResultGroup, SseLookupSearchEvent, SseLookupSearchResult, SseSearchEvent};
-
-
+use super::{
+    ImageRequestOptions, ImageUploadOptions, RatingUpdateBody, SearchQuery, SearchResultGroup,
+    SseLookupSearchEvent, SseLookupSearchResult, SseSearchEvent,
+};
 
 pub fn routes(mc: ModelController) -> Router {
-	Router::new()
-		.route("/", get(handler_list))
-		.route("/trending", get(handler_trending))
-		.route("/ondeck", get(handler_ondeck))
-		.route("/upcoming", get(handler_upcoming))
-		.route("/", post(handler_post))
-		.route("/search", get(handler_seach_movies))
-		.route("/searchstream", get(handler_search_movies_stream))
-		.route("/:id", get(handler_get))
-		
-		.route("/:id/medias", get(handler_medias))
-		.route("/:id/search", get(handler_lookup))
-		.route("/:id/searchstream", get(handler_lookup_stream))
-		.route("/:id/search", post(handler_lookup_add))
-		.route("/:id", patch(handler_patch))
-		.route("/:id/import", put(handler_import))
-		.route("/:id/refresh", get(handler_refresh))
-		.route("/:id", delete(handler_delete))
-		.route("/:id/image", get(handler_image))
-		.route("/:id/image/search", get(handler_image_search))
-		.route("/:id/image/fetch", post(handler_image_fetch))
-		.route("/:id/image/refresh", get(handler_image_refresh))
-		.route("/:id/image", post(handler_post_image))
-		.route("/:id/progress", get(handler_progress_get))
-		.route("/:id/progress", post(handler_progress_set))
-		.route("/:id/rating", get(handler_rating_get))
-		.route("/:id/rating", patch(handler_rating_set))
-		.route("/:id/watched", get(handler_watched_get))
-		.route("/:id/watched", post(handler_watched_set))
-		.route("/:id/watched", delete(handler_watched_delete))
-		.with_state(mc.clone())
-        
+    Router::new()
+        .route("/", get(handler_list))
+        .route("/trending", get(handler_trending))
+        .route("/ondeck", get(handler_ondeck))
+        .route("/upcoming", get(handler_upcoming))
+        .route("/", post(handler_post))
+        .route("/search", get(handler_seach_movies))
+        .route("/searchstream", get(handler_search_movies_stream))
+        .route("/:id", get(handler_get))
+        .route("/:id/medias", get(handler_medias))
+        .route("/:id/search", get(handler_lookup))
+        .route("/:id/searchstream", get(handler_lookup_stream))
+        .route("/:id/search", post(handler_lookup_add))
+        .route("/:id", patch(handler_patch))
+        .route("/:id/import", put(handler_import))
+        .route("/:id/refresh", get(handler_refresh))
+        .route("/:id", delete(handler_delete))
+        .route("/:id/image", get(handler_image))
+        .route("/:id/image/search", get(handler_image_search))
+        .route("/:id/image/fetch", post(handler_image_fetch))
+        .route("/:id/image/refresh", get(handler_image_refresh))
+        .route("/:id/image", post(handler_post_image))
+        .route("/:id/progress", get(handler_progress_get))
+        .route("/:id/progress", post(handler_progress_set))
+        .route("/:id/rating", get(handler_rating_get))
+        .route("/:id/rating", patch(handler_rating_set))
+        .route("/:id/watched", get(handler_watched_get))
+        .route("/:id/watched", post(handler_watched_set))
+        .route("/:id/watched", delete(handler_watched_delete))
+        .with_state(mc.clone())
 }
 
-async fn handler_list(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<MovieQuery>) -> Result<Json<Value>> {
-	let libraries = mc.get_movies(&library_id, query, &user).await?;
-	let body = Json(json!(libraries));
-	Ok(body)
+async fn handler_list(
+    Path(library_id): Path<String>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Query(query): Query<MovieQuery>,
+) -> Result<Json<Value>> {
+    let libraries = mc.get_movies(&library_id, query, &user).await?;
+    let body = Json(json!(libraries));
+    Ok(body)
 }
 
-async fn handler_trending(State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
-	println!("FUUUU");
-	let libraries = mc.trending_movies(&user).await?;
-	let body = Json(json!(libraries));
-	Ok(body)
+async fn handler_trending(
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<Json<Value>> {
+    println!("FUUUU");
+    let libraries = mc.trending_movies(&user).await?;
+    let body = Json(json!(libraries));
+    Ok(body)
 }
 
-async fn handler_upcoming(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
-	let libraries = mc.get_movies(&library_id, MovieQuery { in_digital: Some(false), sort: RsMovieSort::Digitalairdate, order: Some(SqlOrder::ASC), ..Default::default() }, &user).await?;
-	let body = Json(json!(libraries));
-	Ok(body)
+async fn handler_upcoming(
+    Path(library_id): Path<String>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<Json<Value>> {
+    let libraries = mc
+        .get_movies(
+            &library_id,
+            MovieQuery {
+                in_digital: Some(false),
+                sort: RsMovieSort::Digitalairdate,
+                order: Some(SqlOrder::ASC),
+                ..Default::default()
+            },
+            &user,
+        )
+        .await?;
+    let body = Json(json!(libraries));
+    Ok(body)
 }
-async fn handler_ondeck(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
-	let libraries = mc.get_movies(&library_id, MovieQuery { in_digital: Some(true), watched: Some(false), sort: RsMovieSort::Digitalairdate, order: Some(SqlOrder::DESC), ..Default::default() }, &user).await?;
-	let body = Json(json!(libraries));
-	Ok(body)
-}
-
-async fn handler_get(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
-	let movie = mc.get_movie(&library_id, movie_id, &user).await?;
-	let body = Json(json!(movie));
-	Ok(body)
-}
-
-async fn handler_seach_movies(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<SearchQuery<RsLookupMovie>>) -> Result<Json<Value>> {
-	let sources = query.sources();
-	let groups = mc.search_movie(&library_id, query.lookup, sources, &user).await?;
-	let body: Vec<SearchResultGroup> = groups.into_iter().map(|(source_id, source_name, data)| SearchResultGroup { source_id, source_name, data }).collect();
-	Ok(Json(json!(body)))
-}
-
-
-async fn handler_search_movies_stream(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<SearchQuery<RsLookupMovie>>) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>> {
-	let sources = query.sources();
-	let mut rx = mc.search_movie_stream(&library_id, query.lookup, sources, &user).await?;
-
-	let stream = async_stream::stream! {
-		while let Some((source_id, source_name, batch)) = rx.recv().await {
-			if let Ok(data) = serde_json::to_string(&SseSearchEvent { source_id: &source_id, source_name: &source_name, data: &batch }) {
-				yield Ok(Event::default().event("results").data(data));
-			}
-		}
-	};
-
-	Ok(Sse::new(stream).keep_alive(
-		KeepAlive::new()
-			.interval(Duration::from_secs(30))
-			.text("ping"),
-	))
+async fn handler_ondeck(
+    Path(library_id): Path<String>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<Json<Value>> {
+    let libraries = mc
+        .get_movies(
+            &library_id,
+            MovieQuery {
+                in_digital: Some(true),
+                watched: Some(false),
+                sort: RsMovieSort::Digitalairdate,
+                order: Some(SqlOrder::DESC),
+                ..Default::default()
+            },
+            &user,
+        )
+        .await?;
+    let body = Json(json!(libraries));
+    Ok(body)
 }
 
-async fn handler_medias(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
-	let libraries = mc.get_medias(&library_id, MediaQuery { movie: Some(movie_id), ..Default::default() }, &user).await?;
-	let body = Json(json!(libraries));
-	Ok(body)
+async fn handler_get(
+    Path((library_id, movie_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<Json<Value>> {
+    let movie = mc.get_movie(&library_id, movie_id, &user).await?;
+    let body = Json(json!(movie));
+    Ok(body)
 }
 
-async fn handler_lookup(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
-	let movie = mc.get_movie(&library_id, movie_id, &user).await?;
-	let name = movie.name.clone();
-	let ids: RsIds = movie.into();
-	let query = RsLookupQuery::Movie(RsLookupMovie {
-		name: Some(name),
-		ids: Some(ids),
-		page_key: None,
-	});
-	let library = mc.exec_lookup(query, Some(library_id), &user, None).await?;
-	let body = Json(json!(library));
-	Ok(body)
+async fn handler_seach_movies(
+    Path(library_id): Path<String>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Query(query): Query<SearchQuery<RsLookupMovie>>,
+) -> Result<Json<Value>> {
+    let sources = query.sources();
+    let groups = mc
+        .search_movie(&library_id, query.lookup, sources, &user)
+        .await?;
+    let body: Vec<SearchResultGroup> = groups
+        .into_iter()
+        .map(|(source_id, source_name, data)| SearchResultGroup {
+            source_id,
+            source_name,
+            data,
+        })
+        .collect();
+    Ok(Json(json!(body)))
 }
 
-async fn handler_lookup_stream(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>> {
-	let movie = mc.get_movie(&library_id, movie_id, &user).await?;
-	let name = movie.name.clone();
-	let ids: RsIds = movie.into();
-	let query = RsLookupQuery::Movie(RsLookupMovie {
-		name: Some(name),
-		ids: Some(ids),
-		page_key: None,
-	});
-	let mut rx = mc.exec_lookup_stream_grouped(query, Some(library_id), &user, None, None).await?;
+async fn handler_search_movies_stream(
+    Path(library_id): Path<String>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Query(query): Query<SearchQuery<RsLookupMovie>>,
+) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>> {
+    let sources = query.sources();
+    let mut rx = mc
+        .search_movie_stream(&library_id, query.lookup, sources, &user)
+        .await?;
 
-	let stream = async_stream::stream! {
-		while let Some((source_id, source_name, groups)) = rx.recv().await {
-			let results = SseLookupSearchResult::from_groups(groups);
-			if let Ok(data) = serde_json::to_string(&SseLookupSearchEvent { source_id: &source_id, source_name: &source_name, results: &results }) {
-				yield Ok(Event::default().event("results").data(data));
-			}
-		}
-	};
+    let stream = async_stream::stream! {
+        while let Some((source_id, source_name, batch)) = rx.recv().await {
+            if let Ok(data) = serde_json::to_string(&SseSearchEvent { source_id: &source_id, source_name: &source_name, data: &batch }) {
+                yield Ok(Event::default().event("results").data(data));
+            }
+        }
+    };
 
-	Ok(Sse::new(stream).keep_alive(
-		KeepAlive::new()
-			.interval(Duration::from_secs(30))
-			.text("ping"),
-	))
+    Ok(Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(30))
+            .text("ping"),
+    ))
 }
 
-async fn handler_lookup_add(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(mut request): Json<RsRequest>) -> Result<Json<Value>> {
-	// Set movie info directly on the request
-	request.movie = Some(movie_id);
-
-	let group = RsGroupDownload {
-		requests: vec![request],
-		group: false,
-		..Default::default()
-	};
-	let added = mc.download_library_url(&library_id, group, &user).await?;
-	let added = added.into_iter().next().ok_or(Error::Error("No media added".to_string()))?;
-
-	Ok(Json(json!(added)))
+async fn handler_medias(
+    Path((library_id, movie_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<Json<Value>> {
+    let libraries = mc
+        .get_medias(
+            &library_id,
+            MediaQuery {
+                movie: Some(movie_id),
+                ..Default::default()
+            },
+            &user,
+        )
+        .await?;
+    let body = Json(json!(libraries));
+    Ok(body)
 }
 
-
-async fn handler_refresh(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
-	let library = mc.refresh_movie(&library_id, &movie_id, &user).await?;
-	let body = Json(json!(library));
-	Ok(body)
+async fn handler_lookup(
+    Path((library_id, movie_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<Json<Value>> {
+    let movie = mc.get_movie(&library_id, movie_id, &user).await?;
+    let name = movie.name.clone();
+    let ids: RsIds = movie.into();
+    let query = RsLookupQuery::Movie(RsLookupMovie {
+        name: Some(name),
+        ids: Some(ids),
+        page_key: None,
+    });
+    let library = mc.exec_lookup(query, Some(library_id), &user, None).await?;
+    let body = Json(json!(library));
+    Ok(body)
 }
 
-async fn handler_patch(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(update): Json<MovieForUpdate>) -> Result<Json<Value>> {
-	let new_credential = mc.update_movie(&library_id, movie_id, update, &user).await?;
-	Ok(Json(json!(new_credential)))
+async fn handler_lookup_stream(
+    Path((library_id, movie_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>> {
+    let movie = mc.get_movie(&library_id, movie_id, &user).await?;
+    let name = movie.name.clone();
+    let ids: RsIds = movie.into();
+    let query = RsLookupQuery::Movie(RsLookupMovie {
+        name: Some(name),
+        ids: Some(ids),
+        page_key: None,
+    });
+    let mut rx = mc
+        .exec_lookup_stream_grouped(query, Some(library_id), &user, None, None)
+        .await?;
+
+    let stream = async_stream::stream! {
+        while let Some((source_id, source_name, groups)) = rx.recv().await {
+            let results = SseLookupSearchResult::from_groups(groups);
+            if let Ok(data) = serde_json::to_string(&SseLookupSearchEvent { source_id: &source_id, source_name: &source_name, results: &results }) {
+                yield Ok(Event::default().event("results").data(data));
+            }
+        }
+    };
+
+    Ok(Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(30))
+            .text("ping"),
+    ))
 }
 
-async fn handler_import(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
-	let new_credential = mc.import_movie(&library_id, &movie_id, &user).await?;
-	Ok(Json(json!(new_credential)))
+async fn handler_lookup_add(
+    Path((library_id, movie_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Json(mut request): Json<RsRequest>,
+) -> Result<Json<Value>> {
+    // Set movie info directly on the request
+    request.movie = Some(movie_id);
+
+    let group = RsGroupDownload {
+        requests: vec![request],
+        group: false,
+        ..Default::default()
+    };
+    let added = mc.download_library_url(&library_id, group, &user).await?;
+    let added = added
+        .into_iter()
+        .next()
+        .ok_or(Error::Error("No media added".to_string()))?;
+
+    Ok(Json(json!(added)))
 }
 
-
-async fn handler_delete(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
-	let library = mc.remove_movie(&library_id, &movie_id, &user).await?;
-	let body = Json(json!(library));
-	Ok(body)
+async fn handler_refresh(
+    Path((library_id, movie_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<Json<Value>> {
+    let library = mc.refresh_movie(&library_id, &movie_id, &user).await?;
+    let body = Json(json!(library));
+    Ok(body)
 }
 
-
-
-
-async fn handler_progress_get(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
-	let movie = mc.get_movie(&library_id, movie_id, &user).await?;
-	let progress = mc.get_view_progress(movie.into(), &user, Some(library_id.to_string())).await?.ok_or(Error::NotFound("unable to get movie progress".to_string()))?;
-	Ok(Json(json!(progress)))
+async fn handler_patch(
+    Path((library_id, movie_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Json(update): Json<MovieForUpdate>,
+) -> Result<Json<Value>> {
+    let new_credential = mc
+        .update_movie(&library_id, movie_id, update, &user)
+        .await?;
+    Ok(Json(json!(new_credential)))
 }
 
-async fn handler_progress_set(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(progress): Json<ViewProgressLigh>) -> Result<()> {
-	let movie = mc.get_movie(&library_id, movie_id, &user).await?;
-	let id = RsIds::from(movie).into_best_external().ok_or(Error::NotFound("unable to get best external id for movie progress".to_string()))?;
-	let progress = ViewProgressForAdd { kind: MediaType::Movie, id, progress: progress.progress, parent: None };
-	mc.add_view_progress(progress, &user, Some(library_id)).await?;
-
-	Ok(())
+async fn handler_import(
+    Path((library_id, movie_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<Json<Value>> {
+    let new_credential = mc.import_movie(&library_id, &movie_id, &user).await?;
+    Ok(Json(json!(new_credential)))
 }
 
-async fn handler_rating_get(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
-	let rating = mc.get_media_rating(&library_id, ElementType::Movie, movie_id, &user).await?;
-	Ok(Json(json!(rating)))
+async fn handler_delete(
+    Path((library_id, movie_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<Json<Value>> {
+    let library = mc.remove_movie(&library_id, &movie_id, &user).await?;
+    let body = Json(json!(library));
+    Ok(body)
 }
 
-async fn handler_rating_set(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(body): Json<RatingUpdateBody>) -> Result<Json<Value>> {
-	let rating = mc.set_media_rating(&library_id, ElementType::Movie, movie_id, body.rating, &user).await?;
-	Ok(Json(json!(rating)))
+async fn handler_progress_get(
+    Path((library_id, movie_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<Json<Value>> {
+    let movie = mc.get_movie(&library_id, movie_id, &user).await?;
+    let progress = mc
+        .get_view_progress(movie.into(), &user, Some(library_id.to_string()))
+        .await?
+        .ok_or(Error::NotFound("unable to get movie progress".to_string()))?;
+    Ok(Json(json!(progress)))
 }
 
-async fn handler_watched_get(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
-	let movie = mc.get_movie(&library_id, movie_id, &user).await?;
-	let query = HistoryQuery {
-		id: Some(movie.into()),
-		..Default::default()
-	};
-	let progress = mc.get_watched(query, &user, Some(library_id)).await?.into_iter().next().ok_or(Error::NotFound("Unable to get watched movies".to_string()))?;
-	Ok(Json(json!(progress)))
+async fn handler_progress_set(
+    Path((library_id, movie_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Json(progress): Json<ViewProgressLigh>,
+) -> Result<()> {
+    let movie = mc.get_movie(&library_id, movie_id, &user).await?;
+    let id = RsIds::from(movie)
+        .into_best_external()
+        .ok_or(Error::NotFound(
+            "unable to get best external id for movie progress".to_string(),
+        ))?;
+    let progress = ViewProgressForAdd {
+        kind: MediaType::Movie,
+        id,
+        progress: progress.progress,
+        parent: None,
+    };
+    mc.add_view_progress(progress, &user, Some(library_id))
+        .await?;
+
+    Ok(())
 }
 
-async fn handler_watched_set(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(watched): Json<WatchedLight>) -> Result<()> {
-	let movie = mc.get_movie(&library_id, movie_id, &user).await?;
-	let id = RsIds::from(movie).into_best_external().ok_or(Error::NotFound("Unable to get best external id for movie".to_string()))?;
-	let watched = WatchedForAdd { kind: MediaType::Movie, id, date: watched.date };
-	mc.add_watched(watched, &user, Some(library_id)).await?;
-
-	Ok(())
+async fn handler_rating_get(
+    Path((library_id, movie_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<Json<Value>> {
+    let rating = mc
+        .get_media_rating(&library_id, ElementType::Movie, movie_id, &user)
+        .await?;
+    Ok(Json(json!(rating)))
 }
 
-async fn handler_watched_delete(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<()> {
-	let movie = mc.get_movie(&library_id, movie_id, &user).await?;
-	let rs_ids = RsIds::from(movie);
-	let ids = rs_ids.into_all_external();
-	let watched = WatchedForDelete { kind: MediaType::Movie, ids };
-	mc.remove_watched(watched, &user, Some(library_id)).await?;
-
-	Ok(())
+async fn handler_rating_set(
+    Path((library_id, movie_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Json(body): Json<RatingUpdateBody>,
+) -> Result<Json<Value>> {
+    let rating = mc
+        .set_media_rating(
+            &library_id,
+            ElementType::Movie,
+            movie_id,
+            body.rating,
+            &user,
+        )
+        .await?;
+    Ok(Json(json!(rating)))
 }
 
-
-
-async fn handler_post(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Json(tag): Json<Movie>) -> Result<Json<Value>> {
-	let credential = mc.add_movie(&library_id, tag, &user).await?;
-	let body = Json(json!(credential));
-	Ok(body)
+async fn handler_watched_get(
+    Path((library_id, movie_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<Json<Value>> {
+    let movie = mc.get_movie(&library_id, movie_id, &user).await?;
+    let query = HistoryQuery {
+        id: Some(movie.into()),
+        ..Default::default()
+    };
+    let progress = mc
+        .get_watched(query, &user, Some(library_id))
+        .await?
+        .into_iter()
+        .next()
+        .ok_or(Error::NotFound("Unable to get watched movies".to_string()))?;
+    Ok(Json(json!(progress)))
 }
 
+async fn handler_watched_set(
+    Path((library_id, movie_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Json(watched): Json<WatchedLight>,
+) -> Result<()> {
+    let movie = mc.get_movie(&library_id, movie_id, &user).await?;
+    let id = RsIds::from(movie)
+        .into_best_external()
+        .ok_or(Error::NotFound(
+            "Unable to get best external id for movie".to_string(),
+        ))?;
+    let watched = WatchedForAdd {
+        kind: MediaType::Movie,
+        id,
+        date: watched.date,
+    };
+    mc.add_watched(watched, &user, Some(library_id)).await?;
 
-async fn handler_image(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ImageRequestOptions>) -> Result<Response> {
-	let reader_response = mc.movie_image(&library_id, &movie_id, query.kind.clone(), query.size.clone(), &user).await;
-
-	if let Ok(reader_response) =reader_response {
-		let headers = reader_response.hearders().map_err(|_| Error::GenericRedseatError)?;
-		let stream = ReaderStream::new(reader_response.stream);
-		let body = Body::from_stream(stream);
-		
-		Ok((headers, body).into_response())
-	} else if query.defaulting {
-		if query.kind.as_ref().unwrap_or(&ImageType::Poster) == &ImageType::Card {
-			let reader_response = mc.movie_image(&library_id, &movie_id, Some(ImageType::Background), query.size, &user).await?;
-			let headers = reader_response.hearders().map_err(|_| Error::GenericRedseatError)?;
-			let stream = ReaderStream::new(reader_response.stream);
-			let body = Body::from_stream(stream);
-			
-			Ok((headers, body).into_response())
-		} else {
-			Err(Error::NotFound(format!("Unable to find movie image with defaulting: {} {}", library_id, movie_id)))
-		}
-	} else {
-		Err(Error::NotFound(format!("Unable to find movie image without defaulting: {} {}", library_id, movie_id)))
-	}
-
-	
+    Ok(())
 }
 
-async fn handler_image_fetch(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(externalImage): Json<ExternalImage>) -> Result<Json<Value>> {
-	let request = externalImage.url;
+async fn handler_watched_delete(
+    Path((library_id, movie_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<()> {
+    let movie = mc.get_movie(&library_id, movie_id, &user).await?;
+    let rs_ids = RsIds::from(movie);
+    let ids = rs_ids.into_all_external();
+    let watched = WatchedForDelete {
+        kind: MediaType::Movie,
+        ids,
+    };
+    mc.remove_watched(watched, &user, Some(library_id)).await?;
 
-	let kind = externalImage.kind.ok_or(RsError::Error("Missing image type".to_string()))?;
+    Ok(())
+}
 
-	let mut reader = mc.request_to_reader(&library_id, request, &user).await?;
+async fn handler_post(
+    Path(library_id): Path<String>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Json(tag): Json<Movie>,
+) -> Result<Json<Value>> {
+    let credential = mc.add_movie(&library_id, tag, &user).await?;
+    let body = Json(json!(credential));
+    Ok(body)
+}
 
-	mc.update_movie_image(&library_id, &serie_id, &kind, reader.stream, &user).await?;
-	
+async fn handler_image(
+    Path((library_id, movie_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Query(query): Query<ImageRequestOptions>,
+) -> Result<Response> {
+    let reader_response = mc
+        .movie_image(
+            &library_id,
+            &movie_id,
+            query.kind.clone(),
+            query.size.clone(),
+            &user,
+        )
+        .await;
+
+    if let Ok(reader_response) = reader_response {
+        let headers = reader_response
+            .hearders()
+            .map_err(|_| Error::GenericRedseatError)?;
+        let stream = ReaderStream::new(reader_response.stream);
+        let body = Body::from_stream(stream);
+
+        Ok((headers, body).into_response())
+    } else if query.defaulting {
+        if query.kind.as_ref().unwrap_or(&ImageType::Poster) == &ImageType::Card {
+            let reader_response = mc
+                .movie_image(
+                    &library_id,
+                    &movie_id,
+                    Some(ImageType::Background),
+                    query.size,
+                    &user,
+                )
+                .await?;
+            let headers = reader_response
+                .hearders()
+                .map_err(|_| Error::GenericRedseatError)?;
+            let stream = ReaderStream::new(reader_response.stream);
+            let body = Body::from_stream(stream);
+
+            Ok((headers, body).into_response())
+        } else {
+            Err(Error::NotFound(format!(
+                "Unable to find movie image with defaulting: {} {}",
+                library_id, movie_id
+            )))
+        }
+    } else {
+        Err(Error::NotFound(format!(
+            "Unable to find movie image without defaulting: {} {}",
+            library_id, movie_id
+        )))
+    }
+}
+
+async fn handler_image_fetch(
+    Path((library_id, serie_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Json(externalImage): Json<ExternalImage>,
+) -> Result<Json<Value>> {
+    let request = externalImage.url;
+
+    let kind = externalImage
+        .kind
+        .ok_or(RsError::Error("Missing image type".to_string()))?;
+
+    let mut reader = mc.request_to_reader(&library_id, request, &user).await?;
+
+    mc.update_movie_image(&library_id, &serie_id, &kind, reader.stream, &user)
+        .await?;
+
     Ok(Json(json!({"data": "ok"})))
 }
 
+async fn handler_image_search(
+    Path((library_id, movie_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Query(_query): Query<ImageRequestOptions>,
+) -> Result<Json<Value>> {
+    let movie = mc.get_movie(&library_id, movie_id, &user).await?;
+    let name = movie.name.clone();
+    let ids: RsIds = movie.into();
+    let lookup_query = RsLookupMovie {
+        name: Some(name),
+        ids: Some(ids.clone()),
+        page_key: None,
+    };
+    let result = mc
+        .get_movie_images(lookup_query, Some(library_id), &user)
+        .await?;
 
-async fn handler_image_search(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(_query): Query<ImageRequestOptions>) -> Result<Json<Value>> {
-	let movie = mc.get_movie(&library_id, movie_id, &user).await?;
-	let name = movie.name.clone();
-	let ids: RsIds = movie.into();
-	let lookup_query = RsLookupMovie {
-		name: Some(name),
-		ids: Some(ids.clone()),
-		page_key: None,
-	};
-	let result = mc.get_movie_images(lookup_query, Some(library_id), &user).await?;
-
-	Ok(Json(json!(result)))
+    Ok(Json(json!(result)))
 }
 
 async fn handler_image_refresh(
-	Path((library_id, movie_id)): Path<(String, String)>,
-	State(mc): State<ModelController>,
-	user: ConnectedUser,
-	Query(query): Query<ImageRequestOptions>,
+    Path((library_id, movie_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Query(query): Query<ImageRequestOptions>,
 ) -> Result<Json<Value>> {
-	let kind = query.kind.unwrap_or(ImageType::Poster);
-	mc.refresh_movie_image(&library_id, &movie_id, &kind, &user).await?;
-	Ok(Json(json!({"data": "ok"})))
+    let kind = query.kind.unwrap_or(ImageType::Poster);
+    mc.refresh_movie_image(&library_id, &movie_id, &kind, &user)
+        .await?;
+    Ok(Json(json!({"data": "ok"})))
 }
 
 #[debug_handler]
-async fn handler_post_image(Path((library_id, movie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ImageUploadOptions>, mut multipart: Multipart) -> Result<Json<Value>> {
-	while let Some(field) = multipart.next_field().await.unwrap() {
+async fn handler_post_image(
+    Path((library_id, movie_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Query(query): Query<ImageUploadOptions>,
+    mut multipart: Multipart,
+) -> Result<Json<Value>> {
+    while let Some(field) = multipart.next_field().await.unwrap() {
         //let name = field.name().unwrap().to_string();
-		//let filename = field.file_name().unwrap().to_string();
-		//let mime: String = field.content_type().unwrap().to_string();
+        //let filename = field.file_name().unwrap().to_string();
+        //let mime: String = field.content_type().unwrap().to_string();
         //let data = field.bytes().await.unwrap();
 
-		let mut reader = StreamReader::new(field.map_err(|multipart_error| {
-			std::io::Error::new(std::io::ErrorKind::Other, multipart_error)
-		}));
+        let mut reader = StreamReader::new(field.map_err(|multipart_error| {
+            std::io::Error::new(std::io::ErrorKind::Other, multipart_error)
+        }));
 
-		
-		// Read all bytes from the field into a buffer
-		let mut data = Vec::new();
-		tokio::io::copy(&mut reader, &mut data).await?;
-		let reader = Box::pin(Cursor::new(data));
-		
+        // Read all bytes from the field into a buffer
+        let mut data = Vec::new();
+        tokio::io::copy(&mut reader, &mut data).await?;
+        let reader = Box::pin(Cursor::new(data));
+
         //println!("Length of `{}` {}  {} is {} bytes", name, filename, mime, data.len());
-			mc.update_movie_image(&library_id, &movie_id, &query.kind, reader, &user).await?;
+        mc.update_movie_image(&library_id, &movie_id, &query.kind, reader, &user)
+            .await?;
     }
-	
+
     Ok(Json(json!({"data": "ok"})))
 }

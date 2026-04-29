@@ -1,7 +1,10 @@
 use std::u64;
 
 use chrono::Utc;
-use rs_plugin_common_interfaces::{domain::{other_ids::OtherIds, rs_ids::RsIds}, url::RsLink};
+use rs_plugin_common_interfaces::{
+    domain::{other_ids::OtherIds, rs_ids::RsIds},
+    url::RsLink,
+};
 use rusqlite::{
     params, params_from_iter,
     types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef},
@@ -17,11 +20,11 @@ use crate::model::Error;
 use crate::{
     domain::{
         library::LibraryLimits,
-        tag::TagForUpdate,
         media::{
             self, FileEpisode, FileType, Media, MediaForInsert, MediaForUpdate, MediaItemReference,
             RsGpsPosition,
         },
+        tag::TagForUpdate,
     },
     error::RsResult,
     model::{
@@ -52,7 +55,6 @@ pub struct MediaBackup {
     pub size: Option<u64>,
     pub hash: String,
 }
-
 
 impl RsSort {
     pub fn to_media_query(&self) -> String {
@@ -500,10 +502,7 @@ impl SqliteLibraryStore {
         }
 
         if let Some(key) = query.uploadkey {
-            where_query.add_where(SqlWhereType::Equal(
-                "uploadkey".to_string(),
-                Box::new(key),
-            ));
+            where_query.add_where(SqlWhereType::Equal("uploadkey".to_string(), Box::new(key)));
         }
 
         where_query.add_oder(OrderBuilder::new(sort.to_owned(), query.order.clone()));
@@ -530,7 +529,11 @@ impl SqliteLibraryStore {
         where_query
     }
 
-    pub async fn get_medias(&self, query: MediaQuery, limits: LibraryLimits) -> Result<Vec<ItemWithRelations<Media>>> {
+    pub async fn get_medias(
+        &self,
+        query: MediaQuery,
+        limits: LibraryLimits,
+    ) -> Result<Vec<ItemWithRelations<Media>>> {
         let row = self
             .connection
             .call(move |conn| {
@@ -556,8 +559,9 @@ impl SqliteLibraryStore {
                 //println!("query {:?}", query.expanded_sql());
 
                 let rows = query.query_map(where_query.values(), Self::row_to_media)?;
-                let backups: Vec<ItemWithRelations<Media>> =
-                    rows.collect::<std::result::Result<Vec<ItemWithRelations<Media>>, rusqlite::Error>>()?;
+                let backups: Vec<ItemWithRelations<Media>> = rows
+                    .collect::<std::result::Result<Vec<ItemWithRelations<Media>>, rusqlite::Error>>(
+                    )?;
                 Ok(backups)
             })
             .await?;
@@ -615,7 +619,11 @@ impl SqliteLibraryStore {
         Ok(row)
     }
 
-    pub async fn get_media_by_hash(&self, hash: String, check_original: bool) -> Option<ItemWithRelations<Media>> {
+    pub async fn get_media_by_hash(
+        &self,
+        hash: String,
+        check_original: bool,
+    ) -> Option<ItemWithRelations<Media>> {
         let row = self
             .connection
             .call(move |conn| {
@@ -987,7 +995,10 @@ impl SqliteLibraryStore {
                         ids.set(parts[0], parts[1]);
                     }
                     if let Ok(Some(found)) = self.get_person_by_external_id(ids).await {
-                        resolved.push(MediaItemReference { id: found.id, conf: person.conf });
+                        resolved.push(MediaItemReference {
+                            id: found.id,
+                            conf: person.conf,
+                        });
                     }
                 }
             }
@@ -1002,7 +1013,10 @@ impl SqliteLibraryStore {
                 } else {
                     let other_ids = OtherIds::from(vec![tag.id.clone()]);
                     if let Ok(Some(found)) = self.get_tag_by_otherids(other_ids).await {
-                        resolved.push(MediaItemReference { id: found.id, conf: tag.conf });
+                        resolved.push(MediaItemReference {
+                            id: found.id,
+                            conf: tag.conf,
+                        });
                     }
                 }
             }
@@ -1249,38 +1263,43 @@ impl SqliteLibraryStore {
     }
 
     pub async fn copy_media_relations(&self, source_id: String, target_id: String) -> Result<()> {
-        self.connection.call(move |conn| {
-            conn.execute(
-                "INSERT OR IGNORE INTO media_tag_mapping (media_ref, tag_ref, confidence)
+        self.connection
+            .call(move |conn| {
+                conn.execute(
+                    "INSERT OR IGNORE INTO media_tag_mapping (media_ref, tag_ref, confidence)
                  SELECT ?, tag_ref, confidence FROM media_tag_mapping WHERE media_ref = ?",
-                params![target_id, source_id],
-            )?;
-            conn.execute(
-                "INSERT OR IGNORE INTO media_people_mapping (media_ref, people_ref, confidence)
+                    params![target_id, source_id],
+                )?;
+                conn.execute(
+                    "INSERT OR IGNORE INTO media_people_mapping (media_ref, people_ref, confidence)
                  SELECT ?, people_ref, confidence FROM media_people_mapping WHERE media_ref = ?",
-                params![target_id, source_id],
-            )?;
-            conn.execute(
+                    params![target_id, source_id],
+                )?;
+                conn.execute(
                 "INSERT OR IGNORE INTO media_serie_mapping (media_ref, serie_ref, season, episode)
                  SELECT ?, serie_ref, season, episode FROM media_serie_mapping WHERE media_ref = ?",
                 params![target_id, source_id],
             )?;
-            conn.execute(
-                "UPDATE medias SET
+                conn.execute(
+                    "UPDATE medias SET
                     movie = COALESCE((SELECT movie FROM medias WHERE id = ?1), movie),
                     book = COALESCE((SELECT book FROM medias WHERE id = ?1), book)
                  WHERE id = ?2",
-                params![source_id, target_id],
-            )?;
-            Ok(())
-        }).await?;
+                    params![source_id, target_id],
+                )?;
+                Ok(())
+            })
+            .await?;
         Ok(())
     }
 
     pub async fn remove_media(&self, media_id: String) -> Result<()> {
         self.connection
             .call(move |conn| {
-                conn.execute("DELETE FROM ratings WHERE type = 'media' AND ref = ?", params![media_id])?;
+                conn.execute(
+                    "DELETE FROM ratings WHERE type = 'media' AND ref = ?",
+                    params![media_id],
+                )?;
                 conn.execute(
                     "DELETE FROM media_tag_mapping WHERE media_ref = ?",
                     params![media_id],
@@ -1339,7 +1358,9 @@ mod tests {
 
         let media = store.get_media(&media_id, None).await.unwrap().unwrap();
         assert_eq!(
-            media.relations.as_ref()
+            media
+                .relations
+                .as_ref()
                 .and_then(|r| r.books.as_ref())
                 .and_then(|b| b.first())
                 .map(|s| s.as_str()),

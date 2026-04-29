@@ -1,13 +1,22 @@
 use rusqlite::{params, OptionalExtension, Row, ToSql};
 
-use crate::{domain::episode::{self, Episode, EpisodeWithShow}, model::{episodes::{EpisodeForUpdate, EpisodeQuery}, store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_pipe_separated_optional}}, plugins::sources::error::SourcesError, tools::array_tools::replace_add_remove_from_array};
 use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
-
-
+use crate::{
+    domain::episode::{self, Episode, EpisodeWithShow},
+    model::{
+        episodes::{EpisodeForUpdate, EpisodeQuery},
+        store::{
+            from_pipe_separated_optional,
+            sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder},
+            to_pipe_separated_optional,
+        },
+    },
+    plugins::sources::error::SourcesError,
+    tools::array_tools::replace_add_remove_from_array,
+};
 
 impl SqliteLibraryStore {
-  
     fn row_to_episode(row: &Row) -> rusqlite::Result<Episode> {
         Ok(Episode {
             serie: row.get(0)?,
@@ -17,10 +26,10 @@ impl SqliteLibraryStore {
 
             name: row.get(4)?,
             overview: row.get(5)?,
-            
+
             airdate: row.get(6)?,
             duration: row.get(7)?,
-            
+
             alt: from_pipe_separated_optional(row.get(8)?),
             params: row.get(9)?,
 
@@ -36,7 +45,7 @@ impl SqliteLibraryStore {
 
             imdb_rating: row.get(18)?,
             imdb_votes: row.get(19)?,
-            
+
             trakt_rating: row.get(20)?,
             trakt_votes: row.get(21)?,
 
@@ -49,50 +58,53 @@ impl SqliteLibraryStore {
     fn row_to_show_episode(row: &Row) -> rusqlite::Result<EpisodeWithShow> {
         Ok(EpisodeWithShow {
             name: row.get(22)?,
-            episode: SqliteLibraryStore::row_to_episode(&row)?
+            episode: SqliteLibraryStore::row_to_episode(&row)?,
         })
     }
 
     pub async fn get_episodes(&self, query: EpisodeQuery) -> Result<Vec<Episode>> {
-        let row = self.connection.call( move |conn| { 
-            let mut where_query = QueryBuilder::new();
-            if let Some(q) = &query.after {
-                if q > &0 {
-                    where_query.add_where(QueryWhereType::After("u.modified", q));
+        let row = self
+            .connection
+            .call(move |conn| {
+                let mut where_query = QueryBuilder::new();
+                if let Some(q) = &query.after {
+                    if q > &0 {
+                        where_query.add_where(QueryWhereType::After("u.modified", q));
+                    }
                 }
-            }
-            
-            if let Some(q) = &query.aired_after {
-                where_query.add_where(QueryWhereType::After("u.airdate", q));
-            }
-            if let Some(q) = &query.aired_before {
-                where_query.add_where(QueryWhereType::Before("u.airdate", q));
-            }
 
-            if let Some(q) = &query.serie_ref {
-                where_query.add_where(QueryWhereType::Equal("u.serie_ref", q));
-            }
-            if let Some(q) = &query.season {
-                where_query.add_where(QueryWhereType::Equal("u.season", q));
-            }
+                if let Some(q) = &query.aired_after {
+                    where_query.add_where(QueryWhereType::After("u.airdate", q));
+                }
+                if let Some(q) = &query.aired_before {
+                    where_query.add_where(QueryWhereType::Before("u.airdate", q));
+                }
 
-            
-            if query.not_seasons.len() > 0 {
-                let refed = query.not_seasons.iter().map(|t| t as &dyn ToSql).collect::<Vec<_>>();
-                where_query.add_where(QueryWhereType::NotIn("u.season", refed));
-            }
-            
-            for sorts in query.sorts {
-                where_query.add_oder(OrderBuilder::new(sorts.sort.to_string(), sorts.order));
-            }
-            
-            
-            //where_query.add_oder(OrderBuilder::new("season".to_string(), SqlOrder::ASC));
-            //where_query.add_oder(OrderBuilder::new("number".to_string(), SqlOrder::ASC));
-            
+                if let Some(q) = &query.serie_ref {
+                    where_query.add_where(QueryWhereType::Equal("u.serie_ref", q));
+                }
+                if let Some(q) = &query.season {
+                    where_query.add_where(QueryWhereType::Equal("u.season", q));
+                }
 
-            
-            let mut query = conn.prepare(&format!("
+                if query.not_seasons.len() > 0 {
+                    let refed = query
+                        .not_seasons
+                        .iter()
+                        .map(|t| t as &dyn ToSql)
+                        .collect::<Vec<_>>();
+                    where_query.add_where(QueryWhereType::NotIn("u.season", refed));
+                }
+
+                for sorts in query.sorts {
+                    where_query.add_oder(OrderBuilder::new(sorts.sort.to_string(), sorts.order));
+                }
+
+                //where_query.add_oder(OrderBuilder::new("season".to_string(), SqlOrder::ASC));
+                //where_query.add_oder(OrderBuilder::new("number".to_string(), SqlOrder::ASC));
+
+                let mut query = conn.prepare(&format!(
+                    "
 SELECT * FROM (
 SELECT 
     e.serie_ref,
@@ -159,20 +171,26 @@ ON
     {}
     )
     as u
-    {}",where_query.format_order(), where_query.format() ))?;
-            //println!("query {:?}", query.expanded_sql());
-            let rows = query.query_map(
-            where_query.values(), Self::row_to_episode,
-            )?;
-            let backups:Vec<Episode> = rows.collect::<std::result::Result<Vec<Episode>, rusqlite::Error>>()?; 
-            Ok(backups)
-        }).await?;
+    {}",
+                    where_query.format_order(),
+                    where_query.format()
+                ))?;
+                //println!("query {:?}", query.expanded_sql());
+                let rows = query.query_map(where_query.values(), Self::row_to_episode)?;
+                let backups: Vec<Episode> =
+                    rows.collect::<std::result::Result<Vec<Episode>, rusqlite::Error>>()?;
+                Ok(backups)
+            })
+            .await?;
         Ok(row)
     }
 
     pub async fn get_episodes_upcoming(&self, query: EpisodeQuery) -> Result<Vec<Episode>> {
-        let row = self.connection.call( move |conn| { 
-            let mut stm = conn.prepare(" 
+        let row = self
+            .connection
+            .call(move |conn| {
+                let mut stm = conn.prepare(
+                    " 
             SELECT * FROM (
     SELECT 
         ep.serie_ref, ep.season, ep.number, ep.abs, ep.name, ep.overview, ep.airdate, ep.duration, 
@@ -190,13 +208,14 @@ ON
 WHERE rn = 1
 ORDER BY airdate ASC
             LIMIT ?
-            ")?;
-            let rows = stm.query_map(
-            &[&query.limit.unwrap_or(100)], Self::row_to_episode,
-            )?;
-            let backups:Vec<Episode> = rows.collect::<std::result::Result<Vec<Episode>, rusqlite::Error>>()?; 
-            Ok(backups)
-        }).await?;
+            ",
+                )?;
+                let rows = stm.query_map(&[&query.limit.unwrap_or(100)], Self::row_to_episode)?;
+                let backups: Vec<Episode> =
+                    rows.collect::<std::result::Result<Vec<Episode>, rusqlite::Error>>()?;
+                Ok(backups)
+            })
+            .await?;
         Ok(row)
     }
 
@@ -222,7 +241,12 @@ ORDER BY airdate ASC
         Ok(row)
     }
 
-    pub async fn get_episode(&self, serie_id: &str, season: u32, number: u32) -> Result<Option<Episode>> {
+    pub async fn get_episode(
+        &self,
+        serie_id: &str,
+        season: u32,
+        number: u32,
+    ) -> Result<Option<Episode>> {
         let serie_id = serie_id.to_string();
         let row = self.connection.call( move |conn| { 
             let mut query = conn.prepare("SELECT serie_ref, season, number, abs, name, overview, airdate, duration, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, modified, added, imdb_rating, imdb_votes, trakt_rating, trakt_votes, null as serie_name FROM episodes WHERE serie_ref = ? and season = ? and number = ?")?;
@@ -233,46 +257,66 @@ ORDER BY airdate ASC
         Ok(row)
     }
 
-    pub async fn update_episode(&self, serie_id: &str, season: u32, number: u32, update: EpisodeForUpdate) -> Result<()> {
+    pub async fn update_episode(
+        &self,
+        serie_id: &str,
+        season: u32,
+        number: u32,
+        update: EpisodeForUpdate,
+    ) -> Result<()> {
         let id = serie_id.to_string();
-        let existing = self.get_episode(serie_id, season, number).await?.ok_or_else( || SourcesError::UnableToFindEpisodes(format!("{} {} {}", serie_id, season, number), "update_episode".to_string()))?;
-        self.connection.call( move |conn| { 
-            let mut where_query = QueryBuilder::new();
-            
+        let existing = self
+            .get_episode(serie_id, season, number)
+            .await?
+            .ok_or_else(|| {
+                SourcesError::UnableToFindEpisodes(
+                    format!("{} {} {}", serie_id, season, number),
+                    "update_episode".to_string(),
+                )
+            })?;
+        self.connection
+            .call(move |conn| {
+                let mut where_query = QueryBuilder::new();
 
-            where_query.add_update(&update.name, "name");
-            where_query.add_update(&update.abs, "abs");
-            where_query.add_update(&update.overview, "overview");
-            where_query.add_update(&update.airdate, "airdate");
-            where_query.add_update(&update.duration, "duration");
-            where_query.add_update(&update.imdb, "imdb");
-            where_query.add_update(&update.slug, "slug");
-            where_query.add_update(&update.tmdb, "tmdb");
-            where_query.add_update(&update.trakt, "trakt");
-            where_query.add_update(&update.tvdb, "tvdb");
-            where_query.add_update(&update.otherids, "otherids");
-            where_query.add_update(&update.imdb_rating, "imdb_rating");
-            where_query.add_update(&update.imdb_votes, "imdb_votes");
-            where_query.add_update(&update.trakt_rating, "trakt_rating");
-            where_query.add_update(&update.trakt_votes, "trakt_votes");
+                where_query.add_update(&update.name, "name");
+                where_query.add_update(&update.abs, "abs");
+                where_query.add_update(&update.overview, "overview");
+                where_query.add_update(&update.airdate, "airdate");
+                where_query.add_update(&update.duration, "duration");
+                where_query.add_update(&update.imdb, "imdb");
+                where_query.add_update(&update.slug, "slug");
+                where_query.add_update(&update.tmdb, "tmdb");
+                where_query.add_update(&update.trakt, "trakt");
+                where_query.add_update(&update.tvdb, "tvdb");
+                where_query.add_update(&update.otherids, "otherids");
+                where_query.add_update(&update.imdb_rating, "imdb_rating");
+                where_query.add_update(&update.imdb_votes, "imdb_votes");
+                where_query.add_update(&update.trakt_rating, "trakt_rating");
+                where_query.add_update(&update.trakt_votes, "trakt_votes");
 
+                let alts = replace_add_remove_from_array(
+                    existing.alt,
+                    update.alt,
+                    update.add_alts,
+                    update.remove_alts,
+                );
+                let alts = to_pipe_separated_optional(alts);
+                where_query.add_update(&alts, "alt");
 
-            let alts = replace_add_remove_from_array(existing.alt, update.alt, update.add_alts, update.remove_alts);
-            let alts = to_pipe_separated_optional(alts);
-            where_query.add_update(&alts, "alt");
+                where_query.add_where(QueryWhereType::Equal("serie_ref", &id));
+                where_query.add_where(QueryWhereType::Equal("season", &season));
+                where_query.add_where(QueryWhereType::Equal("number", &number));
 
-            
+                let update_sql = format!(
+                    "UPDATE episodes SET {} {}",
+                    where_query.format_update(),
+                    where_query.format()
+                );
 
-            where_query.add_where(QueryWhereType::Equal("serie_ref", &id));
-            where_query.add_where(QueryWhereType::Equal("season", &season));
-            where_query.add_where(QueryWhereType::Equal("number", &number));
-            
-
-            let update_sql = format!("UPDATE episodes SET {} {}", where_query.format_update(), where_query.format());
-
-            conn.execute(&update_sql, where_query.values())?;
-            Ok(())
-        }).await?;
+                conn.execute(&update_sql, where_query.values())?;
+                Ok(())
+            })
+            .await?;
 
         Ok(())
     }
@@ -308,17 +352,27 @@ ORDER BY airdate ASC
         Ok(())
     }
     pub async fn remove_all_serie_episodes(&self, serie_ref: String) -> Result<()> {
-        self.connection.call( move |conn| { 
-            conn.execute("DELETE FROM episodes WHERE serie_ref = ?", params![serie_ref])?;
-            Ok(())
-        }).await?;
+        self.connection
+            .call(move |conn| {
+                conn.execute(
+                    "DELETE FROM episodes WHERE serie_ref = ?",
+                    params![serie_ref],
+                )?;
+                Ok(())
+            })
+            .await?;
         Ok(())
     }
     pub async fn remove_episode(&self, serie_ref: String, season: u32, number: u32) -> Result<()> {
-        self.connection.call( move |conn| { 
-            conn.execute("DELETE FROM episodes WHERE serie_ref = ? and season = ? and number = ?", params![serie_ref, season, number])?;
-            Ok(())
-        }).await?;
+        self.connection
+            .call(move |conn| {
+                conn.execute(
+                    "DELETE FROM episodes WHERE serie_ref = ? and season = ? and number = ?",
+                    params![serie_ref, season, number],
+                )?;
+                Ok(())
+            })
+            .await?;
         Ok(())
     }
 }

@@ -1,4 +1,7 @@
-use std::{collections::{HashMap, HashSet}, io::Cursor};
+use std::{
+    collections::{HashMap, HashSet},
+    io::Cursor,
+};
 
 use nanoid::nanoid;
 use rs_plugin_common_interfaces::ImageType;
@@ -6,7 +9,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     domain::{
-        channel::{Channel, ChannelForUpdate, ChannelVariant, ChannelMessage, ChannelWithAction, M3uImportResult},
+        channel::{
+            Channel, ChannelForUpdate, ChannelMessage, ChannelVariant, ChannelWithAction,
+            M3uImportResult,
+        },
         library::{LibraryRole, LibraryType},
         ElementAction,
     },
@@ -20,7 +26,9 @@ use crate::{
     },
 };
 
-use super::{entity_images::EntityImageConfig, tags::TagForAdd, users::ConnectedUser, ModelController};
+use super::{
+    entity_images::EntityImageConfig, tags::TagForAdd, users::ConnectedUser, ModelController,
+};
 
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -75,7 +83,10 @@ impl ModelController {
         let mut channel = store
             .get_channel(channel_id)
             .await?
-            .ok_or(crate::Error::NotFound(format!("Channel {} not found", channel_id)))?;
+            .ok_or(crate::Error::NotFound(format!(
+                "Channel {} not found",
+                channel_id
+            )))?;
         let variants = store.get_channel_variants(&channel.id).await?;
         if !variants.is_empty() {
             channel.variants = Some(variants);
@@ -125,7 +136,10 @@ impl ModelController {
 
         // If quality requested, try to find that variant
         if let Some(ref q) = quality {
-            if let Some(variant) = variants.iter().find(|v| v.quality.as_deref() == Some(q.as_str())) {
+            if let Some(variant) = variants
+                .iter()
+                .find(|v| v.quality.as_deref() == Some(q.as_str()))
+            {
                 return Ok(variant.stream_url.clone());
             }
         }
@@ -149,10 +163,13 @@ impl ModelController {
     ) -> RsResult<M3uImportResult> {
         requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
 
-        let library = self
-            .get_library(library_id, requesting_user)
-            .await?
-            .ok_or(crate::Error::NotFound(format!("Library {} not found", library_id)))?;
+        let library =
+            self.get_library(library_id, requesting_user)
+                .await?
+                .ok_or(crate::Error::NotFound(format!(
+                    "Library {} not found",
+                    library_id
+                )))?;
         if library.kind != LibraryType::Iptv {
             return Err(crate::Error::Error(
                 "M3U import is only available for IPTV libraries".to_string(),
@@ -163,8 +180,9 @@ impl ModelController {
         let m3u_url = url_override
             .or(library.root.clone())
             .ok_or(crate::Error::Error(
-                "No M3U URL configured for this library. Set the library root to the M3U playlist URL.".to_string(),
-            ))?;
+            "No M3U URL configured for this library. Set the library root to the M3U playlist URL."
+                .to_string(),
+        ))?;
 
         // Send status
         self.broadcast_sse(SseEvent::LibraryStatus(
@@ -243,7 +261,10 @@ impl ModelController {
         let mut channel_groups: HashMap<String, Vec<M3uEntry>> = HashMap::new();
         for entry in &live_entries {
             if let Some(ref tvg_id) = entry.tvg_id {
-                channel_groups.entry(tvg_id.clone()).or_default().push(entry.clone());
+                channel_groups
+                    .entry(tvg_id.clone())
+                    .or_default()
+                    .push(entry.clone());
             }
         }
 
@@ -359,17 +380,28 @@ impl ModelController {
             let mut seen_tvg_names: HashSet<String> = HashSet::new();
             for entry in entries {
                 let quality = entry.quality().unwrap_or_else(|| "default".to_string());
-                let tvg_name = entry.tvg_name.as_deref().unwrap_or(&entry.display_name).to_string();
+                let tvg_name = entry
+                    .tvg_name
+                    .as_deref()
+                    .unwrap_or(&entry.display_name)
+                    .to_string();
                 let variant_name = entry.variant_name();
 
                 let existing_variant = store
                     .get_channel_variant_by_tvg_name(&channel_id, &tvg_name)
                     .await?;
 
-                let variant_id = existing_variant.as_ref().map(|v| v.id.clone()).unwrap_or_else(|| nanoid!());
+                let variant_id = existing_variant
+                    .as_ref()
+                    .map(|v| v.id.clone())
+                    .unwrap_or_else(|| nanoid!());
                 let needs_update = existing_variant
                     .as_ref()
-                    .map(|v| v.stream_url != entry.url || v.quality.as_deref() != Some(&quality) || v.name.as_deref() != Some(&variant_name))
+                    .map(|v| {
+                        v.stream_url != entry.url
+                            || v.quality.as_deref() != Some(&quality)
+                            || v.name.as_deref() != Some(&variant_name)
+                    })
                     .unwrap_or(true);
 
                 if needs_update {
@@ -403,7 +435,11 @@ impl ModelController {
             // Fetch updated channel for SSE (after tag sync)
             if let Some(updated) = store.get_channel(&channel_id).await? {
                 channel_actions.push(ChannelWithAction {
-                    action: if is_new { ElementAction::Added } else { ElementAction::Updated },
+                    action: if is_new {
+                        ElementAction::Added
+                    } else {
+                        ElementAction::Updated
+                    },
                     channel: updated,
                 });
             }
@@ -453,10 +489,7 @@ impl ModelController {
 
         log_info(
             LogServiceType::Source,
-            format!(
-                "IPTV import for library {}: {:?}",
-                library_id, result
-            ),
+            format!("IPTV import for library {}: {:?}", library_id, result),
         );
 
         Ok(result)
@@ -476,7 +509,9 @@ impl ModelController {
         // confidence = NULL means user-assigned
         store.add_channel_tag(channel_id, tag_id, None).await?;
 
-        let channel = self.get_channel(library_id, channel_id, requesting_user).await?;
+        let channel = self
+            .get_channel(library_id, channel_id, requesting_user)
+            .await?;
         self.broadcast_sse(SseEvent::Channels(ChannelMessage {
             library: library_id.to_string(),
             channels: vec![ChannelWithAction {
@@ -498,7 +533,9 @@ impl ModelController {
         let store = self.store.get_library_store(library_id)?;
         store.remove_channel_tag(channel_id, tag_id).await?;
 
-        let channel = self.get_channel(library_id, channel_id, requesting_user).await?;
+        let channel = self
+            .get_channel(library_id, channel_id, requesting_user)
+            .await?;
         self.broadcast_sse(SseEvent::Channels(ChannelMessage {
             library: library_id.to_string(),
             channels: vec![ChannelWithAction {
@@ -544,7 +581,8 @@ impl ModelController {
     ) -> RsResult<()> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
 
-        let converted = convert_image_reader(reader, image::ImageFormat::Avif, Some(60), false).await?;
+        let converted =
+            convert_image_reader(reader, image::ImageFormat::Avif, Some(60), false).await?;
         let converted_reader = Cursor::new(converted);
 
         self.update_library_image(
@@ -563,7 +601,9 @@ impl ModelController {
             .update_channel_image(channel_id.to_string(), kind.clone())
             .await;
 
-        let channel = self.get_channel(library_id, channel_id, requesting_user).await?;
+        let channel = self
+            .get_channel(library_id, channel_id, requesting_user)
+            .await?;
         self.broadcast_sse(SseEvent::Channels(ChannelMessage {
             library: library_id.to_string(),
             channels: vec![ChannelWithAction {
@@ -582,10 +622,13 @@ impl ModelController {
         kind: &ImageType,
         requesting_user: &ConnectedUser,
     ) -> RsResult<()> {
-        let channel = self.get_channel(library_id, channel_id, requesting_user).await?;
-        let logo_url = channel.logo.ok_or(crate::Error::NotFound(
-            format!("Channel {} has no logo URL", channel_id),
-        ))?;
+        let channel = self
+            .get_channel(library_id, channel_id, requesting_user)
+            .await?;
+        let logo_url = channel.logo.ok_or(crate::Error::NotFound(format!(
+            "Channel {} has no logo URL",
+            channel_id
+        )))?;
 
         let response = reqwest::get(&logo_url)
             .await
@@ -611,10 +654,9 @@ impl ModelController {
             )));
         }
 
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|e| crate::Error::Error(format!("Failed to read channel logo bytes: {}", e)))?;
+        let bytes = response.bytes().await.map_err(|e| {
+            crate::Error::Error(format!("Failed to read channel logo bytes: {}", e))
+        })?;
 
         if bytes.is_empty() {
             return Err(crate::Error::Error(format!(
@@ -638,13 +680,14 @@ impl ModelController {
 
     // -- Stream slot management (concurrent stream limiting) --
 
-    pub async fn acquire_stream_slot(
-        &self,
-        library_id: &str,
-        channel_id: &str,
-    ) -> RsResult<()> {
-        let library = self.cache_get_library(library_id).await
-            .ok_or(crate::Error::NotFound(format!("Library {} not found", library_id)))?;
+    pub async fn acquire_stream_slot(&self, library_id: &str, channel_id: &str) -> RsResult<()> {
+        let library = self
+            .cache_get_library(library_id)
+            .await
+            .ok_or(crate::Error::NotFound(format!(
+                "Library {} not found",
+                library_id
+            )))?;
         let max_streams = library.settings.max_streams.unwrap_or(1) as usize;
 
         let mut streams = self.active_streams.write().await;
@@ -695,11 +738,7 @@ impl ModelController {
         Ok(())
     }
 
-    pub async fn release_stream_slot(
-        &self,
-        library_id: &str,
-        channel_id: &str,
-    ) {
+    pub async fn release_stream_slot(&self, library_id: &str, channel_id: &str) {
         let mut streams = self.active_streams.write().await;
         if let Some(channels) = streams.get_mut(library_id) {
             channels.remove(channel_id);
@@ -736,7 +775,9 @@ impl ModelController {
         self.acquire_stream_slot(library_id, channel_id).await?;
 
         // Resolve the stream URL
-        let stream_url = self.get_channel_stream_url(library_id, channel_id, quality, requesting_user).await?;
+        let stream_url = self
+            .get_channel_stream_url(library_id, channel_id, quality, requesting_user)
+            .await?;
 
         // Create the session
         match crate::tools::hls_session::create_session(
@@ -746,7 +787,9 @@ impl ModelController {
             stream_url,
             self.hls_sessions.clone(),
             self.clone(),
-        ).await {
+        )
+        .await
+        {
             Ok(result) => Ok(result),
             Err(e) => {
                 // Release slot on failure
@@ -756,11 +799,7 @@ impl ModelController {
         }
     }
 
-    pub async fn stop_hls_session(
-        &self,
-        library_id: &str,
-        channel_id: &str,
-    ) -> RsResult<()> {
+    pub async fn stop_hls_session(&self, library_id: &str, channel_id: &str) -> RsResult<()> {
         let keys_to_stop: Vec<String> = {
             let sessions = self.hls_sessions.read().await;
             sessions

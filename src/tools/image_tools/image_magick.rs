@@ -1,7 +1,6 @@
 use chrono::{TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 
-
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImageMagickInfo {
@@ -72,7 +71,7 @@ impl Image {
                 "RightTop" => Some(6),
                 "RightBottom" => Some(7),
                 "LeftBottom" => Some(8),
-                _ => None
+                _ => None,
             }
         } else {
             None
@@ -84,7 +83,8 @@ impl Image {
             let mut splitted = focals.split('/').map(|s| s.trim());
             let a = splitted.next().and_then(|m| m.parse::<f64>().ok());
             let b = splitted.next().and_then(|m| m.parse::<f64>().ok());
-            a.map(|a| a / b.unwrap_or(1.0)).map(|f| (f * 1000.0).round() / 1000.0) 
+            a.map(|a| a / b.unwrap_or(1.0))
+                .map(|f| (f * 1000.0).round() / 1000.0)
         } else {
             None
         }
@@ -92,12 +92,14 @@ impl Image {
 
     pub fn created(&self) -> Option<i64> {
         if let Some(time) = &self.properties.exif_date_time_original {
-            if let Some(date) = Utc.datetime_from_str(time.as_str(), "%Y:%m:%d %H:%M:%S").ok() {
+            if let Some(date) = Utc
+                .datetime_from_str(time.as_str(), "%Y:%m:%d %H:%M:%S")
+                .ok()
+            {
                 Some(date.timestamp_millis())
             } else {
                 None
             }
-                            
         } else {
             None
         }

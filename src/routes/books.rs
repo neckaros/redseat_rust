@@ -11,7 +11,7 @@ use axum::{
     Json, Router,
 };
 use futures::{Stream, TryStreamExt};
-use rs_plugin_common_interfaces::domain::{rs_ids::RsIds, Relations, ItemWithRelations};
+use rs_plugin_common_interfaces::domain::{rs_ids::RsIds, ItemWithRelations, Relations};
 use rs_plugin_common_interfaces::lookup::{RsLookupBook, RsLookupQuery};
 use rs_plugin_common_interfaces::{ElementType, ExternalImage, ImageType};
 
@@ -24,11 +24,19 @@ use serde::Deserialize;
 use crate::{
     domain::book::{Book, BookForUpdate},
     model::{books::BookQuery, medias::MediaQuery, users::ConnectedUser, ModelController},
-    routes::{ImageRequestOptions, ImageUploadOptions, RatingUpdateBody, SearchQuery, SearchResultGroup, SseLookupSearchEvent, SseLookupSearchResult, SseSearchEvent},
+    routes::{
+        ImageRequestOptions, ImageUploadOptions, RatingUpdateBody, SearchQuery, SearchResultGroup,
+        SseLookupSearchEvent, SseLookupSearchResult, SseSearchEvent,
+    },
     Error, Result,
 };
 
-async fn first_person_name(mc: &ModelController, library_id: &str, relations: &Option<Relations>, user: &ConnectedUser) -> Option<String> {
+async fn first_person_name(
+    mc: &ModelController,
+    library_id: &str,
+    relations: &Option<Relations>,
+    user: &ConnectedUser,
+) -> Option<String> {
     let person_id = relations
         .as_ref()
         .and_then(|r| r.people.as_ref())
@@ -91,7 +99,16 @@ async fn handler_post(
     Query(options): Query<AddBookOptions>,
     Json(item): Json<ItemWithRelations<Book>>,
 ) -> Result<Json<Value>> {
-    let created = mc.add_book(&library_id, item, options.upsert_tags, options.upsert_people, options.upsert_serie, &user).await?;
+    let created = mc
+        .add_book(
+            &library_id,
+            item,
+            options.upsert_tags,
+            options.upsert_people,
+            options.upsert_serie,
+            &user,
+        )
+        .await?;
     Ok(Json(json!(created)))
 }
 
@@ -132,9 +149,22 @@ async fn handler_search_books(
     let sources = query.sources();
     let lookup_query = RsLookupQuery::Book(query.lookup);
     let groups = mc
-        .exec_lookup_metadata_grouped(lookup_query, Some(library_id), &user, None, sources.as_deref())
+        .exec_lookup_metadata_grouped(
+            lookup_query,
+            Some(library_id),
+            &user,
+            None,
+            sources.as_deref(),
+        )
         .await?;
-    let body: Vec<SearchResultGroup> = groups.into_iter().map(|(source_id, source_name, data)| SearchResultGroup { source_id, source_name, data }).collect();
+    let body: Vec<SearchResultGroup> = groups
+        .into_iter()
+        .map(|(source_id, source_name, data)| SearchResultGroup {
+            source_id,
+            source_name,
+            data,
+        })
+        .collect();
     Ok(Json(json!(body)))
 }
 
@@ -147,7 +177,13 @@ async fn handler_search_books_stream(
     let sources = query.sources();
     let lookup_query = RsLookupQuery::Book(query.lookup);
     let mut rx = mc
-        .exec_lookup_metadata_stream_grouped(lookup_query, Some(library_id), &user, None, sources.as_deref())
+        .exec_lookup_metadata_stream_grouped(
+            lookup_query,
+            Some(library_id),
+            &user,
+            None,
+            sources.as_deref(),
+        )
         .await?;
 
     let stream = async_stream::stream! {
@@ -165,13 +201,26 @@ async fn handler_search_books_stream(
     ))
 }
 
-async fn handler_rating_get(Path((library_id, book_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
-    let rating = mc.get_media_rating(&library_id, ElementType::Book, book_id, &user).await?;
+async fn handler_rating_get(
+    Path((library_id, book_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<Json<Value>> {
+    let rating = mc
+        .get_media_rating(&library_id, ElementType::Book, book_id, &user)
+        .await?;
     Ok(Json(json!(rating)))
 }
 
-async fn handler_rating_set(Path((library_id, book_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(body): Json<RatingUpdateBody>) -> Result<Json<Value>> {
-    let rating = mc.set_media_rating(&library_id, ElementType::Book, book_id, body.rating, &user).await?;
+async fn handler_rating_set(
+    Path((library_id, book_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Json(body): Json<RatingUpdateBody>,
+) -> Result<Json<Value>> {
+    let rating = mc
+        .set_media_rating(&library_id, ElementType::Book, book_id, body.rating, &user)
+        .await?;
     Ok(Json(json!(rating)))
 }
 
@@ -190,7 +239,10 @@ async fn handler_lookup(
         ids: Some(ids),
         page_key: None,
     });
-    log_info(LogServiceType::Source, format!("Executing lookup with query: {:?}", query));
+    log_info(
+        LogServiceType::Source,
+        format!("Executing lookup with query: {:?}", query),
+    );
     let results = mc.exec_lookup(query, Some(library_id), &user, None).await?;
     Ok(Json(json!(results)))
 }
@@ -210,7 +262,9 @@ async fn handler_lookup_stream(
         ids: Some(ids),
         page_key: None,
     });
-    let mut rx = mc.exec_lookup_stream_grouped(query, Some(library_id), &user, None, None).await?;
+    let mut rx = mc
+        .exec_lookup_stream_grouped(query, Some(library_id), &user, None, None)
+        .await?;
 
     let stream = async_stream::stream! {
         while let Some((source_id, source_name, groups)) = rx.recv().await {

@@ -1,17 +1,18 @@
 use std::str::FromStr;
 
-use rusqlite::{params, params_from_iter, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, ToSql};
+use rusqlite::{
+    params, params_from_iter,
+    types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef},
+    OptionalExtension, ToSql,
+};
 
-use crate::{domain::credential::Credential, model::{credentials::CredentialForUpdate, store::SqliteStore}};
 use super::Result;
-
-
-
-
+use crate::{
+    domain::credential::Credential,
+    model::{credentials::CredentialForUpdate, store::SqliteStore},
+};
 
 impl SqliteStore {
-  
-    
     pub async fn get_credentials(&self) -> Result<Vec<Credential>> {
         let row = self.server_store.call( move |conn| { 
             let mut query = conn.prepare("SELECT id, name, source, type, login, password, preferences, user_ref, refreshtoken, expires  FROM Credentials")?;
@@ -66,29 +67,44 @@ impl SqliteStore {
         Ok(row)
     }
 
-
-
-    pub async fn update_credentials(&self, credential_id: &str, update: CredentialForUpdate) -> Result<()> {
+    pub async fn update_credentials(
+        &self,
+        credential_id: &str,
+        update: CredentialForUpdate,
+    ) -> Result<()> {
         let credential_id = credential_id.to_string();
-        self.server_store.call( move |conn| { 
-            let mut columns: Vec<String> = Vec::new();
-            let mut values: Vec<Box<dyn ToSql>> = Vec::new();
-            super::add_for_sql_update(update.name, "name", &mut columns, &mut values);
-            super::add_for_sql_update(update.source, "source", &mut columns, &mut values);
-            super::add_for_sql_update(update.login, "login", &mut columns, &mut values);
-            super::add_for_sql_update(update.password, "password", &mut columns, &mut values);
-            super::add_for_sql_update(update.settings, "preferences", &mut columns, &mut values);
-            super::add_for_sql_update(update.user_ref, "user_ref", &mut columns, &mut values);
-            super::add_for_sql_update(update.refresh_token, "refreshtoken", &mut columns, &mut values);
-            super::add_for_sql_update(update.expires, "expires", &mut columns, &mut values);
+        self.server_store
+            .call(move |conn| {
+                let mut columns: Vec<String> = Vec::new();
+                let mut values: Vec<Box<dyn ToSql>> = Vec::new();
+                super::add_for_sql_update(update.name, "name", &mut columns, &mut values);
+                super::add_for_sql_update(update.source, "source", &mut columns, &mut values);
+                super::add_for_sql_update(update.login, "login", &mut columns, &mut values);
+                super::add_for_sql_update(update.password, "password", &mut columns, &mut values);
+                super::add_for_sql_update(
+                    update.settings,
+                    "preferences",
+                    &mut columns,
+                    &mut values,
+                );
+                super::add_for_sql_update(update.user_ref, "user_ref", &mut columns, &mut values);
+                super::add_for_sql_update(
+                    update.refresh_token,
+                    "refreshtoken",
+                    &mut columns,
+                    &mut values,
+                );
+                super::add_for_sql_update(update.expires, "expires", &mut columns, &mut values);
 
-            if columns.len() > 0 {
-                values.push(Box::new(credential_id));
-                let update_sql = format!("UPDATE Credentials SET {} WHERE id = ?", columns.join(", "));
-                conn.execute(&update_sql, params_from_iter(values))?;
-            }
-            Ok(())
-        }).await?;
+                if columns.len() > 0 {
+                    values.push(Box::new(credential_id));
+                    let update_sql =
+                        format!("UPDATE Credentials SET {} WHERE id = ?", columns.join(", "));
+                    conn.execute(&update_sql, params_from_iter(values))?;
+                }
+                Ok(())
+            })
+            .await?;
         Ok(())
     }
 
@@ -115,10 +131,12 @@ impl SqliteStore {
     }
 
     pub async fn remove_credential(&self, credential_id: String) -> Result<()> {
-        self.server_store.call( move |conn| { 
-            conn.execute("DELETE FROM Credentials WHERE id = ?", &[&credential_id])?;
-            Ok(())
-        }).await?;
+        self.server_store
+            .call(move |conn| {
+                conn.execute("DELETE FROM Credentials WHERE id = ?", &[&credential_id])?;
+                Ok(())
+            })
+            .await?;
         Ok(())
     }
 }

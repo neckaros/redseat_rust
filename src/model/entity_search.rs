@@ -64,10 +64,7 @@ pub fn merge_result_ids(groups: &mut SearchResultGroups) {
     // 4. Group by root and merge
     let mut components: HashMap<usize, Vec<usize>> = HashMap::new();
     for i in 0..n {
-        components
-            .entry(find(&mut parent, i))
-            .or_default()
-            .push(i);
+        components.entry(find(&mut parent, i)).or_default().push(i);
     }
 
     for members in components.values() {
@@ -150,7 +147,15 @@ impl ModelController {
             )
             .await?;
 
-        for (id, name, RsLookupMetadataResults { results, next_page_key }) in plugin_results {
+        for (
+            id,
+            name,
+            RsLookupMetadataResults {
+                results,
+                next_page_key,
+            },
+        ) in plugin_results
+        {
             let filtered: Vec<_> = results.into_iter().filter(|r| result_filter(r)).collect();
             if !filtered.is_empty() {
                 groups.push((

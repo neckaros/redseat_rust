@@ -1,277 +1,452 @@
-
 use std::{convert::Infallible, io::Cursor, time::Duration};
 
-use crate::{domain::serie::Serie, error::RsError, model::{books::BookQuery, episodes::EpisodeQuery, series::{SerieForUpdate, SerieQuery}, users::ConnectedUser, ModelController}, plugins::sources::error::SourcesError, Error, Result};
-use axum::{body::Body, debug_handler, extract::{Multipart, Path, Query, State}, response::{sse::{Event, KeepAlive, Sse}, IntoResponse, Response}, routing::{delete, get, patch, post, put}, Json, Router};
+use crate::{
+    domain::serie::Serie,
+    error::RsError,
+    model::{
+        books::BookQuery,
+        episodes::EpisodeQuery,
+        series::{SerieForUpdate, SerieQuery},
+        users::ConnectedUser,
+        ModelController,
+    },
+    plugins::sources::error::SourcesError,
+    Error, Result,
+};
+use axum::{
+    body::Body,
+    debug_handler,
+    extract::{Multipart, Path, Query, State},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Response,
+    },
+    routing::{delete, get, patch, post, put},
+    Json, Router,
+};
 use futures::{Stream, TryStreamExt};
-use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, lookup::{RsLookupMovie, RsLookupQuery, RsLookupSerie}, ElementType, ExternalImage, ImageType};
+use rs_plugin_common_interfaces::{
+    domain::rs_ids::RsIds,
+    lookup::{RsLookupMovie, RsLookupQuery, RsLookupSerie},
+    ElementType, ExternalImage, ImageType,
+};
 use serde_json::{json, Value};
 use tokio::io::AsyncRead;
 use tokio_util::io::{ReaderStream, StreamReader};
 
-use super::{ImageRequestOptions, ImageUploadOptions, RatingUpdateBody, SearchQuery, SearchResultGroup, SseSearchEvent};
-
-
+use super::{
+    ImageRequestOptions, ImageUploadOptions, RatingUpdateBody, SearchQuery, SearchResultGroup,
+    SseSearchEvent,
+};
 
 pub fn routes(mc: ModelController) -> Router {
-	Router::new()
-		.route("/", get(handler_list))
-		.route("/trending", get(handler_trending))
-		.route("/ondeck", get(handler_ondeck))
-		.route("/upcoming", get(handler_upcoming))
-		.route("/episodes", get(handler_list_episodes))
-		.route("/search", get(handler_seach_series))
-		.route("/searchstream", get(handler_search_series_stream))
-		.route("/", post(handler_post))
-		.route("/:id", get(handler_get))
-		.route("/:id", patch(handler_patch))
-		.route("/:id/refresh", get(handler_refresh))
-		.route("/:id/import", put(handler_import))
-		.route("/:id", delete(handler_delete))
-		.route("/:id/image", get(handler_image))
-		.route("/:id/image", post(handler_post_image))
-		.route("/:id/image/search", get(handler_image_search))
-		.route("/:id/image/fetch", post(handler_image_fetch))
-		.route("/:id/image/refresh", get(handler_image_refresh))
-		.route("/:id/search", get(handler_lookup))
-		.route("/:id/rating", get(handler_rating_get))
-		.route("/:id/rating", patch(handler_rating_set))
-		.route("/:id/books", get(handler_list_books))
-		.with_state(mc.clone())
-		.nest("/:id/", super::episodes::routes(mc))
-        
+    Router::new()
+        .route("/", get(handler_list))
+        .route("/trending", get(handler_trending))
+        .route("/ondeck", get(handler_ondeck))
+        .route("/upcoming", get(handler_upcoming))
+        .route("/episodes", get(handler_list_episodes))
+        .route("/search", get(handler_seach_series))
+        .route("/searchstream", get(handler_search_series_stream))
+        .route("/", post(handler_post))
+        .route("/:id", get(handler_get))
+        .route("/:id", patch(handler_patch))
+        .route("/:id/refresh", get(handler_refresh))
+        .route("/:id/import", put(handler_import))
+        .route("/:id", delete(handler_delete))
+        .route("/:id/image", get(handler_image))
+        .route("/:id/image", post(handler_post_image))
+        .route("/:id/image/search", get(handler_image_search))
+        .route("/:id/image/fetch", post(handler_image_fetch))
+        .route("/:id/image/refresh", get(handler_image_refresh))
+        .route("/:id/search", get(handler_lookup))
+        .route("/:id/rating", get(handler_rating_get))
+        .route("/:id/rating", patch(handler_rating_set))
+        .route("/:id/books", get(handler_list_books))
+        .with_state(mc.clone())
+        .nest("/:id/", super::episodes::routes(mc))
 }
 
-async fn handler_rating_get(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
-	let rating = mc.get_media_rating(&library_id, ElementType::Serie, serie_id, &user).await?;
-	Ok(Json(json!(rating)))
+async fn handler_rating_get(
+    Path((library_id, serie_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<Json<Value>> {
+    let rating = mc
+        .get_media_rating(&library_id, ElementType::Serie, serie_id, &user)
+        .await?;
+    Ok(Json(json!(rating)))
 }
 
-async fn handler_rating_set(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(body): Json<RatingUpdateBody>) -> Result<Json<Value>> {
-	let rating = mc.set_media_rating(&library_id, ElementType::Serie, serie_id, body.rating, &user).await?;
-	Ok(Json(json!(rating)))
+async fn handler_rating_set(
+    Path((library_id, serie_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Json(body): Json<RatingUpdateBody>,
+) -> Result<Json<Value>> {
+    let rating = mc
+        .set_media_rating(
+            &library_id,
+            ElementType::Serie,
+            serie_id,
+            body.rating,
+            &user,
+        )
+        .await?;
+    Ok(Json(json!(rating)))
 }
 
 async fn handler_list_books(
-	Path((library_id, serie_id)): Path<(String, String)>,
-	State(mc): State<ModelController>,
-	user: ConnectedUser,
-	Query(mut query): Query<BookQuery>,
+    Path((library_id, serie_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Query(mut query): Query<BookQuery>,
 ) -> Result<Json<Value>> {
-	query.serie_ref = Some(serie_id);
-	let books = mc.get_books(&library_id, query, &user).await?;
-	Ok(Json(json!(books)))
+    query.serie_ref = Some(serie_id);
+    let books = mc.get_books(&library_id, query, &user).await?;
+    Ok(Json(json!(books)))
 }
 
-async fn handler_list(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<SerieQuery>) -> Result<Json<Value>> {
-	let libraries = mc.get_series(&library_id, query, &user).await?;
-	let body = Json(json!(libraries));
-	Ok(body)
+async fn handler_list(
+    Path(library_id): Path<String>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Query(query): Query<SerieQuery>,
+) -> Result<Json<Value>> {
+    let libraries = mc.get_series(&library_id, query, &user).await?;
+    let body = Json(json!(libraries));
+    Ok(body)
 }
 
-async fn handler_list_episodes(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<EpisodeQuery>) -> Result<Json<Value>> {
-	let libraries = mc.get_episodes(&library_id, query, &user).await?;
-	let body = Json(json!(libraries));
-	Ok(body)
+async fn handler_list_episodes(
+    Path(library_id): Path<String>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Query(query): Query<EpisodeQuery>,
+) -> Result<Json<Value>> {
+    let libraries = mc.get_episodes(&library_id, query, &user).await?;
+    let body = Json(json!(libraries));
+    Ok(body)
 }
 
-async fn handler_seach_series(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<SearchQuery<RsLookupMovie>>) -> Result<Json<Value>> {
-	let sources = query.sources();
-	let groups = mc.search_serie(&library_id, query.lookup, sources, &user).await?;
-	let body: Vec<SearchResultGroup> = groups.into_iter().map(|(source_id, source_name, data)| SearchResultGroup { source_id, source_name, data }).collect();
-	Ok(Json(json!(body)))
+async fn handler_seach_series(
+    Path(library_id): Path<String>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Query(query): Query<SearchQuery<RsLookupMovie>>,
+) -> Result<Json<Value>> {
+    let sources = query.sources();
+    let groups = mc
+        .search_serie(&library_id, query.lookup, sources, &user)
+        .await?;
+    let body: Vec<SearchResultGroup> = groups
+        .into_iter()
+        .map(|(source_id, source_name, data)| SearchResultGroup {
+            source_id,
+            source_name,
+            data,
+        })
+        .collect();
+    Ok(Json(json!(body)))
 }
 
-async fn handler_search_series_stream(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<SearchQuery<RsLookupMovie>>) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>> {
-	let sources = query.sources();
-	let mut rx = mc.search_serie_stream(&library_id, query.lookup, sources, &user).await?;
+async fn handler_search_series_stream(
+    Path(library_id): Path<String>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Query(query): Query<SearchQuery<RsLookupMovie>>,
+) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>> {
+    let sources = query.sources();
+    let mut rx = mc
+        .search_serie_stream(&library_id, query.lookup, sources, &user)
+        .await?;
 
-	let stream = async_stream::stream! {
-		while let Some((source_id, source_name, batch)) = rx.recv().await {
-			if let Ok(data) = serde_json::to_string(&SseSearchEvent { source_id: &source_id, source_name: &source_name, data: &batch }) {
-				yield Ok(Event::default().event("results").data(data));
-			}
-		}
-	};
+    let stream = async_stream::stream! {
+        while let Some((source_id, source_name, batch)) = rx.recv().await {
+            if let Ok(data) = serde_json::to_string(&SseSearchEvent { source_id: &source_id, source_name: &source_name, data: &batch }) {
+                yield Ok(Event::default().event("results").data(data));
+            }
+        }
+    };
 
-	Ok(Sse::new(stream).keep_alive(
-		KeepAlive::new()
-			.interval(Duration::from_secs(30))
-			.text("ping"),
-	))
+    Ok(Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(30))
+            .text("ping"),
+    ))
 }
 
 async fn handler_trending(State(mc): State<ModelController>) -> Result<Json<Value>> {
-	let libraries = mc.trending_shows().await?;
-	let body = Json(json!(libraries));
-	Ok(body)
+    let libraries = mc.trending_shows().await?;
+    let body = Json(json!(libraries));
+    Ok(body)
 }
 
-async fn handler_upcoming(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<EpisodeQuery>) -> Result<Json<Value>> {
-	let libraries = mc.get_episodes_upcoming(&library_id, query, &user).await?;
-	let body = Json(json!(libraries));
-	Ok(body)
+async fn handler_upcoming(
+    Path(library_id): Path<String>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Query(query): Query<EpisodeQuery>,
+) -> Result<Json<Value>> {
+    let libraries = mc.get_episodes_upcoming(&library_id, query, &user).await?;
+    let body = Json(json!(libraries));
+    Ok(body)
 }
 
-async fn handler_ondeck(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<EpisodeQuery>) -> Result<Json<Value>> {
-	let episodes = mc.get_episodes_ondeck(&library_id, query, &user).await?;
-	let body = Json(json!(episodes));
-	Ok(body)
+async fn handler_ondeck(
+    Path(library_id): Path<String>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Query(query): Query<EpisodeQuery>,
+) -> Result<Json<Value>> {
+    let episodes = mc.get_episodes_ondeck(&library_id, query, &user).await?;
+    let body = Json(json!(episodes));
+    Ok(body)
 }
 
-async fn handler_get(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
-	let library = mc.get_serie(&library_id, serie_id, &user).await?;
-	let body = Json(json!(library));
-	Ok(body)
+async fn handler_get(
+    Path((library_id, serie_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<Json<Value>> {
+    let library = mc.get_serie(&library_id, serie_id, &user).await?;
+    let body = Json(json!(library));
+    Ok(body)
 }
 
-async fn handler_refresh(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
-	let library = mc.refresh_serie(&library_id, &serie_id, &user).await?;
-	mc.refresh_episodes(&library_id, &serie_id, &user).await?;
-	let body = Json(json!(library));
-	Ok(body)
+async fn handler_refresh(
+    Path((library_id, serie_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<Json<Value>> {
+    let library = mc.refresh_serie(&library_id, &serie_id, &user).await?;
+    mc.refresh_episodes(&library_id, &serie_id, &user).await?;
+    let body = Json(json!(library));
+    Ok(body)
 }
 
-
-async fn handler_import(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
-	let library = mc.import_serie(&library_id, &serie_id, &user).await?;
-	let body = Json(json!(library));
-	Ok(body)
+async fn handler_import(
+    Path((library_id, serie_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<Json<Value>> {
+    let library = mc.import_serie(&library_id, &serie_id, &user).await?;
+    let body = Json(json!(library));
+    Ok(body)
 }
 
-async fn handler_patch(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(update): Json<SerieForUpdate>) -> Result<Json<Value>> {
-	let new_credential = mc.update_serie(&library_id, serie_id, update, &user).await?;
-	Ok(Json(json!(new_credential)))
+async fn handler_patch(
+    Path((library_id, serie_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Json(update): Json<SerieForUpdate>,
+) -> Result<Json<Value>> {
+    let new_credential = mc
+        .update_serie(&library_id, serie_id, update, &user)
+        .await?;
+    Ok(Json(json!(new_credential)))
 }
 
-async fn handler_delete(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser) -> Result<Json<Value>> {
-	let library = mc.remove_serie(&library_id, &serie_id, false, &user).await?;
-	let body = Json(json!(library));
-	Ok(body)
+async fn handler_delete(
+    Path((library_id, serie_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<Json<Value>> {
+    let library = mc
+        .remove_serie(&library_id, &serie_id, false, &user)
+        .await?;
+    let body = Json(json!(library));
+    Ok(body)
 }
 
-async fn handler_post(Path(library_id): Path<String>, State(mc): State<ModelController>, user: ConnectedUser, Json(serie): Json<Serie>) -> Result<Json<Value>> {
-	let created_serie = mc.add_serie(&library_id, serie, &user).await?;
-	let body = Json(json!(created_serie));
-	Ok(body)
+async fn handler_post(
+    Path(library_id): Path<String>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Json(serie): Json<Serie>,
+) -> Result<Json<Value>> {
+    let created_serie = mc.add_serie(&library_id, serie, &user).await?;
+    let body = Json(json!(created_serie));
+    Ok(body)
 }
 
+async fn handler_image(
+    Path((library_id, serie_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Query(query): Query<ImageRequestOptions>,
+) -> Result<Response> {
+    let reader_response = mc
+        .serie_image(
+            &library_id,
+            &serie_id,
+            query.kind.clone(),
+            query.size.clone(),
+            &user,
+        )
+        .await;
 
-async fn handler_image(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ImageRequestOptions>) -> Result<Response> {
-	let reader_response = mc.serie_image(&library_id, &serie_id, query.kind.clone(), query.size.clone(), &user).await;
+    if let Ok(reader_response) = reader_response {
+        let headers = reader_response
+            .hearders()
+            .map_err(|_| Error::GenericRedseatError)?;
+        let stream = ReaderStream::new(reader_response.stream);
+        let body = Body::from_stream(stream);
 
+        Ok((headers, body).into_response())
+    } else if query.defaulting {
+        if query.kind.as_ref().unwrap_or(&ImageType::Poster) == &ImageType::Card {
+            let reader_response = mc
+                .serie_image(
+                    &library_id,
+                    &serie_id,
+                    Some(ImageType::Background),
+                    query.size,
+                    &user,
+                )
+                .await?;
+            let headers = reader_response
+                .hearders()
+                .map_err(|_| Error::GenericRedseatError)?;
+            let stream = ReaderStream::new(reader_response.stream);
+            let body = Body::from_stream(stream);
 
-	if let Ok(reader_response) =reader_response {
-		let headers = reader_response.hearders().map_err(|_| Error::GenericRedseatError)?;
-		let stream = ReaderStream::new(reader_response.stream);
-		let body = Body::from_stream(stream);
-		
-		Ok((headers, body).into_response())
-	} else if query.defaulting { 
-		if query.kind.as_ref().unwrap_or(&ImageType::Poster) == &ImageType::Card {
-			let reader_response = mc.serie_image(&library_id, &serie_id, Some(ImageType::Background), query.size, &user).await?;
-			let headers = reader_response.hearders().map_err(|_| Error::GenericRedseatError)?;
-			let stream = ReaderStream::new(reader_response.stream);
-			let body = Body::from_stream(stream);
-			
-			Ok((headers, body).into_response())
-		} else if let Err(err) = reader_response {
-			Err(Error::NotFound(format!("Unable to find serie image with defaulting: {} {} {:?}", library_id, serie_id, err)))
-		} else {
-			Err(Error::NotFound(format!("Unable to find serie image with defaulting: {} {}", library_id, serie_id)))
-		}
-	} else {
-		if let Err(err) = reader_response {
-			Err(Error::NotFound(format!("Unable to find serie image without defaulting: {} {} {:?}", library_id, serie_id, err)))
-		} else {
-			Err(Error::NotFound(format!("Unable to find serie image without defaulting: {} {}", library_id, serie_id)))
-		}
-	}
+            Ok((headers, body).into_response())
+        } else if let Err(err) = reader_response {
+            Err(Error::NotFound(format!(
+                "Unable to find serie image with defaulting: {} {} {:?}",
+                library_id, serie_id, err
+            )))
+        } else {
+            Err(Error::NotFound(format!(
+                "Unable to find serie image with defaulting: {} {}",
+                library_id, serie_id
+            )))
+        }
+    } else {
+        if let Err(err) = reader_response {
+            Err(Error::NotFound(format!(
+                "Unable to find serie image without defaulting: {} {} {:?}",
+                library_id, serie_id, err
+            )))
+        } else {
+            Err(Error::NotFound(format!(
+                "Unable to find serie image without defaulting: {} {}",
+                library_id, serie_id
+            )))
+        }
+    }
 }
 
-async fn handler_image_search(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(_query): Query<ImageRequestOptions>) -> Result<Json<Value>> {
-	let serie = mc.get_serie(&library_id, serie_id.clone(), &user).await?.ok_or(SourcesError::UnableToFindSerie(library_id.clone(), serie_id, "handler_image_search".to_string()))?;
-	let name = serie.item.name.clone();
-	let ids: RsIds = serie.item.into();
-	let lookup_query = RsLookupSerie {
-		name: Some(name),
-		ids: Some(ids.clone()),
-		page_key: None,
-	};
-	let result = mc.get_serie_images(lookup_query, Some(library_id), &user).await?;
+async fn handler_image_search(
+    Path((library_id, serie_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Query(_query): Query<ImageRequestOptions>,
+) -> Result<Json<Value>> {
+    let serie = mc
+        .get_serie(&library_id, serie_id.clone(), &user)
+        .await?
+        .ok_or(SourcesError::UnableToFindSerie(
+            library_id.clone(),
+            serie_id,
+            "handler_image_search".to_string(),
+        ))?;
+    let name = serie.item.name.clone();
+    let ids: RsIds = serie.item.into();
+    let lookup_query = RsLookupSerie {
+        name: Some(name),
+        ids: Some(ids.clone()),
+        page_key: None,
+    };
+    let result = mc
+        .get_serie_images(lookup_query, Some(library_id), &user)
+        .await?;
 
-	Ok(Json(json!(result)))
+    Ok(Json(json!(result)))
 }
-
-
-
-
 
 async fn handler_lookup(
-	Path((library_id, serie_id)): Path<(String, String)>,
-	State(mc): State<ModelController>,
-	user: ConnectedUser,
+    Path((library_id, serie_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
 ) -> Result<Json<Value>> {
-	let serie = mc.get_serie(&library_id, serie_id.clone(), &user).await?
-		.ok_or(SourcesError::UnableToFindSerie(
-			library_id.clone(),
-			serie_id,
-			"handler_lookup".to_string(),
-		))?;
-	let name = serie.item.name.clone();
-	let ids: RsIds = serie.item.into();
-	let query = RsLookupQuery::Serie(RsLookupSerie {
-		name: Some(name),
-		ids: Some(ids),
-		page_key: None,
-	});
-	let results = mc.exec_lookup(query, Some(library_id), &user, None).await?;
-	Ok(Json(json!(results)))
+    let serie = mc
+        .get_serie(&library_id, serie_id.clone(), &user)
+        .await?
+        .ok_or(SourcesError::UnableToFindSerie(
+            library_id.clone(),
+            serie_id,
+            "handler_lookup".to_string(),
+        ))?;
+    let name = serie.item.name.clone();
+    let ids: RsIds = serie.item.into();
+    let query = RsLookupQuery::Serie(RsLookupSerie {
+        name: Some(name),
+        ids: Some(ids),
+        page_key: None,
+    });
+    let results = mc.exec_lookup(query, Some(library_id), &user, None).await?;
+    Ok(Json(json!(results)))
 }
 
 async fn handler_image_refresh(
-	Path((library_id, serie_id)): Path<(String, String)>,
-	State(mc): State<ModelController>,
-	user: ConnectedUser,
-	Query(query): Query<ImageRequestOptions>,
+    Path((library_id, serie_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Query(query): Query<ImageRequestOptions>,
 ) -> Result<Json<Value>> {
-	let kind = query.kind.unwrap_or(ImageType::Poster);
-	mc.refresh_serie_image(&library_id, &serie_id, &kind, &user).await?;
-	Ok(Json(json!({"data": "ok"})))
+    let kind = query.kind.unwrap_or(ImageType::Poster);
+    mc.refresh_serie_image(&library_id, &serie_id, &kind, &user)
+        .await?;
+    Ok(Json(json!({"data": "ok"})))
 }
 
-async fn handler_image_fetch(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Json(externalImage): Json<ExternalImage>) -> Result<Json<Value>> {
-	let request = externalImage.url;
+async fn handler_image_fetch(
+    Path((library_id, serie_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Json(externalImage): Json<ExternalImage>,
+) -> Result<Json<Value>> {
+    let request = externalImage.url;
 
-	let kind = externalImage.kind.ok_or(RsError::Error("Missing image type".to_string()))?;
+    let kind = externalImage
+        .kind
+        .ok_or(RsError::Error("Missing image type".to_string()))?;
 
-	let mut reader = mc.request_to_reader(&library_id, request, &user).await?;
+    let mut reader = mc.request_to_reader(&library_id, request, &user).await?;
 
-	mc.update_serie_image(&library_id, &serie_id, &kind, reader.stream, &user).await?;
-	
+    mc.update_serie_image(&library_id, &serie_id, &kind, reader.stream, &user)
+        .await?;
+
     Ok(Json(json!({"data": "ok"})))
 }
 
 #[debug_handler]
-async fn handler_post_image(Path((library_id, serie_id)): Path<(String, String)>, State(mc): State<ModelController>, user: ConnectedUser, Query(query): Query<ImageUploadOptions>, mut multipart: Multipart) -> Result<Json<Value>> {
-	while let Some(field) = multipart.next_field().await.unwrap() {
+async fn handler_post_image(
+    Path((library_id, serie_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Query(query): Query<ImageUploadOptions>,
+    mut multipart: Multipart,
+) -> Result<Json<Value>> {
+    while let Some(field) = multipart.next_field().await.unwrap() {
         //let name = field.name().unwrap().to_string();
-		//let filename = field.file_name().unwrap().to_string();
-		//let mime: String = field.content_type().unwrap().to_string();
+        //let filename = field.file_name().unwrap().to_string();
+        //let mime: String = field.content_type().unwrap().to_string();
         //let data = field.bytes().await.unwrap();
-		let mut reader = StreamReader::new(field.map_err(|multipart_error| {
-			std::io::Error::new(std::io::ErrorKind::Other, multipart_error)
-		}));
+        let mut reader = StreamReader::new(field.map_err(|multipart_error| {
+            std::io::Error::new(std::io::ErrorKind::Other, multipart_error)
+        }));
 
-		// Read all bytes from the field into a buffer
-		let mut data = Vec::new();
-		tokio::io::copy(&mut reader, &mut data).await?;
-		let reader = Box::pin(Cursor::new(data));
+        // Read all bytes from the field into a buffer
+        let mut data = Vec::new();
+        tokio::io::copy(&mut reader, &mut data).await?;
+        let reader = Box::pin(Cursor::new(data));
         //println!("Length of `{}` {}  {} is {} bytes", name, filename, mime, data.len());
-		mc.update_serie_image(&library_id, &serie_id, &query.kind, reader, &user).await?;
-		
-
+        mc.update_serie_image(&library_id, &serie_id, &query.kind, reader, &user)
+            .await?;
     }
-	
+
     Ok(Json(json!({"data": "ok"})))
 }

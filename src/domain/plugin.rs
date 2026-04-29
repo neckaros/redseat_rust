@@ -1,16 +1,19 @@
-use std::{path::PathBuf, sync::{Arc, Mutex}};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
+use super::{credential::Credential, ElementAction};
+use extism::Plugin as ExtismPlugin;
+use rs_plugin_common_interfaces::{CredentialType, CustomParam, PluginInformation, PluginType};
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
-use rs_plugin_common_interfaces::{CredentialType, CustomParam, PluginInformation, PluginType};
-use extism::Plugin as ExtismPlugin;
-use super::{credential::Credential, ElementAction};
 
 #[derive(Debug, Serialize)]
 pub struct PluginWasm {
     pub filename: String,
     pub path: PathBuf,
-	pub infos: PluginInformation,
+    pub infos: PluginInformation,
     #[serde(skip_serializing)]
     pub plugin: Arc<Mutex<ExtismPlugin>>,
 }
@@ -18,16 +21,16 @@ pub struct PluginWasm {
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct PluginWithCredential {
     pub plugin: Plugin,
-    pub credential: Option<Credential>
+    pub credential: Option<Credential>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")] 
+#[serde(rename_all = "camelCase")]
 pub struct Plugin {
     pub id: String,
-	pub name: String,
+    pub name: String,
     pub description: String,
-	pub path: String,
+    pub path: String,
     pub repo: Option<String>,
     pub repov: Option<String>,
     pub capabilities: Vec<PluginType>,
@@ -54,7 +57,9 @@ impl From<&PluginWasm> for Plugin {
             repo: value.infos.repo.clone(),
             repov: None,
             capabilities: value.infos.capabilities.clone(),
-            settings: PluginSettings {..Default::default()},
+            settings: PluginSettings {
+                ..Default::default()
+            },
             libraries: vec![],
             credential: None,
             installed: false,
@@ -78,7 +83,9 @@ impl From<&PluginWasm> for PluginForAdd {
             description: value.infos.description.to_owned(),
             version: value.infos.version.to_owned(),
             capabilities: value.infos.capabilities.clone(),
-            settings: PluginSettings {..Default::default()},
+            settings: PluginSettings {
+                ..Default::default()
+            },
             libraries: vec![],
             credential: None,
             params: vec![],
@@ -98,26 +105,25 @@ impl From<PluginInformation> for PluginForUpdate {
     }
 }
 
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PluginForInstall {
-	pub path: String,
+    pub path: String,
     #[serde(rename = "type")]
     pub kind: PluginType,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PluginRepoAdd {
-	pub url: String,
+    pub url: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")] 
+#[serde(rename_all = "camelCase")]
 pub struct PluginForAdd {
-	pub name: String,
-	pub path: String,
-	pub repo: Option<String>,
-	pub repov: Option<String>,
+    pub name: String,
+    pub path: String,
+    pub repo: Option<String>,
+    pub repov: Option<String>,
     pub version: u16,
     pub description: String,
     pub credential_type: Option<CredentialType>,
@@ -131,26 +137,26 @@ pub struct PluginForAdd {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PluginForInsert {
-	pub id: String,
-	pub plugin: PluginForAdd,
+    pub id: String,
+    pub plugin: PluginForAdd,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")] 
-pub struct PluginForUpdate{
-	pub name: Option<String>,
-	pub version: Option<u16>,
-	pub description: Option<String>,
-	pub path: Option<String>,
-	pub repo: Option<String>,
-	pub repov: Option<String>,
+#[serde(rename_all = "camelCase")]
+pub struct PluginForUpdate {
+    pub name: Option<String>,
+    pub version: Option<u16>,
+    pub description: Option<String>,
+    pub path: Option<String>,
+    pub repo: Option<String>,
+    pub repov: Option<String>,
     pub capabilities: Option<Vec<PluginType>>,
     pub settings: Option<PluginSettings>,
-    
-	pub credential_type: Option<CredentialType>,
-	pub credential: Option<String>,
+
+    pub credential_type: Option<CredentialType>,
+    pub credential: Option<String>,
     #[serde(default)]
-	pub remove_credential: bool,
+    pub remove_credential: bool,
 
     pub params: Option<Vec<CustomParam>>,
 
@@ -159,9 +165,8 @@ pub struct PluginForUpdate{
     pub remove_libraries: Option<Vec<String>>,
 }
 
-
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")] 
+#[serde(rename_all = "camelCase")]
 pub struct PluginSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bgr: Option<bool>,
@@ -169,14 +174,9 @@ pub struct PluginSettings {
     pub normalize: Option<bool>,
 }
 
-
-
-
-
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")] 
+#[serde(rename_all = "camelCase")]
 pub struct LibraryMessage {
     pub action: ElementAction,
-    pub plugin: Plugin
+    pub plugin: Plugin,
 }

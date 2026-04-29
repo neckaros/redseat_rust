@@ -120,7 +120,8 @@ async fn handler_add_tag(
     user: ConnectedUser,
     Json(body): Json<TagBody>,
 ) -> Result<Json<Value>> {
-    mc.add_channel_tag(&library_id, &channel_id, &body.tag_id, &user).await?;
+    mc.add_channel_tag(&library_id, &channel_id, &body.tag_id, &user)
+        .await?;
     Ok(Json(json!({"status": "ok"})))
 }
 
@@ -129,7 +130,8 @@ async fn handler_remove_tag(
     State(mc): State<ModelController>,
     user: ConnectedUser,
 ) -> Result<Json<Value>> {
-    mc.remove_channel_tag(&library_id, &channel_id, &tag_id, &user).await?;
+    mc.remove_channel_tag(&library_id, &channel_id, &tag_id, &user)
+        .await?;
     Ok(Json(json!({"status": "ok"})))
 }
 
@@ -233,8 +235,8 @@ async fn handler_hls_playlist(
         .await?;
 
     // Wait for the playlist file to be created by FFmpeg
-    let deadline = tokio::time::Instant::now()
-        + std::time::Duration::from_millis(PLAYLIST_READY_TIMEOUT_MS);
+    let deadline =
+        tokio::time::Instant::now() + std::time::Duration::from_millis(PLAYLIST_READY_TIMEOUT_MS);
 
     loop {
         if let Ok(meta) = tokio::fs::metadata(&playlist_path).await {
@@ -322,13 +324,13 @@ async fn handler_hls_segment(
     let file = tokio::fs::File::open(&segment_path)
         .await
         .map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => Error::NotFound(format!("Segment not found: {}", segment)),
+            std::io::ErrorKind::NotFound => {
+                Error::NotFound(format!("Segment not found: {}", segment))
+            }
             _ => Error::Error(format!("Failed to open segment: {}", e)),
         })?;
 
-    let file_size = file.metadata().await
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let file_size = file.metadata().await.map(|m| m.len()).unwrap_or(0);
 
     let stream = ReaderStream::new(file);
     let body = Body::from_stream(stream);

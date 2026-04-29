@@ -1,8 +1,6 @@
-use std::path::Path;
 use serde::Deserialize;
+use std::path::Path;
 use tokio::fs::File;
-
-
 
 #[derive(Deserialize, Debug)]
 struct GithubRelease {
@@ -23,7 +21,7 @@ struct NewestRelease {
 
 #[derive(Deserialize, Debug)]
 struct ExternalLibDownloader {
-    pub name: String
+    pub name: String,
 }
 
 impl ExternalLibDownloader {
@@ -51,12 +49,8 @@ impl ExternalLibDownloader {
         Path::new(&self.filename()).exists()
     }
 
-
-
     #[cfg(target_os = "windows")]
     async fn create_file(path: impl AsRef<Path>) -> tokio::io::Result<File> {
-        
-
         File::create(&path).await
     }
 
@@ -73,4 +67,3 @@ impl ExternalLibDownloader {
             .await
     }
 }
-

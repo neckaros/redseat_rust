@@ -31,7 +31,9 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio_util::io::{ReaderStream, StreamReader};
 
-use super::{ImageRequestOptions, RatingUpdateBody, SearchQuery, SearchResultGroup, SseSearchEvent};
+use super::{
+    ImageRequestOptions, RatingUpdateBody, SearchQuery, SearchResultGroup, SseSearchEvent,
+};
 
 pub fn routes(mc: ModelController) -> Router {
     Router::new()
@@ -163,10 +165,16 @@ async fn handler_search_people(
     Query(query): Query<SearchQuery<RsLookupMovie>>,
 ) -> Result<Json<Value>> {
     let sources = query.sources();
-    let groups = mc.search_person(&library_id, query.lookup, sources, &user).await?;
+    let groups = mc
+        .search_person(&library_id, query.lookup, sources, &user)
+        .await?;
     let body: Vec<SearchResultGroup> = groups
         .into_iter()
-        .map(|(source_id, source_name, data)| SearchResultGroup { source_id, source_name, data })
+        .map(|(source_id, source_name, data)| SearchResultGroup {
+            source_id,
+            source_name,
+            data,
+        })
         .collect();
     Ok(Json(json!(body)))
 }
@@ -178,7 +186,9 @@ async fn handler_search_people_stream(
     Query(query): Query<SearchQuery<RsLookupMovie>>,
 ) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>> {
     let sources = query.sources();
-    let mut rx = mc.search_person_stream(&library_id, query.lookup, sources, &user).await?;
+    let mut rx = mc
+        .search_person_stream(&library_id, query.lookup, sources, &user)
+        .await?;
 
     let stream = async_stream::stream! {
         while let Some((source_id, source_name, batch)) = rx.recv().await {
@@ -205,7 +215,9 @@ async fn handler_image_search(
     user: ConnectedUser,
     Query(_query): Query<ImageRequestOptions>,
 ) -> Result<Json<Value>> {
-    let person = mc.get_person(&library_id, person_id.clone(), &user).await?
+    let person = mc
+        .get_person(&library_id, person_id.clone(), &user)
+        .await?
         .ok_or(SourcesError::UnableToFindPerson(
             library_id.clone(),
             person_id,
@@ -217,7 +229,9 @@ async fn handler_image_search(
         ids: Some(ids),
         page_key: None,
     };
-    let result = mc.get_person_images(lookup_query, Some(library_id), &user).await?;
+    let result = mc
+        .get_person_images(lookup_query, Some(library_id), &user)
+        .await?;
     Ok(Json(json!(result)))
 }
 
@@ -247,7 +261,8 @@ async fn handler_image_refresh(
     Query(query): Query<ImageRequestOptions>,
 ) -> Result<Json<Value>> {
     let kind = query.kind;
-    mc.refresh_person_image(&library_id, &person_id, &kind, &user).await?;
+    mc.refresh_person_image(&library_id, &person_id, &kind, &user)
+        .await?;
     Ok(Json(json!({"data": "ok"})))
 }
 
@@ -256,7 +271,9 @@ async fn handler_rating_get(
     State(mc): State<ModelController>,
     user: ConnectedUser,
 ) -> Result<Json<Value>> {
-    let rating = mc.get_media_rating(&library_id, ElementType::Person, person_id, &user).await?;
+    let rating = mc
+        .get_media_rating(&library_id, ElementType::Person, person_id, &user)
+        .await?;
     Ok(Json(json!(rating)))
 }
 
@@ -266,7 +283,15 @@ async fn handler_rating_set(
     user: ConnectedUser,
     Json(body): Json<RatingUpdateBody>,
 ) -> Result<Json<Value>> {
-    let rating = mc.set_media_rating(&library_id, ElementType::Person, person_id, body.rating, &user).await?;
+    let rating = mc
+        .set_media_rating(
+            &library_id,
+            ElementType::Person,
+            person_id,
+            body.rating,
+            &user,
+        )
+        .await?;
     Ok(Json(json!(rating)))
 }
 

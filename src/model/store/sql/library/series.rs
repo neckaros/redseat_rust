@@ -1,4 +1,7 @@
-use rs_plugin_common_interfaces::{domain::{rs_ids::RsIds, ItemWithRelations}, ImageType};
+use rs_plugin_common_interfaces::{
+    domain::{rs_ids::RsIds, ItemWithRelations},
+    ImageType,
+};
 use rusqlite::{params, OptionalExtension, Row};
 
 use super::{Result, SqliteLibraryStore};
@@ -95,8 +98,9 @@ impl SqliteLibraryStore {
                     where_query.format_order()
                 ))?;
                 let rows = query.query_map(where_query.values(), Self::row_to_serie)?;
-                let backups: Vec<ItemWithRelations<Serie>> =
-                    rows.collect::<std::result::Result<Vec<ItemWithRelations<Serie>>, rusqlite::Error>>()?;
+                let backups: Vec<ItemWithRelations<Serie>> = rows
+                    .collect::<std::result::Result<Vec<ItemWithRelations<Serie>>, rusqlite::Error>>(
+                    )?;
                 Ok(backups)
             })
             .await?;
@@ -120,7 +124,10 @@ impl SqliteLibraryStore {
         Ok(row)
     }
 
-    pub async fn get_serie_by_external_id(&self, ids: RsIds) -> Result<Option<ItemWithRelations<Serie>>> {
+    pub async fn get_serie_by_external_id(
+        &self,
+        ids: RsIds,
+    ) -> Result<Option<ItemWithRelations<Serie>>> {
         let row = self.connection.call( move |conn| { 
             let mut query = conn.prepare(&format!("SELECT 
             {} 

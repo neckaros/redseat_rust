@@ -9,7 +9,6 @@ use crate::domain::movie::{Movie, MovieStatus};
 
 use super::trakt_show::TraktIds;
 
-
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TraktRelease {
@@ -36,7 +35,6 @@ pub enum TraktReleaseType {
     #[default]
     Other,
 }
-
 
 #[derive(Serialize, Deserialize, Default, Debug, PartialEq, Clone, Display, EnumString)]
 #[serde(rename_all = "lowercase")]
@@ -74,7 +72,10 @@ pub trait TraktReleases {
 }
 impl TraktReleases for Vec<TraktRelease> {
     fn earliest_for(&self, kind: TraktReleaseType) -> Option<NaiveDate> {
-        self.iter().filter(|r| &r.release_type == &kind).map(|r| r.release_date).min()
+        self.iter()
+            .filter(|r| &r.release_type == &kind)
+            .map(|r| r.release_date)
+            .min()
     }
 }
 
@@ -104,7 +105,6 @@ pub struct TraktFullMovie {
     pub genres: Vec<String>,
     pub certification: Option<String>,
 }
-
 
 impl From<TraktFullMovie> for Movie {
     fn from(value: TraktFullMovie) -> Self {
@@ -136,7 +136,7 @@ impl From<TraktFullMovie> for Movie {
                 id: t,
                 ..Default::default()
             }),
-            
+
             ..Default::default()
         }
     }
@@ -145,11 +145,11 @@ impl From<TraktFullMovie> for Movie {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TraktTrendingMoviesResult {
     pub watchers: u64,
-    pub movie: TraktFullMovie
+    pub movie: TraktFullMovie,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TraktMovieSearchElement {
     pub score: f64,
-    pub movie: TraktFullMovie
+    pub movie: TraktFullMovie,
 }

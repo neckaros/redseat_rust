@@ -1,18 +1,36 @@
+use crate::{
+    domain::{episode::Episode, movie::Movie, people::Person, serie::Serie},
+    plugins::medias::trakt::{trakt_episode::TraktSeasonWithEpisodes, trakt_show::TraktFullShow},
+    tools::clock::{Clock, RsNaiveDate},
+    Error, Result,
+};
 use chrono::{DateTime, FixedOffset};
 use http::{header::USER_AGENT, HeaderMap, HeaderValue};
 use reqwest::{Client, Response, Url};
-use rs_plugin_common_interfaces::{domain::rs_ids::{RsIds, RsIdsError}, lookup::{RsLookupMatchType, RsLookupMovie}};
+use rs_plugin_common_interfaces::{
+    domain::rs_ids::{RsIds, RsIdsError},
+    lookup::{RsLookupMatchType, RsLookupMovie},
+};
 use serde::de::DeserializeOwned;
 use tower::Service;
 use trakt_people::{TraktActorsResult, TraktPeopleSearchElement, TraktPerson};
-use crate::{domain::{episode::Episode, movie::Movie, people::Person, serie::Serie}, plugins::medias::trakt::{trakt_episode::TraktSeasonWithEpisodes, trakt_show::TraktFullShow}, tools::clock::{Clock, RsNaiveDate}, Error, Result};
 
-use self::{trakt_episode::TraktFullEpisode, trakt_movie::{TraktFullMovie, TraktMovieSearchElement, TraktRelease, TraktReleaseType, TraktReleases, TraktTrendingMoviesResult}, trakt_show::{TraktShowSearchElement, TraktTrendingShowResult}};
+use self::{
+    trakt_episode::TraktFullEpisode,
+    trakt_movie::{
+        TraktFullMovie, TraktMovieSearchElement, TraktRelease, TraktReleaseType, TraktReleases,
+        TraktTrendingMoviesResult,
+    },
+    trakt_show::{TraktShowSearchElement, TraktTrendingShowResult},
+};
 // Context required for all requests
 use unidecode::unidecode;
 
 /// Deserialize JSON response with detailed error path information
-async fn json_with_path<T: DeserializeOwned>(response: Response, context: &str) -> crate::Result<T> {
+async fn json_with_path<T: DeserializeOwned>(
+    response: Response,
+    context: &str,
+) -> crate::Result<T> {
     let url = response.url().to_string();
     let bytes = response.bytes().await?;
     let jd = &mut serde_json::Deserializer::from_slice(&bytes);
@@ -20,21 +38,24 @@ async fn json_with_path<T: DeserializeOwned>(response: Response, context: &str) 
         let path = e.path().to_string();
         Error::Error(format!(
             "JSON parse error in {} at field '{}': {} (url: {})",
-            context, path, e.inner(), url
+            context,
+            path,
+            e.inner(),
+            url
         ))
     })
 }
 
-mod trakt_show;
 mod trakt_episode;
 mod trakt_movie;
 mod trakt_people;
+mod trakt_show;
 
 #[derive(Debug, Clone)]
 pub struct TraktContext {
     base_url: Url,
     client_id: String,
-    client: Client
+    client: Client,
 }
 
 /// Returns the best ID string for use with the Trakt API.
@@ -59,27 +80,43 @@ impl TraktContext {
         //headers.insert("X-Custom-Header", HeaderValue::from_static("custom_value"));
 
         // Create a client with default headers
-        let client = Client::builder()
-            .default_headers(headers)
-            .build().unwrap();
-            
+        let client = Client::builder().default_headers(headers).build().unwrap();
+
         TraktContext {
             base_url, //"https://api.trakt.tv".to_string(),
             client_id,
-            client
+            client,
         }
     }
 }
 
 impl TraktContext {
-
     pub async fn episodes_refreshed(&self, date: DateTime<FixedOffset>) -> crate::Result<Vec<u64>> {
-        let mut all_updates:Vec<u64> = vec![];
+        let mut all_updates: Vec<u64> = vec![];
         let mut page = 1;
         loop {
-            let url = self.base_url.join(&format!("shows/updates/id/{}?page={}&limit=100", date.to_utc().fixed_offset().print(), page)).unwrap();
-            let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
-            let nb_pages: u32 = r.headers().get("x-pagination-page-count").ok_or(crate::Error::TraktTooManyUpdates)?.to_str().map_err(|_| crate::Error::TraktTooManyUpdates)?.parse().map_err(|_| crate::Error::TraktTooManyUpdates)?;
+            let url = self
+                .base_url
+                .join(&format!(
+                    "shows/updates/id/{}?page={}&limit=100",
+                    date.to_utc().fixed_offset().print(),
+                    page
+                ))
+                .unwrap();
+            let r = self
+                .client
+                .get(url)
+                .header("trakt-api-key", &self.client_id)
+                .send()
+                .await?;
+            let nb_pages: u32 = r
+                .headers()
+                .get("x-pagination-page-count")
+                .ok_or(crate::Error::TraktTooManyUpdates)?
+                .to_str()
+                .map_err(|_| crate::Error::TraktTooManyUpdates)?
+                .parse()
+                .map_err(|_| crate::Error::TraktTooManyUpdates)?;
             let mut updates: Vec<u64> = r.json::<Vec<u64>>().await?.into_iter().collect();
             all_updates.append(&mut updates);
             if nb_pages > 10 {
@@ -94,54 +131,110 @@ impl TraktContext {
     }
 
     pub async fn get_serie(&self, id: &RsIds) -> crate::Result<Serie> {
-
         let id = as_id_for_trakt(id).ok_or(RsIdsError::NoMediaIdRequired(Box::new(id.clone())))?;
 
-        let url = self.base_url.join(&format!("shows/{}?extended=full", id)).unwrap();
-        let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
+        let url = self
+            .base_url
+            .join(&format!("shows/{}?extended=full", id))
+            .unwrap();
+        let r = self
+            .client
+            .get(url)
+            .header("trakt-api-key", &self.client_id)
+            .send()
+            .await?;
         let show: TraktFullShow = json_with_path(r, &format!("get_serie({})", id)).await?;
-        
+
         let show_nous: Serie = show.into();
         Ok(show_nous)
     }
 
-    pub async fn search_show(&self, search: &RsLookupMovie) -> crate::Result<Vec<(Serie, Option<RsLookupMatchType>)>> {
+    pub async fn search_show(
+        &self,
+        search: &RsLookupMovie,
+    ) -> crate::Result<Vec<(Serie, Option<RsLookupMatchType>)>> {
         let query = search.name.as_deref().unwrap_or_default();
         let url = self
             .base_url
-            .join(&format!("search/show?extended=full&query={}", unidecode(query)))
+            .join(&format!(
+                "search/show?extended=full&query={}",
+                unidecode(query)
+            ))
             .unwrap();
 
-        let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
+        let r = self
+            .client
+            .get(url)
+            .header("trakt-api-key", &self.client_id)
+            .send()
+            .await?;
 
-        let shows = r.json::<Vec<TraktShowSearchElement>>().await?.into_iter().map(|m| {
-            let match_type = if m.score >= 1000.0 && m.show.title.to_lowercase() == query.to_lowercase() { Some(RsLookupMatchType::ExactText) } else { None };
-            (Serie::from(m.show), match_type)
-        }).collect();
+        let shows = r
+            .json::<Vec<TraktShowSearchElement>>()
+            .await?
+            .into_iter()
+            .map(|m| {
+                let match_type =
+                    if m.score >= 1000.0 && m.show.title.to_lowercase() == query.to_lowercase() {
+                        Some(RsLookupMatchType::ExactText)
+                    } else {
+                        None
+                    };
+                (Serie::from(m.show), match_type)
+            })
+            .collect();
 
         Ok(shows)
     }
 
-
     pub async fn trending_shows(&self) -> crate::Result<Vec<Serie>> {
         let url = self.base_url.join("shows/trending?extended=full").unwrap();
-        let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
-        let shows: Vec<Serie> = r.json::<Vec<TraktTrendingShowResult>>().await?.into_iter().map(|s| s.show).map(Serie::from).collect();
+        let r = self
+            .client
+            .get(url)
+            .header("trakt-api-key", &self.client_id)
+            .send()
+            .await?;
+        let shows: Vec<Serie> = r
+            .json::<Vec<TraktTrendingShowResult>>()
+            .await?
+            .into_iter()
+            .map(|s| s.show)
+            .map(Serie::from)
+            .collect();
         Ok(shows)
     }
 
     pub async fn all_episodes(&self, id: &RsIds) -> crate::Result<Vec<Episode>> {
-        let serie_id = as_id_for_trakt(id).ok_or(Error::Error(format!("Unable to request trakt. No imdb or trakt id for: {:?}", id)))?;
-        let url = self.base_url.join(&format!("shows/{}/seasons?extended=full,episodes", serie_id)).unwrap();
-        let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
+        let serie_id = as_id_for_trakt(id).ok_or(Error::Error(format!(
+            "Unable to request trakt. No imdb or trakt id for: {:?}",
+            id
+        )))?;
+        let url = self
+            .base_url
+            .join(&format!(
+                "shows/{}/seasons?extended=full,episodes",
+                serie_id
+            ))
+            .unwrap();
+        let r = self
+            .client
+            .get(url)
+            .header("trakt-api-key", &self.client_id)
+            .send()
+            .await?;
         let best_serie_id = id.clone().into_best().unwrap_or(serie_id.to_owned());
-        let seasons: Vec<TraktSeasonWithEpisodes> = json_with_path(r, &format!("all_episodes({})", serie_id)).await?;
-        let episodes = seasons.into_iter().flat_map(|s| s.episodes).map(|e| e.into_trakt(best_serie_id.clone())).collect::<Vec<_>>();
+        let seasons: Vec<TraktSeasonWithEpisodes> =
+            json_with_path(r, &format!("all_episodes({})", serie_id)).await?;
+        let episodes = seasons
+            .into_iter()
+            .flat_map(|s| s.episodes)
+            .map(|e| e.into_trakt(best_serie_id.clone()))
+            .collect::<Vec<_>>();
         Ok(episodes)
     }
 
     pub async fn episode(&self, id: &RsIds, season: u32, episode: u32) -> crate::Result<Episode> {
-
         let id = if let Some(imdb) = id.imdb() {
             Ok(imdb.to_string())
         } else if let Some(trakt) = id.trakt() {
@@ -149,23 +242,52 @@ impl TraktContext {
         } else {
             Err(RsIdsError::NoMediaIdRequired(Box::new(id.clone())))
         }?;
-        let url = self.base_url.join(&format!("shows/{}/seasons/{}/episodes/{}?extended=full", id, season, episode)).unwrap();
-        let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
-        let ep: TraktFullEpisode = json_with_path(r, &format!("episode({} S{}E{})", id, season, episode)).await?;
+        let url = self
+            .base_url
+            .join(&format!(
+                "shows/{}/seasons/{}/episodes/{}?extended=full",
+                id, season, episode
+            ))
+            .unwrap();
+        let r = self
+            .client
+            .get(url)
+            .header("trakt-api-key", &self.client_id)
+            .send()
+            .await?;
+        let ep: TraktFullEpisode =
+            json_with_path(r, &format!("episode({} S{}E{})", id, season, episode)).await?;
         Ok(ep.into_trakt(format!("trakt:")))
     }
 }
 
-
 impl TraktContext {
-
     pub async fn movies_refreshed(&self, date: DateTime<FixedOffset>) -> crate::Result<Vec<u64>> {
-        let mut all_updates:Vec<u64> = vec![];
+        let mut all_updates: Vec<u64> = vec![];
         let mut page = 1;
         loop {
-            let url = self.base_url.join(&format!("movies/updates/id/{}?page={}&limit=100", date.to_utc().fixed_offset().print(), page)).unwrap();
-            let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
-            let nb_pages: u32 = r.headers().get("x-pagination-page-count").ok_or(crate::Error::TraktTooManyUpdates)?.to_str().map_err(|_| crate::Error::TraktTooManyUpdates)?.parse().map_err(|_| crate::Error::TraktTooManyUpdates)?;
+            let url = self
+                .base_url
+                .join(&format!(
+                    "movies/updates/id/{}?page={}&limit=100",
+                    date.to_utc().fixed_offset().print(),
+                    page
+                ))
+                .unwrap();
+            let r = self
+                .client
+                .get(url)
+                .header("trakt-api-key", &self.client_id)
+                .send()
+                .await?;
+            let nb_pages: u32 = r
+                .headers()
+                .get("x-pagination-page-count")
+                .ok_or(crate::Error::TraktTooManyUpdates)?
+                .to_str()
+                .map_err(|_| crate::Error::TraktTooManyUpdates)?
+                .parse()
+                .map_err(|_| crate::Error::TraktTooManyUpdates)?;
             let mut updates: Vec<u64> = r.json::<Vec<u64>>().await?.into_iter().collect();
             all_updates.append(&mut updates);
             if nb_pages > 10 {
@@ -180,40 +302,63 @@ impl TraktContext {
     }
 
     pub async fn get_movie_releases(&self, id: &RsIds) -> crate::Result<Vec<TraktRelease>> {
-
         let id = as_id_for_trakt(id).ok_or(RsIdsError::NoMediaIdRequired(Box::new(id.clone())))?;
 
-        let url = self.base_url.join(&format!("movies/{}/releases", id)).unwrap();
+        let url = self
+            .base_url
+            .join(&format!("movies/{}/releases", id))
+            .unwrap();
 
-        let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
+        let r = self
+            .client
+            .get(url)
+            .header("trakt-api-key", &self.client_id)
+            .send()
+            .await?;
         let releases = r.json::<Vec<TraktRelease>>().await?;
         Ok(releases)
     }
 
     pub async fn get_movie_actors(&self, id: &RsIds) -> crate::Result<TraktActorsResult> {
-
         let id = as_id_for_trakt(id).ok_or(RsIdsError::NoMediaIdRequired(Box::new(id.clone())))?;
 
-        let url = self.base_url.join(&format!("movies/{}/people", id)).unwrap();
+        let url = self
+            .base_url
+            .join(&format!("movies/{}/people", id))
+            .unwrap();
 
-        let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
+        let r = self
+            .client
+            .get(url)
+            .header("trakt-api-key", &self.client_id)
+            .send()
+            .await?;
         let releases = r.json::<TraktActorsResult>().await?;
         Ok(releases)
     }
 
     pub async fn get_movie(&self, ids: &RsIds) -> crate::Result<Movie> {
+        let id =
+            as_id_for_trakt(ids).ok_or(RsIdsError::NoMediaIdRequired(Box::new(ids.clone())))?;
 
-        let id = as_id_for_trakt(ids).ok_or(RsIdsError::NoMediaIdRequired(Box::new(ids.clone())))?;
+        let url = self
+            .base_url
+            .join(&format!("movies/{}?extended=full", id))
+            .unwrap();
 
-        let url = self.base_url.join(&format!("movies/{}?extended=full", id)).unwrap();
-
-        let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
+        let r = self
+            .client
+            .get(url)
+            .header("trakt-api-key", &self.client_id)
+            .send()
+            .await?;
         let movie = r.json::<TraktFullMovie>().await?;
         let mut movie_nous: Movie = movie.into();
         let releases = self.get_movie_releases(&ids).await?;
         let digital = releases.earliest_for(TraktReleaseType::Digital);
         if digital.is_some() {
-            movie_nous.digitalairdate = digital.and_then(|t| Some(t.utc().ok()?.timestamp_millis()));
+            movie_nous.digitalairdate =
+                digital.and_then(|t| Some(t.utc().ok()?.timestamp_millis()));
         }
         let theatrical = releases.earliest_for(TraktReleaseType::Theatrical);
         if theatrical.is_some() {
@@ -222,45 +367,91 @@ impl TraktContext {
         Ok(movie_nous)
     }
 
-    pub async fn search_movie(&self, search: &RsLookupMovie) -> crate::Result<Vec<(Movie, Option<RsLookupMatchType>)>> {
+    pub async fn search_movie(
+        &self,
+        search: &RsLookupMovie,
+    ) -> crate::Result<Vec<(Movie, Option<RsLookupMatchType>)>> {
         let query = search.name.as_deref().unwrap_or_default();
         let url = self
             .base_url
-            .join(&format!("search/movie?extended=full&query={}", unidecode(query)))
+            .join(&format!(
+                "search/movie?extended=full&query={}",
+                unidecode(query)
+            ))
             .unwrap();
 
-        let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
-        let movies = r.json::<Vec<TraktMovieSearchElement>>().await?.into_iter().map(|m| {
-            let match_type = if m.score >= 1000.0 && m.movie.title.to_lowercase() == query.to_lowercase() { Some(RsLookupMatchType::ExactText) } else { None };
-            (Movie::from(m.movie), match_type)
-        }).collect();
+        let r = self
+            .client
+            .get(url)
+            .header("trakt-api-key", &self.client_id)
+            .send()
+            .await?;
+        let movies = r
+            .json::<Vec<TraktMovieSearchElement>>()
+            .await?
+            .into_iter()
+            .map(|m| {
+                let match_type =
+                    if m.score >= 1000.0 && m.movie.title.to_lowercase() == query.to_lowercase() {
+                        Some(RsLookupMatchType::ExactText)
+                    } else {
+                        None
+                    };
+                (Movie::from(m.movie), match_type)
+            })
+            .collect();
 
         Ok(movies)
     }
 
-
-
     pub async fn trending_movies(&self) -> crate::Result<Vec<Movie>> {
         let url = self.base_url.join("movies/trending?extended=full").unwrap();
-        let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
+        let r = self
+            .client
+            .get(url)
+            .header("trakt-api-key", &self.client_id)
+            .send()
+            .await?;
 
-        let shows: Vec<Movie> = r.json::<Vec<TraktTrendingMoviesResult>>().await?.into_iter().map(|s| s.movie).map(Movie::from).collect();
+        let shows: Vec<Movie> = r
+            .json::<Vec<TraktTrendingMoviesResult>>()
+            .await?
+            .into_iter()
+            .map(|s| s.movie)
+            .map(Movie::from)
+            .collect();
         println!("got trending");
         Ok(shows)
     }
-
 }
 
-
 impl TraktContext {
-
     pub async fn people_refreshed(&self, date: DateTime<FixedOffset>) -> crate::Result<Vec<u64>> {
-        let mut all_updates:Vec<u64> = vec![];
+        let mut all_updates: Vec<u64> = vec![];
         let mut page = 1;
         loop {
-            let url = self.base_url.join(&format!("people/updates/id/{}?page={}&limit=100", date.to_utc().fixed_offset().print(), page)).unwrap();
-            let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
-            let nb_pages: u32 = r.headers().get("x-pagination-page-count").ok_or(crate::Error::TraktTooManyUpdates)?.to_str().map_err(|_| crate::Error::TraktTooManyUpdates)?.parse().map_err(|_| crate::Error::TraktTooManyUpdates)?;
+            let url = self
+                .base_url
+                .join(&format!(
+                    "people/updates/id/{}?page={}&limit=100",
+                    date.to_utc().fixed_offset().print(),
+                    page
+                ))
+                .unwrap();
+            let r = self
+                .client
+                .get(url)
+                .header("trakt-api-key", &self.client_id)
+                .send()
+                .await?;
+            let nb_pages: u32 = r
+                .headers()
+                .get("x-pagination-page-count")
+                .ok_or(crate::Error::TraktTooManyUpdates)?
+                .to_str()
+                .map_err(|_| crate::Error::TraktTooManyUpdates)?
+                .parse()
+                .map_err(|_| crate::Error::TraktTooManyUpdates)?;
             let mut updates: Vec<u64> = r.json::<Vec<u64>>().await?.into_iter().collect();
             all_updates.append(&mut updates);
             if nb_pages > 10 {
@@ -275,29 +466,58 @@ impl TraktContext {
     }
 
     pub async fn get_person(&self, ids: &RsIds) -> crate::Result<Person> {
+        let id =
+            as_id_for_trakt(ids).ok_or(RsIdsError::NoMediaIdRequired(Box::new(ids.clone())))?;
 
-        let id = as_id_for_trakt(ids).ok_or(RsIdsError::NoMediaIdRequired(Box::new(ids.clone())))?;
+        let url = self
+            .base_url
+            .join(&format!("people/{}?extended=full", id))
+            .unwrap();
 
-        let url = self.base_url.join(&format!("people/{}?extended=full", id)).unwrap();
-
-        let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
+        let r = self
+            .client
+            .get(url)
+            .header("trakt-api-key", &self.client_id)
+            .send()
+            .await?;
         let person = r.json::<TraktPerson>().await?;
         let mut person: Person = person.into();
         Ok(person)
     }
 
-    pub async fn search_person(&self, search: &RsLookupMovie) -> crate::Result<Vec<(Person, Option<RsLookupMatchType>)>> {
+    pub async fn search_person(
+        &self,
+        search: &RsLookupMovie,
+    ) -> crate::Result<Vec<(Person, Option<RsLookupMatchType>)>> {
         let query = search.name.as_deref().unwrap_or_default();
         let url = self
             .base_url
-            .join(&format!("search/person?extended=full&query={}", unidecode(query)))
+            .join(&format!(
+                "search/person?extended=full&query={}",
+                unidecode(query)
+            ))
             .unwrap();
 
-        let r = self.client.get(url).header("trakt-api-key", &self.client_id).send().await?;
-        let people = r.json::<Vec<TraktPeopleSearchElement>>().await?.into_iter().map(|m| {
-            let match_type = if m.score >= 1000.0 && m.person.name.to_lowercase() == query.to_lowercase() { Some(RsLookupMatchType::ExactText) } else { None };
-            (Person::from(m.person), match_type)
-        }).collect();
+        let r = self
+            .client
+            .get(url)
+            .header("trakt-api-key", &self.client_id)
+            .send()
+            .await?;
+        let people = r
+            .json::<Vec<TraktPeopleSearchElement>>()
+            .await?
+            .into_iter()
+            .map(|m| {
+                let match_type =
+                    if m.score >= 1000.0 && m.person.name.to_lowercase() == query.to_lowercase() {
+                        Some(RsLookupMatchType::ExactText)
+                    } else {
+                        None
+                    };
+                (Person::from(m.person), match_type)
+            })
+            .collect();
 
         Ok(people)
     }
@@ -320,23 +540,37 @@ mod tests {
     #[tokio::test]
     #[ignore] // requires network + valid Trakt API key
     async fn trakt_releases() -> RsResult<()> {
-        let trakt = TraktContext::new("455f81b3409a8dd140a941e9250ff22b2ed92d68003491c3976363fe752a9024".to_owned());
+        let trakt = TraktContext::new(
+            "455f81b3409a8dd140a941e9250ff22b2ed92d68003491c3976363fe752a9024".to_owned(),
+        );
 
         let releases = trakt.get_movie_releases(&exemple_movie()).await?;
-        
+
         println!("{:?}", releases);
-        println!("{:?}", releases.earliest_for(TraktReleaseType::Digital).and_then(|d| d.utc().ok()));
+        println!(
+            "{:?}",
+            releases
+                .earliest_for(TraktReleaseType::Digital)
+                .and_then(|d| d.utc().ok())
+        );
         Ok(())
     }
-
 
     #[tokio::test]
     #[ignore] // requires network + valid Trakt API key
     async fn trakt_search_person() -> RsResult<()> {
-        let trakt = TraktContext::new("455f81b3409a8dd140a941e9250ff22b2ed92d68003491c3976363fe752a9024".to_owned());
+        let trakt = TraktContext::new(
+            "455f81b3409a8dd140a941e9250ff22b2ed92d68003491c3976363fe752a9024".to_owned(),
+        );
 
-        let search_result = trakt.search_person(&RsLookupMovie { name: Some("jessica alba".to_string()), ids: None, page_key: None }).await?;
-        
+        let search_result = trakt
+            .search_person(&RsLookupMovie {
+                name: Some("jessica alba".to_string()),
+                ids: None,
+                page_key: None,
+            })
+            .await?;
+
         println!("{:?}", search_result.first());
         let (person_serach, match_type) = search_result.into_iter().next().unwrap();
         assert_eq!(person_serach.gender, Some(Gender::Female));
@@ -344,7 +578,9 @@ mod tests {
         assert_eq!(match_type, Some(RsLookupMatchType::ExactText));
         let id = {
             let mut ids = RsIds::default();
-            if let Some(trakt) = person_serach.trakt { ids.set("trakt", trakt); }
+            if let Some(trakt) = person_serach.trakt {
+                ids.set("trakt", trakt);
+            }
             ids
         };
         let queried = trakt.get_person(&id).await?;

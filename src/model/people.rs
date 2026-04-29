@@ -36,8 +36,12 @@ use crate::{
 };
 use rs_plugin_common_interfaces::{
     domain::{other_ids::OtherIds, rs_ids::RsIds},
-    lookup::{RsLookupMetadataResult, RsLookupMetadataResultWrapper, RsLookupMetadataResults, RsLookupMovie, RsLookupPerson, RsLookupQuery},
-    url::RsLink, ExternalImage, Gender, ImageType,
+    lookup::{
+        RsLookupMetadataResult, RsLookupMetadataResultWrapper, RsLookupMetadataResults,
+        RsLookupMovie, RsLookupPerson, RsLookupQuery,
+    },
+    url::RsLink,
+    ExternalImage, Gender, ImageType,
 };
 use tokio_util::io::StreamReader;
 
@@ -212,7 +216,9 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> Result<Vec<Person>> {
         if let Ok(key) = requesting_user.check_upload_key(library_id) {
-            if !key.people { return Err(Error::ShareTokenInsufficient); }
+            if !key.people {
+                return Err(Error::ShareTokenInsufficient);
+            }
         } else {
             requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         }
@@ -283,7 +289,9 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> RsResult<Person> {
         if let Ok(key) = requesting_user.check_upload_key(library_id) {
-            if !key.people { return Err(Error::ShareTokenInsufficient.into()); }
+            if !key.people {
+                return Err(Error::ShareTokenInsufficient.into());
+            }
             // Upload keys can only add alts and links, nothing else
             update = PersonForUpdate {
                 add_alts: update.add_alts,
@@ -339,7 +347,9 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> Result<Person> {
         if let Ok(key) = requesting_user.check_upload_key(library_id) {
-            if !key.people { return Err(Error::ShareTokenInsufficient); }
+            if !key.people {
+                return Err(Error::ShareTokenInsufficient);
+            }
         } else {
             requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         }
@@ -653,8 +663,14 @@ impl ModelController {
         Ok(person)
     }
 
-    pub async fn get_person_images(&self, query: RsLookupPerson, library_id: Option<String>, requesting_user: &ConnectedUser) -> RsResult<Vec<ExternalImage>> {
-        self.get_entity_images(RsLookupQuery::Person(query), library_id, requesting_user).await
+    pub async fn get_person_images(
+        &self,
+        query: RsLookupPerson,
+        library_id: Option<String>,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Vec<ExternalImage>> {
+        self.get_entity_images(RsLookupQuery::Person(query), library_id, requesting_user)
+            .await
     }
 
     pub async fn search_person(
@@ -664,14 +680,21 @@ impl ModelController {
         sources: Option<Vec<String>>,
         requesting_user: &ConnectedUser,
     ) -> RsResult<Vec<(String, String, RsLookupMetadataResults)>> {
-        let include_trakt = sources.as_deref().map_or(true, |s| s.iter().any(|id| id == "trakt"));
+        let include_trakt = sources
+            .as_deref()
+            .map_or(true, |s| s.iter().any(|id| id == "trakt"));
         let trakt_entries = if include_trakt {
             let trakt_results = self.trakt.search_person(&query).await?;
-            Some(trakt_results.into_iter().map(|(person, match_type)| RsLookupMetadataResultWrapper {
-                metadata: RsLookupMetadataResult::Person(person),
-                match_type,
-                ..Default::default()
-            }).collect())
+            Some(
+                trakt_results
+                    .into_iter()
+                    .map(|(person, match_type)| RsLookupMetadataResultWrapper {
+                        metadata: RsLookupMetadataResult::Person(person),
+                        match_type,
+                        ..Default::default()
+                    })
+                    .collect(),
+            )
         } else {
             None
         };
@@ -688,7 +711,8 @@ impl ModelController {
             trakt_entries,
             sources,
             requesting_user,
-        ).await
+        )
+        .await
     }
 
     pub async fn search_person_stream(
@@ -698,14 +722,21 @@ impl ModelController {
         sources: Option<Vec<String>>,
         requesting_user: &ConnectedUser,
     ) -> RsResult<tokio::sync::mpsc::Receiver<(String, String, RsLookupMetadataResults)>> {
-        let include_trakt = sources.as_deref().map_or(true, |s| s.iter().any(|id| id == "trakt"));
+        let include_trakt = sources
+            .as_deref()
+            .map_or(true, |s| s.iter().any(|id| id == "trakt"));
         let trakt_entries = if include_trakt {
             let trakt_results = self.trakt.search_person(&query).await?;
-            Some(trakt_results.into_iter().map(|(person, match_type)| RsLookupMetadataResultWrapper {
-                metadata: RsLookupMetadataResult::Person(person),
-                match_type,
-                ..Default::default()
-            }).collect())
+            Some(
+                trakt_results
+                    .into_iter()
+                    .map(|(person, match_type)| RsLookupMetadataResultWrapper {
+                        metadata: RsLookupMetadataResult::Person(person),
+                        match_type,
+                        ..Default::default()
+                    })
+                    .collect(),
+            )
         } else {
             None
         };
@@ -722,7 +753,8 @@ impl ModelController {
             trakt_entries,
             sources,
             requesting_user,
-        ).await
+        )
+        .await
     }
 
     pub async fn download_person_image(
@@ -732,7 +764,13 @@ impl ModelController {
         kind: &ImageType,
         requesting_user: &ConnectedUser,
     ) -> crate::Result<AsyncReadPinBox> {
-        self.download_entity_image(RsLookupQuery::Person(query), library_id, kind, requesting_user).await
+        self.download_entity_image(
+            RsLookupQuery::Person(query),
+            library_id,
+            kind,
+            requesting_user,
+        )
+        .await
     }
 
     pub async fn get_person_image_url(
@@ -742,7 +780,13 @@ impl ModelController {
         kind: &ImageType,
         requesting_user: &ConnectedUser,
     ) -> RsResult<Option<rs_plugin_common_interfaces::RsRequest>> {
-        self.get_entity_image_url(RsLookupQuery::Person(query), library_id, kind, requesting_user).await
+        self.get_entity_image_url(
+            RsLookupQuery::Person(query),
+            library_id,
+            kind,
+            requesting_user,
+        )
+        .await
     }
 
     /// download and update image
@@ -764,12 +808,14 @@ impl ModelController {
             page_key: None,
         };
         let target_kind = kind.as_ref().unwrap_or(&ImageType::Poster);
-        let reader = self.download_person_image(
-            lookup_query,
-            Some(library_id.to_string()),
-            target_kind,
-            requesting_user,
-        ).await?;
+        let reader = self
+            .download_person_image(
+                lookup_query,
+                Some(library_id.to_string()),
+                target_kind,
+                requesting_user,
+            )
+            .await?;
         self.update_person_image(
             library_id,
             person_id,

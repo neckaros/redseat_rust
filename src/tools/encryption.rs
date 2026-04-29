@@ -1,12 +1,24 @@
-use std::{pin::Pin, task::{Context, Poll}};
+use std::{
+    pin::Pin,
+    task::{Context, Poll},
+};
 
-use aes::{cipher::{block_padding::{Padding, Pkcs7}, BlockDecryptMut, BlockEncryptMut, KeyIvInit, StreamCipher, StreamCipherSeek}, Aes256, Aes256Dec, Block};
+use aes::{
+    cipher::{
+        block_padding::{Padding, Pkcs7},
+        BlockDecryptMut, BlockEncryptMut, KeyIvInit, StreamCipher, StreamCipherSeek,
+    },
+    Aes256, Aes256Dec, Block,
+};
 use extism::ToBytes;
 use hex_literal::hex;
 use pbkdf2::{pbkdf2_hmac, pbkdf2_hmac_array};
 use rand::RngCore;
 use sha1::Sha1;
-use tokio::{fs::{File, OpenOptions}, io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter, ReadBuf}};
+use tokio::{
+    fs::{File, OpenOptions},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter, ReadBuf},
+};
 
 type Aes256CbcDec = cbc::Decryptor<Aes256>;
 type Aes256CbcEnc = cbc::Encryptor<Aes256>;
@@ -25,31 +37,46 @@ pub fn ceil_to_multiple_of_16(value: usize) -> usize {
     ceil + rest
 }
 
-
-pub fn estimated_encrypted_size(unencrypted_file_size: u64, unencrypted_thumb_size: u64, unencrypted_infos_size: u64) -> u64 {
-            //16 Bytes to store IV
-        //4 to store encrypted thumb size = T (can be 0)
-        //4 to store encrypted Info size = I (can be 0)
-        //32 to store thumb mimetype
-        //256 to store file mimetype
-        //T Bytes for the encrypted thumb
-        //I Bytes for the encrypted info
-        let thumb_size = if unencrypted_thumb_size == 0 { 0 } else { ceil_to_multiple_of_16(unencrypted_thumb_size as usize) as u64 };
-        //println!("thumb_size {thumb_size}: {unencrypted_thumb_size}");
-        let infos_size = if unencrypted_infos_size == 0 { 0 } else { ceil_to_multiple_of_16(unencrypted_infos_size as usize) as u64 };
-        //println!("infos_size {infos_size}: {unencrypted_infos_size}");
-        let file_size = if unencrypted_file_size == 0 { 0 } else { ceil_to_multiple_of_16(unencrypted_file_size as usize) as u64 };
-        //println!("file {file_size}: {unencrypted_file_size}");
-        16 + 4 + 4 + 32 + 256 + thumb_size +  infos_size + file_size
+pub fn estimated_encrypted_size(
+    unencrypted_file_size: u64,
+    unencrypted_thumb_size: u64,
+    unencrypted_infos_size: u64,
+) -> u64 {
+    //16 Bytes to store IV
+    //4 to store encrypted thumb size = T (can be 0)
+    //4 to store encrypted Info size = I (can be 0)
+    //32 to store thumb mimetype
+    //256 to store file mimetype
+    //T Bytes for the encrypted thumb
+    //I Bytes for the encrypted info
+    let thumb_size = if unencrypted_thumb_size == 0 {
+        0
+    } else {
+        ceil_to_multiple_of_16(unencrypted_thumb_size as usize) as u64
+    };
+    //println!("thumb_size {thumb_size}: {unencrypted_thumb_size}");
+    let infos_size = if unencrypted_infos_size == 0 {
+        0
+    } else {
+        ceil_to_multiple_of_16(unencrypted_infos_size as usize) as u64
+    };
+    //println!("infos_size {infos_size}: {unencrypted_infos_size}");
+    let file_size = if unencrypted_file_size == 0 {
+        0
+    } else {
+        ceil_to_multiple_of_16(unencrypted_file_size as usize) as u64
+    };
+    //println!("file {file_size}: {unencrypted_file_size}");
+    16 + 4 + 4 + 32 + 256 + thumb_size + infos_size + file_size
 }
 
 pub fn string_to_fixed_bytes(input: &str, size: usize) -> Vec<u8> {
     let mut bytes = vec![b' '; size]; // Initialize with space characters
     let input_bytes = input.as_bytes();
     let copy_len = input_bytes.len().min(size);
-    
+
     bytes[..copy_len].copy_from_slice(&input_bytes[..copy_len]);
-    
+
     bytes
 }
 
@@ -66,19 +93,26 @@ pub struct AesTokioEncryptStream<W: AsyncWrite + Unpin> {
     thumb_mime: String,
 
     infos: Vec<u8>,
-    
 }
 
 impl<W: AsyncWrite + Unpin> AesTokioEncryptStream<W> {
-    pub fn new(writer: W, key: &[u8], iv: &[u8], file_mime: Option<String>, thumb: Option<(&[u8], String)>, infos: Option<String>) -> RsResult<Self> {
+    pub fn new(
+        writer: W,
+        key: &[u8],
+        iv: &[u8],
+        file_mime: Option<String>,
+        thumb: Option<(&[u8], String)>,
+        infos: Option<String>,
+    ) -> RsResult<Self> {
         if key.len() != 32 || iv.len() != 16 {
             return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput, 
-                "Key must be 256 bytes and IV must be 16 bytes"
-            ).into());
+                std::io::ErrorKind::InvalidInput,
+                "Key must be 256 bytes and IV must be 16 bytes",
+            )
+            .into());
         }
 
-        let encryptor = Aes256CbcEnc::new(key.into(), iv.into());        
+        let encryptor = Aes256CbcEnc::new(key.into(), iv.into());
         let (thumb, thumb_mime) = thumb.unwrap_or((&[], "".to_string()));
         let encthumb = if thumb.len() > 0 {
             encrypt(thumb, key, iv)?
@@ -103,13 +137,10 @@ impl<W: AsyncWrite + Unpin> AesTokioEncryptStream<W> {
 
             thumb: encthumb,
             thumb_mime,
-            
+
             infos: encinfos,
-            
         })
     }
-    
-    
 
     pub async fn write_encrypted(&mut self, data: &[u8]) -> RsResult<usize> {
         //16 Bytes to store IV
@@ -122,18 +153,26 @@ impl<W: AsyncWrite + Unpin> AesTokioEncryptStream<W> {
         if !self.header_written {
             //IV
             self.writer.write_all(self.iv.as_slice()).await?;
-        
+
             //thumb size
-            self.writer.write_all(&(self.thumb.len() as u32).to_be_bytes()).await?;
+            self.writer
+                .write_all(&(self.thumb.len() as u32).to_be_bytes())
+                .await?;
 
             //info size
-            self.writer.write_all(&(self.infos.len() as u32).to_be_bytes()).await?;
+            self.writer
+                .write_all(&(self.infos.len() as u32).to_be_bytes())
+                .await?;
 
             //thumb mime
-            self.writer.write_all(&string_to_fixed_bytes(&self.thumb_mime, 32)).await?;
+            self.writer
+                .write_all(&string_to_fixed_bytes(&self.thumb_mime, 32))
+                .await?;
 
             //file mime
-            self.writer.write_all(&string_to_fixed_bytes(&self.file_mime, 256)).await?;
+            self.writer
+                .write_all(&string_to_fixed_bytes(&self.file_mime, 256))
+                .await?;
 
             //enc thumb
             self.writer.write_all(&self.thumb).await?;
@@ -144,8 +183,6 @@ impl<W: AsyncWrite + Unpin> AesTokioEncryptStream<W> {
             self.header_written = true;
             //println!("Written headers");
         }
-
-
 
         self.buffer.extend_from_slice(data);
 
@@ -164,9 +201,12 @@ impl<W: AsyncWrite + Unpin> AesTokioEncryptStream<W> {
         // Encrypt multiple blocks at once
         let mut decrypted_blocks = Vec::with_capacity(blocks_end);
         for chunk in blocks.chunks(self.block_size) {
-            let mut block_array: [u8; 16] = chunk.try_into().map_err(|e| RsError::CryptError("Unable to convert chuck to block_array".to_string()))?;
+            let mut block_array: [u8; 16] = chunk.try_into().map_err(|e| {
+                RsError::CryptError("Unable to convert chuck to block_array".to_string())
+            })?;
             let mut outblock = Block::default();
-            self.encryptor.encrypt_block_b2b_mut(&mut block_array.into(), &mut outblock);
+            self.encryptor
+                .encrypt_block_b2b_mut(&mut block_array.into(), &mut outblock);
             decrypted_blocks.extend_from_slice(&outblock);
         }
 
@@ -182,11 +222,11 @@ impl<W: AsyncWrite + Unpin> AesTokioEncryptStream<W> {
     pub async fn finalize(mut self) -> RsResult<()> {
         //println!("finalize: {}", self.buffer.len());
         if !self.buffer.is_empty() {
-
             let mut buf = vec![0; ceil_to_multiple_of_16(self.buffer.len())];
-            let pt = self.encryptor.encrypt_padded_b2b_mut::<Pkcs7>(&self.buffer, &mut buf)?;
+            let pt = self
+                .encryptor
+                .encrypt_padded_b2b_mut::<Pkcs7>(&self.buffer, &mut buf)?;
 
-            
             self.writer.write_all(&pt).await?;
         }
         self.writer.flush().await?;
@@ -202,9 +242,6 @@ impl<W: AsyncWrite + Unpin> Stream for AesTokioEncryptStream<W> {
         Poll::Ready(None)
     }
 }
-
-
-
 
 //======================================================
 pub struct AesTokioDecryptStream<W: AsyncWrite + Unpin> {
@@ -227,12 +264,11 @@ impl<W: AsyncWrite + Unpin> AesTokioDecryptStream<W> {
     pub fn new(writer: W, key: &[u8], iv: Option<&[u8]>) -> Result<Self, std::io::Error> {
         if key.len() != 32 {
             return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput, 
-                "Key must be 32 bytes"
+                std::io::ErrorKind::InvalidInput,
+                "Key must be 32 bytes",
             ));
         }
 
-        
         Ok(Self {
             writer,
             decryptor: if let Some(iv) = iv {
@@ -251,7 +287,6 @@ impl<W: AsyncWrite + Unpin> AesTokioDecryptStream<W> {
 
             thumb_mime_passed: false,
             file_mime_passed: false,
-            
         })
     }
 
@@ -266,13 +301,15 @@ impl<W: AsyncWrite + Unpin> AesTokioDecryptStream<W> {
         //T Bytes for the encrypted thumb
         //I Bytes for the encrypted info
         if let Some(mut decryptor) = self.decryptor.as_mut() {
-          
             if self.thumb_size.is_none() {
                 if self.buffer.len() < 4 {
                     return Ok(data.len());
                 }
                 let (block, rest) = self.buffer.split_at(4);
-                self.thumb_size = Some(u32::from_be_bytes(block[0..4].try_into().map_err(|e| RsError::CryptError("Unable to convert chuck to block_array".to_string()))?));
+                self.thumb_size =
+                    Some(u32::from_be_bytes(block[0..4].try_into().map_err(|e| {
+                        RsError::CryptError("Unable to convert chuck to block_array".to_string())
+                    })?));
                 println!("thumb size: {:?}", self.thumb_size);
                 self.buffer = rest.to_vec();
             }
@@ -281,7 +318,10 @@ impl<W: AsyncWrite + Unpin> AesTokioDecryptStream<W> {
                     return Ok(data.len());
                 }
                 let (block, rest) = self.buffer.split_at(4);
-                self.infos_size = Some(u32::from_be_bytes(block[0..4].try_into().map_err(|e| RsError::CryptError("Unable to convert chuck to block_array".to_string()))?));
+                self.infos_size =
+                    Some(u32::from_be_bytes(block[0..4].try_into().map_err(|e| {
+                        RsError::CryptError("Unable to convert chuck to block_array".to_string())
+                    })?));
                 println!("info size: {:?}", self.infos_size);
                 self.buffer = rest.to_vec();
             }
@@ -299,12 +339,12 @@ impl<W: AsyncWrite + Unpin> AesTokioDecryptStream<W> {
                     return Ok(data.len());
                 }
                 let (block, rest) = self.buffer.split_at(256);
-                let file_mime = String::from_utf8(block.to_vec()).unwrap_or("unable to decrypt".to_string());
+                let file_mime =
+                    String::from_utf8(block.to_vec()).unwrap_or("unable to decrypt".to_string());
                 println!("filemime: {}", file_mime);
                 self.buffer = rest.to_vec();
                 self.file_mime_passed = true;
             }
-
 
             let thumb_size = self.thumb_size.unwrap_or(0);
             if !self.thumb_passed && thumb_size > 0 {
@@ -327,7 +367,6 @@ impl<W: AsyncWrite + Unpin> AesTokioDecryptStream<W> {
                 self.infos_passed = true;
             }
 
-
             //put the last 16 bits in a end_buffer in case it's the end of the file
             //let (block, rest) = self.buffer.split_at();
 
@@ -341,7 +380,9 @@ impl<W: AsyncWrite + Unpin> AesTokioDecryptStream<W> {
             // Decrypt multiple blocks at once
             let mut decrypted_blocks = Vec::with_capacity(blocks_end);
             for chunk in blocks.chunks(self.block_size) {
-                let mut block_array: [u8; 16] = chunk.try_into().map_err(|e| RsError::CryptError("Unable to convert chuck to block_array".to_string()))?;
+                let mut block_array: [u8; 16] = chunk.try_into().map_err(|e| {
+                    RsError::CryptError("Unable to convert chuck to block_array".to_string())
+                })?;
                 //println!("encrypted {:?}", block_array);
                 let mut outblock = Block::default();
                 decryptor.decrypt_block_b2b_mut(&mut block_array.into(), &mut outblock);
@@ -349,38 +390,32 @@ impl<W: AsyncWrite + Unpin> AesTokioDecryptStream<W> {
                 //print!("outblock: {:?}", decrypted_blocks);
 
                 //return Err(std::io::Error::other("STOP".to_string()));
-
             }
 
             // Write all decrypted blocks in one go
             self.writer.write_all(&decrypted_blocks).await?;
 
-
             // Keep only the leftover bytes in the buffer
             self.buffer = rest.to_vec();
-
         } else if self.buffer.len() >= 16 {
             let (blocks, rest) = self.buffer.split_at(16);
             println!("iv: {:?}", blocks);
 
-
-
             self.decryptor = Some(Aes256CbcDec::new(self.key.as_slice().into(), blocks.into()));
-            
+
             // init again the buffer buffer with the remaining
             self.buffer = rest.to_vec();
-
         }
 
         Ok(data.len())
-
     }
 
     pub async fn finalize(mut self) -> RsResult<()> {
         if let Some(mut decryptor) = self.decryptor {
             if !self.buffer.is_empty() {
-                let mut padded_block: [u8; 16] = self.buffer.try_into().map_err(|e| RsError::CryptError("Unable to convert chuck to block_array".to_string()))?;
-
+                let mut padded_block: [u8; 16] = self.buffer.try_into().map_err(|e| {
+                    RsError::CryptError("Unable to convert chuck to block_array".to_string())
+                })?;
 
                 let mut outblock = Block::default();
                 decryptor.decrypt_block_b2b_mut(&mut padded_block.into(), &mut outblock);
@@ -390,7 +425,7 @@ impl<W: AsyncWrite + Unpin> AesTokioDecryptStream<W> {
                 // Remove PKCS7 padding
                 let pad_length = padded_block[padded_block.len() - 1] as usize;
                 let unpadded = &padded_block[..padded_block.len() - pad_length];
-                
+
                 self.writer.write_all(unpadded).await?;
             }
             self.writer.flush().await?;
@@ -407,15 +442,7 @@ impl<W: AsyncWrite + Unpin> Stream for AesTokioDecryptStream<W> {
     }
 }
 
-
-
-
 //======================================================
-
-
-
-
-
 
 pub fn derive_key(password: String) -> [u8; 32] {
     let password = password.into_bytes();
@@ -426,7 +453,7 @@ pub fn derive_key(password: String) -> [u8; 32] {
     let mut key1 = [0u8; 32];
     pbkdf2_hmac::<Sha1>(password.as_slice(), &salt_file, n, &mut key1);
     //println!("{:?}", key1);
-    
+
     key1
 }
 
@@ -436,19 +463,20 @@ fn encrypt(data: &[u8], key: &[u8], iv: &[u8]) -> RsResult<Vec<u8>> {
     }
     let data_len = data.len();
     let mut buf = vec![0u8; ceil_to_multiple_of_16(data_len)];
-    
+
     buf[..data_len].copy_from_slice(&data);
-    let ct = Aes256CbcEnc::new(key.into(), iv.into())
-        .encrypt_padded_mut::<Pkcs7>(&mut buf, data_len)?;
+    let ct =
+        Aes256CbcEnc::new(key.into(), iv.into()).encrypt_padded_mut::<Pkcs7>(&mut buf, data_len)?;
 
     Ok((ct.to_vec()))
 }
 
 fn decrypt(mut data: &mut [u8], key: &[u8], iv: &[u8]) -> RsResult<Vec<u8>> {
-
     let decrypted = Aes256CbcDec::new(key.into(), iv.into())
         .decrypt_padded_mut::<Pkcs7>(&mut data)
-        .map_err(|e| RsError::CryptError("Unable to convert chuck todecrypt data buffer".to_string()))?;
+        .map_err(|e| {
+            RsError::CryptError("Unable to convert chuck todecrypt data buffer".to_string())
+        })?;
 
     Ok(decrypted.to_vec())
 }
@@ -460,10 +488,10 @@ pub fn random_iv() -> [u8; 16] {
 }
 
 pub async fn encrypt_file(
-    input_path: &str, 
-    output_path: &str, 
-    key: &[u8], 
-    iv: &[u8]
+    input_path: &str,
+    output_path: &str,
+    key: &[u8],
+    iv: &[u8],
 ) -> RsResult<()> {
     // Open input file
     let input_file = File::open(input_path).await?;
@@ -479,7 +507,17 @@ pub async fn encrypt_file(
     let writer = BufWriter::new(output_file);
 
     // Create encryption stream
-    let mut encrypt_stream = AesTokioEncryptStream::new(writer, key, iv, None, Some((vec![0, 1, 226, 64, 100, 200, 50, 75, 0, 0, 0, 0].as_slice(), "image/jpeg".to_string())), None)?;
+    let mut encrypt_stream = AesTokioEncryptStream::new(
+        writer,
+        key,
+        iv,
+        None,
+        Some((
+            vec![0, 1, 226, 64, 100, 200, 50, 75, 0, 0, 0, 0].as_slice(),
+            "image/jpeg".to_string(),
+        )),
+        None,
+    )?;
 
     // Read and encrypt in chunks
     let mut buffer = vec![0; 1024];
@@ -488,7 +526,9 @@ pub async fn encrypt_file(
         if bytes_read == 0 {
             break;
         }
-        encrypt_stream.write_encrypted(&buffer[..bytes_read]).await?;
+        encrypt_stream
+            .write_encrypted(&buffer[..bytes_read])
+            .await?;
     }
 
     // Finalize encryption
@@ -498,10 +538,10 @@ pub async fn encrypt_file(
 }
 
 pub async fn decrypt_file(
-    input_path: &str, 
-    output_path: &str, 
-    key: &[u8], 
-    iv: Option<&[u8]>
+    input_path: &str,
+    output_path: &str,
+    key: &[u8],
+    iv: Option<&[u8]>,
 ) -> RsResult<()> {
     let input_file = File::open(input_path).await?;
     let mut reader = BufReader::new(input_file);
@@ -522,7 +562,9 @@ pub async fn decrypt_file(
         if bytes_read == 0 {
             break;
         }
-        decrypt_stream.write_decrypted(&buffer[..bytes_read]).await?;
+        decrypt_stream
+            .write_decrypted(&buffer[..bytes_read])
+            .await?;
     }
 
     decrypt_stream.finalize().await?;
@@ -775,8 +817,12 @@ mod tests {
         {
             let cursor = std::io::Cursor::new(&mut encrypted);
             let mut writer = CtrEncryptWriter::new(cursor, &key).unwrap();
-            tokio::io::AsyncWriteExt::write_all(&mut writer, plaintext).await.unwrap();
-            tokio::io::AsyncWriteExt::shutdown(&mut writer).await.unwrap();
+            tokio::io::AsyncWriteExt::write_all(&mut writer, plaintext)
+                .await
+                .unwrap();
+            tokio::io::AsyncWriteExt::shutdown(&mut writer)
+                .await
+                .unwrap();
         }
 
         // Verify encrypted size = plaintext + 16 nonce
@@ -805,8 +851,12 @@ mod tests {
         {
             let cursor = std::io::Cursor::new(&mut encrypted);
             let mut writer = CtrEncryptWriter::new(cursor, &key).unwrap();
-            tokio::io::AsyncWriteExt::write_all(&mut writer, &plaintext).await.unwrap();
-            tokio::io::AsyncWriteExt::shutdown(&mut writer).await.unwrap();
+            tokio::io::AsyncWriteExt::write_all(&mut writer, &plaintext)
+                .await
+                .unwrap();
+            tokio::io::AsyncWriteExt::shutdown(&mut writer)
+                .await
+                .unwrap();
         }
 
         // Extract nonce
@@ -822,5 +872,4 @@ mod tests {
 
         assert_eq!(decrypted, &plaintext[offset as usize..]);
     }
-
 }

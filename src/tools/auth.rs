@@ -27,7 +27,7 @@ pub struct ClaimsLocal {
     pub(crate) kind: ClaimsLocalType,
     pub(crate) exp: u64,
 }
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, strum_macros::Display,EnumString)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, strum_macros::Display, EnumString)]
 #[strum(serialize_all = "camelCase")]
 #[serde(rename_all = "camelCase")]
 pub enum ClaimsLocalType {
@@ -38,14 +38,17 @@ pub enum ClaimsLocalType {
 }
 impl ClaimsLocal {
     pub fn generate_seconds(delay_in_seconds: u64) -> u64 {
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() + delay_in_seconds
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + delay_in_seconds
     }
 }
 
-
-
 pub fn verify(token: &str, server: &str) -> Result<Claims> {
-    let public_key = DecodingKey::from_rsa_pem(include_bytes!("pubkey.pem")).expect("Unable to find publickey.pem");
+    let public_key = DecodingKey::from_rsa_pem(include_bytes!("pubkey.pem"))
+        .expect("Unable to find publickey.pem");
     let mut validation = Validation::new(Algorithm::RS256);
     validation.set_audience(&[server]);
     let token_data = match decode::<Claims>(&token, &public_key, &validation) {
@@ -89,38 +92,41 @@ fn verify_with_key(token: &str, public_key: DecodingKey) -> Result<ClaimsLocal> 
 
 pub async fn sign_local(claims: ClaimsLocal) -> Result<String> {
     let (_, prv) = get_or_init_keys().await?;
-    
-    
-    let encoding_key: EncodingKey = EncodingKey::from_rsa_pem(prv.as_bytes()).or(Err(Error::AuthFail))?;
-    
+
+    let encoding_key: EncodingKey =
+        EncodingKey::from_rsa_pem(prv.as_bytes()).or(Err(Error::AuthFail))?;
+
     let header = jsonwebtoken::Header::new(Algorithm::RS256);
-
-
 
     let key = encode(&header, &claims, &encoding_key).or(Err(Error::AuthFail))?;
 
     Ok(key)
-
 }
 
-
 pub async fn get_or_init_keys() -> Result<(String, Zeroizing<String>)> {
-
     if has_server_file("pubkey.pem").await && has_server_file("private.pem").await {
-        let pubkeystring = get_server_file_string("pubkey.pem").await?.ok_or(Error::InvalidPublicKey)?;
-        let prvkeystring = Zeroizing::new(get_server_file_string("private.pem").await?.ok_or(Error::InvalidPublicKey)?);
-        return  Ok((pubkeystring, prvkeystring));
+        let pubkeystring = get_server_file_string("pubkey.pem")
+            .await?
+            .ok_or(Error::InvalidPublicKey)?;
+        let prvkeystring = Zeroizing::new(
+            get_server_file_string("private.pem")
+                .await?
+                .ok_or(Error::InvalidPublicKey)?,
+        );
+        return Ok((pubkeystring, prvkeystring));
     }
 
     let (pubkeystring, prvkeystring) = {
-    let mut rng = rand::thread_rng();
-    let bits = 2048;
-    let priv_key = RsaPrivateKey::new(&mut rng, bits).expect("failed to generate a key");
-    let pub_key = RsaPublicKey::from(&priv_key);
+        let mut rng = rand::thread_rng();
+        let bits = 2048;
+        let priv_key = RsaPrivateKey::new(&mut rng, bits).expect("failed to generate a key");
+        let pub_key = RsaPublicKey::from(&priv_key);
 
-    let pubkeystring = pub_key.to_public_key_pem(rsa::pkcs8::LineEnding::CRLF).unwrap();
+        let pubkeystring = pub_key
+            .to_public_key_pem(rsa::pkcs8::LineEnding::CRLF)
+            .unwrap();
 
-    let prvkeystring = priv_key.to_pkcs8_pem(rsa::pkcs8::LineEnding::CRLF).unwrap();
+        let prvkeystring = priv_key.to_pkcs8_pem(rsa::pkcs8::LineEnding::CRLF).unwrap();
         (pubkeystring, prvkeystring)
     };
     write_server_file("pubkey.pem", pubkeystring.as_bytes()).await?;
@@ -128,7 +134,6 @@ pub async fn get_or_init_keys() -> Result<(String, Zeroizing<String>)> {
 
     Ok((pubkeystring, prvkeystring))
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -156,5 +161,4 @@ mod tests {
 
         //assert_eq!(error, Error::AuthFailNotForThisServer);
     }
-
 }

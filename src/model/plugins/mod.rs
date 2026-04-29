@@ -1,19 +1,54 @@
-
-
-
 use std::collections::HashMap;
 
 use nanoid::nanoid;
-use rs_plugin_common_interfaces::{lookup::{RsLookupMetadataResultWrapper, RsLookupMetadataResults, RsLookupQuery, RsLookupSourceResult}, request::{RsGroupDownload, RsProcessingStatus, RsRequest}, url::{RsLink, RsLinkType}, CustomParam, ExternalImage, PluginCredential, PluginInformation, PluginType, RsPluginRequest};
+use rs_plugin_common_interfaces::{
+    lookup::{
+        RsLookupMetadataResultWrapper, RsLookupMetadataResults, RsLookupQuery, RsLookupSourceResult,
+    },
+    request::{RsGroupDownload, RsProcessingStatus, RsRequest},
+    url::{RsLink, RsLinkType},
+    CustomParam, ExternalImage, PluginCredential, PluginInformation, PluginType, RsPluginRequest,
+};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::{fs::{self, File}, io::{copy, BufWriter}, sync::mpsc::Sender};
+use tokio::{
+    fs::{self, File},
+    io::{copy, BufWriter},
+    sync::mpsc::Sender,
+};
 
+use crate::{
+    domain::{
+        backup::Backup,
+        library::LibraryRole,
+        plugin::{
+            Plugin, PluginForAdd, PluginForInsert, PluginForInstall, PluginForUpdate, PluginWasm,
+            PluginWithCredential,
+        },
+        progress::{RsProgress, RsProgressCallback},
+        request_processing::{
+            RequestProcessingMessage, RequestProcessingWithAction, RsRequestProcessing,
+            RsRequestProcessingForInsert, RsRequestProcessingForUpdate,
+        },
+        ElementAction,
+    },
+    error::{RsError, RsResult},
+    plugins::{
+        get_plugin_fodler,
+        sources::{error::SourcesError, AsyncReadPinBox, SourceRead},
+        url::{self, PluginTarget},
+    },
+    tools::{
+        file_tools::extract_zip, http_tools::download_latest_wasm, video_tools::ytdl::YydlContext,
+    },
+};
 
-use crate::{domain::{backup::Backup, library::LibraryRole, plugin::{Plugin, PluginForAdd, PluginForInsert, PluginForInstall, PluginForUpdate, PluginWasm, PluginWithCredential}, progress::{RsProgress, RsProgressCallback}, request_processing::{RequestProcessingMessage, RequestProcessingWithAction, RsRequestProcessing, RsRequestProcessingForInsert, RsRequestProcessingForUpdate}, ElementAction}, error::{RsError, RsResult}, plugins::{get_plugin_fodler, sources::{error::SourcesError, AsyncReadPinBox, SourceRead}, url::{self, PluginTarget}}, tools::{file_tools::extract_zip, http_tools::download_latest_wasm, video_tools::ytdl::YydlContext}};
-
-use super::{error::{Error, Result}, users::{ConnectedUser, UserRole}, ModelController};
+use super::{
+    error::{Error, Result},
+    users::{ConnectedUser, UserRole},
+    ModelController,
+};
 
 pub mod video_convert_plugin;
 
@@ -24,23 +59,33 @@ pub struct PluginQuery {
     pub library: Option<String>,
 }
 
-
 /// Merge WASM-defined params with DB-stored params.
 /// Starts from WASM params (full schema), then overrides values from DB where name matches.
 fn merge_params(wasm_params: &[CustomParam], db_params: &[CustomParam]) -> Vec<CustomParam> {
-    wasm_params.iter().map(|wasm_param| {
-        if let Some(db_param) = db_params.iter().find(|p| p.name == wasm_param.name) {
-            CustomParam {
-                param: db_param.param.clone(),
-                ..wasm_param.clone()
+    wasm_params
+        .iter()
+        .map(|wasm_param| {
+            if let Some(db_param) = db_params.iter().find(|p| p.name == wasm_param.name) {
+                CustomParam {
+                    param: db_param.param.clone(),
+                    ..wasm_param.clone()
+                }
+            } else {
+                wasm_param.clone()
             }
-        } else {
-            wasm_param.clone()
-        }
-    }).collect()
+        })
+        .collect()
 }
 
 impl ModelController {
+    pub(super) async fn clear_plugin_convert_concurrency_limit_cache(&self, plugin_id: Option<&str>) {
+        let mut limits = self.plugin_convert_concurrency_limits.write().await;
+        if let Some(plugin_id) = plugin_id {
+            limits.remove(plugin_id);
+        } else {
+            limits.clear();
+        }
+    }
 
     /// Enrich a plugin with WASM runtime data (description, credential_type, merged params)
     async fn enrich_plugin(&self, plugin: &mut Plugin) {
@@ -52,363 +97,716 @@ impl ModelController {
         }
     }
 
-	pub async fn get_all_plugins(&self, query: PluginQuery, requesting_user: &ConnectedUser) -> Result<Vec<Plugin>> {
+    pub async fn get_all_plugins(
+        &self,
+        query: PluginQuery,
+        requesting_user: &ConnectedUser,
+    ) -> Result<Vec<Plugin>> {
         requesting_user.check_role(&UserRole::Admin)?;
-		let mut installed_plugins = self.store.get_plugins(query).await?;
+        let mut installed_plugins = self.store.get_plugins(query).await?;
         let all_plugins = &self.plugin_manager.plugins;
         for plugin in all_plugins.read().await.iter() {
-            let existing = installed_plugins.iter_mut().find(|r| r.path == plugin.filename);
+            let existing = installed_plugins
+                .iter_mut()
+                .find(|r| r.path == plugin.filename);
             if let Some(existing) = existing {
                 existing.description = plugin.infos.description.clone();
                 existing.credential_type = plugin.infos.credential_kind.clone();
                 existing.params = merge_params(&plugin.infos.settings, &existing.params);
             } else {
                 installed_plugins.push(plugin.into());
-
             }
         }
-		Ok(installed_plugins)
-	}
+        Ok(installed_plugins)
+    }
 
-
-    pub async fn get_plugins(&self, query: PluginQuery, requesting_user: &ConnectedUser) -> Result<Vec<Plugin>> {
+    pub async fn get_plugins(
+        &self,
+        query: PluginQuery,
+        requesting_user: &ConnectedUser,
+    ) -> Result<Vec<Plugin>> {
         if let Some(library_id) = &query.library {
-            requesting_user.check_library_role(library_id, crate::domain::library::LibraryRole::Write)?;
+            requesting_user
+                .check_library_role(library_id, crate::domain::library::LibraryRole::Write)?;
         } else {
             requesting_user.check_role(&UserRole::Write)?;
         }
 
-		let plugins = self.store.get_plugins(query).await?;
-		
-		Ok(plugins)
-	}
+        let plugins = self.store.get_plugins(query).await?;
 
-    pub async fn get_plugins_with_credential(&self, query: PluginQuery) -> Result<impl Iterator<Item = PluginWithCredential>> {
-		let plugins = self.store.get_plugins(query).await?.into_iter();
-		let credentials = self.store.get_credentials().await?;
+        Ok(plugins)
+    }
+
+    pub async fn get_plugins_with_credential(
+        &self,
+        query: PluginQuery,
+    ) -> Result<impl Iterator<Item = PluginWithCredential>> {
+        let plugins = self.store.get_plugins(query).await?.into_iter();
+        let credentials = self.store.get_credentials().await?;
         let iter = plugins.map(move |p| {
-            let credential = credentials.iter().find(|c| Some(&c.id) == p.credential.as_ref()).cloned();
-            PluginWithCredential { plugin: p.clone(), credential }
+            let credential = credentials
+                .iter()
+                .find(|c| Some(&c.id) == p.credential.as_ref())
+                .cloned();
+            PluginWithCredential {
+                plugin: p.clone(),
+                credential,
+            }
         });
-		Ok(iter)
-	}
+        Ok(iter)
+    }
 
-    pub async fn get_plugin(&self, plugin_id: String, requesting_user: &ConnectedUser) -> RsResult<Plugin> {
+    pub async fn get_plugin(
+        &self,
+        plugin_id: String,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Plugin> {
         requesting_user.check_role(&UserRole::Admin)?;
-		let mut plugin = self.store.get_plugin(&plugin_id).await?.ok_or(SourcesError::UnableToFindPlugin(plugin_id.to_string(), "get_plugin".to_string()))?;
+        let mut plugin =
+            self.store
+                .get_plugin(&plugin_id)
+                .await?
+                .ok_or(SourcesError::UnableToFindPlugin(
+                    plugin_id.to_string(),
+                    "get_plugin".to_string(),
+                ))?;
         self.enrich_plugin(&mut plugin).await;
-		Ok(plugin)
-	}
-    
+        Ok(plugin)
+    }
+
     pub async fn get_plugin_with_credential(&self, id: &str) -> Result<PluginWithCredential> {
-		let plugin = self.store.get_plugin(id).await?.ok_or(SourcesError::UnableToFindPlugin(id.to_string(), "get_plugin_with_credential".to_string()))?;
-		let credentials = self.store.get_credentials().await?;
-      
-        let credential = credentials.iter().find(|c| Some(&c.id) == plugin.credential.as_ref()).cloned();
-        Ok(PluginWithCredential { plugin: plugin, credential })
-	}
+        let plugin = self
+            .store
+            .get_plugin(id)
+            .await?
+            .ok_or(SourcesError::UnableToFindPlugin(
+                id.to_string(),
+                "get_plugin_with_credential".to_string(),
+            ))?;
+        let credentials = self.store.get_credentials().await?;
+
+        let credential = credentials
+            .iter()
+            .find(|c| Some(&c.id) == plugin.credential.as_ref())
+            .cloned();
+        Ok(PluginWithCredential {
+            plugin: plugin,
+            credential,
+        })
+    }
 
     pub async fn reload_plugins(&self, requesting_user: &ConnectedUser) -> RsResult<()> {
         requesting_user.check_role(&UserRole::Admin)?;
         self.plugin_manager.reload().await?;
-		Ok(())
-	}
+        self.clear_plugin_convert_concurrency_limit_cache(None).await;
+        Ok(())
+    }
 
-    pub async fn reload_plugin(&self, plugin_id: String, requesting_user: &ConnectedUser) -> RsResult<Plugin> {
+    pub async fn reload_plugin(
+        &self,
+        plugin_id: String,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Plugin> {
         requesting_user.check_role(&UserRole::Admin)?;
         let plugin = self.get_plugin(plugin_id.clone(), requesting_user).await?;
 
         let infos = self.plugin_manager.load_wasm_plugin(&plugin.path).await?;
         let update: PluginForUpdate = infos.into();
-        let plugin = self.update_plugin(&plugin_id, update, requesting_user).await?;
-		Ok(plugin)
-	}
+        let plugin = self
+            .update_plugin(&plugin_id, update, requesting_user)
+            .await?;
+        Ok(plugin)
+    }
 
-    pub async fn update_plugin(&self, plugin_id: &str, update: PluginForUpdate, requesting_user: &ConnectedUser) -> Result<Plugin> {
+    pub async fn update_plugin(
+        &self,
+        plugin_id: &str,
+        update: PluginForUpdate,
+        requesting_user: &ConnectedUser,
+    ) -> Result<Plugin> {
         requesting_user.check_role(&UserRole::Admin)?;
-		self.store.update_plugin(plugin_id, update).await?;
-        let mut plugin = self.store.get_plugin(plugin_id).await?.ok_or(SourcesError::UnableToFindPlugin(plugin_id.to_string(), "update_plugin".to_string()))?;
+        self.store.update_plugin(plugin_id, update).await?;
+        self.clear_plugin_convert_concurrency_limit_cache(Some(plugin_id))
+            .await;
+        let mut plugin =
+            self.store
+                .get_plugin(plugin_id)
+                .await?
+                .ok_or(SourcesError::UnableToFindPlugin(
+                    plugin_id.to_string(),
+                    "update_plugin".to_string(),
+                ))?;
         self.enrich_plugin(&mut plugin).await;
         Ok(plugin)
-	}
+    }
 
-    pub async fn install_plugin(&self, plugin: PluginForInstall, requesting_user: &ConnectedUser) -> RsResult<Plugin> {
+    pub async fn install_plugin(
+        &self,
+        plugin: PluginForInstall,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Plugin> {
         requesting_user.check_role(&UserRole::Admin)?;
         let plugins = self.plugin_manager.plugins.read().await;
-        let plugin = plugins.iter().find(|p| p.filename == plugin.path).ok_or(SourcesError::UnableToFindPlugin(plugin.path.to_string(), "install_plugin".to_string()))?;
-  
-        let plugin_for_add:PluginForAdd  = plugin.into();
-        
+        let plugin = plugins.iter().find(|p| p.filename == plugin.path).ok_or(
+            SourcesError::UnableToFindPlugin(plugin.path.to_string(), "install_plugin".to_string()),
+        )?;
+
+        let plugin_for_add: PluginForAdd = plugin.into();
+
         let plugin = PluginForInsert {
             id: nanoid!(),
-            plugin: plugin_for_add
+            plugin: plugin_for_add,
         };
-		self.store.add_plugin(plugin.clone()).await?;
+        self.store.add_plugin(plugin.clone()).await?;
+        self.clear_plugin_convert_concurrency_limit_cache(None).await;
         let plugin = self.get_plugin(plugin.id, &requesting_user).await?;
-		Ok(plugin)
-	}
+        Ok(plugin)
+    }
 
-    pub async fn add_plugin(&self, plugin: PluginForAdd, requesting_user: &ConnectedUser) -> RsResult<Plugin> {
+    pub async fn add_plugin(
+        &self,
+        plugin: PluginForAdd,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Plugin> {
         requesting_user.check_role(&UserRole::Admin)?;
         let plugin = PluginForInsert {
             id: nanoid!(),
-            plugin
+            plugin,
         };
-		self.store.add_plugin(plugin.clone()).await?;
+        self.store.add_plugin(plugin.clone()).await?;
+        self.clear_plugin_convert_concurrency_limit_cache(None).await;
         let plugin = self.get_plugin(plugin.id, &requesting_user).await?;
-		Ok(plugin)
-	}
+        Ok(plugin)
+    }
 
-
-    pub async fn remove_plugin(&self, plugin_id: &str, requesting_user: &ConnectedUser) -> RsResult<Plugin> {
+    pub async fn remove_plugin(
+        &self,
+        plugin_id: &str,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Plugin> {
         requesting_user.check_role(&UserRole::Admin)?;
-        let plugin = self.store.get_plugin(&plugin_id).await?.ok_or(SourcesError::UnableToFindPlugin(plugin_id.to_string(), "get_plugin".to_string()))?;
+        let plugin =
+            self.store
+                .get_plugin(&plugin_id)
+                .await?
+                .ok_or(SourcesError::UnableToFindPlugin(
+                    plugin_id.to_string(),
+                    "get_plugin".to_string(),
+                ))?;
 
         self.store.remove_plugin(plugin_id.to_string()).await?;
+        self.clear_plugin_convert_concurrency_limit_cache(Some(plugin_id))
+            .await;
         self.reload_plugins(&requesting_user).await?;
         Ok(plugin)
-	}
+    }
 
-    pub async fn remove_plugin_wasm(&self, plugin_id: &str, requesting_user: &ConnectedUser) -> RsResult<()> {
+    pub async fn remove_plugin_wasm(
+        &self,
+        plugin_id: &str,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<()> {
         requesting_user.check_role(&UserRole::Admin)?;
         self.remove_plugin(plugin_id, requesting_user).await;
         let mut path = get_plugin_fodler().await?;
-        path.push(plugin_id);   
+        path.push(plugin_id);
         fs::remove_file(path).await?;
         self.reload_plugins(&requesting_user).await?;
         Ok(())
-	}
-
-
-    pub async fn exec_parse(&self, library_id: Option<String>, url: String, requesting_user: &ConnectedUser) -> RsResult<RsLink> {
-		if let Some(library_id) = &library_id {
-            requesting_user.check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
-        } else {
-            requesting_user.check_role(&UserRole::Admin)?;
-        }
-        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::UrlParser), library: library_id, ..Default::default() }).await?;
-
-        Ok(self.plugin_manager.parse(url.clone(), plugins).await.unwrap_or(RsLink { platform: "link".to_owned(), kind: Some(RsLinkType::Other), id: url, ..Default::default() }))
-	}
-
-    pub async fn exec_expand(&self, library_id: Option<String>, link: RsLink, requesting_user: &ConnectedUser) -> RsResult<String> {
-		if let Some(library_id) = &library_id {
-            requesting_user.check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
-        } else {
-            requesting_user.check_role(&UserRole::Admin)?;
-        }
-        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::UrlParser), library: library_id, ..Default::default() }).await?;
-
-        Ok(self.plugin_manager.expand(link.clone(), plugins).await.ok_or(Error::NotFound(format!("Unable to expand link {:?}", link)))?)
-	}
-
-
-
-    pub async fn exec_request(&self, request: RsRequest, library_id: Option<String>, savable: bool, progress: Option<Sender<RsProgress>>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<SourceRead> {
-
-        if let Some(library_id) = &library_id {
-            requesting_user.check_request_role(library_id, &request)?;
-
-        } else {
-            requesting_user.check_role(&UserRole::Admin)?;
-        }
-        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::Request), library: library_id, ..Default::default() }).await?.collect();
-        self.plugin_manager.request(request, savable, plugins, progress, target).await
-
     }
 
-    pub async fn parse_request(&self, request: RsRequest, progress: RsProgressCallback) -> RsResult<SourceRead> {
+    pub async fn exec_parse(
+        &self,
+        library_id: Option<String>,
+        url: String,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<RsLink> {
+        if let Some(library_id) = &library_id {
+            requesting_user
+                .check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
+        } else {
+            requesting_user.check_role(&UserRole::Admin)?;
+        }
+        let plugins = self
+            .get_plugins_with_credential(PluginQuery {
+                kind: Some(PluginType::UrlParser),
+                library: library_id,
+                ..Default::default()
+            })
+            .await?;
+
+        Ok(self
+            .plugin_manager
+            .parse(url.clone(), plugins)
+            .await
+            .unwrap_or(RsLink {
+                platform: "link".to_owned(),
+                kind: Some(RsLinkType::Other),
+                id: url,
+                ..Default::default()
+            }))
+    }
+
+    pub async fn exec_expand(
+        &self,
+        library_id: Option<String>,
+        link: RsLink,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<String> {
+        if let Some(library_id) = &library_id {
+            requesting_user
+                .check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
+        } else {
+            requesting_user.check_role(&UserRole::Admin)?;
+        }
+        let plugins = self
+            .get_plugins_with_credential(PluginQuery {
+                kind: Some(PluginType::UrlParser),
+                library: library_id,
+                ..Default::default()
+            })
+            .await?;
+
+        Ok(self
+            .plugin_manager
+            .expand(link.clone(), plugins)
+            .await
+            .ok_or(Error::NotFound(format!("Unable to expand link {:?}", link)))?)
+    }
+
+    pub async fn exec_request(
+        &self,
+        request: RsRequest,
+        library_id: Option<String>,
+        savable: bool,
+        progress: Option<Sender<RsProgress>>,
+        requesting_user: &ConnectedUser,
+        target: Option<PluginTarget>,
+    ) -> RsResult<SourceRead> {
+        if let Some(library_id) = &library_id {
+            requesting_user.check_request_role(library_id, &request)?;
+        } else {
+            requesting_user.check_role(&UserRole::Admin)?;
+        }
+        let plugins = self
+            .get_plugins_with_credential(PluginQuery {
+                kind: Some(PluginType::Request),
+                library: library_id,
+                ..Default::default()
+            })
+            .await?
+            .collect();
+        self.plugin_manager
+            .request(request, savable, plugins, progress, target)
+            .await
+    }
+
+    pub async fn parse_request(
+        &self,
+        request: RsRequest,
+        progress: RsProgressCallback,
+    ) -> RsResult<SourceRead> {
         let ctx = YydlContext::new().await?;
         let result = ctx.request(&request, progress).await?;
 
         return Ok(result);
     }
 
-    pub async fn exec_permanent(&self, request: RsRequest, library_id: Option<String>, progress: Option<Sender<RsProgress>>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<RsRequest> {
-
+    pub async fn exec_permanent(
+        &self,
+        request: RsRequest,
+        library_id: Option<String>,
+        progress: Option<Sender<RsProgress>>,
+        requesting_user: &ConnectedUser,
+        target: Option<PluginTarget>,
+    ) -> RsResult<RsRequest> {
         if let Some(library_id) = &library_id {
-            requesting_user.check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
-
+            requesting_user
+                .check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
         } else {
             requesting_user.check_role(&UserRole::Admin)?;
         }
-        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::Request), library: library_id, ..Default::default() }).await?.collect();
-        self.plugin_manager.request_permanent(request, plugins, progress, target).await?.ok_or(crate::Error::NotFound("Unable to get permanent link".to_string()))
-
+        let plugins = self
+            .get_plugins_with_credential(PluginQuery {
+                kind: Some(PluginType::Request),
+                library: library_id,
+                ..Default::default()
+            })
+            .await?
+            .collect();
+        self.plugin_manager
+            .request_permanent(request, plugins, progress, target)
+            .await?
+            .ok_or(crate::Error::NotFound(
+                "Unable to get permanent link".to_string(),
+            ))
     }
 
-    pub async fn exec_lookup(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<Vec<RsGroupDownload>> {
+    pub async fn exec_lookup(
+        &self,
+        query: RsLookupQuery,
+        library_id: Option<String>,
+        requesting_user: &ConnectedUser,
+        target: Option<PluginTarget>,
+    ) -> RsResult<Vec<RsGroupDownload>> {
         if let Some(library_id) = &library_id {
-            requesting_user.check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
+            requesting_user
+                .check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
         } else {
             requesting_user.check_role(&UserRole::Admin)?;
         }
-        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::Lookup), library: library_id, ..Default::default() }).await?.collect();
+        let plugins = self
+            .get_plugins_with_credential(PluginQuery {
+                kind: Some(PluginType::Lookup),
+                library: library_id,
+                ..Default::default()
+            })
+            .await?
+            .collect();
 
         self.plugin_manager.lookup(query, plugins, target).await
-
     }
 
-    pub async fn exec_lookup_stream_grouped(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>, sources: Option<&[String]>) -> RsResult<tokio::sync::mpsc::Receiver<(String, String, Vec<RsGroupDownload>)>> {
+    pub async fn exec_lookup_stream_grouped(
+        &self,
+        query: RsLookupQuery,
+        library_id: Option<String>,
+        requesting_user: &ConnectedUser,
+        target: Option<PluginTarget>,
+        sources: Option<&[String]>,
+    ) -> RsResult<tokio::sync::mpsc::Receiver<(String, String, Vec<RsGroupDownload>)>> {
         if let Some(library_id) = &library_id {
-            requesting_user.check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
+            requesting_user
+                .check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
         } else {
             requesting_user.check_role(&UserRole::Admin)?;
         }
-        let plugins: Vec<_> = self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::Lookup), library: library_id, ..Default::default() })
+        let plugins: Vec<_> = self
+            .get_plugins_with_credential(PluginQuery {
+                kind: Some(PluginType::Lookup),
+                library: library_id,
+                ..Default::default()
+            })
             .await?
             .filter(|p| sources.map_or(true, |s| s.iter().any(|id| id == &p.plugin.path)))
             .collect();
 
-        self.plugin_manager.lookup_stream_grouped(query, plugins, target).await
+        self.plugin_manager
+            .lookup_stream_grouped(query, plugins, target)
+            .await
     }
 
-    pub async fn exec_lookup_metadata(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<RsLookupMetadataResults> {
+    pub async fn exec_lookup_metadata(
+        &self,
+        query: RsLookupQuery,
+        library_id: Option<String>,
+        requesting_user: &ConnectedUser,
+        target: Option<PluginTarget>,
+    ) -> RsResult<RsLookupMetadataResults> {
         if let Some(library_id) = &library_id {
-            requesting_user.check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
+            requesting_user
+                .check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
         } else {
             requesting_user.check_role(&UserRole::Admin)?;
         }
-        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::LookupMetadata), library: library_id, ..Default::default() }).await?.collect();
+        let plugins = self
+            .get_plugins_with_credential(PluginQuery {
+                kind: Some(PluginType::LookupMetadata),
+                library: library_id,
+                ..Default::default()
+            })
+            .await?
+            .collect();
 
-        self.plugin_manager.lookup_metadata(query, plugins, target).await
+        self.plugin_manager
+            .lookup_metadata(query, plugins, target)
+            .await
     }
 
-    pub async fn exec_lookup_images(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<Vec<ExternalImage>> {
+    pub async fn exec_lookup_images(
+        &self,
+        query: RsLookupQuery,
+        library_id: Option<String>,
+        requesting_user: &ConnectedUser,
+        target: Option<PluginTarget>,
+    ) -> RsResult<Vec<ExternalImage>> {
         if let Some(library_id) = &library_id {
-            requesting_user.check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
+            requesting_user
+                .check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
         } else {
             requesting_user.check_role(&UserRole::Admin)?;
         }
-        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::LookupMetadata), library: library_id, ..Default::default() }).await?.collect();
+        let plugins = self
+            .get_plugins_with_credential(PluginQuery {
+                kind: Some(PluginType::LookupMetadata),
+                library: library_id,
+                ..Default::default()
+            })
+            .await?
+            .collect();
 
-        self.plugin_manager.lookup_images(query, plugins, target).await
+        self.plugin_manager
+            .lookup_images(query, plugins, target)
+            .await
     }
 
-    pub async fn exec_lookup_metadata_grouped(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>, sources: Option<&[String]>) -> RsResult<Vec<(String, String, RsLookupMetadataResults)>> {
+    pub async fn exec_lookup_metadata_grouped(
+        &self,
+        query: RsLookupQuery,
+        library_id: Option<String>,
+        requesting_user: &ConnectedUser,
+        target: Option<PluginTarget>,
+        sources: Option<&[String]>,
+    ) -> RsResult<Vec<(String, String, RsLookupMetadataResults)>> {
         if let Some(library_id) = &library_id {
-            requesting_user.check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
+            requesting_user
+                .check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
         } else {
             requesting_user.check_role(&UserRole::Admin)?;
         }
-        let plugins: Vec<_> = self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::LookupMetadata), library: library_id, ..Default::default() })
+        let plugins: Vec<_> = self
+            .get_plugins_with_credential(PluginQuery {
+                kind: Some(PluginType::LookupMetadata),
+                library: library_id,
+                ..Default::default()
+            })
             .await?
             .filter(|p| sources.map_or(true, |s| s.iter().any(|id| id == &p.plugin.path)))
             .collect();
 
-        let mut results = self.plugin_manager.lookup_metadata_grouped(query, plugins, target).await?;
+        let mut results = self
+            .plugin_manager
+            .lookup_metadata_grouped(query, plugins, target)
+            .await?;
         crate::model::entity_search::merge_result_ids(&mut results);
         Ok(results)
     }
 
-    pub async fn exec_lookup_images_grouped(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<HashMap<String, Vec<ExternalImage>>> {
+    pub async fn exec_lookup_images_grouped(
+        &self,
+        query: RsLookupQuery,
+        library_id: Option<String>,
+        requesting_user: &ConnectedUser,
+        target: Option<PluginTarget>,
+    ) -> RsResult<HashMap<String, Vec<ExternalImage>>> {
         if let Some(library_id) = &library_id {
-            requesting_user.check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
+            requesting_user
+                .check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
         } else {
             requesting_user.check_role(&UserRole::Admin)?;
         }
-        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::LookupMetadata), library: library_id, ..Default::default() }).await?.collect();
+        let plugins = self
+            .get_plugins_with_credential(PluginQuery {
+                kind: Some(PluginType::LookupMetadata),
+                library: library_id,
+                ..Default::default()
+            })
+            .await?
+            .collect();
 
-        self.plugin_manager.lookup_images_grouped(query, plugins, target).await
+        self.plugin_manager
+            .lookup_images_grouped(query, plugins, target)
+            .await
     }
 
-    pub async fn exec_lookup_metadata_stream(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<tokio::sync::mpsc::Receiver<RsLookupMetadataResults>> {
+    pub async fn exec_lookup_metadata_stream(
+        &self,
+        query: RsLookupQuery,
+        library_id: Option<String>,
+        requesting_user: &ConnectedUser,
+        target: Option<PluginTarget>,
+    ) -> RsResult<tokio::sync::mpsc::Receiver<RsLookupMetadataResults>> {
         if let Some(library_id) = &library_id {
-            requesting_user.check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
+            requesting_user
+                .check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
         } else {
             requesting_user.check_role(&UserRole::Admin)?;
         }
-        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::LookupMetadata), library: library_id, ..Default::default() }).await?.collect();
+        let plugins = self
+            .get_plugins_with_credential(PluginQuery {
+                kind: Some(PluginType::LookupMetadata),
+                library: library_id,
+                ..Default::default()
+            })
+            .await?
+            .collect();
 
-        self.plugin_manager.lookup_metadata_stream(query, plugins, target).await
+        self.plugin_manager
+            .lookup_metadata_stream(query, plugins, target)
+            .await
     }
 
-    pub async fn exec_lookup_images_stream(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<tokio::sync::mpsc::Receiver<Vec<ExternalImage>>> {
+    pub async fn exec_lookup_images_stream(
+        &self,
+        query: RsLookupQuery,
+        library_id: Option<String>,
+        requesting_user: &ConnectedUser,
+        target: Option<PluginTarget>,
+    ) -> RsResult<tokio::sync::mpsc::Receiver<Vec<ExternalImage>>> {
         if let Some(library_id) = &library_id {
-            requesting_user.check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
+            requesting_user
+                .check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
         } else {
             requesting_user.check_role(&UserRole::Admin)?;
         }
-        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::LookupMetadata), library: library_id, ..Default::default() }).await?.collect();
+        let plugins = self
+            .get_plugins_with_credential(PluginQuery {
+                kind: Some(PluginType::LookupMetadata),
+                library: library_id,
+                ..Default::default()
+            })
+            .await?
+            .collect();
 
-        self.plugin_manager.lookup_images_stream(query, plugins, target).await
+        self.plugin_manager
+            .lookup_images_stream(query, plugins, target)
+            .await
     }
 
-    pub async fn exec_lookup_metadata_stream_grouped(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>, sources: Option<&[String]>) -> RsResult<tokio::sync::mpsc::Receiver<(String, String, RsLookupMetadataResults)>> {
+    pub async fn exec_lookup_metadata_stream_grouped(
+        &self,
+        query: RsLookupQuery,
+        library_id: Option<String>,
+        requesting_user: &ConnectedUser,
+        target: Option<PluginTarget>,
+        sources: Option<&[String]>,
+    ) -> RsResult<tokio::sync::mpsc::Receiver<(String, String, RsLookupMetadataResults)>> {
         if let Some(library_id) = &library_id {
-            requesting_user.check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
+            requesting_user
+                .check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
         } else {
             requesting_user.check_role(&UserRole::Admin)?;
         }
-        let plugins: Vec<_> = self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::LookupMetadata), library: library_id, ..Default::default() })
+        let plugins: Vec<_> = self
+            .get_plugins_with_credential(PluginQuery {
+                kind: Some(PluginType::LookupMetadata),
+                library: library_id,
+                ..Default::default()
+            })
             .await?
             .filter(|p| sources.map_or(true, |s| s.iter().any(|id| id == &p.plugin.path)))
             .collect();
 
-        self.plugin_manager.lookup_metadata_stream_grouped(query, plugins, target).await
+        self.plugin_manager
+            .lookup_metadata_stream_grouped(query, plugins, target)
+            .await
     }
 
-    pub async fn exec_lookup_images_stream_grouped(&self, query: RsLookupQuery, library_id: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<tokio::sync::mpsc::Receiver<(String, Vec<ExternalImage>)>> {
+    pub async fn exec_lookup_images_stream_grouped(
+        &self,
+        query: RsLookupQuery,
+        library_id: Option<String>,
+        requesting_user: &ConnectedUser,
+        target: Option<PluginTarget>,
+    ) -> RsResult<tokio::sync::mpsc::Receiver<(String, Vec<ExternalImage>)>> {
         if let Some(library_id) = &library_id {
-            requesting_user.check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
+            requesting_user
+                .check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
         } else {
             requesting_user.check_role(&UserRole::Admin)?;
         }
-        let plugins= self.get_plugins_with_credential(PluginQuery { kind: Some(PluginType::LookupMetadata), library: library_id, ..Default::default() }).await?.collect();
+        let plugins = self
+            .get_plugins_with_credential(PluginQuery {
+                kind: Some(PluginType::LookupMetadata),
+                library: library_id,
+                ..Default::default()
+            })
+            .await?
+            .collect();
 
-        self.plugin_manager.lookup_images_stream_grouped(query, plugins, target).await
+        self.plugin_manager
+            .lookup_images_stream_grouped(query, plugins, target)
+            .await
     }
 
-    pub async fn exec_token_exchange(&self, plugin_id: &str, request: HashMap<String, String>, requesting_user: &ConnectedUser) -> RsResult<PluginCredential> {
-
+    pub async fn exec_token_exchange(
+        &self,
+        plugin_id: &str,
+        request: HashMap<String, String>,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<PluginCredential> {
         requesting_user.check_role(&UserRole::Admin)?;
-        
 
-        let plugin = self.store.get_plugin(plugin_id).await?.ok_or(SourcesError::UnableToFindPlugin(plugin_id.to_string(), "get_plugin".to_string()))?;
-        
+        let plugin =
+            self.store
+                .get_plugin(plugin_id)
+                .await?
+                .ok_or(SourcesError::UnableToFindPlugin(
+                    plugin_id.to_string(),
+                    "get_plugin".to_string(),
+                ))?;
+
         self.plugin_manager.exchange_token(plugin, request).await
     }
 
-
-    pub async fn refresh_repo_plugin(&self, plugin_id: &str, requesting_user: &ConnectedUser) -> RsResult<Plugin> {
-
+    pub async fn refresh_repo_plugin(
+        &self,
+        plugin_id: &str,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Plugin> {
         requesting_user.check_role(&UserRole::Admin)?;
 
-        let plugin = self.store.get_plugin(plugin_id).await?.ok_or(SourcesError::UnableToFindPlugin(plugin_id.to_string(), "get_plugin".to_string()))?;
-        
-        let url = plugin.repo.ok_or(RsError::Error("Plugin does not have a repo".to_string()))?;
+        let plugin =
+            self.store
+                .get_plugin(plugin_id)
+                .await?
+                .ok_or(SourcesError::UnableToFindPlugin(
+                    plugin_id.to_string(),
+                    "get_plugin".to_string(),
+                ))?;
+
+        let url = plugin
+            .repo
+            .ok_or(RsError::Error("Plugin does not have a repo".to_string()))?;
         let name = plugin.path.clone();
 
         let mut path = get_plugin_fodler().await?;
 
-        download_latest_wasm(&url, path.to_str().ok_or(RsError::Error("Unable to get plugin folder path".to_string()))?, Some(&name)).await?;
+        download_latest_wasm(
+            &url,
+            path.to_str().ok_or(RsError::Error(
+                "Unable to get plugin folder path".to_string(),
+            ))?,
+            Some(&name),
+        )
+        .await?;
 
-        self.reload_plugin(plugin_id.to_string(), requesting_user).await
+        self.reload_plugin(plugin_id.to_string(), requesting_user)
+            .await
+    }
 
-	}
-
-    pub async fn upload_repo_plugin(&self, url: &str, requesting_user: &ConnectedUser) -> RsResult<String> {
-
+    pub async fn upload_repo_plugin(
+        &self,
+        url: &str,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<String> {
         requesting_user.check_role(&UserRole::Admin)?;
 
-        
         let mut path = get_plugin_fodler().await?;
 
-        let name = format!("plugin_{}.wasm", nanoid!());    
+        let name = format!("plugin_{}.wasm", nanoid!());
 
-        download_latest_wasm(url, path.to_str().ok_or(RsError::Error("Unable to get plugin folder path".to_string()))?, Some(&name)).await?;
+        download_latest_wasm(
+            url,
+            path.to_str().ok_or(RsError::Error(
+                "Unable to get plugin folder path".to_string(),
+            ))?,
+            Some(&name),
+        )
+        .await?;
 
         self.reload_plugins(&requesting_user).await?;
         path.push(name);
         Ok(path.to_string_lossy().to_string())
+    }
 
-	}
-
-
-    pub async fn upload_plugin(&self, reader: &mut (dyn tokio::io::AsyncRead + Unpin + Send), filename: &str, requesting_user: &ConnectedUser) -> RsResult<()> {
-
+    pub async fn upload_plugin(
+        &self,
+        reader: &mut (dyn tokio::io::AsyncRead + Unpin + Send),
+        filename: &str,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<()> {
         requesting_user.check_role(&UserRole::Admin)?;
-
 
         let mut path = get_plugin_fodler().await?;
         if filename.ends_with(".wasm") {
@@ -425,35 +823,60 @@ impl ModelController {
             extract_zip(reader, &path).await?;
         }
 
-
         Ok(())
-
-	}
+    }
 
     // ============== Request Processing Methods ==============
 
     /// Check if request can be played instantly without adding to service
-    pub async fn exec_check_instant(&self, request: RsRequest, library_id: &str, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<bool> {
+    pub async fn exec_check_instant(
+        &self,
+        request: RsRequest,
+        library_id: &str,
+        requesting_user: &ConnectedUser,
+        target: Option<PluginTarget>,
+    ) -> RsResult<bool> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
-        let plugins = self.get_plugins_with_credential(PluginQuery {
-            kind: Some(PluginType::Request), library: Some(library_id.to_string()),
-            ..Default::default()
-        }).await?.collect();
+        let plugins = self
+            .get_plugins_with_credential(PluginQuery {
+                kind: Some(PluginType::Request),
+                library: Some(library_id.to_string()),
+                ..Default::default()
+            })
+            .await?
+            .collect();
 
-        let result = self.plugin_manager.check_instant(request.clone(), plugins, target).await?;
+        let result = self
+            .plugin_manager
+            .check_instant(request.clone(), plugins, target)
+            .await?;
         Ok(result.unwrap_or(request.instant.unwrap_or(false)))
     }
 
     /// Add a request for processing (for RequireAdd status)
-    pub async fn exec_request_add(&self, request: RsRequest, library_id: &str, media_ref: Option<String>, requesting_user: &ConnectedUser, target: Option<PluginTarget>) -> RsResult<RsRequestProcessing> {
+    pub async fn exec_request_add(
+        &self,
+        request: RsRequest,
+        library_id: &str,
+        media_ref: Option<String>,
+        requesting_user: &ConnectedUser,
+        target: Option<PluginTarget>,
+    ) -> RsResult<RsRequestProcessing> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
 
-        let plugins: Vec<PluginWithCredential> = self.get_plugins_with_credential(PluginQuery {
-            kind: Some(PluginType::Request), library: Some(library_id.to_string()),
-            ..Default::default()
-        }).await?.collect();
+        let plugins: Vec<PluginWithCredential> = self
+            .get_plugins_with_credential(PluginQuery {
+                kind: Some(PluginType::Request),
+                library: Some(library_id.to_string()),
+                ..Default::default()
+            })
+            .await?
+            .collect();
 
-        let result = self.plugin_manager.request_add(request.clone(), plugins, target).await?
+        let result = self
+            .plugin_manager
+            .request_add(request.clone(), plugins, target)
+            .await?
             .ok_or(Error::NotFound("No plugin handled request_add".to_string()))?;
 
         let (plugin_id, add_response) = result;
@@ -471,8 +894,14 @@ impl ModelController {
         let library_store = self.store.get_library_store(library_id)?;
         library_store.add_request_processing(insert).await?;
 
-        let processing = library_store.get_request_processing(&id).await?
-            .ok_or(Error::NotFound(format!("Request processing {} not found after insert", id)))?;
+        let processing =
+            library_store
+                .get_request_processing(&id)
+                .await?
+                .ok_or(Error::NotFound(format!(
+                    "Request processing {} not found after insert",
+                    id
+                )))?;
 
         // Broadcast SSE event for new processing
         self.send_request_processing(RequestProcessingMessage {
@@ -487,7 +916,11 @@ impl ModelController {
     }
 
     /// List all active request processings for a library
-    pub async fn list_request_processings(&self, library_id: &str, requesting_user: &ConnectedUser) -> RsResult<Vec<RsRequestProcessing>> {
+    pub async fn list_request_processings(
+        &self,
+        library_id: &str,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Vec<RsRequestProcessing>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
 
         let library_store = self.store.get_library_store(library_id)?;
@@ -496,38 +929,63 @@ impl ModelController {
     }
 
     /// Get a specific request processing
-    pub async fn get_request_processing(&self, library_id: &str, processing_id: &str, requesting_user: &ConnectedUser) -> RsResult<RsRequestProcessing> {
+    pub async fn get_request_processing(
+        &self,
+        library_id: &str,
+        processing_id: &str,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<RsRequestProcessing> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
 
         let library_store = self.store.get_library_store(library_id)?;
-        library_store.get_request_processing(processing_id).await?
+        library_store
+            .get_request_processing(processing_id)
+            .await?
             .ok_or(Error::NotFound(format!("Processing {} not found", processing_id)).into())
     }
 
     /// Get progress of a processing task (returns cached DB value)
     /// Progress is updated by the scheduled RequestProgressTask every 30 seconds
-    pub async fn get_processing_progress(&self, library_id: &str, processing_nanoid: &str, requesting_user: &ConnectedUser) -> RsResult<RsRequestProcessing> {
+    pub async fn get_processing_progress(
+        &self,
+        library_id: &str,
+        processing_nanoid: &str,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<RsRequestProcessing> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
 
         let library_store = self.store.get_library_store(library_id)?;
-        library_store.get_request_processing(processing_nanoid).await?
+        library_store
+            .get_request_processing(processing_nanoid)
+            .await?
             .ok_or(Error::NotFound(format!("Processing {} not found", processing_nanoid)).into())
     }
 
     /// Pause a processing task
-    pub async fn pause_processing(&self, library_id: &str, processing_nanoid: &str, requesting_user: &ConnectedUser) -> RsResult<RsRequestProcessing> {
+    pub async fn pause_processing(
+        &self,
+        library_id: &str,
+        processing_nanoid: &str,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<RsRequestProcessing> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
 
         let library_store = self.store.get_library_store(library_id)?;
-        let processing = library_store.get_request_processing(processing_nanoid).await?
-            .ok_or(Error::NotFound(format!("Processing {} not found", processing_nanoid)))?;
+        let processing = library_store
+            .get_request_processing(processing_nanoid)
+            .await?
+            .ok_or(Error::NotFound(format!(
+                "Processing {} not found",
+                processing_nanoid
+            )))?;
 
-        let plugin_with_cred = self.get_plugin_with_credential(&processing.plugin_id).await?;
+        let plugin_with_cred = self
+            .get_plugin_with_credential(&processing.plugin_id)
+            .await?;
 
-        self.plugin_manager.pause_processing(
-            &processing.processing_id,
-            &plugin_with_cred,
-        ).await?;
+        self.plugin_manager
+            .pause_processing(&processing.processing_id, &plugin_with_cred)
+            .await?;
 
         let update = RsRequestProcessingForUpdate {
             progress: None,
@@ -535,28 +993,45 @@ impl ModelController {
             error: None,
             eta: None,
         };
-        library_store.update_request_processing(processing_nanoid, update).await?;
+        library_store
+            .update_request_processing(processing_nanoid, update)
+            .await?;
 
-        library_store.get_request_processing(processing_nanoid).await?
+        library_store
+            .get_request_processing(processing_nanoid)
+            .await?
             .ok_or(Error::NotFound(format!("Processing {} not found", processing_nanoid)).into())
     }
 
     /// Remove/cancel a processing task
-    pub async fn remove_processing(&self, library_id: &str, processing_nanoid: &str, requesting_user: &ConnectedUser) -> RsResult<()> {
+    pub async fn remove_processing(
+        &self,
+        library_id: &str,
+        processing_nanoid: &str,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<()> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
 
         let library_store = self.store.get_library_store(library_id)?;
-        let processing = library_store.get_request_processing(processing_nanoid).await?
-            .ok_or(Error::NotFound(format!("Processing {} not found", processing_nanoid)))?;
+        let processing = library_store
+            .get_request_processing(processing_nanoid)
+            .await?
+            .ok_or(Error::NotFound(format!(
+                "Processing {} not found",
+                processing_nanoid
+            )))?;
 
-        let plugin_with_cred = self.get_plugin_with_credential(&processing.plugin_id).await?;
+        let plugin_with_cred = self
+            .get_plugin_with_credential(&processing.plugin_id)
+            .await?;
 
-        self.plugin_manager.remove_processing(
-            &processing.processing_id,
-            &plugin_with_cred,
-        ).await?;
+        self.plugin_manager
+            .remove_processing(&processing.processing_id, &plugin_with_cred)
+            .await?;
 
-        library_store.remove_request_processing(processing_nanoid).await?;
+        library_store
+            .remove_request_processing(processing_nanoid)
+            .await?;
         Ok(())
     }
 
@@ -571,35 +1046,45 @@ impl ModelController {
 
         for processing in processings {
             // Get the plugin with credentials
-            let plugin_with_cred = match self.get_plugin_with_credential(&processing.plugin_id).await {
-                Ok(p) => p,
-                Err(e) => {
-                    crate::tools::log::log_error(
-                        crate::tools::log::LogServiceType::Scheduler,
-                        format!("Failed to get plugin {} for processing {}: {:#}", processing.plugin_id, processing.id, e),
-                    );
-                    // Mark as error if plugin not found
-                    let update = RsRequestProcessingForUpdate {
-                        progress: None,
-                        status: Some(RsProcessingStatus::Error),
-                        error: Some(format!("Plugin not found: {}", e)),
-                        eta: None,
-                    };
-                    let _ = library_store.update_request_processing(&processing.id, update).await;
-                    continue;
-                }
-            };
+            let plugin_with_cred =
+                match self.get_plugin_with_credential(&processing.plugin_id).await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        crate::tools::log::log_error(
+                            crate::tools::log::LogServiceType::Scheduler,
+                            format!(
+                                "Failed to get plugin {} for processing {}: {:#}",
+                                processing.plugin_id, processing.id, e
+                            ),
+                        );
+                        // Mark as error if plugin not found
+                        let update = RsRequestProcessingForUpdate {
+                            progress: None,
+                            status: Some(RsProcessingStatus::Error),
+                            error: Some(format!("Plugin not found: {}", e)),
+                            eta: None,
+                        };
+                        let _ = library_store
+                            .update_request_processing(&processing.id, update)
+                            .await;
+                        continue;
+                    }
+                };
 
             // Poll plugin for progress
-            let progress = match self.plugin_manager.get_processing_progress(
-                &processing.processing_id,
-                &plugin_with_cred,
-            ).await {
+            let progress = match self
+                .plugin_manager
+                .get_processing_progress(&processing.processing_id, &plugin_with_cred)
+                .await
+            {
                 Ok(p) => p,
                 Err(e) => {
                     crate::tools::log::log_error(
                         crate::tools::log::LogServiceType::Scheduler,
-                        format!("Failed to get progress for processing {}: {:#}", processing.id, e),
+                        format!(
+                            "Failed to get progress for processing {}: {:#}",
+                            processing.id, e
+                        ),
                     );
                     // Skip this one - may be a temporary communication error
                     continue;
@@ -615,20 +1100,28 @@ impl ModelController {
             };
 
             // Check if there was a meaningful change (status or progress)
-            let has_change = progress.status != processing.status
-                || progress.progress != processing.progress;
+            let has_change =
+                progress.status != processing.status || progress.progress != processing.progress;
 
-            if let Err(e) = library_store.update_request_processing(&processing.id, update).await {
+            if let Err(e) = library_store
+                .update_request_processing(&processing.id, update)
+                .await
+            {
                 crate::tools::log::log_error(
                     crate::tools::log::LogServiceType::Scheduler,
-                    format!("Failed to update processing {} in DB: {:#}", processing.id, e),
+                    format!(
+                        "Failed to update processing {} in DB: {:#}",
+                        processing.id, e
+                    ),
                 );
                 continue;
             }
 
             // Emit SSE event if there was a change
             if has_change {
-                if let Ok(Some(updated)) = library_store.get_request_processing(&processing.id).await {
+                if let Ok(Some(updated)) =
+                    library_store.get_request_processing(&processing.id).await
+                {
                     self.send_request_processing(RequestProcessingMessage {
                         library: library_id.to_string(),
                         processings: vec![RequestProcessingWithAction {
@@ -649,7 +1142,10 @@ impl ModelController {
                 } else {
                     crate::tools::log::log_error(
                         crate::tools::log::LogServiceType::Scheduler,
-                        format!("No request available for finished processing {}", processing.id),
+                        format!(
+                            "No request available for finished processing {}",
+                            processing.id
+                        ),
                     );
                     continue;
                 };
@@ -666,7 +1162,10 @@ impl ModelController {
 
                 // Trigger download
                 let connected_user = super::users::ConnectedUser::ServerAdmin;
-                match self.download_library_url(library_id, group_download, &connected_user).await {
+                match self
+                    .download_library_url(library_id, group_download, &connected_user)
+                    .await
+                {
                     Ok(medias) => {
                         crate::tools::log::log_info(
                             crate::tools::log::LogServiceType::Scheduler,
@@ -677,10 +1176,16 @@ impl ModelController {
                             ),
                         );
                         // Remove the processing record on success
-                        if let Err(e) = library_store.remove_request_processing(&processing.id).await {
+                        if let Err(e) = library_store
+                            .remove_request_processing(&processing.id)
+                            .await
+                        {
                             crate::tools::log::log_error(
                                 crate::tools::log::LogServiceType::Scheduler,
-                                format!("Failed to remove completed processing {}: {:#}", processing.id, e),
+                                format!(
+                                    "Failed to remove completed processing {}: {:#}",
+                                    processing.id, e
+                                ),
                             );
                         } else {
                             // Emit SSE event for deleted processing
@@ -696,7 +1201,10 @@ impl ModelController {
                     Err(e) => {
                         crate::tools::log::log_error(
                             crate::tools::log::LogServiceType::Scheduler,
-                            format!("Failed to download media for processing {}: {:#}", processing.id, e),
+                            format!(
+                                "Failed to download media for processing {}: {:#}",
+                                processing.id, e
+                            ),
                         );
                         // Mark as error
                         let update = RsRequestProcessingForUpdate {
@@ -705,7 +1213,9 @@ impl ModelController {
                             error: Some(format!("Download failed: {}", e)),
                             eta: None,
                         };
-                        let _ = library_store.update_request_processing(&processing.id, update).await;
+                        let _ = library_store
+                            .update_request_processing(&processing.id, update)
+                            .await;
                     }
                 }
             } else if progress.status == RsProcessingStatus::Error {
@@ -713,8 +1223,7 @@ impl ModelController {
                     crate::tools::log::LogServiceType::Scheduler,
                     format!(
                         "Processing {} failed with error: {:?}",
-                        processing.id,
-                        progress.error
+                        processing.id, progress.error
                     ),
                 );
             }

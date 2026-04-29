@@ -1,45 +1,47 @@
-pub mod libraries;
-pub mod users;
-pub mod credentials;
 pub mod backups;
+pub mod credentials;
+pub mod libraries;
 pub mod library;
+pub mod plugin_convert_queue;
 pub mod plugins;
+pub mod users;
 
 use std::fmt::Display;
 
 use rsa::{pkcs8::der::TagNumber, rand_core::le};
-use rusqlite::{params, params_from_iter, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, ParamsFromIter, Row, ToSql};
+use rusqlite::{
+    params, params_from_iter,
+    types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef},
+    ParamsFromIter, Row, ToSql,
+};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use strum::additional_attributes;
 use strum_macros::EnumString;
 use tokio_rusqlite::Connection;
 
-
 use super::Result;
 
-
 pub async fn migrate_database(connection: &Connection) -> Result<usize> {
-    let version = connection.call( |conn| {
-        let version = conn.query_row(
-            "SELECT user_version FROM pragma_user_version;",
-            [],
-            |row| {
-                let version: usize = row.get(0)?;
-                Ok(version)
-            })?;
+    let version = connection
+        .call(|conn| {
+            let version =
+                conn.query_row("SELECT user_version FROM pragma_user_version;", [], |row| {
+                    let version: usize = row.get(0)?;
+                    Ok(version)
+                })?;
 
             if version < 2 {
                 let initial = String::from_utf8_lossy(include_bytes!("001 - INITIAL.sql"));
                 conn.execute_batch(&initial)?;
-                
+
                 conn.pragma_update(None, "user_version", 2)?;
                 println!("Update SQL to verison 2")
             }
             if version < 3 {
                 let update = String::from_utf8_lossy(include_bytes!("003 - AI MODELS.sql"));
                 conn.execute_batch(&update)?;
-                
+
                 conn.pragma_update(None, "user_version", 3)?;
                 println!("Update SQL to verison 3 (AI Models)")
             }
@@ -47,7 +49,7 @@ pub async fn migrate_database(connection: &Connection) -> Result<usize> {
             if version < 4 {
                 let update = String::from_utf8_lossy(include_bytes!("004 - SHARE OPTIONS.sql"));
                 conn.execute_batch(&update)?;
-                
+
                 conn.pragma_update(None, "user_version", 4)?;
                 println!("Update SQL to verison 4 (share options)")
             }
@@ -55,16 +57,15 @@ pub async fn migrate_database(connection: &Connection) -> Result<usize> {
             if version < 5 {
                 let update = String::from_utf8_lossy(include_bytes!("005 - BACKUP PLUGIN.sql"));
                 conn.execute_batch(&update)?;
-                
+
                 conn.pragma_update(None, "user_version", 5)?;
                 println!("Update SQL to verison 5 (share backup plugin)")
             }
 
-            
             if version < 6 {
                 let update = String::from_utf8_lossy(include_bytes!("006 - BACKUP ERRORS.sql"));
                 conn.execute_batch(&update)?;
-                
+
                 conn.pragma_update(None, "user_version", 6)?;
                 println!("Update SQL to verison 6 (backup error management)")
             }
@@ -72,7 +73,7 @@ pub async fn migrate_database(connection: &Connection) -> Result<usize> {
             if version < 7 {
                 let update = String::from_utf8_lossy(include_bytes!("007 - PLUGIN REPO.sql"));
                 conn.execute_batch(&update)?;
-                
+
                 conn.pragma_update(None, "user_version", 7)?;
                 println!("Update SQL to verison 7 (add repo info to plugins)")
             }
@@ -101,22 +102,35 @@ pub async fn migrate_database(connection: &Connection) -> Result<usize> {
                 println!("Update SQL to version 10 (upload key people)")
             }
 
+            if version < 11 {
+                let update =
+                    String::from_utf8_lossy(include_bytes!("011 - PLUGIN CONVERT QUEUE.sql"));
+                conn.execute_batch(&update)?;
+
+                conn.pragma_update(None, "user_version", 11)?;
+                println!("Update SQL to version 11 (plugin convert queue)")
+            }
+
             conn.execute("VACUUM;", params![])?;
-            Ok(6)
-    }).await?;
+            Ok(11)
+        })
+        .await?;
 
     Ok(version)
-} 
+}
 
-
-pub fn add_for_sql_update<'a, T: ToSql + 'a,>(optional: Option<T>, name: &str, columns: &mut Vec<String>, values: &mut Vec<Box<dyn ToSql + 'a>>) {
+pub fn add_for_sql_update<'a, T: ToSql + 'a>(
+    optional: Option<T>,
+    name: &str,
+    columns: &mut Vec<String>,
+    values: &mut Vec<Box<dyn ToSql + 'a>>,
+) {
     if let Some(value) = optional {
         let r = format!("{} = ?", name.to_string());
         columns.push(r);
         values.push(Box::new(value));
-    } 
+    }
 }
-
 
 pub enum SqlWhereType {
     Like(String, Box<dyn ToSql>),
@@ -137,7 +151,6 @@ pub enum SqlWhereType {
     And(Vec<SqlWhereType>),
 }
 
-
 impl SqlWhereType {
     pub fn expand(&self) -> Result<(String, Vec<&Box<dyn ToSql>>)> {
         let mut values: Vec<&Box<dyn ToSql>> = vec![];
@@ -145,73 +158,84 @@ impl SqlWhereType {
             SqlWhereType::Equal(name, value) => {
                 values.push(value);
                 format!("{} = ?", name)
-            },
+            }
             SqlWhereType::Like(name, value) => {
                 values.push(value);
                 format!("{} like ?", name)
-            },
+            }
             SqlWhereType::Custom(custom, value) => {
                 values.push(value);
                 custom.to_string()
-            },
+            }
             SqlWhereType::After(name, value) => {
                 values.push(value);
                 format!("{} > ?", name)
-            },
+            }
             SqlWhereType::Before(name, value) => {
                 values.push(value);
                 format!("{} < ?", name)
-            },
+            }
             SqlWhereType::GreaterOrEqual(name, value) => {
                 values.push(value);
                 format!("{} >= ?", name)
-            },
+            }
             SqlWhereType::SmallerOrEqual(name, value) => {
                 values.push(value);
                 format!("{} <= ?", name)
-            },
-            
+            }
+
             SqlWhereType::Between(name, down, up) => {
                 values.push(down);
                 values.push(up);
                 format!("{} BETWEEN ? and ?", name)
-            },
+            }
             SqlWhereType::In(name, ins) => {
-
                 for value in ins {
                     values.push(value);
                 }
-                format!("{} in ({})", name, ins.iter().map(|_| "?").collect::<Vec<_>>().join(", "))
-            },
+                format!(
+                    "{} in ({})",
+                    name,
+                    ins.iter().map(|_| "?").collect::<Vec<_>>().join(", ")
+                )
+            }
             SqlWhereType::NotIn(name, ins) => {
-
                 for value in ins {
                     values.push(value);
                 }
-                format!("{} not in ({})", name, ins.iter().map(|_| "?").collect::<Vec<_>>().join(", "))
-            },
-            
+                format!(
+                    "{} not in ({})",
+                    name,
+                    ins.iter().map(|_| "?").collect::<Vec<_>>().join(", ")
+                )
+            }
+
             SqlWhereType::InStringList(name, separator, value) => {
-
                 values.push(value);
 
-                format!("('{}' || {} || '{}' LIKE '%{}' || ? || '{}%')", separator, name, separator, separator, separator)
-            },
+                format!(
+                    "('{}' || {} || '{}' LIKE '%{}' || ? || '{}%')",
+                    separator, name, separator, separator, separator
+                )
+            }
             SqlWhereType::EqualWithAlt(name, alt, separator, value) => {
-
                 values.push(value);
                 values.push(value);
 
-                format!("( {} = ? COLLATE NOCASE or  '{}' || {} || '{}' LIKE '%{}' || ? || '{}%')", name, separator, alt, separator, separator, separator)
-            },
+                format!(
+                    "( {} = ? COLLATE NOCASE or  '{}' || {} || '{}' LIKE '%{}' || ? || '{}%')",
+                    name, separator, alt, separator, separator, separator
+                )
+            }
             SqlWhereType::SeparatedContain(name, separator, value) => {
                 values.push(value);
 
-                format!("'{}' || {} || '{}' LIKE '%{}' || ? || '{}%'", separator, name, separator, separator, separator)
-            },
-            SqlWhereType::Static(s) => {
-                s.to_string()
-            },
+                format!(
+                    "'{}' || {} || '{}' LIKE '%{}' || ? || '{}%'",
+                    separator, name, separator, separator, separator
+                )
+            }
+            SqlWhereType::Static(s) => s.to_string(),
             SqlWhereType::Or(sub_queries) => {
                 let mut texts: Vec<String> = vec![];
                 for query in sub_queries {
@@ -220,7 +244,7 @@ impl SqlWhereType {
                     values.append(&mut v);
                 }
                 format!("({})", texts.join(" or "))
-            },
+            }
             SqlWhereType::And(sub_queries) => {
                 let mut texts: Vec<String> = vec![];
                 for query in sub_queries {
@@ -229,17 +253,11 @@ impl SqlWhereType {
                     values.append(&mut v);
                 }
                 format!("({})", texts.join(" and "))
-            },
+            }
         };
         Ok((text, values))
     }
 }
-
-
-
-
-
-
 
 pub enum QueryWhereType<'a> {
     Like(&'a str, &'a dyn ToSql),
@@ -264,59 +282,70 @@ impl<'a> QueryWhereType<'a> {
             QueryWhereType::Equal(name, value) => {
                 values.push(value);
                 format!("{} = ?", name)
-            },
+            }
             QueryWhereType::Like(name, value) => {
                 values.push(value);
                 format!("{} like ?", name)
-            },
+            }
             QueryWhereType::Custom(custom, value) => {
                 values.push(value);
                 custom.to_string()
-            },
+            }
             QueryWhereType::After(name, value) => {
                 values.push(value);
                 format!("{} > ?", name)
-            },
+            }
             QueryWhereType::Before(name, value) => {
                 values.push(value);
                 format!("{} < ?", name)
-            },
+            }
             QueryWhereType::In(name, ins) => {
-
                 for value in ins {
                     values.push(value);
                 }
-                format!("{} in ({})", name, ins.iter().map(|_| "?").collect::<Vec<_>>().join(", "))
-            },
+                format!(
+                    "{} in ({})",
+                    name,
+                    ins.iter().map(|_| "?").collect::<Vec<_>>().join(", ")
+                )
+            }
             QueryWhereType::NotIn(name, ins) => {
-
                 for value in ins {
                     values.push(value);
                 }
-                format!("{} not in ({})", name, ins.iter().map(|_| "?").collect::<Vec<_>>().join(", "))
-            },
-            
+                format!(
+                    "{} not in ({})",
+                    name,
+                    ins.iter().map(|_| "?").collect::<Vec<_>>().join(", ")
+                )
+            }
+
             QueryWhereType::InStringList(name, separator, value) => {
-
                 values.push(value);
 
-                format!("('{}' || {} || '{}' LIKE '%{}' || ? || '{}%')", separator, name, separator, separator, separator)
-            },
+                format!(
+                    "('{}' || {} || '{}' LIKE '%{}' || ? || '{}%')",
+                    separator, name, separator, separator, separator
+                )
+            }
             QueryWhereType::EqualWithAlt(name, alt, separator, value) => {
-
                 values.push(value);
                 values.push(value);
 
-                format!("( {} = ? COLLATE NOCASE or  '{}' || {} || '{}' LIKE '%{}' || ? || '{}%')", name, separator, alt, separator, separator, separator)
-            },
+                format!(
+                    "( {} = ? COLLATE NOCASE or  '{}' || {} || '{}' LIKE '%{}' || ? || '{}%')",
+                    name, separator, alt, separator, separator, separator
+                )
+            }
             QueryWhereType::SeparatedContain(name, separator, value) => {
                 values.push(value);
 
-                format!("'{}' || {} || '{}' LIKE '%{}' || ? || '{}%'", separator, name, separator, separator, separator)
-            },
-            QueryWhereType::Static(s) => {
-                s.to_string()
-            },
+                format!(
+                    "'{}' || {} || '{}' LIKE '%{}' || ? || '{}%'",
+                    separator, name, separator, separator, separator
+                )
+            }
+            QueryWhereType::Static(s) => s.to_string(),
             QueryWhereType::Or(sub_queries) => {
                 let mut texts: Vec<String> = vec![];
                 for query in sub_queries {
@@ -325,7 +354,7 @@ impl<'a> QueryWhereType<'a> {
                     values.append(&mut v);
                 }
                 format!("({})", texts.join(" or "))
-            },
+            }
             QueryWhereType::And(sub_queries) => {
                 let mut texts: Vec<String> = vec![];
                 for query in sub_queries {
@@ -334,27 +363,27 @@ impl<'a> QueryWhereType<'a> {
                     values.append(&mut v);
                 }
                 format!("({})", texts.join(" and "))
-            },
+            }
         };
         Ok((text, values))
     }
 }
 
-
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, strum_macros::Display,EnumString, Default)]
+#[derive(
+    Debug, Serialize, Deserialize, Clone, PartialEq, strum_macros::Display, EnumString, Default,
+)]
 #[strum(serialize_all = "UPPERCASE")]
 #[serde(rename_all = "UPPERCASE")]
 pub enum SqlOrder {
     ASC,
     #[default]
-    DESC
+    DESC,
 }
 
 #[derive(Debug)]
 pub struct OrderBuilder {
     column: String,
-    order: SqlOrder
+    order: SqlOrder,
 }
 
 impl OrderBuilder {
@@ -371,7 +400,6 @@ impl OrderBuilder {
 
 #[derive(Default)]
 pub struct RsQueryBuilder {
-
     wheres: Vec<SqlWhereType>,
 
     columns_recursive: Vec<String>,
@@ -389,31 +417,48 @@ impl RsQueryBuilder {
     }
     pub fn add_where(&mut self, kind: SqlWhereType) {
         self.wheres.push(kind);
-    }    
-    pub fn add_update<T: ToSql>(&mut self, optional: Option<Box<dyn ToSql>>, column: &str)  {
+    }
+    pub fn add_update<T: ToSql>(&mut self, optional: Option<Box<dyn ToSql>>, column: &str) {
         if let Some(value) = optional {
             self.columns_update.push(format!("{} = ?", column));
             self.values_update.push(value);
         }
     }
 
-    pub fn add_nullify(&mut self, column: &str)  {
+    pub fn add_nullify(&mut self, column: &str) {
         self.columns_update.push(format!("{} = NULL", column));
     }
 
-
-    pub fn add_recursive<T: ToSql + Display + 'static>(&mut self, table: String, mapping_table: String, map_key: String, map_field: String, id: Box<T>, additional_filter: Option<String>) {
+    pub fn add_recursive<T: ToSql + Display + 'static>(
+        &mut self,
+        table: String,
+        mapping_table: String,
+        map_key: String,
+        map_field: String,
+        id: Box<T>,
+        additional_filter: Option<String>,
+    ) {
         let table_name = format!("{}_{}", table, id.to_string().replace("-", "_"));
 
-        let sql = format!("{}(n) AS (
+        let sql = format!(
+            "{}(n) AS (
             VALUES(?)
             UNION
             SELECT id FROM {}, {}
-             WHERE {}.parent={}.n)", table_name, table, table_name, table, table_name);
+             WHERE {}.parent={}.n)",
+            table_name, table, table_name, table, table_name
+        );
         self.columns_recursive.push(sql);
         self.values_recursive.push(id);
-        self.wheres.push(SqlWhereType::Static(format!("id IN (SELECT tm.{} FROM {} tm WHERE {} IN {}{})", map_key, mapping_table, map_field, table_name, additional_filter.unwrap_or("".to_string()))));
-    }    
+        self.wheres.push(SqlWhereType::Static(format!(
+            "id IN (SELECT tm.{} FROM {} tm WHERE {} IN {}{})",
+            map_key,
+            mapping_table,
+            map_field,
+            table_name,
+            additional_filter.unwrap_or("".to_string())
+        )));
+    }
     pub fn format_recursive(&self) -> String {
         if !self.columns_recursive.is_empty() {
             format!("WITH RECURSIVE {} ", self.columns_recursive.join(", "))
@@ -421,7 +466,6 @@ impl RsQueryBuilder {
             "".to_string()
         }
     }
-
 
     pub fn format(&self) -> String {
         if !self.wheres.is_empty() {
@@ -456,28 +500,32 @@ impl RsQueryBuilder {
     }
     pub fn format_order(&self) -> String {
         if self.columns_orders.len() > 0 {
-            format!(" ORDER BY {}", self.columns_orders.iter().map(|o| o.format()).collect::<Vec<String>>().join(", "))
+            format!(
+                " ORDER BY {}",
+                self.columns_orders
+                    .iter()
+                    .map(|o| o.format())
+                    .collect::<Vec<String>>()
+                    .join(", ")
+            )
         } else {
             "".to_string()
         }
     }
-
 }
 
-
 pub struct QueryBuilder<'a> {
-
     wheres: Vec<QueryWhereType<'a>>,
 
     columns_recursive: Vec<String>,
     values_recursive: Vec<&'a (dyn ToSql + 'a)>,
     columns_update: Vec<String>,
     values_update: Vec<&'a dyn ToSql>,
-    
+
     columns_orders: Vec<OrderBuilder>,
 }
 
-impl <'a> QueryBuilder<'a> {
+impl<'a> QueryBuilder<'a> {
     pub fn new() -> Self {
         Self {
             wheres: Vec::new(),
@@ -485,41 +533,51 @@ impl <'a> QueryBuilder<'a> {
             values_recursive: Vec::new(),
             columns_update: Vec::new(),
             values_update: Vec::new(),
-            columns_orders: Vec::new()
+            columns_orders: Vec::new(),
         }
     }
 
-    pub fn add_recursive<T: ToSql + Display>(&mut self, table: &str, mapping_table: &str, map_key: &str, map_field: &str, id: &'a T) {
-            let table_name = format!("{}_{}", table, id.to_string().replace("-", "_"));
+    pub fn add_recursive<T: ToSql + Display>(
+        &mut self,
+        table: &str,
+        mapping_table: &str,
+        map_key: &str,
+        map_field: &str,
+        id: &'a T,
+    ) {
+        let table_name = format!("{}_{}", table, id.to_string().replace("-", "_"));
 
-            let sql = format!("{}(n) AS (
+        let sql = format!(
+            "{}(n) AS (
                 VALUES(?)
                 UNION
                 SELECT id FROM {}, {}
-                 WHERE {}.parent={}.n)", table_name, table, table_name, table, table_name);
-            self.columns_recursive.push(sql);
-            self.values_recursive.push(id);
-            self.wheres.push(QueryWhereType::Static(format!("id IN (SELECT tm.{} FROM {} tm WHERE {} IN {})", map_key, mapping_table, map_field, table_name)));
-            //self.columns_where.push(format!("id IN (SELECT tm.{} FROM {} tm WHERE {} IN {})", map_key, mapping_table, map_field, table_name))
-           
-        
+                 WHERE {}.parent={}.n)",
+            table_name, table, table_name, table, table_name
+        );
+        self.columns_recursive.push(sql);
+        self.values_recursive.push(id);
+        self.wheres.push(QueryWhereType::Static(format!(
+            "id IN (SELECT tm.{} FROM {} tm WHERE {} IN {})",
+            map_key, mapping_table, map_field, table_name
+        )));
+        //self.columns_where.push(format!("id IN (SELECT tm.{} FROM {} tm WHERE {} IN {})", map_key, mapping_table, map_field, table_name))
     }
 
-    pub fn add_update<T: ToSql>(&mut self, optional: &'a Option<T>, column: &str)  {
+    pub fn add_update<T: ToSql>(&mut self, optional: &'a Option<T>, column: &str) {
         if let Some(value) = optional {
             self.columns_update.push(format!("{} = ?", column));
             self.values_update.push(value);
         }
     }
 
-    pub fn add_nullify(&mut self, column: &str)  {
+    pub fn add_nullify(&mut self, column: &str) {
         self.columns_update.push(format!("{} = NULL", column));
     }
 
     pub fn add_where(&mut self, kind: QueryWhereType<'a>) {
         self.wheres.push(kind);
     }
-
 
     pub fn format_update(&self) -> String {
         if self.columns_update.len() > 0 {
@@ -528,7 +586,7 @@ impl <'a> QueryBuilder<'a> {
             "".to_string()
         }
     }
-    
+
     pub fn format(&self) -> String {
         if self.wheres.len() > 0 {
             let mut columns = vec![];
@@ -548,7 +606,14 @@ impl <'a> QueryBuilder<'a> {
 
     pub fn format_order(&self) -> String {
         if self.columns_orders.len() > 0 {
-            format!(" ORDER BY {}", self.columns_orders.iter().map(|o| o.format()).collect::<Vec<String>>().join(", "))
+            format!(
+                " ORDER BY {}",
+                self.columns_orders
+                    .iter()
+                    .map(|o| o.format())
+                    .collect::<Vec<String>>()
+                    .join(", ")
+            )
         } else {
             "".to_string()
         }
@@ -593,7 +658,7 @@ impl <'a> QueryBuilder<'a> {
     pub fn values_twice(&'a mut self) -> ParamsFromIter<&Vec<&'a (dyn ToSql + 'a)>> {
         let all_values = &mut self.values_recursive;
         all_values.append(&mut self.values_update);
-    
+
         for w in &self.wheres {
             let r = w.expand();
             let (_, mut v) = r.unwrap();
@@ -608,13 +673,16 @@ impl <'a> QueryBuilder<'a> {
             println!("{:?}", value.to_sql())
         }*/
         params_from_iter(all_values)
-    
     }
 }
 
-
-pub fn deserialize_from_row<T: DeserializeOwned>(row: &Row, index: usize) -> std::result::Result<T, FromSqlError> {
-    let value: Value = row.get(index).map_err(|e| FromSqlError::Other(Box::new(e)))?;
+pub fn deserialize_from_row<T: DeserializeOwned>(
+    row: &Row,
+    index: usize,
+) -> std::result::Result<T, FromSqlError> {
+    let value: Value = row
+        .get(index)
+        .map_err(|e| FromSqlError::Other(Box::new(e)))?;
 
     let u = serde_json::from_value::<T>(value).map_err(|e| FromSqlError::Other(Box::new(e)))?;
     Ok(u)

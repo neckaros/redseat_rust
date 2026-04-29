@@ -1,14 +1,15 @@
 use std::{collections::HashMap, iter::Map};
 
+use crate::{
+    domain::{episode::Episode, people::Person},
+    tools::clock::deserialize_optional_date_as_ms_timestamp,
+};
 use chrono::{DateTime, Utc};
 use rs_plugin_common_interfaces::{url::ToRsLinks, Gender, RsLink};
 use serde::{Deserialize, Serialize};
 use strum_macros::{Display, EnumString};
-use crate::{domain::{episode::Episode, people::Person}, tools::clock::deserialize_optional_date_as_ms_timestamp};
 
 use super::trakt_show::TraktIds;
-
-
 
 #[derive(Debug, Serialize, Deserialize, EnumString, Display, Default)]
 #[serde(rename_all = "lowercase")]
@@ -19,7 +20,7 @@ pub enum TraktGender {
     Female,
     #[serde(rename = "non_binary")]
     NonBinary,
-    #[strum(default)] 
+    #[strum(default)]
     Other(String),
     #[default]
     Unknown,
@@ -37,8 +38,6 @@ impl From<TraktGender> for Gender {
     }
 }
 
-
-
 /// An [episode] with full [extended info]
 ///
 /// [episode]: https://trakt.docs.apiary.io/#reference/episodes
@@ -49,7 +48,6 @@ pub struct TraktPerson {
     pub ids: TraktIds,
     pub social_ids: Option<HashMap<String, Option<String>>>,
 
-
     pub biography: Option<String>,
 
     #[serde(deserialize_with = "deserialize_optional_date_as_ms_timestamp")]
@@ -57,7 +55,6 @@ pub struct TraktPerson {
     #[serde(deserialize_with = "deserialize_optional_date_as_ms_timestamp")]
     pub death: Option<i64>,
 
-    
     pub birthplace: Option<String>,
     pub homepage: Option<String>,
     pub gender: Option<TraktGender>,
@@ -90,25 +87,23 @@ impl From<TraktPerson> for Person {
             trakt: value.ids.trakt,
             socials,
             kind: value.known_for_department.map(|v| v.to_string()),
-           
+
             ..Default::default()
         }
     }
 }
 
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TraktActorsResult {
     pub cast: Vec<TraktCast>,
     pub crew: String,
-    
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TraktCast {
     pub character: String,
     pub characters: Vec<String>,
-    pub person: TraktPerson,   
+    pub person: TraktPerson,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -116,18 +111,16 @@ pub struct TraktCrewList {
     pub production: String,
     pub directing: Vec<String>,
     pub writing: TraktPerson,
-    
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TraktCrew {
     pub job: String,
     pub jobs: Vec<String>,
-    pub person: TraktPerson,   
+    pub person: TraktPerson,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TraktPeopleSearchElement {
     pub score: f64,
-    pub person: TraktPerson
+    pub person: TraktPerson,
 }
-

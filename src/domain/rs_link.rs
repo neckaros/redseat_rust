@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, PartialOrd, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct RsLinko {
-	pub platform: String,
+    pub platform: String,
     #[serde(rename = "type")]
     pub kind: Option<String>,
     pub id: String,

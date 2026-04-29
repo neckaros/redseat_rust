@@ -8,9 +8,27 @@ use rusqlite::{
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
 
-use crate::{domain::{library::{LibraryLimits, LibraryRole, LibraryType}, view_progress::{ViewProgress, ViewProgressForAdd}, watched::{Unwatched, Watched, WatchedForAdd, WatchedForDelete}}, error::RsResult, routes::sse::SseEvent, tools::{auth::{ClaimsLocal, ClaimsLocalType}, clock::now}};
+use crate::{
+    domain::{
+        library::{LibraryLimits, LibraryRole, LibraryType},
+        view_progress::{ViewProgress, ViewProgressForAdd},
+        watched::{Unwatched, Watched, WatchedForAdd, WatchedForDelete},
+    },
+    error::RsResult,
+    routes::sse::SseEvent,
+    tools::{
+        auth::{ClaimsLocal, ClaimsLocalType},
+        clock::now,
+    },
+};
 
-use super::{error::{Error, Result}, libraries::ServerLibraryForRead, medias::RsSort, store::sql::{users::WatchedQuery, SqlOrder}, ModelController};
+use super::{
+    error::{Error, Result},
+    libraries::ServerLibraryForRead,
+    medias::RsSort,
+    store::sql::{users::WatchedQuery, SqlOrder},
+    ModelController,
+};
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -20,12 +38,12 @@ pub enum ConnectedUser {
     Share(ClaimsLocal),
     UploadKey(UploadKey),
     Anonymous,
-    ServerAdmin
+    ServerAdmin,
 }
 
 impl ConnectedUser {
     pub fn is_registered(&self) -> bool {
-        matches!(&self, ConnectedUser::Server(_)) 
+        matches!(&self, ConnectedUser::Server(_))
     }
     pub fn check_registered(&self) -> Result<ServerUser> {
         if let ConnectedUser::Server(user) = &self {
@@ -53,8 +71,6 @@ impl ConnectedUser {
         }
     }
 
-
-
     pub fn check_upload_key(&self, library_id: &str) -> Result<&UploadKey> {
         if let ConnectedUser::UploadKey(key) = &self {
             if key.library == library_id {
@@ -78,7 +94,7 @@ impl ConnectedUser {
             Err(Error::NotServerConnected)
         }
     }
-    
+
     pub fn user_name(&self) -> Result<String> {
         if let ConnectedUser::Server(user) = &self {
             Ok(user.name.clone())
@@ -93,9 +109,7 @@ impl ConnectedUser {
             Ok(())
         } else if let ConnectedUser::Share(claims) = &self {
             match &claims.kind {
-                ClaimsLocalType::File(_, _) => {
-                    Ok(()) 
-                },
+                ClaimsLocalType::File(_, _) => Ok(()),
                 ClaimsLocalType::RequestUrl(_) => Err(Error::ShareTokenInsufficient),
                 ClaimsLocalType::UserRole(_) => Err(Error::ShareTokenInsufficient),
                 ClaimsLocalType::Admin => Ok(()),
@@ -104,10 +118,16 @@ impl ConnectedUser {
             if user.has_role(role) {
                 Ok(())
             } else {
-                Err(Error::InsufficientUserRole { user: self.clone(), role: role.clone() })
+                Err(Error::InsufficientUserRole {
+                    user: self.clone(),
+                    role: role.clone(),
+                })
             }
         } else {
-            Err(Error::InsufficientUserRole { user: self.clone(), role: role.clone() })
+            Err(Error::InsufficientUserRole {
+                user: self.clone(),
+                role: role.clone(),
+            })
         }
     }
     pub fn check_library_role(&self, library_id: &str, role: LibraryRole) -> Result<LibraryLimits> {
@@ -117,17 +137,21 @@ impl ConnectedUser {
             if let Some(limits) = user.has_library_role(&library_id, &role) {
                 Ok(limits)
             } else {
-                Err(Error::InsufficientLibraryRole { user: self.clone(), library_id: library_id.to_string(), role: role.clone() })
+                Err(Error::InsufficientLibraryRole {
+                    user: self.clone(),
+                    library_id: library_id.to_string(),
+                    role: role.clone(),
+                })
             }
         } else if let ConnectedUser::Share(claims) = &self {
             match &claims.kind {
                 ClaimsLocalType::File(library, _) => {
-                    if library == library_id { 
-                        Ok(LibraryLimits::default()) 
+                    if library == library_id {
+                        Ok(LibraryLimits::default())
                     } else {
                         Err(Error::ShareTokenInsufficient)
                     }
-                },
+                }
                 _ => Err(Error::ShareTokenInsufficient),
             }
         } else if let ConnectedUser::UploadKey(key) = &self {
@@ -141,24 +165,33 @@ impl ConnectedUser {
         }
     }
 
-    pub fn check_file_role(&self, library_id: &str, file_id: &str, role: LibraryRole) -> Result<()> {
+    pub fn check_file_role(
+        &self,
+        library_id: &str,
+        file_id: &str,
+        role: LibraryRole,
+    ) -> Result<()> {
         if self.is_admin() {
             Ok(())
         } else if let ConnectedUser::Server(user) = &self {
             if user.has_library_role(&library_id, &role).is_some() {
                 Ok(())
             } else {
-                Err(Error::InsufficientLibraryRole { user: self.clone(), library_id: library_id.to_string(), role: role.clone() })
+                Err(Error::InsufficientLibraryRole {
+                    user: self.clone(),
+                    library_id: library_id.to_string(),
+                    role: role.clone(),
+                })
             }
         } else if let ConnectedUser::Share(claims) = &self {
             match &claims.kind {
                 ClaimsLocalType::File(_, id) => {
-                    if id == file_id { 
-                        Ok(()) 
+                    if id == file_id {
+                        Ok(())
                     } else {
                         Err(Error::ShareTokenInsufficient)
                     }
-                },
+                }
                 _ => Err(Error::ShareTokenInsufficient),
             }
         } else {
@@ -169,27 +202,34 @@ impl ConnectedUser {
         if self.is_admin() {
             Ok(())
         } else if let ConnectedUser::Server(user) = &self {
-            if user.has_library_role(library_id, &LibraryRole::Read).is_some() {
+            if user
+                .has_library_role(library_id, &LibraryRole::Read)
+                .is_some()
+            {
                 Ok(())
             } else {
-                Err(Error::InsufficientLibraryRole { user: self.clone(), library_id: library_id.to_string(), role: LibraryRole::Read })
+                Err(Error::InsufficientLibraryRole {
+                    user: self.clone(),
+                    library_id: library_id.to_string(),
+                    role: LibraryRole::Read,
+                })
             }
         } else if let ConnectedUser::Share(claims) = &self {
             match &claims.kind {
                 ClaimsLocalType::File(library, _) => {
-                    if library == library_id { 
-                        Ok(()) 
+                    if library == library_id {
+                        Ok(())
                     } else {
                         Err(Error::ShareTokenInsufficient)
                     }
-                },
+                }
                 ClaimsLocalType::RequestUrl(url) => {
-                    if *url == request.url { 
-                        Ok(()) 
+                    if *url == request.url {
+                        Ok(())
                     } else {
                         Err(Error::ShareTokenInsufficient)
                     }
-                },
+                }
                 _ => Err(Error::ShareTokenInsufficient),
             }
         } else {
@@ -282,7 +322,6 @@ fn default_hidden_libraries() -> Vec<String> {
 }
 // endregion:    --- Preferences
 
-
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct ServerUserLibrariesRights {
     pub id: String,
@@ -320,15 +359,13 @@ pub struct ServerLibrariesRightsForAdd {
     pub limits: LibraryLimits,
 }
 
-
-
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
 pub struct ServerUser {
     pub id: String,
     pub name: String,
     pub role: UserRole,
     pub preferences: ServerUserPreferences,
-    pub libraries: Vec<ServerUserLibrariesRights>
+    pub libraries: Vec<ServerUserLibrariesRights>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
@@ -380,13 +417,11 @@ impl ServerUser {
     }
 }
 
-
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")] 
+#[serde(rename_all = "camelCase")]
 pub struct InvitationRedeemer {
-	pub code: String,
+    pub code: String,
 }
-
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ServerUserForUpdate {
@@ -399,7 +434,6 @@ pub struct ServerUserForUpdate {
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryQuery {
-
     #[serde(default)]
     pub sort: RsSort,
     #[serde(default)]
@@ -422,15 +456,12 @@ pub struct HistoryQuery {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")] 
+#[serde(rename_all = "camelCase")]
 pub struct ViewProgressQuery {
     #[serde(rename = "type")]
     pub kind: String,
     pub id: String,
 }
-
-
-
 
 impl ModelController {
     pub async fn hide_library(&self, library_id: String, user: &ConnectedUser) -> RsResult<()> {
@@ -463,36 +494,52 @@ impl ModelController {
         Ok(())
     }
 
-    pub async fn get_watched(&self, query: HistoryQuery, user: &ConnectedUser, library_id: Option<String>) -> RsResult<Vec<Watched>> {
+    pub async fn get_watched(
+        &self,
+        query: HistoryQuery,
+        user: &ConnectedUser,
+        library_id: Option<String>,
+    ) -> RsResult<Vec<Watched>> {
         user.check_role(&UserRole::Read)?;
         if matches!(user, ConnectedUser::ServerAdmin) {
-            return Ok(vec![])
+            return Ok(vec![]);
         }
         let user_id = user.user_id()?;
-        let progress_user = self.get_optional_library_mapped_user(library_id.as_deref(), user.user_id()?).await.ok().unwrap_or(user_id);
-        let watcheds = self.store.get_watched( query, progress_user, vec![]).await?;
-        Ok(watcheds)       
+        let progress_user = self
+            .get_optional_library_mapped_user(library_id.as_deref(), user.user_id()?)
+            .await
+            .ok()
+            .unwrap_or(user_id);
+        let watcheds = self.store.get_watched(query, progress_user, vec![]).await?;
+        Ok(watcheds)
     }
 
     pub async fn get_all_watched(&self, user: &ConnectedUser) -> RsResult<Vec<Watched>> {
         user.check_role(&UserRole::Admin)?;
-     
+
         let watcheds = self.store.get_all_watched().await?;
-        Ok(watcheds)       
+        Ok(watcheds)
     }
 
     pub fn send_watched(&self, watched: Watched) {
         self.broadcast_sse(SseEvent::Watched(watched));
     }
 
-    pub async fn add_watched(&self, watched: WatchedForAdd, user: &ConnectedUser, library_id: Option<String>) -> RsResult<()> {
+    pub async fn add_watched(
+        &self,
+        watched: WatchedForAdd,
+        user: &ConnectedUser,
+        library_id: Option<String>,
+    ) -> RsResult<()> {
         user.check_role(&UserRole::Read)?;
 
         let user_id = user.user_id()?;
         let modified = now().timestamp_millis() as u64;
 
         if let Some(library_id) = library_id {
-            let all_ids = self.get_library_progress_merged_users(&library_id, user_id).await?;
+            let all_ids = self
+                .get_library_progress_merged_users(&library_id, user_id)
+                .await?;
             for id in all_ids {
                 self.store.add_watched(watched.clone(), id.clone()).await?;
                 self.send_watched(Watched {
@@ -504,7 +551,9 @@ impl ModelController {
                 });
             }
         } else {
-            self.store.add_watched(watched.clone(), user_id.clone()).await?;
+            self.store
+                .add_watched(watched.clone(), user_id.clone())
+                .await?;
             self.send_watched(Watched {
                 kind: watched.kind.clone(),
                 id: watched.id.clone(),
@@ -521,15 +570,24 @@ impl ModelController {
     }
 
     /// Removes watched entries. Tries all provided IDs and emits a single SSE event with all IDs.
-    pub async fn remove_watched(&self, watched: WatchedForDelete, user: &ConnectedUser, library_id: Option<String>) -> RsResult<()> {
+    pub async fn remove_watched(
+        &self,
+        watched: WatchedForDelete,
+        user: &ConnectedUser,
+        library_id: Option<String>,
+    ) -> RsResult<()> {
         user.check_role(&UserRole::Read)?;
         let user_id = user.user_id()?;
         let modified = now().timestamp_millis() as u64;
 
         if let Some(library_id) = library_id {
-            let all_user_ids = self.get_library_progress_merged_users(&library_id, user_id).await?;
+            let all_user_ids = self
+                .get_library_progress_merged_users(&library_id, user_id)
+                .await?;
             for uid in all_user_ids {
-                self.store.delete_watched(watched.kind.clone(), watched.ids.clone(), uid.clone()).await?;
+                self.store
+                    .delete_watched(watched.kind.clone(), watched.ids.clone(), uid.clone())
+                    .await?;
                 // Emit single SSE with all IDs for client matching
                 self.send_unwatched(Unwatched {
                     kind: watched.kind.clone(),
@@ -539,7 +597,9 @@ impl ModelController {
                 });
             }
         } else {
-            self.store.delete_watched(watched.kind.clone(), watched.ids.clone(), user_id.clone()).await?;
+            self.store
+                .delete_watched(watched.kind.clone(), watched.ids.clone(), user_id.clone())
+                .await?;
             // Emit single SSE with all IDs for client matching
             self.send_unwatched(Unwatched {
                 kind: watched.kind.clone(),
@@ -551,64 +611,101 @@ impl ModelController {
         Ok(())
     }
 
-    pub async fn add_view_progress(&self, progress: ViewProgressForAdd, user: &ConnectedUser, library_id: Option<String>) -> RsResult<()> {
+    pub async fn add_view_progress(
+        &self,
+        progress: ViewProgressForAdd,
+        user: &ConnectedUser,
+        library_id: Option<String>,
+    ) -> RsResult<()> {
         user.check_role(&UserRole::Read)?;
 
         let user_id = user.user_id()?;
         if let Some(library_id) = library_id {
-            let all_ids = self.get_library_progress_merged_users(&library_id, user_id).await?;
+            let all_ids = self
+                .get_library_progress_merged_users(&library_id, user_id)
+                .await?;
             for id in all_ids {
                 self.store.add_view_progress(progress.clone(), id).await?;
             }
         } else {
-            self.store.add_view_progress(progress.clone(), user_id).await?;
+            self.store
+                .add_view_progress(progress.clone(), user_id)
+                .await?;
         }
         Ok(())
     }
 
-    pub async fn get_view_progress(&self, ids: RsIds, user: &ConnectedUser, library_id: Option<String>) -> RsResult<Option<ViewProgress>> {
+    pub async fn get_view_progress(
+        &self,
+        ids: RsIds,
+        user: &ConnectedUser,
+        library_id: Option<String>,
+    ) -> RsResult<Option<ViewProgress>> {
         if matches!(user, ConnectedUser::ServerAdmin) {
-            return Ok(None)
+            return Ok(None);
         }
-
 
         user.check_role(&UserRole::Read)?;
         let user_id = user.user_id()?;
-        let progress_user = self.get_optional_library_mapped_user(library_id.as_deref(), user.user_id()?).await.ok().unwrap_or(user_id);
-        let progress = self.store.get_view_progess( ids, progress_user).await?;
+        let progress_user = self
+            .get_optional_library_mapped_user(library_id.as_deref(), user.user_id()?)
+            .await
+            .ok()
+            .unwrap_or(user_id);
+        let progress = self.store.get_view_progess(ids, progress_user).await?;
         Ok(progress)
     }
 
-    
-    pub async fn get_view_progress_by_id(&self, id: String, user: &ConnectedUser) -> RsResult<Option<ViewProgress>> {
+    pub async fn get_view_progress_by_id(
+        &self,
+        id: String,
+        user: &ConnectedUser,
+    ) -> RsResult<Option<ViewProgress>> {
         let media_id = RsIds::try_from(id)?;
         self.get_view_progress(media_id, user, None).await
     }
 
-    pub async fn get_all_view_progress(&self, query: HistoryQuery, user: &ConnectedUser, library_id: Option<String>) -> RsResult<Vec<ViewProgress>> {
+    pub async fn get_all_view_progress(
+        &self,
+        query: HistoryQuery,
+        user: &ConnectedUser,
+        library_id: Option<String>,
+    ) -> RsResult<Vec<ViewProgress>> {
         if matches!(user, ConnectedUser::ServerAdmin) {
-            return Ok(vec![])
+            return Ok(vec![]);
         }
-
 
         user.check_role(&UserRole::Read)?;
         let user_id = user.user_id()?;
-        let progress_user = self.get_optional_library_mapped_user(library_id.as_deref(), user.user_id()?).await.ok().unwrap_or(user_id);
-        let progresses = self.store.get_all_view_progress(query, progress_user).await?;
+        let progress_user = self
+            .get_optional_library_mapped_user(library_id.as_deref(), user.user_id()?)
+            .await
+            .ok()
+            .unwrap_or(user_id);
+        let progresses = self
+            .store
+            .get_all_view_progress(query, progress_user)
+            .await?;
         Ok(progresses)
     }
-
 
     pub async fn get_upload_key(&self, key: String) -> RsResult<UploadKey> {
         Ok(self.store.get_upload_key(key).await?)
     }
 
-    pub async fn get_upload_keys(&self, requesting_user: &ConnectedUser) -> RsResult<Vec<UploadKey>> {
+    pub async fn get_upload_keys(
+        &self,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Vec<UploadKey>> {
         requesting_user.check_role(&UserRole::Admin)?;
         Ok(self.store.get_upload_keys().await?)
     }
 
-    pub async fn add_upload_key(&self, params: UploadKeyForCreate, requesting_user: &ConnectedUser) -> RsResult<UploadKey> {
+    pub async fn add_upload_key(
+        &self,
+        params: UploadKeyForCreate,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<UploadKey> {
         requesting_user.check_role(&UserRole::Admin)?;
         let key = UploadKey {
             id: nanoid::nanoid!(),
@@ -621,7 +718,11 @@ impl ModelController {
         Ok(key)
     }
 
-    pub async fn remove_upload_key(&self, key_id: &str, requesting_user: &ConnectedUser) -> RsResult<()> {
+    pub async fn remove_upload_key(
+        &self,
+        key_id: &str,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<()> {
         requesting_user.check_role(&UserRole::Admin)?;
         self.store.remove_upload_key(key_id.to_string()).await?;
         Ok(())
@@ -635,22 +736,38 @@ impl ModelController {
                     id: u.id,
                     name: u.name,
                     role: UserRole::Read,
-			        ..Default::default()
+                    ..Default::default()
                 };
-                self.add_user(creation_user, &ConnectedUser::ServerAdmin).await
-            },
-            _ => Err(Error::UserGetNotAuth { user: user.clone(), requested_user: "Connected".to_string() }),
+                self.add_user(creation_user, &ConnectedUser::ServerAdmin)
+                    .await
+            }
+            _ => Err(Error::UserGetNotAuth {
+                user: user.clone(),
+                requested_user: "Connected".to_string(),
+            }),
         }?;
-        let invitation = self.store.get_library_invitation(code.clone()).await?.ok_or(Error::NotFound(format!("Library invitation not found: {}", code)))?;
+        let invitation = self
+            .store
+            .get_library_invitation(code.clone())
+            .await?
+            .ok_or(Error::NotFound(format!(
+                "Library invitation not found: {}",
+                code
+            )))?;
         let library_id = invitation.library.clone();
-        self.store.add_library_rights(invitation.library, connected_user.id, invitation.roles, invitation.limits).await?;
+        self.store
+            .add_library_rights(
+                invitation.library,
+                connected_user.id,
+                invitation.roles,
+                invitation.limits,
+            )
+            .await?;
 
         self.store.remove_library_invitation(code).await?;
 
         Ok(library_id)
     }
-
-
 }
 
 #[cfg(test)]
@@ -665,6 +782,5 @@ mod tests {
         assert_eq!(UserRole::Admin > UserRole::Write, true);
         assert_eq!(UserRole::Write > UserRole::Read, true);
         assert_eq!(UserRole::Read > UserRole::None, true);
-
     }
 }

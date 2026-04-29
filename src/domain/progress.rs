@@ -5,13 +5,11 @@ use tokio::sync::mpsc::Sender;
 
 pub type RsProgressCallback = Option<Sender<RsProgress>>;
 
-
-
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, PartialOrd, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct RsProgress {
     pub id: String,
-	pub total: Option<u64>,
+    pub total: Option<u64>,
     pub current: Option<u64>,
     pub filename: Option<String>,
     #[serde(rename = "type")]

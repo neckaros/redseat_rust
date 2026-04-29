@@ -1,6 +1,6 @@
 use std::env;
-use std::{error::Error, process::ExitStatus};
 use std::process::Command;
+use std::{error::Error, process::ExitStatus};
 
 pub mod log;
 
@@ -19,11 +19,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
             logln!("run status: {:?}", status);
             if let Some(code) = status.code() {
                 logln!("Exit code: {:?}", code);
-                if code == 101{
+                if code == 101 {
                     if retries < 4 {
                         retries += 1;
                         restart = true;
-                        logln!("Panic termination will try to rerun (retry {:?}/4)", retries);
+                        logln!(
+                            "Panic termination will try to rerun (retry {:?}/4)",
+                            retries
+                        );
                     } else {
                         restart = false
                     }
@@ -45,7 +48,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-
 fn run() -> Result<ExitStatus, Box<dyn Error>> {
     let args: Vec<String> = env::args().skip(1).collect();
 
@@ -64,13 +66,10 @@ fn run() -> Result<ExitStatus, Box<dyn Error>> {
 
     println!("Starting command: ./redseat-rust {}", args.join(" "));
 
-        //.arg("/dev/nonexistent")
-    let status = command   .status()
-        .expect("Redseat could not be executed");
+    //.arg("/dev/nonexistent")
+    let status = command.status().expect("Redseat could not be executed");
 
     println!("ls: {status}");
 
     Ok(status)
-
-
 }

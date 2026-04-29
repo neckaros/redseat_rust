@@ -1,2 +1,2 @@
-pub mod trakt;
 pub mod imdb;
+pub mod trakt;

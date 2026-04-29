@@ -440,17 +440,35 @@ impl ModelController {
             if new_password != old_password {
                 if let Some(ref _new_pw) = new_password {
                     // Password was set or changed: encrypt existing files
-                    use crate::tools::scheduler::{encrypt_library::EncryptLibraryTask, RsSchedulerWhen, RsTaskType};
+                    use crate::tools::scheduler::{
+                        encrypt_library::EncryptLibraryTask, RsSchedulerWhen, RsTaskType,
+                    };
                     let task = EncryptLibraryTask::new_encrypt(library_id.to_string());
-                    if let Err(e) = self.scheduler.add(RsTaskType::EncryptLibrary, RsSchedulerWhen::At(0), task).await {
-                        log_error(LogServiceType::Other, format!("Failed to schedule encryption task: {:?}", e));
+                    if let Err(e) = self
+                        .scheduler
+                        .add(RsTaskType::EncryptLibrary, RsSchedulerWhen::At(0), task)
+                        .await
+                    {
+                        log_error(
+                            LogServiceType::Other,
+                            format!("Failed to schedule encryption task: {:?}", e),
+                        );
                     }
                 } else {
                     // Password was removed: decrypt existing files
-                    use crate::tools::scheduler::{encrypt_library::EncryptLibraryTask, RsSchedulerWhen, RsTaskType};
+                    use crate::tools::scheduler::{
+                        encrypt_library::EncryptLibraryTask, RsSchedulerWhen, RsTaskType,
+                    };
                     let task = EncryptLibraryTask::new_decrypt(library_id.to_string());
-                    if let Err(e) = self.scheduler.add(RsTaskType::EncryptLibrary, RsSchedulerWhen::At(0), task).await {
-                        log_error(LogServiceType::Other, format!("Failed to schedule decryption task: {:?}", e));
+                    if let Err(e) = self
+                        .scheduler
+                        .add(RsTaskType::EncryptLibrary, RsSchedulerWhen::At(0), task)
+                        .await
+                    {
+                        log_error(
+                            LogServiceType::Other,
+                            format!("Failed to schedule decryption task: {:?}", e),
+                        );
                     }
                 }
             }
@@ -901,7 +919,8 @@ impl ModelController {
             url,
             ..Default::default()
         };
-        self.request_to_reader(library_id, request, requesting_user).await
+        self.request_to_reader(library_id, request, requesting_user)
+            .await
     }
 
     pub async fn url_to_bufer(

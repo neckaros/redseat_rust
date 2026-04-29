@@ -7,9 +7,6 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-
-
-
 /// Data returned by `YoutubeDl::run`. Output can either be a single video or a playlist of videos.
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub enum YoutubeDlOutput {
@@ -36,8 +33,6 @@ impl YoutubeDlOutput {
         }
     }
 }
-
-
 
 #[derive(Clone, Serialize, Deserialize, Debug, Default)]
 pub struct Chapter {
@@ -394,7 +389,6 @@ where
     Ok(flattened_entries)
 }
 
-
 // Video entries can be null in the case of premium videos
 // Flattens entries to simplify the type from Option<Vec<Option<SingleVideo>>>> to Option<Vec<SingleVideo>>
 fn parse_tags<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
@@ -402,8 +396,8 @@ where
     D: Deserializer<'de>,
 {
     let entries: Option<Vec<Option<String>>> = Deserialize::deserialize(deserializer)?;
-    let flattened_entries = entries
-        .map(|vec_option_tags| vec_option_tags.into_iter().flatten().collect());
+    let flattened_entries =
+        entries.map(|vec_option_tags| vec_option_tags.into_iter().flatten().collect());
 
     Ok(flattened_entries)
 }

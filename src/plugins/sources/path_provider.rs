@@ -1,5 +1,11 @@
-use std::{collections::HashSet, fs::read_dir, path::{Path, PathBuf}, pin::Pin, str::FromStr, time::{Duration, SystemTime}};
-
+use std::{
+    collections::HashSet,
+    fs::read_dir,
+    path::{Path, PathBuf},
+    pin::Pin,
+    str::FromStr,
+    time::{Duration, SystemTime},
+};
 
 use axum::{async_trait, extract::path};
 use bytes::Bytes;
@@ -7,16 +13,36 @@ use chrono::{Datelike, Utc};
 use futures::Stream;
 use human_bytes::human_bytes;
 use query_external_ip::SourceError;
-use sha2::{Sha256, Digest};
-use tokio::{fs::{create_dir_all, remove_file, File}, io::{copy, AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter}};
+use sha2::{Digest, Sha256};
+use tokio::{
+    fs::{create_dir_all, remove_file, File},
+    io::{
+        copy, AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt, BufReader,
+        BufWriter,
+    },
+};
 
-use crate::{domain::{backup::Backup, library::ServerLibrary, media::MediaForUpdate}, error::{RsError, RsResult}, model::ModelController, routes::mw_range::RangeDefinition, tools::{file_tools::get_mime_from_filename, image_tools::resize_image_reader, log::{log_error, log_info, LogServiceType}}};
+use crate::{
+    domain::{backup::Backup, library::ServerLibrary, media::MediaForUpdate},
+    error::{RsError, RsResult},
+    model::ModelController,
+    routes::mw_range::RangeDefinition,
+    tools::{
+        file_tools::get_mime_from_filename,
+        image_tools::resize_image_reader,
+        log::{log_error, log_info, LogServiceType},
+    },
+};
 
-use super::{error::{SourcesError, SourcesResult}, AsyncReadPinBox, AsyncSeekableWrite, BoxedStringFuture, FileStreamResult, RangeResponse, Source, SourceRead};
+use super::{
+    error::{SourcesError, SourcesResult},
+    AsyncReadPinBox, AsyncSeekableWrite, BoxedStringFuture, FileStreamResult, RangeResponse,
+    Source, SourceRead,
+};
 
 pub struct PathProvider {
     root: PathBuf,
-    for_local: bool
+    for_local: bool,
 }
 
 const FILE_IO_BUFFER_SIZE: usize = 4 * 1024 * 1024;
@@ -37,30 +63,35 @@ impl PathProvider {
 
     pub fn get_all_file_paths(dir: &Path, include_hidden: bool) -> HashSet<String> {
         let mut file_paths = HashSet::new();
-    
+
         if dir.is_dir() {
             for entry in read_dir(dir).expect("Failed to read directory") {
                 let entry = entry.expect("Failed to get directory entry");
                 let path = entry.path();
                 let filename = entry.file_name();
-                
+
                 if path.is_file() {
                     file_paths.insert(path.to_string_lossy().into_owned());
-                } else if path.is_dir() && (include_hidden || !filename.to_string_lossy().starts_with(".")) {
+                } else if path.is_dir()
+                    && (include_hidden || !filename.to_string_lossy().starts_with("."))
+                {
                     file_paths.extend(PathProvider::get_all_file_paths(&path, include_hidden));
                 }
             }
         }
-    
+
         file_paths
     }
-    
+
     pub fn move_to_trash<P: AsRef<Path>>(path: P) -> RsResult<()> {
         trash::delete(path)?;
         Ok(())
     }
 
-    pub async fn get_file_write_stream(&self, name: &str) -> SourcesResult<(String, Pin<Box<dyn AsyncWrite + Send>>)> {
+    pub async fn get_file_write_stream(
+        &self,
+        name: &str,
+    ) -> SourcesResult<(String, Pin<Box<dyn AsyncWrite + Send>>)> {
         let path = self.root.clone();
         let mut sourcepath = PathBuf::new();
 
@@ -72,17 +103,15 @@ impl PathProvider {
         }
         let mut folder = path.clone();
         folder.push(&sourcepath);
-       
 
         let mut file_path = path.clone();
         let original_source = sourcepath.clone();
         sourcepath.push(&name);
         file_path.push(&sourcepath);
-        
+
         if let Some(p) = file_path.parent() {
             create_dir_all(&p).await?;
         }
-        
 
         let original_name = name;
         let mut i = 1;
@@ -99,20 +128,23 @@ impl PathProvider {
             sourcepath.push(new_name);
             file_path.push(&sourcepath);
         }
-    
 
         let file = BufWriter::with_capacity(FILE_IO_BUFFER_SIZE, File::create(&file_path).await?);
-        let source = sourcepath.to_str().ok_or(SourcesError::Other("Unable to convert path to string".into()))?.to_string();
+        let source = sourcepath
+            .to_str()
+            .ok_or(SourcesError::Other(
+                "Unable to convert path to string".into(),
+            ))?
+            .to_string();
         Ok((source.to_string(), Box::pin(file)))
     }
 }
 
 impl PathProvider {
-    
     pub fn new_for_local(path: PathBuf) -> Self {
         PathProvider {
             root: path,
-            for_local: true
+            for_local: true,
         }
     }
 }
@@ -123,7 +155,7 @@ impl Source for PathProvider {
         if let Some(root) = library.root {
             Ok(PathProvider {
                 root: PathBuf::from_str(&root).map_err(|_| SourcesError::Error)?,
-                for_local: false
+                for_local: false,
             })
         } else {
             Err(SourcesError::Error.into())
@@ -131,31 +163,68 @@ impl Source for PathProvider {
     }
 
     async fn new_from_backup(backup: Backup, _: ModelController) -> RsResult<Self> {
-         Ok(PathProvider {
-                root: PathBuf::from_str(&backup.path).map_err(|_| SourcesError::Error)?,
-                for_local: true
-            })
+        Ok(PathProvider {
+            root: PathBuf::from_str(&backup.path).map_err(|_| SourcesError::Error)?,
+            for_local: true,
+        })
     }
 
     async fn init(&self) -> SourcesResult<()> {
-        
-        log_info(LogServiceType::LibraryCreation, format!("init libary {}", self.root.to_string_lossy()));
+        log_info(
+            LogServiceType::LibraryCreation,
+            format!("init libary {}", self.root.to_string_lossy()),
+        );
         let path_lib = self.get_full_path(".redseat");
-        
-        log_info(LogServiceType::LibraryCreation, format!("init libary {} - creating dir {}", self.root.to_string_lossy(), path_lib.to_string_lossy()));
+
+        log_info(
+            LogServiceType::LibraryCreation,
+            format!(
+                "init libary {} - creating dir {}",
+                self.root.to_string_lossy(),
+                path_lib.to_string_lossy()
+            ),
+        );
         create_dir_all(path_lib).await?;
 
         let path_lib = self.get_full_path(".redseat/.thumbs");
-        log_info(LogServiceType::LibraryCreation, format!("init libary {} - creating dir {}", self.root.to_string_lossy(), path_lib.to_string_lossy()));
+        log_info(
+            LogServiceType::LibraryCreation,
+            format!(
+                "init libary {} - creating dir {}",
+                self.root.to_string_lossy(),
+                path_lib.to_string_lossy()
+            ),
+        );
         create_dir_all(path_lib).await?;
         let path_lib = self.get_full_path(".redseat/.portraits");
-        log_info(LogServiceType::LibraryCreation, format!("init libary {} - creating dir {}", self.root.to_string_lossy(), path_lib.to_string_lossy()));
+        log_info(
+            LogServiceType::LibraryCreation,
+            format!(
+                "init libary {} - creating dir {}",
+                self.root.to_string_lossy(),
+                path_lib.to_string_lossy()
+            ),
+        );
         create_dir_all(path_lib).await?;
         let path_lib = self.get_full_path(".redseat/.cache");
-        log_info(LogServiceType::LibraryCreation, format!("init libary {} - creating dir {}", self.root.to_string_lossy(), path_lib.to_string_lossy()));
+        log_info(
+            LogServiceType::LibraryCreation,
+            format!(
+                "init libary {} - creating dir {}",
+                self.root.to_string_lossy(),
+                path_lib.to_string_lossy()
+            ),
+        );
         create_dir_all(path_lib).await?;
         let path_lib = self.get_full_path(".redseat/.series");
-        log_info(LogServiceType::LibraryCreation, format!("init libary {} - creating dir {}", self.root.to_string_lossy(), path_lib.to_string_lossy()));
+        log_info(
+            LogServiceType::LibraryCreation,
+            format!(
+                "init libary {} - creating dir {}",
+                self.root.to_string_lossy(),
+                path_lib.to_string_lossy()
+            ),
+        );
         create_dir_all(path_lib).await?;
         Ok(())
     }
@@ -181,12 +250,14 @@ impl Source for PathProvider {
             let mut buf = vec![0u8; 1024 * 1024];
             loop {
                 let n = file.read(&mut buf).await?;
-                if n == 0 { break; }
+                if n == 0 {
+                    break;
+                }
                 hasher.update(&buf[..n]);
             }
             format!("{:x}", hasher.finalize())
         };
-        infos.md5 = Some(hash); 
+        infos.md5 = Some(hash);
         let mime = get_mime_from_filename(source);
         if let Some(mime) = mime {
             infos.mimetype = Some(mime);
@@ -197,8 +268,6 @@ impl Source for PathProvider {
     fn local_path(&self, source: &str) -> Option<PathBuf> {
         Some(self.get_full_path(&source))
     }
-
-
 
     async fn get_file(&self, source: &str, range: Option<RangeDefinition>) -> RsResult<SourceRead> {
         let path = self.get_full_path(&source);
@@ -213,26 +282,27 @@ impl Source for PathProvider {
             }
         })?;
         let metadata = file.metadata().await?;
-        
+
         let mut size = metadata.len();
 
         let total_size = metadata.len();
 
         let mut filereader = BufReader::with_capacity(FILE_IO_BUFFER_SIZE, file);
 
-        let mut range_response = RangeResponse { size: Some(total_size.clone()), start: None, end: None };
-        
-        if let Some(range) = &range {
+        let mut range_response = RangeResponse {
+            size: Some(total_size.clone()),
+            start: None,
+            end: None,
+        };
 
+        if let Some(range) = &range {
             if let Some(start) = range.start {
-                if start < size { 
-                    filereader.seek( std::io::SeekFrom::Start(start)).await?;
+                if start < size {
+                    filereader.seek(std::io::SeekFrom::Start(start)).await?;
                     range_response.start = Some(start.clone());
                     size = size - start;
                     range_response.size = Some(size.clone());
-
                 }
-
             }
             if let Some(end) = range.end {
                 if end <= size {
@@ -249,8 +319,8 @@ impl Source for PathProvider {
                         range: Some(range_response),
                         mime: guess.first().and_then(|g| Some(g.to_string())),
                         name: filename,
-                        cleanup: None
-                    }))
+                        cleanup: None,
+                    }));
                 }
             } else {
                 range_response.end = Some(total_size - 1);
@@ -262,18 +332,23 @@ impl Source for PathProvider {
             stream: Box::pin(filereader),
             size: Some(size),
             accept_range: true,
-            range: if range.is_some() { Some(range_response) } else {None},
+            range: if range.is_some() {
+                Some(range_response)
+            } else {
+                None
+            },
             mime: guess.first().and_then(|g| Some(g.to_string())),
             name: filename,
-            cleanup: None
+            cleanup: None,
         }))
     }
 
-
-
-
-
-    async fn writer(&self, name: &str, length: Option<u64>, mime: Option<String>) -> RsResult<(BoxedStringFuture, Pin<Box<dyn AsyncWrite + Send>>)> {
+    async fn writer(
+        &self,
+        name: &str,
+        length: Option<u64>,
+        mime: Option<String>,
+    ) -> RsResult<(BoxedStringFuture, Pin<Box<dyn AsyncWrite + Send>>)> {
         let path = self.root.clone();
         let mut sourcepath = PathBuf::new();
 
@@ -285,17 +360,15 @@ impl Source for PathProvider {
         }
         let mut folder = path.clone();
         folder.push(&sourcepath);
-       
 
         let mut file_path = path.clone();
         let original_source = sourcepath.clone();
         sourcepath.push(name);
         file_path.push(&sourcepath);
-        
+
         if let Some(p) = file_path.parent() {
             create_dir_all(&p).await?;
         }
-        
 
         let original_name = name;
         let mut i = 1;
@@ -312,20 +385,24 @@ impl Source for PathProvider {
             sourcepath.push(new_name);
             file_path.push(&sourcepath);
         }
-    
-    
-        let source = sourcepath.to_str().ok_or(SourcesError::Other("Unable to convert path to string".into()))?.to_string();
+
+        let source = sourcepath
+            .to_str()
+            .ok_or(SourcesError::Other(
+                "Unable to convert path to string".into(),
+            ))?
+            .to_string();
         let file = BufWriter::with_capacity(FILE_IO_BUFFER_SIZE, File::create(&file_path).await?);
 
-        let source = Box::pin(async {
-            Ok::<RsResult<String>, RsError>(Ok::<String, RsError>(source))
-        });
+        let source =
+            Box::pin(async { Ok::<RsResult<String>, RsError>(Ok::<String, RsError>(source)) });
         Ok((source, Box::pin(file)))
     }
 
-
-
-    async fn writerseek(&self, name: &str) -> RsResult<(String, Pin<Box<dyn AsyncSeekableWrite + Send>>)> {
+    async fn writerseek(
+        &self,
+        name: &str,
+    ) -> RsResult<(String, Pin<Box<dyn AsyncSeekableWrite + Send>>)> {
         let path = self.root.clone();
         let mut sourcepath = PathBuf::new();
 
@@ -337,17 +414,15 @@ impl Source for PathProvider {
         }
         let mut folder = path.clone();
         folder.push(&sourcepath);
-       
 
         let mut file_path = path.clone();
         let original_source = sourcepath.clone();
         sourcepath.push(name);
         file_path.push(&sourcepath);
-        
+
         if let Some(p) = file_path.parent() {
             create_dir_all(&p).await?;
         }
-        
 
         let original_name = name;
         let mut i = 1;
@@ -364,9 +439,13 @@ impl Source for PathProvider {
             sourcepath.push(new_name);
             file_path.push(&sourcepath);
         }
-    
-    
-        let source = sourcepath.to_str().ok_or(SourcesError::Other("Unable to convert path to string".into()))?.to_string();
+
+        let source = sourcepath
+            .to_str()
+            .ok_or(SourcesError::Other(
+                "Unable to convert path to string".into(),
+            ))?
+            .to_string();
         let file = BufWriter::with_capacity(FILE_IO_BUFFER_SIZE, File::create(&file_path).await?);
 
         Ok((source, Box::pin(file)))
@@ -384,7 +463,10 @@ impl Source for PathProvider {
             let existing_as_source = match path.strip_prefix(&self.root) {
                 Ok(relative) => relative.to_string_lossy().to_string(),
                 Err(_) => {
-                    log_error(crate::tools::log::LogServiceType::Other, format!("Unable to strip root prefix from {}", existing_file));
+                    log_error(
+                        crate::tools::log::LogServiceType::Other,
+                        format!("Unable to strip root prefix from {}", existing_file),
+                    );
                     continue;
                 }
             };
@@ -398,23 +480,29 @@ impl Source for PathProvider {
                 Self::move_to_trash(path)?;
             }
         }
-        println!("Total clean: {} ({})", result.len(), human_bytes(total as f64));
+        println!(
+            "Total clean: {} ({})",
+            result.len(),
+            human_bytes(total as f64)
+        );
         for source in sources {
             if !existing_sources.contains(&source) {
-                log_error(crate::tools::log::LogServiceType::Other, format!("Unable to find file {}", source));
+                log_error(
+                    crate::tools::log::LogServiceType::Other,
+                    format!("Unable to find file {}", source),
+                );
             }
         }
         Ok(result)
     }
-
 }
-
-
-
 
 impl PathProvider {
     /// Will replace existing library file
-    pub async fn get_file_write_library_overwrite(&self, name: &str) -> SourcesResult<BufWriter<File>> {
+    pub async fn get_file_write_library_overwrite(
+        &self,
+        name: &str,
+    ) -> SourcesResult<BufWriter<File>> {
         let mut path = self.root.clone();
         path.push(&name);
         if let Some(p) = path.parent() {
@@ -455,29 +543,25 @@ impl PathProvider {
                 println!("{} TOO YOUNG {}", path_string, metadata.len());
             }
         }
-        println!("Total clean: {} ({})", result.len(), human_bytes(total as f64));
+        println!(
+            "Total clean: {} ({})",
+            result.len(),
+            human_bytes(total as f64)
+        );
 
         Ok(result)
     }
-
 }
-
-
-
-
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::{
         body::Body,
-        http::{self, Request, StatusCode, header},
+        http::{self, header, Request, StatusCode},
     };
     use http_body_util::BodyExt;
     // for `collect`
     use serde_json::{json, Value};
     use tower::ServiceExt; // for `call`, `oneshot`, and `ready`
-
-
-
 }

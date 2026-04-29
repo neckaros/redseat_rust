@@ -3,10 +3,12 @@ use std::{collections::HashMap, io::Cursor};
 use async_recursion::async_recursion;
 use nanoid::nanoid;
 use rs_plugin_common_interfaces::{
-    ExternalImage,
-    ImageType,
     domain::{rs_ids::RsIds, serie::SerieStatus, ItemWithRelations},
-    lookup::{RsLookupMetadataResult, RsLookupMetadataResultWrapper, RsLookupMetadataResults, RsLookupMovie, RsLookupQuery, RsLookupSerie},
+    lookup::{
+        RsLookupMetadataResult, RsLookupMetadataResultWrapper, RsLookupMetadataResults,
+        RsLookupMovie, RsLookupQuery, RsLookupSerie,
+    },
+    ExternalImage, ImageType,
 };
 use rusqlite::{
     types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef},
@@ -17,19 +19,16 @@ use serde_json::Value;
 
 use crate::{
     domain::{
-        ElementAction,
-        MediaElement,
         deleted::RsDeleted,
         episode::EpisodeExt,
         library::{LibraryRole, LibraryType},
         serie::{Serie, SerieExt, SerieWithAction, SeriesMessage},
+        ElementAction, MediaElement,
     },
     error::RsResult,
     plugins::{
         medias::imdb::ImdbContext,
-        sources::{
-            AsyncReadPinBox, FileStreamResult, error::SourcesError,
-        },
+        sources::{error::SourcesError, AsyncReadPinBox, FileStreamResult},
     },
     tools::image_tools::{convert_image_reader, ImageSize},
 };
@@ -45,7 +44,6 @@ use super::{
     ModelController,
 };
 use crate::routes::sse::SseEvent;
-
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct SerieQuery {
@@ -171,7 +169,10 @@ impl ModelController {
                         _ => None,
                     });
                 if let Some(serie) = plugin_serie {
-                    return Ok(Some(ItemWithRelations { item: serie, relations: None }));
+                    return Ok(Some(ItemWithRelations {
+                        item: serie,
+                        relations: None,
+                    }));
                 }
 
                 // Fallback to Trakt
@@ -183,7 +184,10 @@ impl ModelController {
                     )
                 })?;
                 trakt_show.fill_imdb_ratings(&self.imdb).await;
-                Ok(Some(ItemWithRelations { item: trakt_show, relations: None }))
+                Ok(Some(ItemWithRelations {
+                    item: trakt_show,
+                    relations: None,
+                }))
             }
         } else {
             let serie = store.get_serie(&serie_id).await?;
@@ -231,7 +235,10 @@ impl ModelController {
         }
         for name in &names {
             if let Some(found) = store
-                .get_series(SerieQuery { name: Some(name.clone()), ..Default::default() })
+                .get_series(SerieQuery {
+                    name: Some(name.clone()),
+                    ..Default::default()
+                })
                 .await?
                 .into_iter()
                 .next()
@@ -272,14 +279,22 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> RsResult<Vec<(String, String, RsLookupMetadataResults)>> {
         let is_books_library = self.is_books_library(library_id).await;
-        let include_trakt = !is_books_library && sources.as_deref().map_or(true, |s| s.iter().any(|id| id == "trakt"));
+        let include_trakt = !is_books_library
+            && sources
+                .as_deref()
+                .map_or(true, |s| s.iter().any(|id| id == "trakt"));
         let trakt_entries = if include_trakt {
             let trakt_results = self.trakt.search_show(&query).await?;
-            Some(trakt_results.into_iter().map(|(serie, match_type)| RsLookupMetadataResultWrapper {
-                metadata: RsLookupMetadataResult::Serie(serie),
-                match_type,
-                ..Default::default()
-            }).collect())
+            Some(
+                trakt_results
+                    .into_iter()
+                    .map(|(serie, match_type)| RsLookupMetadataResultWrapper {
+                        metadata: RsLookupMetadataResult::Serie(serie),
+                        match_type,
+                        ..Default::default()
+                    })
+                    .collect(),
+            )
         } else {
             None
         };
@@ -296,7 +311,8 @@ impl ModelController {
             trakt_entries,
             sources,
             requesting_user,
-        ).await
+        )
+        .await
     }
 
     pub async fn search_serie_stream(
@@ -307,14 +323,22 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> RsResult<tokio::sync::mpsc::Receiver<(String, String, RsLookupMetadataResults)>> {
         let is_books_library = self.is_books_library(library_id).await;
-        let include_trakt = !is_books_library && sources.as_deref().map_or(true, |s| s.iter().any(|id| id == "trakt"));
+        let include_trakt = !is_books_library
+            && sources
+                .as_deref()
+                .map_or(true, |s| s.iter().any(|id| id == "trakt"));
         let trakt_entries = if include_trakt {
             let trakt_results = self.trakt.search_show(&query).await?;
-            Some(trakt_results.into_iter().map(|(serie, match_type)| RsLookupMetadataResultWrapper {
-                metadata: RsLookupMetadataResult::Serie(serie),
-                match_type,
-                ..Default::default()
-            }).collect())
+            Some(
+                trakt_results
+                    .into_iter()
+                    .map(|(serie, match_type)| RsLookupMetadataResultWrapper {
+                        metadata: RsLookupMetadataResult::Serie(serie),
+                        match_type,
+                        ..Default::default()
+                    })
+                    .collect(),
+            )
         } else {
             None
         };
@@ -331,7 +355,8 @@ impl ModelController {
             trakt_entries,
             sources,
             requesting_user,
-        ).await
+        )
+        .await
     }
 
     async fn is_books_library(&self, library_id: &str) -> bool {
@@ -361,16 +386,15 @@ impl ModelController {
         if update.has_update() {
             let store = self.store.get_library_store(library_id)?;
             store.update_serie(&serie_id, update).await?;
-            let serie =
-                store
-                    .get_serie(&serie_id)
-                    .await?
-                    .ok_or(SourcesError::UnableToFindSerie(
-                        library_id.to_string(),
-                        serie_id,
-                        "get_serie".to_string(),
-                    ))?
-                    .item;
+            let serie = store
+                .get_serie(&serie_id)
+                .await?
+                .ok_or(SourcesError::UnableToFindSerie(
+                    library_id.to_string(),
+                    serie_id,
+                    "get_serie".to_string(),
+                ))?
+                .item;
             self.send_serie(SeriesMessage {
                 library: library_id.to_string(),
                 series: vec![SerieWithAction {
@@ -409,9 +433,11 @@ impl ModelController {
             .get_serie_by_external_id(library_id, ids, requesting_user)
             .await?;
         if let Some(existing) = existing {
-            return Err(
-                Error::Duplicate(existing.item.id.to_owned(), MediaElement::Serie(existing.item)).into(),
-            );
+            return Err(Error::Duplicate(
+                existing.item.id.to_owned(),
+                MediaElement::Serie(existing.item),
+            )
+            .into());
         }
         let store = self.store.get_library_store(library_id)?;
         let id = nanoid!();
@@ -445,15 +471,27 @@ impl ModelController {
             mc.refresh_episodes(&library_id, &inserted_serie_id, &requesting_user)
                 .await
                 .unwrap();
-            let _ = mc.enrich_serie_ids(&library_id, &inserted_serie_id, &requesting_user).await;
+            let _ = mc
+                .enrich_serie_ids(&library_id, &inserted_serie_id, &requesting_user)
+                .await;
         });
         Ok(inserted_serie)
     }
 
-    pub async fn enrich_serie_ids(&self, library_id: &str, serie_id: &str, requesting_user: &ConnectedUser) -> RsResult<()> {
-        let serie = self.get_serie(library_id, serie_id.to_string(), requesting_user)
+    pub async fn enrich_serie_ids(
+        &self,
+        library_id: &str,
+        serie_id: &str,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<()> {
+        let serie = self
+            .get_serie(library_id, serie_id.to_string(), requesting_user)
             .await?
-            .ok_or(SourcesError::UnableToFindSerie(library_id.to_string(), serie_id.to_string(), "enrich_serie_ids".to_string()))?
+            .ok_or(SourcesError::UnableToFindSerie(
+                library_id.to_string(),
+                serie_id.to_string(),
+                "enrich_serie_ids".to_string(),
+            ))?
             .item;
         let ids: RsIds = serie.clone().into();
         if ids.as_all_external_ids().is_empty() {
@@ -465,16 +503,19 @@ impl ModelController {
             ids: Some(ids.clone()),
             page_key: None,
         });
-        let mut groups = self.exec_lookup_metadata_grouped(
-            lookup_query,
-            Some(library_id.to_string()),
-            requesting_user,
-            None,
-            None,
-        ).await?;
+        let mut groups = self
+            .exec_lookup_metadata_grouped(
+                lookup_query,
+                Some(library_id.to_string()),
+                requesting_user,
+                None,
+                None,
+            )
+            .await?;
         merge_result_ids(&mut groups);
 
-        let matched = groups.into_iter()
+        let matched = groups
+            .into_iter()
             .flat_map(|(_, _, r)| r.results)
             .find_map(|result| {
                 if let RsLookupMetadataResult::Serie(s) = result.metadata {
@@ -491,19 +532,47 @@ impl ModelController {
 
         if let Some(matched) = matched {
             let mut updates = SerieForUpdate::default();
-            if serie.imdb.is_none() { updates.imdb = matched.imdb; }
-            if serie.tmdb.is_none() { updates.tmdb = matched.tmdb; }
-            if serie.trakt.is_none() { updates.trakt = matched.trakt; }
-            if serie.tvdb.is_none() { updates.tvdb = matched.tvdb; }
-            if serie.slug.is_none() { updates.slug = matched.slug; }
-            if serie.openlibrary_work_id.is_none() { updates.openlibrary_work_id = matched.openlibrary_work_id; }
-            if serie.anilist_manga_id.is_none() { updates.anilist_manga_id = matched.anilist_manga_id; }
-            if serie.mangadex_manga_uuid.is_none() { updates.mangadex_manga_uuid = matched.mangadex_manga_uuid; }
-            if serie.myanimelist_manga_id.is_none() { updates.myanimelist_manga_id = matched.myanimelist_manga_id; }
-            if serie.year.is_none() { updates.year = matched.year; }
-            if serie.status.is_none() { updates.status = matched.status; }
+            if serie.imdb.is_none() {
+                updates.imdb = matched.imdb;
+            }
+            if serie.tmdb.is_none() {
+                updates.tmdb = matched.tmdb;
+            }
+            if serie.trakt.is_none() {
+                updates.trakt = matched.trakt;
+            }
+            if serie.tvdb.is_none() {
+                updates.tvdb = matched.tvdb;
+            }
+            if serie.slug.is_none() {
+                updates.slug = matched.slug;
+            }
+            if serie.openlibrary_work_id.is_none() {
+                updates.openlibrary_work_id = matched.openlibrary_work_id;
+            }
+            if serie.anilist_manga_id.is_none() {
+                updates.anilist_manga_id = matched.anilist_manga_id;
+            }
+            if serie.mangadex_manga_uuid.is_none() {
+                updates.mangadex_manga_uuid = matched.mangadex_manga_uuid;
+            }
+            if serie.myanimelist_manga_id.is_none() {
+                updates.myanimelist_manga_id = matched.myanimelist_manga_id;
+            }
+            if serie.year.is_none() {
+                updates.year = matched.year;
+            }
+            if serie.status.is_none() {
+                updates.status = matched.status;
+            }
             if updates.has_update() {
-                self.update_serie(library_id, serie_id.to_string(), updates, &ConnectedUser::ServerAdmin).await?;
+                self.update_serie(
+                    library_id,
+                    serie_id.to_string(),
+                    updates,
+                    &ConnectedUser::ServerAdmin,
+                )
+                .await?;
             }
         }
         Ok(())
@@ -690,7 +759,11 @@ impl ModelController {
                 .get_serie_by_external_id(library_id, ids.clone(), requesting_user)
                 .await?;
             if let Some(existing) = existing {
-                Err(Error::Duplicate(existing.item.id.to_owned(), MediaElement::Serie(existing.item)).into())
+                Err(Error::Duplicate(
+                    existing.item.id.to_owned(),
+                    MediaElement::Serie(existing.item),
+                )
+                .into())
             } else {
                 let mut new_serie = self.trakt.get_serie(&ids).await?;
                 new_serie.fill_imdb_ratings(&self.imdb).await;
@@ -714,13 +787,24 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> crate::Result<FileStreamResult<AsyncReadPinBox>> {
         let kind = kind.unwrap_or(ImageType::Poster);
-        let config = EntityImageConfig { folder: ".series", cache_prefix: "serie" };
+        let config = EntityImageConfig {
+            folder: ".series",
+            cache_prefix: "serie",
+        };
         if RsIds::is_id(serie_id) {
             let mut serie_ids: RsIds = serie_id.to_string().try_into()?;
             let store = self.store.get_library_store(library_id)?;
             let existing_serie = store.get_serie_by_external_id(serie_ids.clone()).await?;
             if let Some(existing_serie) = existing_serie {
-                return self.serie_image(library_id, &existing_serie.item.id, Some(kind), size, requesting_user).await;
+                return self
+                    .serie_image(
+                        library_id,
+                        &existing_serie.item.id,
+                        Some(kind),
+                        size,
+                        requesting_user,
+                    )
+                    .await;
             }
             // Enrich IDs via Trakt if needed
             let mut lookup_name = String::new();
@@ -731,16 +815,34 @@ impl ModelController {
                 }
             }
             let lookup_query = RsLookupQuery::Serie(RsLookupSerie {
-                name: if lookup_name.is_empty() { None } else { Some(lookup_name) },
+                name: if lookup_name.is_empty() {
+                    None
+                } else {
+                    Some(lookup_name)
+                },
                 ids: Some(serie_ids),
                 page_key: None,
             });
-            self.serve_cached_entity_image(library_id, serie_id, lookup_query, &kind, &config, requesting_user).await
+            self.serve_cached_entity_image(
+                library_id,
+                serie_id,
+                lookup_query,
+                &kind,
+                &config,
+                requesting_user,
+            )
+            .await
         } else {
             self.serve_local_entity_image(
-                library_id, serie_id, &kind, size, &config, requesting_user,
+                library_id,
+                serie_id,
+                &kind,
+                size,
+                &config,
+                requesting_user,
                 self.refresh_serie_image(library_id, serie_id, &kind, requesting_user),
-            ).await
+            )
+            .await
         }
     }
 
@@ -767,9 +869,21 @@ impl ModelController {
             page_key: None,
         });
         let reader = self
-            .download_entity_image(lookup_query, Some(library_id.to_string()), kind, requesting_user)
+            .download_entity_image(
+                lookup_query,
+                Some(library_id.to_string()),
+                kind,
+                requesting_user,
+            )
             .await?;
-        self.update_serie_image(library_id, serie_id, kind, reader, &ConnectedUser::ServerAdmin).await?;
+        self.update_serie_image(
+            library_id,
+            serie_id,
+            kind,
+            reader,
+            &ConnectedUser::ServerAdmin,
+        )
+        .await?;
         Ok(())
     }
 
@@ -781,7 +895,13 @@ impl ModelController {
         _lang: &Option<String>,
         requesting_user: &ConnectedUser,
     ) -> RsResult<Option<rs_plugin_common_interfaces::RsRequest>> {
-        self.get_entity_image_url(RsLookupQuery::Serie(query), library_id, kind, requesting_user).await
+        self.get_entity_image_url(
+            RsLookupQuery::Serie(query),
+            library_id,
+            kind,
+            requesting_user,
+        )
+        .await
     }
 
     pub async fn get_serie_images(
@@ -790,7 +910,8 @@ impl ModelController {
         library_id: Option<String>,
         requesting_user: &ConnectedUser,
     ) -> RsResult<Vec<ExternalImage>> {
-        self.get_entity_images(RsLookupQuery::Serie(query), library_id, requesting_user).await
+        self.get_entity_images(RsLookupQuery::Serie(query), library_id, requesting_user)
+            .await
     }
 
     pub async fn download_serie_image(
@@ -801,7 +922,13 @@ impl ModelController {
         _lang: &Option<String>,
         requesting_user: &ConnectedUser,
     ) -> crate::Result<AsyncReadPinBox> {
-        self.download_entity_image(RsLookupQuery::Serie(query), library_id, kind, requesting_user).await
+        self.download_entity_image(
+            RsLookupQuery::Serie(query),
+            library_id,
+            kind,
+            requesting_user,
+        )
+        .await
     }
 
     pub async fn update_serie_image(
@@ -814,9 +941,11 @@ impl ModelController {
     ) -> RsResult<()> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         if RsIds::is_id(serie_id) {
-            return Err(
-                Error::InvalidIdForAction("udpate image".to_string(), serie_id.to_string()).into(),
-            );
+            return Err(Error::InvalidIdForAction(
+                "udpate image".to_string(),
+                serie_id.to_string(),
+            )
+            .into());
         }
 
         let converted =

@@ -4,20 +4,55 @@ use async_recursion::async_recursion;
 use extism::convert::Json;
 use futures::StreamExt;
 use http::header::{CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE};
-use rs_plugin_common_interfaces::{lookup::{RsLookupMetadataResultWrapper, RsLookupMetadataResults, RsLookupQuery, RsLookupSourceResult, RsLookupWrapper}, request::{RsGroupDownload, RsProcessingActionRequest, RsProcessingProgress, RsRequest, RsRequestAddResponse, RsRequestPluginRequest, RsRequestStatus}, url::RsLink, ExternalImage, PluginCredential, PluginType};
+use rs_plugin_common_interfaces::{
+    lookup::{
+        RsLookupMetadataResultWrapper, RsLookupMetadataResults, RsLookupQuery,
+        RsLookupSourceResult, RsLookupWrapper,
+    },
+    request::{
+        RsGroupDownload, RsProcessingActionRequest, RsProcessingProgress, RsRequest,
+        RsRequestAddResponse, RsRequestPluginRequest, RsRequestStatus,
+    },
+    url::RsLink,
+    ExternalImage, PluginCredential, PluginType,
+};
 
 use rs_plugin_common_interfaces::CustomParamTypes;
 
-use crate::{Error, domain::{plugin::PluginWithCredential, progress::RsProgressCallback}, error::RsResult, plugins::sources::{AsyncReadPinBox, FileStreamResult}, tools::{array_tools::AddOrSetArray, file_tools::{filename_from_path, get_mime_from_filename}, http_tools::{extract_header, guess_filename, parse_content_disposition}, log::{self, log_error, log_info}, video_tools::ytdl::YydlContext}};
+use crate::{
+    domain::{plugin::PluginWithCredential, progress::RsProgressCallback},
+    error::RsResult,
+    plugins::sources::{AsyncReadPinBox, FileStreamResult},
+    tools::{
+        array_tools::AddOrSetArray,
+        file_tools::{filename_from_path, get_mime_from_filename},
+        http_tools::{extract_header, guess_filename, parse_content_disposition},
+        log::{self, log_error, log_info},
+        video_tools::ytdl::YydlContext,
+    },
+    Error,
+};
 
-use super::{sources::{RsRequestHeader, SourceRead}, PluginManager};
+use super::{
+    sources::{RsRequestHeader, SourceRead},
+    PluginManager,
+};
 
 /// Build params HashMap from plugin's stored CustomParam values
-fn build_plugin_params(plugin_with_cred: &PluginWithCredential) -> Option<HashMap<String, CustomParamTypes>> {
-    let params: HashMap<String, CustomParamTypes> = plugin_with_cred.plugin.params.iter()
+fn build_plugin_params(
+    plugin_with_cred: &PluginWithCredential,
+) -> Option<HashMap<String, CustomParamTypes>> {
+    let params: HashMap<String, CustomParamTypes> = plugin_with_cred
+        .plugin
+        .params
+        .iter()
         .map(|p| (p.name.clone(), p.param.clone()))
         .collect();
-    if params.is_empty() { None } else { Some(params) }
+    if params.is_empty() {
+        None
+    } else {
+        Some(params)
+    }
 }
 
 /// Optional targeting for specific plugin by ID or name
@@ -28,7 +63,6 @@ pub struct PluginTarget {
 }
 
 impl PluginManager {
-
     /// Filter plugins based on target specification
     /// Priority: target.plugin_id > target.plugin_name > request.plugin_id > request.plugin_name > all plugins
     fn filter_plugins_by_target(
@@ -60,57 +94,93 @@ impl PluginManager {
         Ok(plugins)
     }
 
-    fn find_plugin_by_id(plugins: Vec<PluginWithCredential>, id: &str) -> crate::Result<Vec<PluginWithCredential>> {
+    fn find_plugin_by_id(
+        plugins: Vec<PluginWithCredential>,
+        id: &str,
+    ) -> crate::Result<Vec<PluginWithCredential>> {
         if let Some(plugin) = plugins.into_iter().find(|p| p.plugin.id == id) {
             Ok(vec![plugin])
         } else {
-            Err(Error::NotFound(format!("Plugin with id '{}' not found", id)))
+            Err(Error::NotFound(format!(
+                "Plugin with id '{}' not found",
+                id
+            )))
         }
     }
 
-    fn find_plugin_by_name(plugins: Vec<PluginWithCredential>, name: &str) -> crate::Result<Vec<PluginWithCredential>> {
+    fn find_plugin_by_name(
+        plugins: Vec<PluginWithCredential>,
+        name: &str,
+    ) -> crate::Result<Vec<PluginWithCredential>> {
         if let Some(plugin) = plugins.into_iter().find(|p| p.plugin.name == name) {
             Ok(vec![plugin])
         } else {
-            Err(Error::NotFound(format!("Plugin with name '{}' not found", name)))
+            Err(Error::NotFound(format!(
+                "Plugin with name '{}' not found",
+                name
+            )))
         }
     }
 
-    pub async fn parse(&self, url: String, plugins: impl Iterator<Item = PluginWithCredential>) -> Option<RsLink>{
+    pub async fn parse(
+        &self,
+        url: String,
+        plugins: impl Iterator<Item = PluginWithCredential>,
+    ) -> Option<RsLink> {
         for plugin_with_cred in plugins {
-            if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
+            if let Some(plugin) = self
+                .plugins
+                .read()
+                .await
+                .iter()
+                .find(|p| p.filename == plugin_with_cred.plugin.path)
+            {
                 let mut plugin_m = plugin.plugin.lock().unwrap();
                 if plugin.infos.capabilities.contains(&PluginType::UrlParser) {
                     let res = plugin_m.call_get_error_code::<&str, Json<RsLink>>("parse", &url);
                     if let Ok(Json(res)) = res {
-                        return Some(res)
+                        return Some(res);
                     } else if let Err((error, code)) = res {
                         if code != 404 {
-                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request parse: {} {:?}", code, error))
+                            log_error(
+                                crate::tools::log::LogServiceType::Plugin,
+                                format!("Error request parse: {} {:?}", code, error),
+                            )
                         }
                     }
-                    
                 }
             }
         }
         None
     }
 
-    
-    pub async fn expand(&self, link: RsLink, plugins: impl Iterator<Item = PluginWithCredential>) -> Option<String>{
+    pub async fn expand(
+        &self,
+        link: RsLink,
+        plugins: impl Iterator<Item = PluginWithCredential>,
+    ) -> Option<String> {
         for plugin_with_cred in plugins {
-            if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
+            if let Some(plugin) = self
+                .plugins
+                .read()
+                .await
+                .iter()
+                .find(|p| p.filename == plugin_with_cred.plugin.path)
+            {
                 let mut plugin_m = plugin.plugin.lock().unwrap();
                 if plugin.infos.capabilities.contains(&PluginType::UrlParser) {
-                    let res = plugin_m.call_get_error_code::<Json<RsLink>, &str>("expand", Json(link.clone()));
+                    let res = plugin_m
+                        .call_get_error_code::<Json<RsLink>, &str>("expand", Json(link.clone()));
                     if let Ok(res) = res {
-                        return Some(res.to_string())
+                        return Some(res.to_string());
                     } else if let Err((error, code)) = res {
                         if code != 404 {
-                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request expand {} {:?}", code, error))
+                            log_error(
+                                crate::tools::log::LogServiceType::Plugin,
+                                format!("Error request expand {} {:?}", code, error),
+                            )
                         }
                     }
-                    
                 }
             }
         }
@@ -121,19 +191,31 @@ impl PluginManager {
         }
     }
 
-
-    pub async fn renew_crendentials(&self, plugin_with_cred: PluginWithCredential) -> crate::Result<PluginCredential>{
-        if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
+    pub async fn renew_crendentials(
+        &self,
+        plugin_with_cred: PluginWithCredential,
+    ) -> crate::Result<PluginCredential> {
+        if let Some(plugin) = self
+            .plugins
+            .read()
+            .await
+            .iter()
+            .find(|p| p.filename == plugin_with_cred.plugin.path)
+        {
             let mut plugin_m = plugin.plugin.lock().unwrap();
-            let Json(res) = plugin_m.call::<Json<Option<PluginCredential>>, Json<PluginCredential>>("renew_crendentials", Json(plugin_with_cred.credential.map(PluginCredential::from)))?;
+            let Json(res) = plugin_m
+                .call::<Json<Option<PluginCredential>>, Json<PluginCredential>>(
+                    "renew_crendentials",
+                    Json(plugin_with_cred.credential.map(PluginCredential::from)),
+                )?;
             Ok(res)
         } else {
-            Err(crate::Error::Error(format!("Plugin not found: {}", plugin_with_cred.plugin.path)))
+            Err(crate::Error::Error(format!(
+                "Plugin not found: {}",
+                plugin_with_cred.plugin.path
+            )))
         }
-
-        
     }
-
 
     pub async fn fill_infos(&self, request: &mut RsRequest) {
         let ctx = YydlContext::new().await;
@@ -150,29 +232,41 @@ impl PluginManager {
                     if request.description.is_none() {
                         request.description = Some(description);
                     }
-                    
                 }
             }
         }
     }
 
     #[async_recursion]
-    pub async fn request(&self, mut request: RsRequest, _savable: bool, plugins: Vec<PluginWithCredential>, _progress: RsProgressCallback, target: Option<PluginTarget>) -> RsResult<SourceRead> {
+    pub async fn request(
+        &self,
+        mut request: RsRequest,
+        _savable: bool,
+        plugins: Vec<PluginWithCredential>,
+        _progress: RsProgressCallback,
+        target: Option<PluginTarget>,
+    ) -> RsResult<SourceRead> {
         let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
         let initial_request = request.clone();
-        
+
         let client = reqwest::Client::new();
-        let r = client.head(&request.url).add_request_headers(&request, &None)?;
+        let r = client
+            .head(&request.url)
+            .add_request_headers(&request, &None)?;
         let r = r.timeout(Duration::from_secs(3)).send().await;
         if let Ok(heads) = r {
             let headers = heads.headers();
             if let Some(mime) = extract_header(headers, CONTENT_TYPE) {
                 request.mime = Some(mime.to_string())
             }
-            if let Some(size) = extract_header(headers, CONTENT_LENGTH).and_then(|c| c.parse::<u64>().ok()) {
+            if let Some(size) =
+                extract_header(headers, CONTENT_LENGTH).and_then(|c| c.parse::<u64>().ok())
+            {
                 request.size = Some(size);
             }
-            if let Some(_filename) = extract_header(headers, CONTENT_DISPOSITION).and_then(parse_content_disposition) {
+            if let Some(_filename) =
+                extract_header(headers, CONTENT_DISPOSITION).and_then(parse_content_disposition)
+            {
                 //println!("dispo {}", filename);
             } else {
                 //let filename = guess_filename(&request.url, &request.mime);
@@ -182,21 +276,40 @@ impl PluginManager {
 
         let mut processed_request = None;
         for plugin_with_cred in plugins.iter() {
-            if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
+            if let Some(plugin) = self
+                .plugins
+                .read()
+                .await
+                .iter()
+                .find(|p| p.filename == plugin_with_cred.plugin.path)
+            {
                 let mut plugin_m = plugin.plugin.lock().unwrap();
-                
+
                 if plugin.infos.capabilities.contains(&PluginType::Request) {
                     let req = RsRequestPluginRequest {
                         request: request.clone(),
-                        credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
+                        credential: plugin_with_cred
+                            .credential
+                            .clone()
+                            .map(PluginCredential::from),
                         params: build_plugin_params(&plugin_with_cred),
                     };
-                    
+
                     //println!("call plugin request {:?}: {}", plugin.path, request.url);
-                    let res = plugin_m.call_get_error_code::<Json<RsRequestPluginRequest>, Json<RsRequest>>("process", Json(req));
+                    let res = plugin_m
+                        .call_get_error_code::<Json<RsRequestPluginRequest>, Json<RsRequest>>(
+                            "process",
+                            Json(req),
+                        );
                     //println!("called plugin request {:?}", plugin.path);
                     if let Ok(Json(mut res)) = res {
-                        log_info(crate::tools::log::LogServiceType::Plugin, format!("Request processed by plugin {}", plugin_with_cred.plugin.name));
+                        log_info(
+                            crate::tools::log::LogServiceType::Plugin,
+                            format!(
+                                "Request processed by plugin {}",
+                                plugin_with_cred.plugin.name
+                            ),
+                        );
                         res.plugin_id = Some(plugin_with_cred.plugin.id.clone());
                         res.plugin_name = Some(plugin_with_cred.plugin.name.clone());
                         if res.mime.is_none() {
@@ -208,22 +321,28 @@ impl PluginManager {
                         if res.status == RsRequestStatus::FinalPublic {
                             println!("ok request: {:?}", res);
                             return Ok(SourceRead::Request(res));
-                         }
+                        }
                         processed_request = Some(res);
                     } else if let Err((error, code)) = res {
                         if code != 404 {
-                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request ({}): {} {:?}", plugin.filename, code, error))
+                            log_error(
+                                crate::tools::log::LogServiceType::Plugin,
+                                format!(
+                                    "Error request ({}): {} {:?}",
+                                    plugin.filename, code, error
+                                ),
+                            )
                         }
                     }
-                    
                 }
             }
         }
         if let Some(processed) = processed_request {
-
             if processed.status == RsRequestStatus::Intermediate && processed != initial_request {
                 println!("recurse request");
-                let recursed = self.request(processed, false, plugins, _progress, target).await?;
+                let recursed = self
+                    .request(processed, false, plugins, _progress, target)
+                    .await?;
                 return Ok(recursed);
             } else if processed.status == RsRequestStatus::Unprocessed {
                 return Err(Error::NotFound("Unable to process request".to_string()));
@@ -231,36 +350,63 @@ impl PluginManager {
                 return Ok(SourceRead::Request(processed));
             }
         }
-        if request.status == RsRequestStatus::NeedParsing || request.url.contains(".m3u8") || request.url.contains(".mpd") || request.mime.as_deref().unwrap_or("no") == "application/vnd.apple.mpegurl" {
+        if request.status == RsRequestStatus::NeedParsing
+            || request.url.contains(".m3u8")
+            || request.url.contains(".mpd")
+            || request.mime.as_deref().unwrap_or("no") == "application/vnd.apple.mpegurl"
+        {
             let mut result = request.clone();
             result.status = RsRequestStatus::NeedParsing;
             Ok(SourceRead::Request(result))
-
         } else {
             request.status = RsRequestStatus::FinalPublic;
             Ok(SourceRead::Request(request))
         }
-        
     }
 
-    pub async fn request_permanent(&self, request: RsRequest, plugins: Vec<PluginWithCredential>, _progress: RsProgressCallback, target: Option<PluginTarget>) -> RsResult<Option<RsRequest>> {
+    pub async fn request_permanent(
+        &self,
+        request: RsRequest,
+        plugins: Vec<PluginWithCredential>,
+        _progress: RsProgressCallback,
+        target: Option<PluginTarget>,
+    ) -> RsResult<Option<RsRequest>> {
         if request.permanent {
             Ok(Some(request))
         } else {
             let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
             for plugin_with_cred in plugins {
-                if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
+                if let Some(plugin) = self
+                    .plugins
+                    .read()
+                    .await
+                    .iter()
+                    .find(|p| p.filename == plugin_with_cred.plugin.path)
+                {
                     let mut plugin_m = plugin.plugin.lock().unwrap();
                     if plugin.infos.capabilities.contains(&PluginType::Request) {
                         let req = RsRequestPluginRequest {
                             request: request.clone(),
-                            credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
+                            credential: plugin_with_cred
+                                .credential
+                                .clone()
+                                .map(PluginCredential::from),
                             params: build_plugin_params(&plugin_with_cred),
                         };
-                        log_info(crate::tools::log::LogServiceType::Plugin, format!("call plugin request permanent  {:?}", plugin.infos.name));
-                        let res = plugin_m.call_get_error_code::<Json<RsRequestPluginRequest>, Json<RsRequest>>("request_permanent", Json(req));
+                        log_info(
+                            crate::tools::log::LogServiceType::Plugin,
+                            format!("call plugin request permanent  {:?}", plugin.infos.name),
+                        );
+                        let res = plugin_m
+                            .call_get_error_code::<Json<RsRequestPluginRequest>, Json<RsRequest>>(
+                                "request_permanent",
+                                Json(req),
+                            );
                         if let Ok(Json(mut res)) = res {
-                            log_info(crate::tools::log::LogServiceType::Plugin, format!("got plugin request permanent  {:?}", plugin.infos.name));
+                            log_info(
+                                crate::tools::log::LogServiceType::Plugin,
+                                format!("got plugin request permanent  {:?}", plugin.infos.name),
+                            );
                             res.plugin_id = Some(plugin_with_cred.plugin.id.clone());
                             res.plugin_name = Some(plugin_with_cred.plugin.name.clone());
                             if res.mime.is_none() {
@@ -270,14 +416,14 @@ impl PluginManager {
                                 res.filename = filename_from_path(&res.url);
                             }
                             return Ok(Some(res));
-                            
-                            
                         } else if let Err((error, code)) = res {
                             if code != 404 {
-                                log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request permanent {} {:?}", code, error))
+                                log_error(
+                                    crate::tools::log::LogServiceType::Plugin,
+                                    format!("Error request permanent {} {:?}", code, error),
+                                )
                             }
                         }
-                        
                     }
                 }
             }
@@ -285,44 +431,73 @@ impl PluginManager {
         }
     }
 
-    pub async fn lookup(&self, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<Vec<RsGroupDownload>> {
+    pub async fn lookup(
+        &self,
+        query: RsLookupQuery,
+        plugins: Vec<PluginWithCredential>,
+        target: Option<PluginTarget>,
+    ) -> RsResult<Vec<RsGroupDownload>> {
         let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
 
         let tasks: Vec<_> = {
             let plugins_guard = self.plugins.read().await;
-            plugins.into_iter().filter_map(|plugin_with_cred| {
-                plugins_guard.iter()
-                    .find(|p| p.filename == plugin_with_cred.plugin.path)
-                    .filter(|p| p.infos.capabilities.contains(&PluginType::Lookup))
-                    .map(|p| {
-                        let plugin_arc = p.plugin.clone();
-                        let plugin_id = plugin_with_cred.plugin.id.clone();
-                        let plugin_name = plugin_with_cred.plugin.name.clone();
-                        let wrapped_query = RsLookupWrapper {
-                            query: query.clone(),
-                            credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
-                            params: build_plugin_params(&plugin_with_cred),
-                        };
-                        (plugin_arc, plugin_id, plugin_name, wrapped_query)
-                    })
-            }).collect()
+            plugins
+                .into_iter()
+                .filter_map(|plugin_with_cred| {
+                    plugins_guard
+                        .iter()
+                        .find(|p| p.filename == plugin_with_cred.plugin.path)
+                        .filter(|p| p.infos.capabilities.contains(&PluginType::Lookup))
+                        .map(|p| {
+                            let plugin_arc = p.plugin.clone();
+                            let plugin_id = plugin_with_cred.plugin.id.clone();
+                            let plugin_name = plugin_with_cred.plugin.name.clone();
+                            let wrapped_query = RsLookupWrapper {
+                                query: query.clone(),
+                                credential: plugin_with_cred
+                                    .credential
+                                    .clone()
+                                    .map(PluginCredential::from),
+                                params: build_plugin_params(&plugin_with_cred),
+                            };
+                            (plugin_arc, plugin_id, plugin_name, wrapped_query)
+                        })
+                })
+                .collect()
         };
 
-        let handles: Vec<_> = tasks.into_iter().map(|(plugin_arc, plugin_id, plugin_name, wrapped_query)| {
-            tokio::task::spawn_blocking(move || {
-                let mut plugin_m = plugin_arc.lock().unwrap();
-                println!("Executing lookup for plugin {} lookup results... ", plugin_name);
-                let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<RsLookupSourceResult>>("lookup", Json(wrapped_query));
-                (plugin_id, plugin_name, res)
+        let handles: Vec<_> = tasks
+            .into_iter()
+            .map(|(plugin_arc, plugin_id, plugin_name, wrapped_query)| {
+                tokio::task::spawn_blocking(move || {
+                    let mut plugin_m = plugin_arc.lock().unwrap();
+                    println!(
+                        "Executing lookup for plugin {} lookup results... ",
+                        plugin_name
+                    );
+                    let res = plugin_m
+                        .call_get_error_code::<Json<RsLookupWrapper>, Json<RsLookupSourceResult>>(
+                            "lookup",
+                            Json(wrapped_query),
+                        );
+                    (plugin_id, plugin_name, res)
+                })
             })
-        }).collect();
+            .collect();
 
         let mut results: Vec<RsGroupDownload> = vec![];
-        
+
         for handle in handles {
             match handle.await {
-                Ok((plugin_id, plugin_name, Ok(Json(RsLookupSourceResult::GroupRequest(mut groups))))) => {
-                    log_info(crate::tools::log::LogServiceType::Plugin, format!("Lookup result from plugin {}", plugin_name));
+                Ok((
+                    plugin_id,
+                    plugin_name,
+                    Ok(Json(RsLookupSourceResult::GroupRequest(mut groups))),
+                )) => {
+                    log_info(
+                        crate::tools::log::LogServiceType::Plugin,
+                        format!("Lookup result from plugin {}", plugin_name),
+                    );
                     for group in &mut groups {
                         for req in &mut group.requests {
                             req.plugin_id = Some(plugin_id.clone());
@@ -332,7 +507,10 @@ impl PluginManager {
                     results.append(&mut groups);
                 }
                 Ok((plugin_id, plugin_name, Ok(Json(RsLookupSourceResult::Requests(request))))) => {
-                    log_info(crate::tools::log::LogServiceType::Plugin, format!("Lookup result from plugin {}", plugin_name));
+                    log_info(
+                        crate::tools::log::LogServiceType::Plugin,
+                        format!("Lookup result from plugin {}", plugin_name),
+                    );
                     for mut req in request {
                         req.plugin_id = Some(plugin_id.clone());
                         req.plugin_name = Some(plugin_name.clone());
@@ -346,39 +524,57 @@ impl PluginManager {
                 Ok((_, _, Ok(_))) => {}
                 Ok((_, _, Err((error, code)))) => {
                     if code != 404 {
-                        log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request lookup {} {:?}", code, error));
+                        log_error(
+                            crate::tools::log::LogServiceType::Plugin,
+                            format!("Error request lookup {} {:?}", code, error),
+                        );
                     }
                 }
                 Err(e) => {
-                    log_error(crate::tools::log::LogServiceType::Plugin, format!("Plugin task panicked: {:?}", e));
+                    log_error(
+                        crate::tools::log::LogServiceType::Plugin,
+                        format!("Plugin task panicked: {:?}", e),
+                    );
                 }
             }
         }
         Ok(results)
     }
 
-    pub async fn lookup_stream_grouped(self: &std::sync::Arc<Self>, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<tokio::sync::mpsc::Receiver<(String, String, Vec<RsGroupDownload>)>> {
+    pub async fn lookup_stream_grouped(
+        self: &std::sync::Arc<Self>,
+        query: RsLookupQuery,
+        plugins: Vec<PluginWithCredential>,
+        target: Option<PluginTarget>,
+    ) -> RsResult<tokio::sync::mpsc::Receiver<(String, String, Vec<RsGroupDownload>)>> {
         let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
         let (tx, rx) = tokio::sync::mpsc::channel(16);
 
         let tasks: Vec<_> = {
             let plugins_guard = self.plugins.read().await;
-            plugins.into_iter().filter_map(|plugin_with_cred| {
-                plugins_guard.iter()
-                    .find(|p| p.filename == plugin_with_cred.plugin.path)
-                    .filter(|p| p.infos.capabilities.contains(&PluginType::Lookup))
-                    .map(|p| {
-                        let plugin_arc = p.plugin.clone();
-                        let plugin_id = plugin_with_cred.plugin.path.clone();
-                        let plugin_name = plugin_with_cred.plugin.name.clone();
-                        let wrapped_query = RsLookupWrapper {
-                            query: query.clone(),
-                            credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
-                            params: build_plugin_params(&plugin_with_cred),
-                        };
-                        (plugin_arc, plugin_id, plugin_name, wrapped_query)
-                    })
-            }).collect()
+            plugins
+                .into_iter()
+                .filter_map(|plugin_with_cred| {
+                    plugins_guard
+                        .iter()
+                        .find(|p| p.filename == plugin_with_cred.plugin.path)
+                        .filter(|p| p.infos.capabilities.contains(&PluginType::Lookup))
+                        .map(|p| {
+                            let plugin_arc = p.plugin.clone();
+                            let plugin_id = plugin_with_cred.plugin.path.clone();
+                            let plugin_name = plugin_with_cred.plugin.name.clone();
+                            let wrapped_query = RsLookupWrapper {
+                                query: query.clone(),
+                                credential: plugin_with_cred
+                                    .credential
+                                    .clone()
+                                    .map(PluginCredential::from),
+                                params: build_plugin_params(&plugin_with_cred),
+                            };
+                            (plugin_arc, plugin_id, plugin_name, wrapped_query)
+                        })
+                })
+                .collect()
         };
 
         tokio::spawn(async move {
@@ -393,8 +589,15 @@ impl PluginManager {
 
             while let Some(handle_result) = pending.next().await {
                 match handle_result {
-                    Ok((plugin_id, plugin_name, Ok(Json(RsLookupSourceResult::GroupRequest(mut groups))))) => {
-                        log_info(crate::tools::log::LogServiceType::Plugin, format!("Lookup stream result from plugin {}", plugin_name));
+                    Ok((
+                        plugin_id,
+                        plugin_name,
+                        Ok(Json(RsLookupSourceResult::GroupRequest(mut groups))),
+                    )) => {
+                        log_info(
+                            crate::tools::log::LogServiceType::Plugin,
+                            format!("Lookup stream result from plugin {}", plugin_name),
+                        );
                         for group in &mut groups {
                             for req in &mut group.requests {
                                 req.plugin_id = Some(plugin_id.clone());
@@ -405,17 +608,27 @@ impl PluginManager {
                             break;
                         }
                     }
-                    Ok((plugin_id, plugin_name, Ok(Json(RsLookupSourceResult::Requests(request))))) => {
-                        log_info(crate::tools::log::LogServiceType::Plugin, format!("Lookup stream result from plugin {}", plugin_name));
-                        let groups: Vec<RsGroupDownload> = request.into_iter().map(|mut req| {
-                            req.plugin_id = Some(plugin_id.clone());
-                            req.plugin_name = Some(plugin_name.clone());
-                            RsGroupDownload {
-                                requests: vec![req],
-                                group: false,
-                                ..Default::default()
-                            }
-                        }).collect();
+                    Ok((
+                        plugin_id,
+                        plugin_name,
+                        Ok(Json(RsLookupSourceResult::Requests(request))),
+                    )) => {
+                        log_info(
+                            crate::tools::log::LogServiceType::Plugin,
+                            format!("Lookup stream result from plugin {}", plugin_name),
+                        );
+                        let groups: Vec<RsGroupDownload> = request
+                            .into_iter()
+                            .map(|mut req| {
+                                req.plugin_id = Some(plugin_id.clone());
+                                req.plugin_name = Some(plugin_name.clone());
+                                RsGroupDownload {
+                                    requests: vec![req],
+                                    group: false,
+                                    ..Default::default()
+                                }
+                            })
+                            .collect();
                         if tx.send((plugin_id, plugin_name, groups)).await.is_err() {
                             break;
                         }
@@ -423,11 +636,17 @@ impl PluginManager {
                     Ok((_, _, Ok(_))) => {}
                     Ok((_, _, Err((error, code)))) => {
                         if code != 404 {
-                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request lookup stream {} {:?}", code, error));
+                            log_error(
+                                crate::tools::log::LogServiceType::Plugin,
+                                format!("Error request lookup stream {} {:?}", code, error),
+                            );
                         }
                     }
                     Err(e) => {
-                        log_error(crate::tools::log::LogServiceType::Plugin, format!("Plugin task panicked: {:?}", e));
+                        log_error(
+                            crate::tools::log::LogServiceType::Plugin,
+                            format!("Plugin task panicked: {:?}", e),
+                        );
                     }
                 }
             }
@@ -435,26 +654,38 @@ impl PluginManager {
         Ok(rx)
     }
 
-    pub async fn lookup_metadata(&self, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<RsLookupMetadataResults> {
+    pub async fn lookup_metadata(
+        &self,
+        query: RsLookupQuery,
+        plugins: Vec<PluginWithCredential>,
+        target: Option<PluginTarget>,
+    ) -> RsResult<RsLookupMetadataResults> {
         let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
 
         let tasks: Vec<_> = {
             let plugins_guard = self.plugins.read().await;
-            plugins.into_iter().filter_map(|plugin_with_cred| {
-                plugins_guard.iter()
-                    .find(|p| p.filename == plugin_with_cred.plugin.path)
-                    .filter(|p| p.infos.capabilities.contains(&PluginType::LookupMetadata))
-                    .map(|p| {
-                        let plugin_arc = p.plugin.clone();
-                        let plugin_name = plugin_with_cred.plugin.name.clone();
-                        let wrapped_query = RsLookupWrapper {
-                            query: query.clone(),
-                            credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
-                            params: build_plugin_params(&plugin_with_cred),
-                        };
-                        (plugin_arc, plugin_name, wrapped_query)
-                    })
-            }).collect()
+            plugins
+                .into_iter()
+                .filter_map(|plugin_with_cred| {
+                    plugins_guard
+                        .iter()
+                        .find(|p| p.filename == plugin_with_cred.plugin.path)
+                        .filter(|p| p.infos.capabilities.contains(&PluginType::LookupMetadata))
+                        .map(|p| {
+                            let plugin_arc = p.plugin.clone();
+                            let plugin_name = plugin_with_cred.plugin.name.clone();
+                            let wrapped_query = RsLookupWrapper {
+                                query: query.clone(),
+                                credential: plugin_with_cred
+                                    .credential
+                                    .clone()
+                                    .map(PluginCredential::from),
+                                params: build_plugin_params(&plugin_with_cred),
+                            };
+                            (plugin_arc, plugin_name, wrapped_query)
+                        })
+                })
+                .collect()
         };
 
         let handles: Vec<_> = tasks.into_iter().map(|(plugin_arc, plugin_name, wrapped_query)| {
@@ -469,43 +700,67 @@ impl PluginManager {
         for handle in handles {
             match handle.await {
                 Ok((plugin_name, Ok(Json(mut res)))) => {
-                    log_info(crate::tools::log::LogServiceType::Plugin, format!("Lookup metadata result from plugin {}", plugin_name));
+                    log_info(
+                        crate::tools::log::LogServiceType::Plugin,
+                        format!("Lookup metadata result from plugin {}", plugin_name),
+                    );
                     results.append(&mut res.results);
                 }
                 Ok((_, Err((error, code)))) => {
                     if code != 404 {
-                        log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request lookup_metadata {} {:?}", code, error));
+                        log_error(
+                            crate::tools::log::LogServiceType::Plugin,
+                            format!("Error request lookup_metadata {} {:?}", code, error),
+                        );
                     }
                 }
                 Err(e) => {
-                    log_error(crate::tools::log::LogServiceType::Plugin, format!("Plugin task panicked: {:?}", e));
+                    log_error(
+                        crate::tools::log::LogServiceType::Plugin,
+                        format!("Plugin task panicked: {:?}", e),
+                    );
                 }
             }
         }
-        Ok(RsLookupMetadataResults { results, next_page_key: None })
+        Ok(RsLookupMetadataResults {
+            results,
+            next_page_key: None,
+        })
     }
 
-    pub async fn lookup_metadata_grouped(&self, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<Vec<(String, String, RsLookupMetadataResults)>> {
+    pub async fn lookup_metadata_grouped(
+        &self,
+        query: RsLookupQuery,
+        plugins: Vec<PluginWithCredential>,
+        target: Option<PluginTarget>,
+    ) -> RsResult<Vec<(String, String, RsLookupMetadataResults)>> {
         let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
 
         let tasks: Vec<_> = {
             let plugins_guard = self.plugins.read().await;
-            plugins.into_iter().filter_map(|plugin_with_cred| {
-                plugins_guard.iter()
-                    .find(|p| p.filename == plugin_with_cred.plugin.path)
-                    .filter(|p| p.infos.capabilities.contains(&PluginType::LookupMetadata))
-                    .map(|p| {
-                        let plugin_arc = p.plugin.clone();
-                        let plugin_id = plugin_with_cred.plugin.path.clone();
-                        let plugin_name = plugin_with_cred.plugin.name.clone();
-                        let wrapped_query = RsLookupWrapper {
-                            query: query.clone(),
-                            credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
-                            params: build_plugin_params(&plugin_with_cred),
-                        };
-                        (plugin_arc, plugin_id, plugin_name, wrapped_query)
-                    })
-            }).collect()
+            plugins
+                .into_iter()
+                .filter_map(|plugin_with_cred| {
+                    plugins_guard
+                        .iter()
+                        .find(|p| p.filename == plugin_with_cred.plugin.path)
+                        .filter(|p| p.infos.capabilities.contains(&PluginType::LookupMetadata))
+                        .map(|p| {
+                            let plugin_arc = p.plugin.clone();
+                            let plugin_id = plugin_with_cred.plugin.path.clone();
+                            let plugin_name = plugin_with_cred.plugin.name.clone();
+                            let wrapped_query = RsLookupWrapper {
+                                query: query.clone(),
+                                credential: plugin_with_cred
+                                    .credential
+                                    .clone()
+                                    .map(PluginCredential::from),
+                                params: build_plugin_params(&plugin_with_cred),
+                            };
+                            (plugin_arc, plugin_id, plugin_name, wrapped_query)
+                        })
+                })
+                .collect()
         };
 
         let handles: Vec<_> = tasks.into_iter().map(|(plugin_arc, plugin_id, plugin_name, wrapped_query)| {
@@ -520,43 +775,64 @@ impl PluginManager {
         for handle in handles {
             match handle.await {
                 Ok((plugin_id, plugin_name, Ok(Json(res)))) => {
-                    log_info(crate::tools::log::LogServiceType::Plugin, format!("Lookup metadata result from plugin {}", plugin_name));
+                    log_info(
+                        crate::tools::log::LogServiceType::Plugin,
+                        format!("Lookup metadata result from plugin {}", plugin_name),
+                    );
                     results.push((plugin_id, plugin_name, res));
                 }
                 Ok((_, _, Err((error, code)))) => {
                     if code != 404 {
-                        log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request lookup_metadata {} {:?}", code, error));
+                        log_error(
+                            crate::tools::log::LogServiceType::Plugin,
+                            format!("Error request lookup_metadata {} {:?}", code, error),
+                        );
                     }
                 }
                 Err(e) => {
-                    log_error(crate::tools::log::LogServiceType::Plugin, format!("Plugin task panicked: {:?}", e));
+                    log_error(
+                        crate::tools::log::LogServiceType::Plugin,
+                        format!("Plugin task panicked: {:?}", e),
+                    );
                 }
             }
         }
         Ok(results)
     }
 
-    pub async fn lookup_metadata_stream(self: &std::sync::Arc<Self>, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<tokio::sync::mpsc::Receiver<RsLookupMetadataResults>> {
+    pub async fn lookup_metadata_stream(
+        self: &std::sync::Arc<Self>,
+        query: RsLookupQuery,
+        plugins: Vec<PluginWithCredential>,
+        target: Option<PluginTarget>,
+    ) -> RsResult<tokio::sync::mpsc::Receiver<RsLookupMetadataResults>> {
         let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
         let (tx, rx) = tokio::sync::mpsc::channel(16);
 
         let tasks: Vec<_> = {
             let plugins_guard = self.plugins.read().await;
-            plugins.into_iter().filter_map(|plugin_with_cred| {
-                plugins_guard.iter()
-                    .find(|p| p.filename == plugin_with_cred.plugin.path)
-                    .filter(|p| p.infos.capabilities.contains(&PluginType::LookupMetadata))
-                    .map(|p| {
-                        let plugin_arc = p.plugin.clone();
-                        let plugin_name = plugin_with_cred.plugin.name.clone();
-                        let wrapped_query = RsLookupWrapper {
-                            query: query.clone(),
-                            credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
-                            params: build_plugin_params(&plugin_with_cred),
-                        };
-                        (plugin_arc, plugin_name, wrapped_query)
-                    })
-            }).collect()
+            plugins
+                .into_iter()
+                .filter_map(|plugin_with_cred| {
+                    plugins_guard
+                        .iter()
+                        .find(|p| p.filename == plugin_with_cred.plugin.path)
+                        .filter(|p| p.infos.capabilities.contains(&PluginType::LookupMetadata))
+                        .map(|p| {
+                            let plugin_arc = p.plugin.clone();
+                            let plugin_name = plugin_with_cred.plugin.name.clone();
+                            let wrapped_query = RsLookupWrapper {
+                                query: query.clone(),
+                                credential: plugin_with_cred
+                                    .credential
+                                    .clone()
+                                    .map(PluginCredential::from),
+                                params: build_plugin_params(&plugin_with_cred),
+                            };
+                            (plugin_arc, plugin_name, wrapped_query)
+                        })
+                })
+                .collect()
         };
 
         tokio::spawn(async move {
@@ -571,18 +847,27 @@ impl PluginManager {
             while let Some(handle_result) = pending.next().await {
                 match handle_result {
                     Ok((plugin_name, Ok(Json(res)))) => {
-                        log_info(crate::tools::log::LogServiceType::Plugin, format!("Lookup metadata stream result from plugin {}", plugin_name));
+                        log_info(
+                            crate::tools::log::LogServiceType::Plugin,
+                            format!("Lookup metadata stream result from plugin {}", plugin_name),
+                        );
                         if tx.send(res).await.is_err() {
                             break;
                         }
                     }
                     Ok((_, Err((error, code)))) => {
                         if code != 404 {
-                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request lookup_metadata {} {:?}", code, error));
+                            log_error(
+                                crate::tools::log::LogServiceType::Plugin,
+                                format!("Error request lookup_metadata {} {:?}", code, error),
+                            );
                         }
                     }
                     Err(e) => {
-                        log_error(crate::tools::log::LogServiceType::Plugin, format!("Plugin task panicked: {:?}", e));
+                        log_error(
+                            crate::tools::log::LogServiceType::Plugin,
+                            format!("Plugin task panicked: {:?}", e),
+                        );
                     }
                 }
             }
@@ -590,28 +875,40 @@ impl PluginManager {
         Ok(rx)
     }
 
-    pub async fn lookup_metadata_stream_grouped(self: &std::sync::Arc<Self>, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<tokio::sync::mpsc::Receiver<(String, String, RsLookupMetadataResults)>> {
+    pub async fn lookup_metadata_stream_grouped(
+        self: &std::sync::Arc<Self>,
+        query: RsLookupQuery,
+        plugins: Vec<PluginWithCredential>,
+        target: Option<PluginTarget>,
+    ) -> RsResult<tokio::sync::mpsc::Receiver<(String, String, RsLookupMetadataResults)>> {
         let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
         let (tx, rx) = tokio::sync::mpsc::channel(16);
 
         let tasks: Vec<_> = {
             let plugins_guard = self.plugins.read().await;
-            plugins.into_iter().filter_map(|plugin_with_cred| {
-                plugins_guard.iter()
-                    .find(|p| p.filename == plugin_with_cred.plugin.path)
-                    .filter(|p| p.infos.capabilities.contains(&PluginType::LookupMetadata))
-                    .map(|p| {
-                        let plugin_arc = p.plugin.clone();
-                        let plugin_id = plugin_with_cred.plugin.path.clone();
-                        let plugin_name = plugin_with_cred.plugin.name.clone();
-                        let wrapped_query = RsLookupWrapper {
-                            query: query.clone(),
-                            credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
-                            params: build_plugin_params(&plugin_with_cred),
-                        };
-                        (plugin_arc, plugin_id, plugin_name, wrapped_query)
-                    })
-            }).collect()
+            plugins
+                .into_iter()
+                .filter_map(|plugin_with_cred| {
+                    plugins_guard
+                        .iter()
+                        .find(|p| p.filename == plugin_with_cred.plugin.path)
+                        .filter(|p| p.infos.capabilities.contains(&PluginType::LookupMetadata))
+                        .map(|p| {
+                            let plugin_arc = p.plugin.clone();
+                            let plugin_id = plugin_with_cred.plugin.path.clone();
+                            let plugin_name = plugin_with_cred.plugin.name.clone();
+                            let wrapped_query = RsLookupWrapper {
+                                query: query.clone(),
+                                credential: plugin_with_cred
+                                    .credential
+                                    .clone()
+                                    .map(PluginCredential::from),
+                                params: build_plugin_params(&plugin_with_cred),
+                            };
+                            (plugin_arc, plugin_id, plugin_name, wrapped_query)
+                        })
+                })
+                .collect()
         };
 
         tokio::spawn(async move {
@@ -626,18 +923,27 @@ impl PluginManager {
             while let Some(handle_result) = pending.next().await {
                 match handle_result {
                     Ok((plugin_id, plugin_name, Ok(Json(res)))) => {
-                        log_info(crate::tools::log::LogServiceType::Plugin, format!("Lookup metadata stream result from plugin {}", plugin_name));
+                        log_info(
+                            crate::tools::log::LogServiceType::Plugin,
+                            format!("Lookup metadata stream result from plugin {}", plugin_name),
+                        );
                         if tx.send((plugin_id, plugin_name, res)).await.is_err() {
                             break;
                         }
                     }
                     Ok((_, _, Err((error, code)))) => {
                         if code != 404 {
-                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request lookup_metadata {} {:?}", code, error));
+                            log_error(
+                                crate::tools::log::LogServiceType::Plugin,
+                                format!("Error request lookup_metadata {} {:?}", code, error),
+                            );
                         }
                     }
                     Err(e) => {
-                        log_error(crate::tools::log::LogServiceType::Plugin, format!("Plugin task panicked: {:?}", e));
+                        log_error(
+                            crate::tools::log::LogServiceType::Plugin,
+                            format!("Plugin task panicked: {:?}", e),
+                        );
                     }
                 }
             }
@@ -645,153 +951,243 @@ impl PluginManager {
         Ok(rx)
     }
 
-    pub async fn lookup_images(&self, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<Vec<ExternalImage>> {
+    pub async fn lookup_images(
+        &self,
+        query: RsLookupQuery,
+        plugins: Vec<PluginWithCredential>,
+        target: Option<PluginTarget>,
+    ) -> RsResult<Vec<ExternalImage>> {
         let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
 
         let tasks: Vec<_> = {
             let plugins_guard = self.plugins.read().await;
-            plugins.into_iter().filter_map(|plugin_with_cred| {
-                plugins_guard.iter()
-                    .find(|p| p.filename == plugin_with_cred.plugin.path)
-                    .filter(|p| p.infos.capabilities.contains(&PluginType::LookupMetadata))
-                    .map(|p| {
-                        let plugin_arc = p.plugin.clone();
-                        let plugin_name = plugin_with_cred.plugin.name.clone();
-                        let wrapped_query = RsLookupWrapper {
-                            query: query.clone(),
-                            credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
-                            params: build_plugin_params(&plugin_with_cred),
-                        };
-                        (plugin_arc, plugin_name, wrapped_query)
-                    })
-            }).collect()
+            plugins
+                .into_iter()
+                .filter_map(|plugin_with_cred| {
+                    plugins_guard
+                        .iter()
+                        .find(|p| p.filename == plugin_with_cred.plugin.path)
+                        .filter(|p| p.infos.capabilities.contains(&PluginType::LookupMetadata))
+                        .map(|p| {
+                            let plugin_arc = p.plugin.clone();
+                            let plugin_name = plugin_with_cred.plugin.name.clone();
+                            let wrapped_query = RsLookupWrapper {
+                                query: query.clone(),
+                                credential: plugin_with_cred
+                                    .credential
+                                    .clone()
+                                    .map(PluginCredential::from),
+                                params: build_plugin_params(&plugin_with_cred),
+                            };
+                            (plugin_arc, plugin_name, wrapped_query)
+                        })
+                })
+                .collect()
         };
 
-        let handles: Vec<_> = tasks.into_iter().map(|(plugin_arc, plugin_name, wrapped_query)| {
-            tokio::task::spawn_blocking(move || {
-                let mut plugin_m = plugin_arc.lock().unwrap();
-                let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<ExternalImage>>>("lookup_metadata_images", Json(wrapped_query));
-                (plugin_name, res)
+        let handles: Vec<_> = tasks
+            .into_iter()
+            .map(|(plugin_arc, plugin_name, wrapped_query)| {
+                tokio::task::spawn_blocking(move || {
+                    let mut plugin_m = plugin_arc.lock().unwrap();
+                    let res = plugin_m
+                        .call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<ExternalImage>>>(
+                            "lookup_metadata_images",
+                            Json(wrapped_query),
+                        );
+                    (plugin_name, res)
+                })
             })
-        }).collect();
+            .collect();
 
         let mut results = vec![];
         for handle in handles {
             match handle.await {
                 Ok((plugin_name, Ok(Json(mut res)))) => {
-                    log_info(crate::tools::log::LogServiceType::Plugin, format!("Lookup metadata images result from plugin {}", plugin_name));
+                    log_info(
+                        crate::tools::log::LogServiceType::Plugin,
+                        format!("Lookup metadata images result from plugin {}", plugin_name),
+                    );
                     results.append(&mut res);
                 }
                 Ok((_, Err((error, code)))) => {
                     if code != 404 {
-                        log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request lookup_metadata_images {} {:?}", code, error));
+                        log_error(
+                            crate::tools::log::LogServiceType::Plugin,
+                            format!("Error request lookup_metadata_images {} {:?}", code, error),
+                        );
                     }
                 }
                 Err(e) => {
-                    log_error(crate::tools::log::LogServiceType::Plugin, format!("Plugin task panicked: {:?}", e));
+                    log_error(
+                        crate::tools::log::LogServiceType::Plugin,
+                        format!("Plugin task panicked: {:?}", e),
+                    );
                 }
             }
         }
         Ok(results)
     }
 
-    pub async fn lookup_images_grouped(&self, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<HashMap<String, Vec<ExternalImage>>> {
+    pub async fn lookup_images_grouped(
+        &self,
+        query: RsLookupQuery,
+        plugins: Vec<PluginWithCredential>,
+        target: Option<PluginTarget>,
+    ) -> RsResult<HashMap<String, Vec<ExternalImage>>> {
         let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
 
         let tasks: Vec<_> = {
             let plugins_guard = self.plugins.read().await;
-            plugins.into_iter().filter_map(|plugin_with_cred| {
-                plugins_guard.iter()
-                    .find(|p| p.filename == plugin_with_cred.plugin.path)
-                    .filter(|p| p.infos.capabilities.contains(&PluginType::LookupMetadata))
-                    .map(|p| {
-                        let plugin_arc = p.plugin.clone();
-                        let plugin_name = plugin_with_cred.plugin.name.clone();
-                        let wrapped_query = RsLookupWrapper {
-                            query: query.clone(),
-                            credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
-                            params: build_plugin_params(&plugin_with_cred),
-                        };
-                        (plugin_arc, plugin_name, wrapped_query)
-                    })
-            }).collect()
+            plugins
+                .into_iter()
+                .filter_map(|plugin_with_cred| {
+                    plugins_guard
+                        .iter()
+                        .find(|p| p.filename == plugin_with_cred.plugin.path)
+                        .filter(|p| p.infos.capabilities.contains(&PluginType::LookupMetadata))
+                        .map(|p| {
+                            let plugin_arc = p.plugin.clone();
+                            let plugin_name = plugin_with_cred.plugin.name.clone();
+                            let wrapped_query = RsLookupWrapper {
+                                query: query.clone(),
+                                credential: plugin_with_cred
+                                    .credential
+                                    .clone()
+                                    .map(PluginCredential::from),
+                                params: build_plugin_params(&plugin_with_cred),
+                            };
+                            (plugin_arc, plugin_name, wrapped_query)
+                        })
+                })
+                .collect()
         };
 
-        let handles: Vec<_> = tasks.into_iter().map(|(plugin_arc, plugin_name, wrapped_query)| {
-            tokio::task::spawn_blocking(move || {
-                let mut plugin_m = plugin_arc.lock().unwrap();
-                let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<ExternalImage>>>("lookup_metadata_images", Json(wrapped_query));
-                (plugin_name, res)
+        let handles: Vec<_> = tasks
+            .into_iter()
+            .map(|(plugin_arc, plugin_name, wrapped_query)| {
+                tokio::task::spawn_blocking(move || {
+                    let mut plugin_m = plugin_arc.lock().unwrap();
+                    let res = plugin_m
+                        .call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<ExternalImage>>>(
+                            "lookup_metadata_images",
+                            Json(wrapped_query),
+                        );
+                    (plugin_name, res)
+                })
             })
-        }).collect();
+            .collect();
 
         let mut results: HashMap<String, Vec<ExternalImage>> = HashMap::new();
         for handle in handles {
             match handle.await {
                 Ok((plugin_name, Ok(Json(res)))) => {
-                    log_info(crate::tools::log::LogServiceType::Plugin, format!("Lookup metadata images result from plugin {}", plugin_name));
+                    log_info(
+                        crate::tools::log::LogServiceType::Plugin,
+                        format!("Lookup metadata images result from plugin {}", plugin_name),
+                    );
                     results.entry(plugin_name).or_default().extend(res);
                 }
                 Ok((_, Err((error, code)))) => {
                     if code != 404 {
-                        log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request lookup_metadata_images {} {:?}", code, error));
+                        log_error(
+                            crate::tools::log::LogServiceType::Plugin,
+                            format!("Error request lookup_metadata_images {} {:?}", code, error),
+                        );
                     }
                 }
                 Err(e) => {
-                    log_error(crate::tools::log::LogServiceType::Plugin, format!("Plugin task panicked: {:?}", e));
+                    log_error(
+                        crate::tools::log::LogServiceType::Plugin,
+                        format!("Plugin task panicked: {:?}", e),
+                    );
                 }
             }
         }
         Ok(results)
     }
 
-    pub async fn lookup_images_stream(self: &std::sync::Arc<Self>, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<tokio::sync::mpsc::Receiver<Vec<ExternalImage>>> {
+    pub async fn lookup_images_stream(
+        self: &std::sync::Arc<Self>,
+        query: RsLookupQuery,
+        plugins: Vec<PluginWithCredential>,
+        target: Option<PluginTarget>,
+    ) -> RsResult<tokio::sync::mpsc::Receiver<Vec<ExternalImage>>> {
         let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
         let (tx, rx) = tokio::sync::mpsc::channel(16);
 
         let tasks: Vec<_> = {
             let plugins_guard = self.plugins.read().await;
-            plugins.into_iter().filter_map(|plugin_with_cred| {
-                plugins_guard.iter()
-                    .find(|p| p.filename == plugin_with_cred.plugin.path)
-                    .filter(|p| p.infos.capabilities.contains(&PluginType::LookupMetadata))
-                    .map(|p| {
-                        let plugin_arc = p.plugin.clone();
-                        let plugin_name = plugin_with_cred.plugin.name.clone();
-                        let wrapped_query = RsLookupWrapper {
-                            query: query.clone(),
-                            credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
-                            params: build_plugin_params(&plugin_with_cred),
-                        };
-                        (plugin_arc, plugin_name, wrapped_query)
-                    })
-            }).collect()
+            plugins
+                .into_iter()
+                .filter_map(|plugin_with_cred| {
+                    plugins_guard
+                        .iter()
+                        .find(|p| p.filename == plugin_with_cred.plugin.path)
+                        .filter(|p| p.infos.capabilities.contains(&PluginType::LookupMetadata))
+                        .map(|p| {
+                            let plugin_arc = p.plugin.clone();
+                            let plugin_name = plugin_with_cred.plugin.name.clone();
+                            let wrapped_query = RsLookupWrapper {
+                                query: query.clone(),
+                                credential: plugin_with_cred
+                                    .credential
+                                    .clone()
+                                    .map(PluginCredential::from),
+                                params: build_plugin_params(&plugin_with_cred),
+                            };
+                            (plugin_arc, plugin_name, wrapped_query)
+                        })
+                })
+                .collect()
         };
 
         tokio::spawn(async move {
-            let mut pending: futures::stream::FuturesUnordered<_> = tasks.into_iter().map(|(plugin_arc, plugin_name, wrapped_query)| {
-                tokio::task::spawn_blocking(move || {
-                    let mut plugin_m = plugin_arc.lock().unwrap();
-                    let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<ExternalImage>>>("lookup_metadata_images", Json(wrapped_query));
-                    (plugin_name, res)
+            let mut pending: futures::stream::FuturesUnordered<_> = tasks
+                .into_iter()
+                .map(|(plugin_arc, plugin_name, wrapped_query)| {
+                    tokio::task::spawn_blocking(move || {
+                        let mut plugin_m = plugin_arc.lock().unwrap();
+                        let res = plugin_m
+                            .call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<ExternalImage>>>(
+                                "lookup_metadata_images",
+                                Json(wrapped_query),
+                            );
+                        (plugin_name, res)
+                    })
                 })
-            }).collect();
+                .collect();
 
             while let Some(handle_result) = pending.next().await {
                 match handle_result {
                     Ok((plugin_name, Ok(Json(res)))) => {
-                        log_info(crate::tools::log::LogServiceType::Plugin, format!("Lookup metadata images stream result from plugin {}", plugin_name));
+                        log_info(
+                            crate::tools::log::LogServiceType::Plugin,
+                            format!(
+                                "Lookup metadata images stream result from plugin {}",
+                                plugin_name
+                            ),
+                        );
                         if tx.send(res).await.is_err() {
                             break;
                         }
                     }
                     Ok((_, Err((error, code)))) => {
                         if code != 404 {
-                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request lookup_metadata_images {} {:?}", code, error));
+                            log_error(
+                                crate::tools::log::LogServiceType::Plugin,
+                                format!(
+                                    "Error request lookup_metadata_images {} {:?}",
+                                    code, error
+                                ),
+                            );
                         }
                     }
                     Err(e) => {
-                        log_error(crate::tools::log::LogServiceType::Plugin, format!("Plugin task panicked: {:?}", e));
+                        log_error(
+                            crate::tools::log::LogServiceType::Plugin,
+                            format!("Plugin task panicked: {:?}", e),
+                        );
                     }
                 }
             }
@@ -799,53 +1195,87 @@ impl PluginManager {
         Ok(rx)
     }
 
-    pub async fn lookup_images_stream_grouped(self: &std::sync::Arc<Self>, query: RsLookupQuery, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<tokio::sync::mpsc::Receiver<(String, Vec<ExternalImage>)>> {
+    pub async fn lookup_images_stream_grouped(
+        self: &std::sync::Arc<Self>,
+        query: RsLookupQuery,
+        plugins: Vec<PluginWithCredential>,
+        target: Option<PluginTarget>,
+    ) -> RsResult<tokio::sync::mpsc::Receiver<(String, Vec<ExternalImage>)>> {
         let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
         let (tx, rx) = tokio::sync::mpsc::channel(16);
 
         let tasks: Vec<_> = {
             let plugins_guard = self.plugins.read().await;
-            plugins.into_iter().filter_map(|plugin_with_cred| {
-                plugins_guard.iter()
-                    .find(|p| p.filename == plugin_with_cred.plugin.path)
-                    .filter(|p| p.infos.capabilities.contains(&PluginType::LookupMetadata))
-                    .map(|p| {
-                        let plugin_arc = p.plugin.clone();
-                        let plugin_name = plugin_with_cred.plugin.name.clone();
-                        let wrapped_query = RsLookupWrapper {
-                            query: query.clone(),
-                            credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
-                            params: build_plugin_params(&plugin_with_cred),
-                        };
-                        (plugin_arc, plugin_name, wrapped_query)
-                    })
-            }).collect()
+            plugins
+                .into_iter()
+                .filter_map(|plugin_with_cred| {
+                    plugins_guard
+                        .iter()
+                        .find(|p| p.filename == plugin_with_cred.plugin.path)
+                        .filter(|p| p.infos.capabilities.contains(&PluginType::LookupMetadata))
+                        .map(|p| {
+                            let plugin_arc = p.plugin.clone();
+                            let plugin_name = plugin_with_cred.plugin.name.clone();
+                            let wrapped_query = RsLookupWrapper {
+                                query: query.clone(),
+                                credential: plugin_with_cred
+                                    .credential
+                                    .clone()
+                                    .map(PluginCredential::from),
+                                params: build_plugin_params(&plugin_with_cred),
+                            };
+                            (plugin_arc, plugin_name, wrapped_query)
+                        })
+                })
+                .collect()
         };
 
         tokio::spawn(async move {
-            let mut pending: futures::stream::FuturesUnordered<_> = tasks.into_iter().map(|(plugin_arc, plugin_name, wrapped_query)| {
-                tokio::task::spawn_blocking(move || {
-                    let mut plugin_m = plugin_arc.lock().unwrap();
-                    let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<ExternalImage>>>("lookup_metadata_images", Json(wrapped_query));
-                    (plugin_name, res)
+            let mut pending: futures::stream::FuturesUnordered<_> = tasks
+                .into_iter()
+                .map(|(plugin_arc, plugin_name, wrapped_query)| {
+                    tokio::task::spawn_blocking(move || {
+                        let mut plugin_m = plugin_arc.lock().unwrap();
+                        let res = plugin_m
+                            .call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<ExternalImage>>>(
+                                "lookup_metadata_images",
+                                Json(wrapped_query),
+                            );
+                        (plugin_name, res)
+                    })
                 })
-            }).collect();
+                .collect();
 
             while let Some(handle_result) = pending.next().await {
                 match handle_result {
                     Ok((plugin_name, Ok(Json(res)))) => {
-                        log_info(crate::tools::log::LogServiceType::Plugin, format!("Lookup metadata images stream result from plugin {}", plugin_name));
+                        log_info(
+                            crate::tools::log::LogServiceType::Plugin,
+                            format!(
+                                "Lookup metadata images stream result from plugin {}",
+                                plugin_name
+                            ),
+                        );
                         if tx.send((plugin_name, res)).await.is_err() {
                             break;
                         }
                     }
                     Ok((_, Err((error, code)))) => {
                         if code != 404 {
-                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request lookup_metadata_images {} {:?}", code, error));
+                            log_error(
+                                crate::tools::log::LogServiceType::Plugin,
+                                format!(
+                                    "Error request lookup_metadata_images {} {:?}",
+                                    code, error
+                                ),
+                            );
                         }
                     }
                     Err(e) => {
-                        log_error(crate::tools::log::LogServiceType::Plugin, format!("Plugin task panicked: {:?}", e));
+                        log_error(
+                            crate::tools::log::LogServiceType::Plugin,
+                            format!("Plugin task panicked: {:?}", e),
+                        );
                     }
                 }
             }
@@ -854,23 +1284,44 @@ impl PluginManager {
     }
 
     /// Check if a request can be played/downloaded instantly without needing to add to service first
-    pub async fn check_instant(&self, request: RsRequest, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<Option<bool>> {
+    pub async fn check_instant(
+        &self,
+        request: RsRequest,
+        plugins: Vec<PluginWithCredential>,
+        target: Option<PluginTarget>,
+    ) -> RsResult<Option<bool>> {
         let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
         for plugin_with_cred in plugins {
-            if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
+            if let Some(plugin) = self
+                .plugins
+                .read()
+                .await
+                .iter()
+                .find(|p| p.filename == plugin_with_cred.plugin.path)
+            {
                 let mut plugin_m = plugin.plugin.lock().unwrap();
                 if plugin.infos.capabilities.contains(&PluginType::Request) {
                     let req = RsRequestPluginRequest {
                         request: request.clone(),
-                        credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
+                        credential: plugin_with_cred
+                            .credential
+                            .clone()
+                            .map(PluginCredential::from),
                         params: build_plugin_params(&plugin_with_cred),
                     };
-                    let res = plugin_m.call_get_error_code::<Json<RsRequestPluginRequest>, Json<bool>>("check_instant", Json(req));
+                    let res = plugin_m
+                        .call_get_error_code::<Json<RsRequestPluginRequest>, Json<bool>>(
+                            "check_instant",
+                            Json(req),
+                        );
                     if let Ok(Json(instant)) = res {
                         return Ok(Some(instant));
                     } else if let Err((error, code)) = res {
                         if code != 404 {
-                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error check_instant: {} {:?}", code, error));
+                            log_error(
+                                crate::tools::log::LogServiceType::Plugin,
+                                format!("Error check_instant: {} {:?}", code, error),
+                            );
                         }
                     }
                 }
@@ -881,15 +1332,29 @@ impl PluginManager {
 
     /// Add a request for processing (RequireAdd status)
     /// Returns the plugin_id and the response from the plugin
-    pub async fn request_add(&self, request: RsRequest, plugins: Vec<PluginWithCredential>, target: Option<PluginTarget>) -> RsResult<Option<(String, RsRequestAddResponse)>> {
+    pub async fn request_add(
+        &self,
+        request: RsRequest,
+        plugins: Vec<PluginWithCredential>,
+        target: Option<PluginTarget>,
+    ) -> RsResult<Option<(String, RsRequestAddResponse)>> {
         let plugins = Self::filter_plugins_by_target(plugins, &target, Some(&request))?;
         for plugin_with_cred in plugins.iter() {
-            if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
+            if let Some(plugin) = self
+                .plugins
+                .read()
+                .await
+                .iter()
+                .find(|p| p.filename == plugin_with_cred.plugin.path)
+            {
                 let mut plugin_m = plugin.plugin.lock().unwrap();
                 if plugin.infos.capabilities.contains(&PluginType::Request) {
                     let req = RsRequestPluginRequest {
                         request: request.clone(),
-                        credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
+                        credential: plugin_with_cred
+                            .credential
+                            .clone()
+                            .map(PluginCredential::from),
                         params: build_plugin_params(&plugin_with_cred),
                     };
                     let res = plugin_m.call_get_error_code::<Json<RsRequestPluginRequest>, Json<RsRequestAddResponse>>("request_add", Json(req));
@@ -905,7 +1370,10 @@ impl PluginManager {
                         return Ok(Some((plugin_with_cred.plugin.id.clone(), response)));
                     } else if let Err((error, code)) = res {
                         if code != 404 {
-                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request_add: {} {:?}", code, error));
+                            log_error(
+                                crate::tools::log::LogServiceType::Plugin,
+                                format!("Error request_add: {} {:?}", code, error),
+                            );
                         }
                     }
                 }
@@ -915,15 +1383,32 @@ impl PluginManager {
     }
 
     /// Get progress of a processing task
-    pub async fn get_processing_progress(&self, processing_id: &str, plugin_with_cred: &PluginWithCredential) -> RsResult<RsProcessingProgress> {
-        if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
+    pub async fn get_processing_progress(
+        &self,
+        processing_id: &str,
+        plugin_with_cred: &PluginWithCredential,
+    ) -> RsResult<RsProcessingProgress> {
+        if let Some(plugin) = self
+            .plugins
+            .read()
+            .await
+            .iter()
+            .find(|p| p.filename == plugin_with_cred.plugin.path)
+        {
             let mut plugin_m = plugin.plugin.lock().unwrap();
             let req = RsProcessingActionRequest {
                 processing_id: processing_id.to_string(),
-                credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
+                credential: plugin_with_cred
+                    .credential
+                    .clone()
+                    .map(PluginCredential::from),
                 params: build_plugin_params(plugin_with_cred),
             };
-            let res = plugin_m.call_get_error_code::<Json<RsProcessingActionRequest>, Json<RsProcessingProgress>>("get_progress", Json(req));
+            let res = plugin_m
+                .call_get_error_code::<Json<RsProcessingActionRequest>, Json<RsProcessingProgress>>(
+                    "get_progress",
+                    Json(req),
+                );
             match res {
                 Ok(Json(mut progress)) => {
                     // Convert relative ETA (ms) to absolute UTC timestamp (ms)
@@ -935,49 +1420,92 @@ impl PluginManager {
                         progress.eta = Some(now_ms + relative_eta);
                     }
                     Ok(progress)
-                },
-                Err((error, code)) => Err(Error::Error(format!("Plugin error {}: {}", code, error))),
+                }
+                Err((error, code)) => {
+                    Err(Error::Error(format!("Plugin error {}: {}", code, error)))
+                }
             }
         } else {
-            Err(Error::NotFound(format!("Plugin not found: {}", plugin_with_cred.plugin.path)))
+            Err(Error::NotFound(format!(
+                "Plugin not found: {}",
+                plugin_with_cred.plugin.path
+            )))
         }
     }
 
     /// Pause a processing task
-    pub async fn pause_processing(&self, processing_id: &str, plugin_with_cred: &PluginWithCredential) -> RsResult<()> {
-        if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
+    pub async fn pause_processing(
+        &self,
+        processing_id: &str,
+        plugin_with_cred: &PluginWithCredential,
+    ) -> RsResult<()> {
+        if let Some(plugin) = self
+            .plugins
+            .read()
+            .await
+            .iter()
+            .find(|p| p.filename == plugin_with_cred.plugin.path)
+        {
             let mut plugin_m = plugin.plugin.lock().unwrap();
             let req = RsProcessingActionRequest {
                 processing_id: processing_id.to_string(),
-                credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
+                credential: plugin_with_cred
+                    .credential
+                    .clone()
+                    .map(PluginCredential::from),
                 params: build_plugin_params(plugin_with_cred),
             };
-            let res = plugin_m.call_get_error_code::<Json<RsProcessingActionRequest>, ()>("pause", Json(req));
+            let res = plugin_m
+                .call_get_error_code::<Json<RsProcessingActionRequest>, ()>("pause", Json(req));
             match res {
                 Ok(()) => Ok(()),
-                Err((error, code)) => Err(Error::Error(format!("Plugin error {}: {}", code, error))),
+                Err((error, code)) => {
+                    Err(Error::Error(format!("Plugin error {}: {}", code, error)))
+                }
             }
         } else {
-            Err(Error::NotFound(format!("Plugin not found: {}", plugin_with_cred.plugin.path)))
+            Err(Error::NotFound(format!(
+                "Plugin not found: {}",
+                plugin_with_cred.plugin.path
+            )))
         }
     }
 
     /// Remove/cancel a processing task
-    pub async fn remove_processing(&self, processing_id: &str, plugin_with_cred: &PluginWithCredential) -> RsResult<()> {
-        if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_cred.plugin.path) {
+    pub async fn remove_processing(
+        &self,
+        processing_id: &str,
+        plugin_with_cred: &PluginWithCredential,
+    ) -> RsResult<()> {
+        if let Some(plugin) = self
+            .plugins
+            .read()
+            .await
+            .iter()
+            .find(|p| p.filename == plugin_with_cred.plugin.path)
+        {
             let mut plugin_m = plugin.plugin.lock().unwrap();
             let req = RsProcessingActionRequest {
                 processing_id: processing_id.to_string(),
-                credential: plugin_with_cred.credential.clone().map(PluginCredential::from),
+                credential: plugin_with_cred
+                    .credential
+                    .clone()
+                    .map(PluginCredential::from),
                 params: build_plugin_params(plugin_with_cred),
             };
-            let res = plugin_m.call_get_error_code::<Json<RsProcessingActionRequest>, ()>("remove", Json(req));
+            let res = plugin_m
+                .call_get_error_code::<Json<RsProcessingActionRequest>, ()>("remove", Json(req));
             match res {
                 Ok(()) => Ok(()),
-                Err((error, code)) => Err(Error::Error(format!("Plugin error {}: {}", code, error))),
+                Err((error, code)) => {
+                    Err(Error::Error(format!("Plugin error {}: {}", code, error)))
+                }
             }
         } else {
-            Err(Error::NotFound(format!("Plugin not found: {}", plugin_with_cred.plugin.path)))
+            Err(Error::NotFound(format!(
+                "Plugin not found: {}",
+                plugin_with_cred.plugin.path
+            )))
         }
     }
 }

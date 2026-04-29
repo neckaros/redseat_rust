@@ -4,11 +4,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::RsResult;
 
-
 pub use rs_plugin_common_interfaces::domain::MediaElement;
 
-use rs_plugin_common_interfaces::domain::book::Book;
 use self::{episode::Episode, media::Media, movie::Movie, serie::Serie};
+use rs_plugin_common_interfaces::domain::book::Book;
 
 /// Extension trait for RsIds to get all possible external IDs
 pub trait RsIdsExt {
@@ -42,6 +41,7 @@ pub mod media_rating;
 pub mod movie;
 pub mod people;
 pub mod plugin;
+pub mod plugin_convert_queue;
 pub mod request_processing;
 pub mod rs_link;
 pub mod serie;

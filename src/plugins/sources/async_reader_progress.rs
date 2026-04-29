@@ -1,8 +1,8 @@
-use tokio::io::{self, AsyncRead, AsyncWrite, ReadBuf};
-use tokio::sync::mpsc::Sender;
+use bytes::Bytes;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use bytes::Bytes;
+use tokio::io::{self, AsyncRead, AsyncWrite, ReadBuf};
+use tokio::sync::mpsc::Sender;
 
 use crate::domain::progress::RsProgress;
 
@@ -13,15 +13,14 @@ pub struct ProgressReader<R> {
     pub bytes_read: usize,
     pub bytes_reported: usize,
     pub progress_template: RsProgress,
-    pub sender: Sender<RsProgress>
+    pub sender: Sender<RsProgress>,
 }
-
 
 impl<R> Drop for ProgressReader<R> {
     fn drop(&mut self) {
         let sender = self.sender.clone();
         let mut new_progress = self.progress_template.clone();
-        new_progress.current = Some(self.bytes_read as u64); 
+        new_progress.current = Some(self.bytes_read as u64);
         new_progress.total = Some(self.bytes_read as u64);
 
         tokio::spawn(async move {
@@ -37,7 +36,7 @@ impl<R> ProgressReader<R> {
             progress_template,
             sender,
             bytes_read: 0,
-            bytes_reported: 0
+            bytes_reported: 0,
         }
     }
 }
@@ -54,12 +53,13 @@ impl<R: AsyncRead + Unpin> AsyncRead for ProgressReader<R> {
             let read = buf.filled().len().saturating_sub(before);
             self.bytes_read += read;
             let mut new_progress = self.progress_template.clone();
-            new_progress.current = Some(self.bytes_read as u64); 
-            if read > 0 && self.bytes_read.saturating_sub(self.bytes_reported) >= PROGRESS_UPDATE_BYTES {
+            new_progress.current = Some(self.bytes_read as u64);
+            if read > 0
+                && self.bytes_read.saturating_sub(self.bytes_reported) >= PROGRESS_UPDATE_BYTES
+            {
                 self.bytes_reported = self.bytes_read;
                 let _ = self.sender.try_send(new_progress);
             }
-            
         }
         poll
     }

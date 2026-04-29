@@ -34,6 +34,10 @@ mod tests {
         let score =
             crate::model::people::cosine_similarity(&faces2[0].embedding, &faces[0].embedding);
         println!("Similarity Score: {:.4}", score);
-        assert!(score > 0.6, "Expected same person (score > 0.6), got {:.4}", score);
+        assert!(
+            score > 0.6,
+            "Expected same person (score > 0.6), got {:.4}",
+            score
+        );
     }
 }

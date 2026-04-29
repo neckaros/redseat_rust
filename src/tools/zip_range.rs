@@ -81,8 +81,7 @@ pub async fn extract_zip_page_from_request(
 
     // ── Step 3: get central directory bytes (may already be in the tail) ──
     let cd: Vec<u8> =
-        if cd_offset >= fetch_start && (cd_offset - fetch_start + cd_size) as usize <= tail.len()
-        {
+        if cd_offset >= fetch_start && (cd_offset - fetch_start + cd_size) as usize <= tail.len() {
             let rel_start = (cd_offset - fetch_start) as usize;
             tail[rel_start..rel_start + cd_size as usize].to_vec()
         } else {
@@ -113,7 +112,9 @@ pub async fn extract_zip_page_from_request(
         if entry_count == target_index {
             let filename_end = pos + 46 + filename_len;
             if filename_end > cd.len() {
-                return Err(Error::Error("CD entry filename extends beyond data".to_string()));
+                return Err(Error::Error(
+                    "CD entry filename extends beyond data".to_string(),
+                ));
             }
             let filename = String::from_utf8_lossy(&cd[pos + 46..filename_end]).to_string();
             found = Some((local_offset, compressed_size, compression, filename));
@@ -134,7 +135,9 @@ pub async fn extract_zip_page_from_request(
     // ── Step 5: read local file header to determine data offset ──
     let lh = fetch_range(request, local_offset, local_offset + 29).await?;
     if lh.len() < 30 {
-        return Err(Error::Error("Local file header response too short".to_string()));
+        return Err(Error::Error(
+            "Local file header response too short".to_string(),
+        ));
     }
     let lh_filename_len = read_u16_le(&lh, 26) as u64;
     let lh_extra_len = read_u16_le(&lh, 28) as u64;
@@ -166,6 +169,10 @@ pub async fn extract_zip_page_from_request(
         }
     };
 
-    let name = if filename.is_empty() { None } else { Some(filename) };
+    let name = if filename.is_empty() {
+        None
+    } else {
+        Some(filename)
+    };
     Ok((data, name))
 }

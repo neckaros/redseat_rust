@@ -4,167 +4,310 @@ use async_recursion::async_recursion;
 use extism::convert::Json;
 use futures::future::ok;
 use http::header::{CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE};
-use rs_plugin_common_interfaces::{lookup::{RsLookupQuery, RsLookupSourceResult, RsLookupWrapper}, provider::{RsProviderAddRequest, RsProviderAddResponse, RsProviderEntry, RsProviderPath}, request::{RsRequest, RsRequestPluginRequest, RsRequestStatus}, url::RsLink, PluginCredential, PluginType, RsPluginRequest};
+use rs_plugin_common_interfaces::{
+    lookup::{RsLookupQuery, RsLookupSourceResult, RsLookupWrapper},
+    provider::{RsProviderAddRequest, RsProviderAddResponse, RsProviderEntry, RsProviderPath},
+    request::{RsRequest, RsRequestPluginRequest, RsRequestStatus},
+    url::RsLink,
+    PluginCredential, PluginType, RsPluginRequest,
+};
 use serde_json::json;
 
-use crate::{domain::{plugin::PluginWithCredential, progress::RsProgressCallback}, error::RsResult, plugins::sources::{AsyncReadPinBox, FileStreamResult}, tools::{array_tools::AddOrSetArray, file_tools::{filename_from_path, get_mime_from_filename}, http_tools::{extract_header, guess_filename, parse_content_disposition}, log::log_error, video_tools::ytdl::YydlContext}, Error};
+use crate::{
+    domain::{plugin::PluginWithCredential, progress::RsProgressCallback},
+    error::RsResult,
+    plugins::sources::{AsyncReadPinBox, FileStreamResult},
+    tools::{
+        array_tools::AddOrSetArray,
+        file_tools::{filename_from_path, get_mime_from_filename},
+        http_tools::{extract_header, guess_filename, parse_content_disposition},
+        log::log_error,
+        video_tools::ytdl::YydlContext,
+    },
+    Error,
+};
 
-use super::{sources::{RsRequestHeader, SourceRead}, PluginManager};
-
+use super::{
+    sources::{RsRequestHeader, SourceRead},
+    PluginManager,
+};
 
 impl PluginManager {
-
-    pub async fn provider_get_file(&self, path: RsProviderPath, plugin_with_creds: &PluginWithCredential) -> RsResult<RsRequest>{
-        if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_creds.plugin.path) {
+    pub async fn provider_get_file(
+        &self,
+        path: RsProviderPath,
+        plugin_with_creds: &PluginWithCredential,
+    ) -> RsResult<RsRequest> {
+        if let Some(plugin) = self
+            .plugins
+            .read()
+            .await
+            .iter()
+            .find(|p| p.filename == plugin_with_creds.plugin.path)
+        {
             let mut plugin_m = plugin.plugin.lock().unwrap();
             if plugin.infos.capabilities.contains(&PluginType::Provider) {
                 let call_object: RsPluginRequest<RsProviderPath> = RsPluginRequest {
                     request: path.clone(),
-                    plugin_settings: plugin_with_creds.credential.as_ref()
+                    plugin_settings: plugin_with_creds
+                        .credential
+                        .as_ref()
                         .map(|c| c.settings.clone())
                         .unwrap_or(json!({})),
-                    credential: plugin_with_creds.credential.clone().map(|c| c.into())
+                    credential: plugin_with_creds.credential.clone().map(|c| c.into()),
                 };
-                let res = plugin_m.call_get_error_code::<Json<RsPluginRequest<RsProviderPath>>, Json<RsRequest>>("download_request", Json(call_object));
+                let res = plugin_m
+                    .call_get_error_code::<Json<RsPluginRequest<RsProviderPath>>, Json<RsRequest>>(
+                        "download_request",
+                        Json(call_object),
+                    );
                 match res {
                     Ok(Json(res)) => Ok(res),
-                    Err((error, code)) =>  {
+                    Err((error, code)) => {
                         if code != 404 {
-                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request fet file {:?} : {} {:?}", path, code, error));
+                            log_error(
+                                crate::tools::log::LogServiceType::Plugin,
+                                format!("Error request fet file {:?} : {} {:?}", path, code, error),
+                            );
                             Err(Error::NotFound("Unable to get provider file".to_string()))
                         } else {
                             Err(Error::Error(format!("Provider plugin error: {}", code)))
                         }
-                    },
+                    }
                 }
             } else {
-                Err(Error::ModelNotFound(format!("provider plugin {}", plugin.filename)))
+                Err(Error::ModelNotFound(format!(
+                    "provider plugin {}",
+                    plugin.filename
+                )))
             }
         } else {
-            Err(Error::ModelNotFound(format!("Unable to find plugin provider plugin {}: path:{}; list: {:?}", plugin_with_creds.plugin.name, plugin_with_creds.plugin.path, self.plugins.read().await)))
+            Err(Error::ModelNotFound(format!(
+                "Unable to find plugin provider plugin {}: path:{}; list: {:?}",
+                plugin_with_creds.plugin.name,
+                plugin_with_creds.plugin.path,
+                self.plugins.read().await
+            )))
         }
-
     }
 
-    pub async fn provider_upload_file_request(&self, path: RsProviderAddRequest, plugin_with_creds: &PluginWithCredential) -> RsResult<RsProviderAddResponse>{
-        if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_creds.plugin.path) {
+    pub async fn provider_upload_file_request(
+        &self,
+        path: RsProviderAddRequest,
+        plugin_with_creds: &PluginWithCredential,
+    ) -> RsResult<RsProviderAddResponse> {
+        if let Some(plugin) = self
+            .plugins
+            .read()
+            .await
+            .iter()
+            .find(|p| p.filename == plugin_with_creds.plugin.path)
+        {
             let mut plugin_m = plugin.plugin.lock().unwrap();
             if plugin.infos.capabilities.contains(&PluginType::Provider) {
                 let call_object: RsPluginRequest<RsProviderAddRequest> = RsPluginRequest {
                     request: path,
-                    plugin_settings: serde_json::to_value(plugin_with_creds.plugin.settings.clone())?,
-                    credential: plugin_with_creds.credential.clone().map(|c| c.into())
+                    plugin_settings: serde_json::to_value(
+                        plugin_with_creds.plugin.settings.clone(),
+                    )?,
+                    credential: plugin_with_creds.credential.clone().map(|c| c.into()),
                 };
                 let res = plugin_m.call_get_error_code::<Json<RsPluginRequest<RsProviderAddRequest>>, Json<RsProviderAddResponse>>("upload_request", Json(call_object));
                 match res {
                     Ok(Json(res)) => Ok(res),
-                    Err((error, code)) =>  {
+                    Err((error, code)) => {
                         if code != 404 {
-                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request upload file: {} {:?}", code, error));
-                            Err(Error::NotFound("Unable to get provider file request".to_string()))
+                            log_error(
+                                crate::tools::log::LogServiceType::Plugin,
+                                format!("Error request upload file: {} {:?}", code, error),
+                            );
+                            Err(Error::NotFound(
+                                "Unable to get provider file request".to_string(),
+                            ))
                         } else {
                             Err(Error::Error(format!("Provider plugin error: {}", code)))
                         }
-                    },
+                    }
                 }
             } else {
-                Err(Error::ModelNotFound(format!("provider plugin {}", plugin.filename)))
+                Err(Error::ModelNotFound(format!(
+                    "provider plugin {}",
+                    plugin.filename
+                )))
             }
         } else {
-            Err(Error::ModelNotFound(format!("provider plugin {}", plugin_with_creds.plugin.name)))
+            Err(Error::ModelNotFound(format!(
+                "provider plugin {}",
+                plugin_with_creds.plugin.name
+            )))
         }
     }
 
-    pub async fn provider_upload_parse_response(&self, response: String, plugin_with_creds: &PluginWithCredential) -> RsResult<RsProviderEntry>{
-        if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_creds.plugin.path) {
+    pub async fn provider_upload_parse_response(
+        &self,
+        response: String,
+        plugin_with_creds: &PluginWithCredential,
+    ) -> RsResult<RsProviderEntry> {
+        if let Some(plugin) = self
+            .plugins
+            .read()
+            .await
+            .iter()
+            .find(|p| p.filename == plugin_with_creds.plugin.path)
+        {
             let mut plugin_m = plugin.plugin.lock().unwrap();
             if plugin.infos.capabilities.contains(&PluginType::Provider) {
                 let call_object: RsPluginRequest<String> = RsPluginRequest {
                     request: response,
-                    plugin_settings: serde_json::to_value(plugin_with_creds.plugin.settings.clone())?,
-                    credential: plugin_with_creds.credential.clone().map(|c| c.into())
+                    plugin_settings: serde_json::to_value(
+                        plugin_with_creds.plugin.settings.clone(),
+                    )?,
+                    credential: plugin_with_creds.credential.clone().map(|c| c.into()),
                 };
-                let res = plugin_m.call_get_error_code::<Json<RsPluginRequest<String>>, Json<RsProviderEntry>>("upload_response", Json(call_object));
+                let res = plugin_m
+                    .call_get_error_code::<Json<RsPluginRequest<String>>, Json<RsProviderEntry>>(
+                        "upload_response",
+                        Json(call_object),
+                    );
                 match res {
                     Ok(Json(res)) => Ok(res),
-                    Err((error, code)) =>  {
+                    Err((error, code)) => {
                         if code != 404 {
-                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request upload file: {} {:?}", code, error));
-                            Err(Error::NotFound("Unable to get provider file upload parse response".to_string()))
+                            log_error(
+                                crate::tools::log::LogServiceType::Plugin,
+                                format!("Error request upload file: {} {:?}", code, error),
+                            );
+                            Err(Error::NotFound(
+                                "Unable to get provider file upload parse response".to_string(),
+                            ))
                         } else {
                             Err(Error::Error(format!("Provider plugin error: {}", code)))
                         }
-                    },
+                    }
                 }
             } else {
-                Err(Error::ModelNotFound(format!("provider plugin {}", plugin.filename)))
+                Err(Error::ModelNotFound(format!(
+                    "provider plugin {}",
+                    plugin.filename
+                )))
             }
         } else {
-            Err(Error::ModelNotFound(format!("provider plugin {}", plugin_with_creds.plugin.name)))
+            Err(Error::ModelNotFound(format!(
+                "provider plugin {}",
+                plugin_with_creds.plugin.name
+            )))
         }
-    }
-    
-    pub async fn provider_remove_file(&self, path: RsProviderPath, plugin_with_creds: &PluginWithCredential) -> RsResult<()>{
-        if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_creds.plugin.path) {
-            let mut plugin_m = plugin.plugin.lock().unwrap();
-            if plugin.infos.capabilities.contains(&PluginType::Provider) {
-                let call_object: RsPluginRequest<RsProviderPath> = RsPluginRequest {
-                    request: path,
-                    plugin_settings: plugin_with_creds.credential.as_ref()
-                        .map(|c| c.settings.clone())
-                        .unwrap_or(json!({})),
-                    credential: plugin_with_creds.credential.clone().map(|c| c.into())
-                };
-                let res = plugin_m.call_get_error_code::<Json<RsPluginRequest<RsProviderPath>>, ()>("remove_file", Json(call_object));
-                match res {
-                    Ok(()) => Ok(()),
-                    Err((error, code)) =>  {
-                        if code != 404 {
-                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request get gile: {} {:?}", code, error));
-                            Err(Error::NotFound("Unable to get provider file remove".to_string()))
-                        } else {
-                            Err(Error::Error(format!("Provider plugin error: {}", code)))
-                        }
-                    },
-                }
-            } else {
-                Err(Error::ModelNotFound(format!("provider plugin {}", plugin.filename)))
-            }
-        } else {
-            Err(Error::ModelNotFound(format!("provider plugin {}", plugin_with_creds.plugin.name)))
-        }
-      
     }
 
-    pub async fn provider_info_file(&self, path: RsProviderPath, plugin_with_creds: &PluginWithCredential) -> RsResult<RsProviderEntry>{
-        if let Some(plugin) = self.plugins.read().await.iter().find(|p| p.filename == plugin_with_creds.plugin.path) {
+    pub async fn provider_remove_file(
+        &self,
+        path: RsProviderPath,
+        plugin_with_creds: &PluginWithCredential,
+    ) -> RsResult<()> {
+        if let Some(plugin) = self
+            .plugins
+            .read()
+            .await
+            .iter()
+            .find(|p| p.filename == plugin_with_creds.plugin.path)
+        {
             let mut plugin_m = plugin.plugin.lock().unwrap();
             if plugin.infos.capabilities.contains(&PluginType::Provider) {
                 let call_object: RsPluginRequest<RsProviderPath> = RsPluginRequest {
                     request: path,
-                    plugin_settings: plugin_with_creds.credential.as_ref()
+                    plugin_settings: plugin_with_creds
+                        .credential
+                        .as_ref()
                         .map(|c| c.settings.clone())
                         .unwrap_or(json!({})),
-                    credential: plugin_with_creds.credential.clone().map(|c| c.into())
+                    credential: plugin_with_creds.credential.clone().map(|c| c.into()),
+                };
+                let res = plugin_m
+                    .call_get_error_code::<Json<RsPluginRequest<RsProviderPath>>, ()>(
+                        "remove_file",
+                        Json(call_object),
+                    );
+                match res {
+                    Ok(()) => Ok(()),
+                    Err((error, code)) => {
+                        if code != 404 {
+                            log_error(
+                                crate::tools::log::LogServiceType::Plugin,
+                                format!("Error request get gile: {} {:?}", code, error),
+                            );
+                            Err(Error::NotFound(
+                                "Unable to get provider file remove".to_string(),
+                            ))
+                        } else {
+                            Err(Error::Error(format!("Provider plugin error: {}", code)))
+                        }
+                    }
+                }
+            } else {
+                Err(Error::ModelNotFound(format!(
+                    "provider plugin {}",
+                    plugin.filename
+                )))
+            }
+        } else {
+            Err(Error::ModelNotFound(format!(
+                "provider plugin {}",
+                plugin_with_creds.plugin.name
+            )))
+        }
+    }
+
+    pub async fn provider_info_file(
+        &self,
+        path: RsProviderPath,
+        plugin_with_creds: &PluginWithCredential,
+    ) -> RsResult<RsProviderEntry> {
+        if let Some(plugin) = self
+            .plugins
+            .read()
+            .await
+            .iter()
+            .find(|p| p.filename == plugin_with_creds.plugin.path)
+        {
+            let mut plugin_m = plugin.plugin.lock().unwrap();
+            if plugin.infos.capabilities.contains(&PluginType::Provider) {
+                let call_object: RsPluginRequest<RsProviderPath> = RsPluginRequest {
+                    request: path,
+                    plugin_settings: plugin_with_creds
+                        .credential
+                        .as_ref()
+                        .map(|c| c.settings.clone())
+                        .unwrap_or(json!({})),
+                    credential: plugin_with_creds.credential.clone().map(|c| c.into()),
                 };
                 let res = plugin_m.call_get_error_code::<Json<RsPluginRequest<RsProviderPath>>, Json<RsProviderEntry>>("file_info", Json(call_object));
                 match res {
                     Ok(Json(p)) => Ok(p),
-                    Err((error, code)) =>  {
+                    Err((error, code)) => {
                         if code != 404 {
-                            log_error(crate::tools::log::LogServiceType::Plugin, format!("Error request get gile: {} {:?}", code, error));
-                            Err(Error::NotFound("Unable to get provider file info".to_string()))
+                            log_error(
+                                crate::tools::log::LogServiceType::Plugin,
+                                format!("Error request get gile: {} {:?}", code, error),
+                            );
+                            Err(Error::NotFound(
+                                "Unable to get provider file info".to_string(),
+                            ))
                         } else {
                             Err(Error::Error(format!("Provider plugin error: {}", code)))
                         }
-                    },
+                    }
                 }
             } else {
-                Err(Error::ModelNotFound(format!("provider plugin {}", plugin.filename)))
+                Err(Error::ModelNotFound(format!(
+                    "provider plugin {}",
+                    plugin.filename
+                )))
             }
         } else {
-            Err(Error::ModelNotFound(format!("provider plugin {}", plugin_with_creds.plugin.name)))
+            Err(Error::ModelNotFound(format!(
+                "provider plugin {}",
+                plugin_with_creds.plugin.name
+            )))
         }
-      
     }
 }

@@ -53,7 +53,8 @@ pub struct HlsSession {
 
 impl HlsSession {
     pub fn touch(&self) {
-        self.last_active.store(get_time().as_secs(), Ordering::Relaxed);
+        self.last_active
+            .store(get_time().as_secs(), Ordering::Relaxed);
     }
 
     pub fn is_stale(&self) -> bool {
@@ -68,7 +69,10 @@ async fn find_next_segment_number(output_dir: &PathBuf) -> u32 {
     if let Ok(mut entries) = tokio::fs::read_dir(output_dir).await {
         while let Ok(Some(entry)) = entries.next_entry().await {
             let name = entry.file_name().to_string_lossy().to_string();
-            if let Some(num_str) = name.strip_prefix("seg_").and_then(|s| s.strip_suffix(".ts")) {
+            if let Some(num_str) = name
+                .strip_prefix("seg_")
+                .and_then(|s| s.strip_suffix(".ts"))
+            {
                 if let Ok(num) = num_str.parse::<u32>() {
                     max_num = max_num.max(num + 1);
                 }
@@ -121,10 +125,7 @@ async fn spawn_ffmpeg(
         .args(["-hls_time", &HLS_SEGMENT_DURATION.to_string()])
         .args(["-hls_list_size", &HLS_LIST_SIZE.to_string()])
         .args(["-hls_flags", &hls_flags])
-        .args([
-            "-hls_segment_filename",
-            &segment_pattern.to_string_lossy(),
-        ])
+        .args(["-hls_segment_filename", &segment_pattern.to_string_lossy()])
         .args(["-hls_allow_cache", "1"])
         .args(["-start_number", &start_number.to_string()])
         .arg(playlist_path.to_string_lossy().as_ref())
@@ -171,7 +172,14 @@ async fn supervisor_loop(
         let start_number = find_next_segment_number(&output_dir).await;
         let is_restart = restart_count > 0;
 
-        let child = spawn_ffmpeg(&stream_url, &output_dir, &playlist_path, start_number, is_restart).await;
+        let child = spawn_ffmpeg(
+            &stream_url,
+            &output_dir,
+            &playlist_path,
+            start_number,
+            is_restart,
+        )
+        .await;
 
         let mut child = match child {
             Ok(c) => c,
@@ -220,18 +228,21 @@ async fn supervisor_loop(
                 let mut first_segment_seen = start_number > 0;
 
                 loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(STALL_CHECK_INTERVAL_SECS)).await;
+                    tokio::time::sleep(std::time::Duration::from_secs(STALL_CHECK_INTERVAL_SECS))
+                        .await;
                     let current = find_next_segment_number(&output_dir).await;
                     if current > last_seg_num {
                         last_seg_num = current;
                         last_seg_change = get_time().as_secs();
                         first_segment_seen = true;
                     } else if first_segment_seen
-                        && get_time().as_secs().saturating_sub(last_seg_change) > OUTPUT_STALL_TIMEOUT_SECS
+                        && get_time().as_secs().saturating_sub(last_seg_change)
+                            > OUTPUT_STALL_TIMEOUT_SECS
                     {
                         break;
                     } else if !first_segment_seen
-                        && get_time().as_secs().saturating_sub(last_seg_change) > STARTUP_STALL_TIMEOUT_SECS
+                        && get_time().as_secs().saturating_sub(last_seg_change)
+                            > STARTUP_STALL_TIMEOUT_SECS
                     {
                         break;
                     }
@@ -372,7 +383,9 @@ pub async fn stop_session(key: &str, hls_sessions: &Arc<RwLock<HashMap<String, H
 }
 
 /// Clean up stale sessions (called periodically)
-pub async fn cleanup_stale_sessions(hls_sessions: &Arc<RwLock<HashMap<String, HlsSession>>>) -> Vec<(String, String)> {
+pub async fn cleanup_stale_sessions(
+    hls_sessions: &Arc<RwLock<HashMap<String, HlsSession>>>,
+) -> Vec<(String, String)> {
     let stale_keys: Vec<(String, String, String)> = {
         let sessions = hls_sessions.read().await;
         sessions

@@ -1,8 +1,8 @@
 use std::ffi;
+use std::ffi::c_void;
 use std::io::Cursor;
 use std::io::Write;
 use std::ptr;
-use std::ffi::c_void;
 use std::slice;
 
 use image::DynamicImage;
@@ -16,11 +16,8 @@ use crate::error::RsResult;
 use crate::tools::image_tools::ImageAndProfile;
 use image::ImageDecoder;
 
-
 const JPEG_XL_MAGIC: [u8; 12] = [
-    0x00, 0x00, 0x00, 0x0C,
-    b'J', b'X', b'L', b' ',
-    0x0D, 0x0A, 0x87, 0x0A,
+    0x00, 0x00, 0x00, 0x0C, b'J', b'X', b'L', b' ', 0x0D, 0x0A, 0x87, 0x0A,
 ];
 
 pub fn is_jxl(data: &[u8]) -> bool {
@@ -31,7 +28,6 @@ pub fn is_jxl(data: &[u8]) -> bool {
 }
 
 pub fn read_jxl_file_to_image(jxl_data: &[u8]) -> RsResult<ImageAndProfile> {
-
     let reader = Cursor::new(jxl_data);
 
     let mut decoder = JxlDecoder::new(reader)?;
@@ -41,10 +37,9 @@ pub fn read_jxl_file_to_image(jxl_data: &[u8]) -> RsResult<ImageAndProfile> {
     if let Ok(orientation) = orientation {
         image.apply_orientation(orientation);
     }
-    
+
     Ok(ImageAndProfile {
         image,
         profile: icc,
     })
-
 }

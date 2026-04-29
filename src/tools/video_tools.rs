@@ -1028,10 +1028,7 @@ impl VideoCommandBuilder {
             .args(["-hls_time", &segment_duration.to_string()])
             .args(["-hls_playlist_type", "event"])
             .args(["-hls_flags", "temp_file+append_list"])
-            .args([
-                "-hls_segment_filename",
-                &segment_pattern.to_string_lossy(),
-            ])
+            .args(["-hls_segment_filename", &segment_pattern.to_string_lossy()])
             .args(["-hls_allow_cache", "1"])
             .arg(playlist_path.to_string_lossy().as_ref())
             .stdout(Stdio::piped())
@@ -1359,9 +1356,9 @@ fn round(x: f64, decimals: u32) -> f64 {
 /// and stream parameters. Uses `-c copy` (no re-encoding).
 pub async fn concat_videos(segments: &[String], output: &str) -> RsResult<()> {
     let list_path = get_server_temp_file_path().await?;
-    let list_path_str = list_path
-        .to_str()
-        .ok_or(RsError::Error("Invalid temp file path for concat list".to_string()))?;
+    let list_path_str = list_path.to_str().ok_or(RsError::Error(
+        "Invalid temp file path for concat list".to_string(),
+    ))?;
 
     let mut content = String::new();
     for segment in segments {

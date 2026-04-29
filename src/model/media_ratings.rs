@@ -1,11 +1,13 @@
 use rs_plugin_common_interfaces::ElementType;
 use serde::{Deserialize, Serialize};
 
-use crate::{domain::media_rating::RsMediaRating, error::{RsError, RsResult}, routes::sse::SseEvent};
+use crate::{
+    domain::media_rating::RsMediaRating,
+    error::{RsError, RsResult},
+    routes::sse::SseEvent,
+};
 
 use super::{store::sql::SqlOrder, users::ConnectedUser, ModelController};
-
-
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
@@ -21,19 +23,20 @@ pub struct MediaRatingsQuery {
     pub order: SqlOrder,
 }
 
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct MediasRatingMessage {
     pub library: String,
-    pub rating: RsMediaRating
+    pub rating: RsMediaRating,
 }
 
-
 impl ModelController {
-
     pub async fn send_media_rating(&self, message: MediasRatingMessage) {
-        let mapping: Vec<crate::domain::library::UserMapping> = self.get_library_mapped_users(&message.library).await.ok().unwrap_or_default();
+        let mapping: Vec<crate::domain::library::UserMapping> = self
+            .get_library_mapped_users(&message.library)
+            .await
+            .ok()
+            .unwrap_or_default();
 
         for map in &mapping {
             if message.rating.user_ref == map.to {
@@ -51,12 +54,18 @@ impl ModelController {
 
         // Broadcast original message last (consumes message)
         self.broadcast_sse(SseEvent::MediaRating(message));
-	}
+    }
 
-
-	pub async fn get_medias_ratings(&self, library_id: &str, query: MediaRatingsQuery, requesting_user: &ConnectedUser) -> RsResult<Vec<RsMediaRating>> {
+    pub async fn get_medias_ratings(
+        &self,
+        library_id: &str,
+        query: MediaRatingsQuery,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Vec<RsMediaRating>> {
         let original_user_id = requesting_user.user_id()?;
-        let mut user_id = self.get_library_mapped_user(library_id, original_user_id.clone()).await?;
+        let mut user_id = self
+            .get_library_mapped_user(library_id, original_user_id.clone())
+            .await?;
 
         let store = self.store.get_library_store(library_id)?;
         let mut ratings = store.get_medias_ratings(query, user_id.clone()).await?;
@@ -69,28 +78,60 @@ impl ModelController {
             }
         }
 
-		Ok(ratings)
-	}
+        Ok(ratings)
+    }
 
-    pub async fn get_media_rating(&self, library_id: &str, kind: ElementType, ref_id: String, requesting_user: &ConnectedUser) -> RsResult<RsMediaRating> {
-        let rating = self.get_medias_ratings(library_id, MediaRatingsQuery { kind: Some(kind.clone()), ref_id: Some(ref_id.clone()), ..Default::default() }, requesting_user).await?;
-        let p = rating.into_iter().next().ok_or(RsError::NotFound(format!("Rating not found: {:?}/{} for user {:?}", kind, ref_id, requesting_user)))?;
-		Ok(p)
-	}
+    pub async fn get_media_rating(
+        &self,
+        library_id: &str,
+        kind: ElementType,
+        ref_id: String,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<RsMediaRating> {
+        let rating = self
+            .get_medias_ratings(
+                library_id,
+                MediaRatingsQuery {
+                    kind: Some(kind.clone()),
+                    ref_id: Some(ref_id.clone()),
+                    ..Default::default()
+                },
+                requesting_user,
+            )
+            .await?;
+        let p = rating.into_iter().next().ok_or(RsError::NotFound(format!(
+            "Rating not found: {:?}/{} for user {:?}",
+            kind, ref_id, requesting_user
+        )))?;
+        Ok(p)
+    }
 
-    pub async fn set_media_rating(&self, library_id: &str, kind: ElementType, ref_id: String, rating: f64, requesting_user: &ConnectedUser) -> RsResult<RsMediaRating> {
-        let user_id = self.get_library_mapped_user(library_id, requesting_user.user_id()?).await?;
+    pub async fn set_media_rating(
+        &self,
+        library_id: &str,
+        kind: ElementType,
+        ref_id: String,
+        rating: f64,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<RsMediaRating> {
+        let user_id = self
+            .get_library_mapped_user(library_id, requesting_user.user_id()?)
+            .await?;
 
         let store = self.store.get_library_store(library_id)?;
-        store.set_media_rating(kind.clone(), ref_id.clone(), user_id, rating).await?;
+        store
+            .set_media_rating(kind.clone(), ref_id.clone(), user_id, rating)
+            .await?;
 
-        let rating = self.get_media_rating(library_id, kind, ref_id, requesting_user).await?;
+        let rating = self
+            .get_media_rating(library_id, kind, ref_id, requesting_user)
+            .await?;
 
         let message = MediasRatingMessage {
             library: library_id.to_string(),
-            rating: rating.clone()
+            rating: rating.clone(),
         };
         self.send_media_rating(message).await;
-		Ok(rating)
-	}
+        Ok(rating)
+    }
 }

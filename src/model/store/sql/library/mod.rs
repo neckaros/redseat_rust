@@ -174,9 +174,8 @@ impl SqliteLibraryStore {
                 }
 
                 if version < 39 {
-                    let initial = String::from_utf8_lossy(include_bytes!(
-                        "039 - REQUEST PROCESSING.sql"
-                    ));
+                    let initial =
+                        String::from_utf8_lossy(include_bytes!("039 - REQUEST PROCESSING.sql"));
                     conn.execute_batch(&initial)?;
                     version = 39;
                     conn.pragma_update(None, "user_version", version)?;
@@ -208,7 +207,8 @@ impl SqliteLibraryStore {
                 }
 
                 if version < 42 {
-                    let initial = String::from_utf8_lossy(include_bytes!("042 - BOOK OTHERIDS.sql"));
+                    let initial =
+                        String::from_utf8_lossy(include_bytes!("042 - BOOK OTHERIDS.sql"));
                     conn.execute_batch(&initial)?;
                     version = 42;
                     conn.pragma_update(None, "user_version", version)?;
@@ -219,7 +219,8 @@ impl SqliteLibraryStore {
                 }
 
                 if version < 43 {
-                    let initial = String::from_utf8_lossy(include_bytes!("043 - PEOPLE OTHERIDS.sql"));
+                    let initial =
+                        String::from_utf8_lossy(include_bytes!("043 - PEOPLE OTHERIDS.sql"));
                     conn.execute_batch(&initial)?;
                     version = 43;
                     conn.pragma_update(None, "user_version", version)?;
@@ -241,7 +242,8 @@ impl SqliteLibraryStore {
                 }
 
                 if version < 45 {
-                    let initial = String::from_utf8_lossy(include_bytes!("045 - BOOK RELATIONS.sql"));
+                    let initial =
+                        String::from_utf8_lossy(include_bytes!("045 - BOOK RELATIONS.sql"));
                     conn.execute_batch(&initial)?;
                     version = 45;
                     conn.pragma_update(None, "user_version", version)?;
@@ -263,7 +265,8 @@ impl SqliteLibraryStore {
                 }
 
                 if version < 47 {
-                    let initial = String::from_utf8_lossy(include_bytes!("047 - IPTV CHANNELS.sql"));
+                    let initial =
+                        String::from_utf8_lossy(include_bytes!("047 - IPTV CHANNELS.sql"));
                     conn.execute_batch(&initial)?;
                     version = 47;
                     conn.pragma_update(None, "user_version", version)?;
@@ -273,7 +276,8 @@ impl SqliteLibraryStore {
                     );
                 }
                 if version < 48 {
-                    let initial = String::from_utf8_lossy(include_bytes!("048 - CHANNEL POSTERV.sql"));
+                    let initial =
+                        String::from_utf8_lossy(include_bytes!("048 - CHANNEL POSTERV.sql"));
                     conn.execute_batch(&initial)?;
                     version = 48;
                     conn.pragma_update(None, "user_version", version)?;
@@ -293,7 +297,8 @@ impl SqliteLibraryStore {
                     );
                 }
                 if version < 50 {
-                    let initial = String::from_utf8_lossy(include_bytes!("050 - CHANNEL VARIANT NAME.sql"));
+                    let initial =
+                        String::from_utf8_lossy(include_bytes!("050 - CHANNEL VARIANT NAME.sql"));
                     conn.execute_batch(&initial)?;
                     version = 50;
                     conn.pragma_update(None, "user_version", version)?;
@@ -303,7 +308,8 @@ impl SqliteLibraryStore {
                     );
                 }
                 if version < 51 {
-                    let initial = String::from_utf8_lossy(include_bytes!("051 - CASCADE DELETE.sql"));
+                    let initial =
+                        String::from_utf8_lossy(include_bytes!("051 - CASCADE DELETE.sql"));
                     conn.execute_batch(&initial)?;
                     version = 51;
                     conn.pragma_update(None, "user_version", version)?;
@@ -313,7 +319,8 @@ impl SqliteLibraryStore {
                     );
                 }
                 if version < 52 {
-                    let initial = String::from_utf8_lossy(include_bytes!("052 - CLEAN PLUGIN IDS.sql"));
+                    let initial =
+                        String::from_utf8_lossy(include_bytes!("052 - CLEAN PLUGIN IDS.sql"));
                     conn.execute_batch(&initial)?;
                     version = 52;
                     conn.pragma_update(None, "user_version", version)?;
@@ -406,10 +413,16 @@ mod tests {
 
         // Cascade delete: deleting book-1 should delete m1
         store.remove_book("book-1".to_string()).await.unwrap();
-        assert!(store.get_media("m1", None).await.unwrap().is_none(), "media should be cascade deleted when book is deleted");
+        assert!(
+            store.get_media("m1", None).await.unwrap().is_none(),
+            "media should be cascade deleted when book is deleted"
+        );
 
         // Cascade delete: deleting movie-1 should delete m2
         store.remove_movie("movie-1".to_string()).await.unwrap();
-        assert!(store.get_media("m2", None).await.unwrap().is_none(), "media should be cascade deleted when movie is deleted");
+        assert!(
+            store.get_media("m2", None).await.unwrap().is_none(),
+            "media should be cascade deleted when movie is deleted"
+        );
     }
 }

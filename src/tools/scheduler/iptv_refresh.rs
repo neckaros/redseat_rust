@@ -34,7 +34,11 @@ impl RsSchedulerTask for IptvRefreshTask {
 
         for library in iptv_libraries {
             // The M3U URL is stored in library.root
-            let has_m3u_url = library.root.as_ref().map(|s| !s.is_empty()).unwrap_or(false);
+            let has_m3u_url = library
+                .root
+                .as_ref()
+                .map(|s| !s.is_empty())
+                .unwrap_or(false);
             if !has_m3u_url {
                 continue;
             }

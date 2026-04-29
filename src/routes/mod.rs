@@ -1,4 +1,8 @@
-use rs_plugin_common_interfaces::{lookup::{RsLookupMatchType, RsLookupMetadataResults}, request::{RsGroupDownload, RsRequest}, ImageType};
+use rs_plugin_common_interfaces::{
+    lookup::{RsLookupMatchType, RsLookupMetadataResults},
+    request::{RsGroupDownload, RsRequest},
+    ImageType,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::tools::image_tools::ImageSize;
@@ -80,15 +84,19 @@ pub struct SseLookupSearchResult {
 
 impl SseLookupSearchResult {
     pub fn from_groups(groups: Vec<RsGroupDownload>) -> Vec<Self> {
-        groups.into_iter().flat_map(|group| {
-            let match_type = group.match_type;
-            group.requests.into_iter().map(move |request| {
-                SseLookupSearchResult {
-                    request,
-                    match_type: match_type.clone(),
-                }
+        groups
+            .into_iter()
+            .flat_map(|group| {
+                let match_type = group.match_type;
+                group
+                    .requests
+                    .into_iter()
+                    .map(move |request| SseLookupSearchResult {
+                        request,
+                        match_type: match_type.clone(),
+                    })
             })
-        }).collect()
+            .collect()
     }
 }
 

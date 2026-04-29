@@ -1,5 +1,8 @@
 use rs_plugin_common_interfaces::domain::{
-    media::{FileEpisode, MediaItemReference}, other_ids::OtherIds, rs_ids::RsIds, ItemWithRelations, Relations,
+    media::{FileEpisode, MediaItemReference},
+    other_ids::OtherIds,
+    rs_ids::RsIds,
+    ItemWithRelations, Relations,
 };
 use rusqlite::{params, params_from_iter, OptionalExtension, Row, ToSql};
 
@@ -157,7 +160,10 @@ impl SqliteLibraryStore {
         Ok(row)
     }
 
-    pub async fn get_book_by_external_id(&self, ids: RsIds) -> Result<Option<ItemWithRelations<Book>>> {
+    pub async fn get_book_by_external_id(
+        &self,
+        ids: RsIds,
+    ) -> Result<Option<ItemWithRelations<Book>>> {
         let row = self
             .connection
             .call(move |conn| {
@@ -299,7 +305,12 @@ impl SqliteLibraryStore {
         Ok(())
     }
 
-    pub async fn add_book_tag(&self, book_id: &str, tag_id: &str, confidence: Option<i32>) -> Result<()> {
+    pub async fn add_book_tag(
+        &self,
+        book_id: &str,
+        tag_id: &str,
+        confidence: Option<i32>,
+    ) -> Result<()> {
         let book_id = book_id.to_string();
         let tag_id = tag_id.to_string();
         self.connection
@@ -329,7 +340,12 @@ impl SqliteLibraryStore {
         Ok(())
     }
 
-    pub async fn add_book_person(&self, book_id: &str, person_id: &str, confidence: Option<i32>) -> Result<()> {
+    pub async fn add_book_person(
+        &self,
+        book_id: &str,
+        person_id: &str,
+        confidence: Option<i32>,
+    ) -> Result<()> {
         let book_id = book_id.to_string();
         let person_id = person_id.to_string();
         self.connection
@@ -446,8 +462,14 @@ impl SqliteLibraryStore {
         self.connection
             .call(move |conn| {
                 conn.execute("DELETE FROM books WHERE id = ?", [book_id.clone()])?;
-                conn.execute("DELETE FROM book_tag_mapping  WHERE book_ref = ?", &[&book_id])?;
-                conn.execute("DELETE FROM book_people_mapping  WHERE book_ref = ?", &[&book_id])?;
+                conn.execute(
+                    "DELETE FROM book_tag_mapping  WHERE book_ref = ?",
+                    &[&book_id],
+                )?;
+                conn.execute(
+                    "DELETE FROM book_people_mapping  WHERE book_ref = ?",
+                    &[&book_id],
+                )?;
                 Ok(())
             })
             .await?;
@@ -577,20 +599,14 @@ mod tests {
 
         let mut isbn_ids = RsIds::default();
         isbn_ids.set("isbn13", "9783161484100");
-        let found = store
-            .get_book_by_external_id(isbn_ids)
-            .await
-            .unwrap();
+        let found = store.get_book_by_external_id(isbn_ids).await.unwrap();
         assert!(found.is_some());
 
         let mut manga_ids = RsIds::default();
         manga_ids.set("anilist", 12345u64);
         manga_ids.set("mangadex", "mangadex-id");
         manga_ids.set("mal", 67890u64);
-        let not_found = store
-            .get_book_by_external_id(manga_ids)
-            .await
-            .unwrap();
+        let not_found = store.get_book_by_external_id(manga_ids).await.unwrap();
         assert!(not_found.is_none());
     }
 
@@ -636,10 +652,7 @@ mod tests {
         lookup_ids.set("anilist", 4242u64);
         lookup_ids.set("volume", 2.0f64);
         lookup_ids.set("chapter", 10.0f64);
-        let found = store
-            .get_book_by_external_id(lookup_ids)
-            .await
-            .unwrap();
+        let found = store.get_book_by_external_id(lookup_ids).await.unwrap();
 
         assert_eq!(found.map(|b| b.item.id), Some("book-manga-v2".to_string()));
     }
@@ -659,11 +672,17 @@ mod tests {
             .unwrap();
 
         // Add tags
-        store.add_book_tag("book-rel", "tag-1", Some(100)).await.unwrap();
+        store
+            .add_book_tag("book-rel", "tag-1", Some(100))
+            .await
+            .unwrap();
         store.add_book_tag("book-rel", "tag-2", None).await.unwrap();
 
         // Add people
-        store.add_book_person("book-rel", "person-1", Some(90)).await.unwrap();
+        store
+            .add_book_person("book-rel", "person-1", Some(90))
+            .await
+            .unwrap();
 
         let fetched = store.get_book("book-rel").await.unwrap().unwrap();
         let relations = fetched.relations.unwrap();
@@ -688,7 +707,10 @@ mod tests {
             .update_book(
                 "book-rel",
                 crate::domain::book::BookForUpdate {
-                    add_tags: Some(vec![MediaItemReference { id: "tag-3".to_string(), conf: None }]),
+                    add_tags: Some(vec![MediaItemReference {
+                        id: "tag-3".to_string(),
+                        conf: None,
+                    }]),
                     remove_tags: Some(vec!["tag-2".to_string()]),
                     remove_people: Some(vec!["person-1".to_string()]),
                     ..Default::default()

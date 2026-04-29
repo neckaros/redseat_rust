@@ -1,30 +1,28 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::ElementAction;
 use crate::{plugins::medias::imdb::ImdbContext, tools::serialization_tools::rating_serializer};
 pub use rs_plugin_common_interfaces::domain::episode::Episode;
-use super::ElementAction;
-
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct EpisodeWithShow {
     pub name: String,
-    pub episode: Episode
+    pub episode: Episode,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")] 
+#[serde(rename_all = "camelCase")]
 pub struct EpisodeWithAction {
     pub action: ElementAction,
-    pub episode: Episode
+    pub episode: Episode,
 }
 
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")] 
+#[serde(rename_all = "camelCase")]
 pub struct EpisodesMessage {
     pub library: String,
-    pub episodes: Vec<EpisodeWithAction>
+    pub episodes: Vec<EpisodeWithAction>,
 }
 
 #[async_trait::async_trait]
@@ -42,5 +40,5 @@ impl EpisodeExt for Episode {
                 self.imdb_votes = Some(rating.1);
             }
         }
-    } 
+    }
 }

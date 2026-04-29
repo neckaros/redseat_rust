@@ -4,8 +4,8 @@ use serde_json::Value;
 use super::ElementAction;
 use rs_plugin_common_interfaces::{url::RsLink, Gender};
 
-pub use rs_plugin_common_interfaces::domain::person::Person;
 pub use rs_plugin_common_interfaces::domain::media::{FaceBBox, FaceEmbedding};
+pub use rs_plugin_common_interfaces::domain::person::Person;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -20,7 +20,6 @@ pub struct PersonWithAction {
     pub action: ElementAction,
     pub person: Person,
 }
-
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]

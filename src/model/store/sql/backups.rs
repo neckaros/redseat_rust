@@ -1,8 +1,12 @@
 use nanoid::nanoid;
 use rusqlite::{params, params_from_iter, OptionalExtension, Row, ToSql};
 
-use crate::{domain::backup::{Backup, BackupError, BackupFile}, error::RsError, model::{backups::BackupForUpdate, store::SqliteStore}};
 use super::Result;
+use crate::{
+    domain::backup::{Backup, BackupError, BackupFile},
+    error::RsError,
+    model::{backups::BackupForUpdate, store::SqliteStore},
+};
 
 pub struct BackupInfos {
     pub max_date: Option<i64>,
@@ -12,23 +16,22 @@ pub struct BackupInfos {
 const BACKUP_FILE_QUERY_ELEMENTS: &str = "backup, library, file, id, path, hash, sourcehash, size, modified, added, iv, infoSize, thumbsize, error";
 
 impl SqliteStore {
-  
     fn backup_file_from_row(row: &Row) -> rusqlite::Result<BackupFile> {
         Ok(BackupFile {
             backup: row.get(0)?,
-            library:row.get(1)?,
-            file:row.get(2)?,
-            id:row.get(3)?,
-            path:row.get(4)?,
-            hash:row.get(5)?,
-            sourcehash:row.get(6)?,
-            size:row.get(7)?,
-            modified:row.get(8)?,
-            added:row.get(9)?,
-            iv:row.get(10)?,
-            info_size:row.get(11)?,
+            library: row.get(1)?,
+            file: row.get(2)?,
+            id: row.get(3)?,
+            path: row.get(4)?,
+            hash: row.get(5)?,
+            sourcehash: row.get(6)?,
+            size: row.get(7)?,
+            modified: row.get(8)?,
+            added: row.get(9)?,
+            iv: row.get(10)?,
+            info_size: row.get(11)?,
             thumb_size: row.get(12)?,
-            error:row.get(13)?,
+            error: row.get(13)?,
         })
     }
 
@@ -36,14 +39,13 @@ impl SqliteStore {
         Ok(BackupError {
             id: row.get(0)?,
             backup: row.get(1)?,
-            library:row.get(2)?,
-            file:row.get(3)?,
-            date:row.get(4)?,
-            error:row.get(5)?,
+            library: row.get(2)?,
+            file: row.get(3)?,
+            date: row.get(4)?,
+            error: row.get(5)?,
         })
     }
-    
-    
+
     pub async fn get_backups(&self) -> Result<Vec<Backup>> {
         let row = self.server_store.call( move |conn| { 
             let mut query = conn.prepare("SELECT id, source, credentials, library, path, schedule, filter, last, password, size, plugin, name  FROM Backups")?;
@@ -101,33 +103,38 @@ impl SqliteStore {
         Ok(row)
     }
 
-
-
     pub async fn update_backup(&self, credential_id: &str, update: BackupForUpdate) -> Result<()> {
         let credential_id = credential_id.to_string();
-        self.server_store.call( move |conn| { 
-            let mut columns: Vec<String> = Vec::new();
-            let mut values: Vec<Box<dyn ToSql>> = Vec::new();
-            super::add_for_sql_update(update.source, "source", &mut columns, &mut values);
-            super::add_for_sql_update(update.plugin, "plugin", &mut columns, &mut values);
-            super::add_for_sql_update(update.credentials, "credentials", &mut columns, &mut values);
-            super::add_for_sql_update(update.library, "library", &mut columns, &mut values);
-            super::add_for_sql_update(update.path, "path", &mut columns, &mut values);
-            super::add_for_sql_update(update.schedule, "schedule", &mut columns, &mut values);
-            super::add_for_sql_update(update.filter, "filter", &mut columns, &mut values);
-            super::add_for_sql_update(update.last, "last", &mut columns, &mut values);
-            super::add_for_sql_update(update.password, "password", &mut columns, &mut values);
-            super::add_for_sql_update(update.size, "size", &mut columns, &mut values);
-            super::add_for_sql_update(update.name, "name", &mut columns, &mut values);
+        self.server_store
+            .call(move |conn| {
+                let mut columns: Vec<String> = Vec::new();
+                let mut values: Vec<Box<dyn ToSql>> = Vec::new();
+                super::add_for_sql_update(update.source, "source", &mut columns, &mut values);
+                super::add_for_sql_update(update.plugin, "plugin", &mut columns, &mut values);
+                super::add_for_sql_update(
+                    update.credentials,
+                    "credentials",
+                    &mut columns,
+                    &mut values,
+                );
+                super::add_for_sql_update(update.library, "library", &mut columns, &mut values);
+                super::add_for_sql_update(update.path, "path", &mut columns, &mut values);
+                super::add_for_sql_update(update.schedule, "schedule", &mut columns, &mut values);
+                super::add_for_sql_update(update.filter, "filter", &mut columns, &mut values);
+                super::add_for_sql_update(update.last, "last", &mut columns, &mut values);
+                super::add_for_sql_update(update.password, "password", &mut columns, &mut values);
+                super::add_for_sql_update(update.size, "size", &mut columns, &mut values);
+                super::add_for_sql_update(update.name, "name", &mut columns, &mut values);
 
-
-            if columns.len() > 0 {
-                values.push(Box::new(credential_id));
-                let update_sql = format!("UPDATE Backups SET {} WHERE id = ?", columns.join(", "));
-                conn.execute(&update_sql, params_from_iter(values))?;
-            }
-            Ok(())
-        }).await?;
+                if columns.len() > 0 {
+                    values.push(Box::new(credential_id));
+                    let update_sql =
+                        format!("UPDATE Backups SET {} WHERE id = ?", columns.join(", "));
+                    conn.execute(&update_sql, params_from_iter(values))?;
+                }
+                Ok(())
+            })
+            .await?;
         Ok(())
     }
 
@@ -156,26 +163,30 @@ impl SqliteStore {
     }
 
     pub async fn remove_backup(&self, credential_id: String) -> Result<()> {
-        self.server_store.call( move |conn| { 
-            conn.execute("DELETE FROM Backups WHERE id = ?", &[&credential_id])?;
-            Ok(())
-        }).await?;
+        self.server_store
+            .call(move |conn| {
+                conn.execute("DELETE FROM Backups WHERE id = ?", &[&credential_id])?;
+                Ok(())
+            })
+            .await?;
         Ok(())
     }
-
-
 
     // BACKUP FILE ============================
     pub async fn get_backup_file(&self, backup_file_id: &str) -> Result<Option<BackupFile>> {
         let backup_file_id = backup_file_id.to_owned();
-        let row = self.server_store.call( move |conn| { 
-            let mut query = conn.prepare(&format!("SELECT {BACKUP_FILE_QUERY_ELEMENTS} FROM Backups_Files WHERE id = ?"))?;
-            let row = query.query_row(
-            [backup_file_id],Self::backup_file_from_row,
-            ).optional()?;
-            Ok(row)
-           
-        }).await?;
+        let row = self
+            .server_store
+            .call(move |conn| {
+                let mut query = conn.prepare(&format!(
+                    "SELECT {BACKUP_FILE_QUERY_ELEMENTS} FROM Backups_Files WHERE id = ?"
+                ))?;
+                let row = query
+                    .query_row([backup_file_id], Self::backup_file_from_row)
+                    .optional()?;
+                Ok(row)
+            })
+            .await?;
         Ok(row)
     }
 
@@ -194,7 +205,11 @@ impl SqliteStore {
     }
 
     /// For a specific media id get all the files for a specific backup
-    pub async fn get_backup_media_backup_files(&self, backup_id: &str, media_id: &str) -> Result<Vec<BackupFile>> {
+    pub async fn get_backup_media_backup_files(
+        &self,
+        backup_id: &str,
+        media_id: &str,
+    ) -> Result<Vec<BackupFile>> {
         let media_id = media_id.to_owned();
         let backup_id = backup_id.to_owned();
         let row = self.server_store.call( move |conn| { 
@@ -209,7 +224,11 @@ impl SqliteStore {
     }
 
     /// For a specific media id get all the files whatever the backup
-    pub async fn get_library_media_backup_files(&self, library_id: &str, media_id: &str) -> Result<Vec<BackupFile>> {
+    pub async fn get_library_media_backup_files(
+        &self,
+        library_id: &str,
+        media_id: &str,
+    ) -> Result<Vec<BackupFile>> {
         let media_id = media_id.to_owned();
         let library_id = library_id.to_owned();
         let row = self.server_store.call( move |conn| { 
@@ -238,7 +257,6 @@ impl SqliteStore {
         Ok(row)
     }
 
-
     pub async fn get_backup_files_infos(&self, backup_id: &str) -> Result<BackupInfos> {
         let backup_id = backup_id.to_owned();
         let row = self.server_store.call( move |conn| { 
@@ -256,9 +274,6 @@ impl SqliteStore {
         Ok(row)
     }
 
-
-    
-    
     pub async fn add_backup_file(&self, backup: BackupFile) -> Result<()> {
         self.server_store.call( move |conn| { 
             conn.execute("INSERT INTO Backups_Files (backup, library, file, id, path, hash, sourcehash, size, modified, added, iv, thumbsize, infoSize, error)
@@ -285,16 +300,17 @@ impl SqliteStore {
     }
 
     pub async fn remove_backup_file(&self, id: String) -> Result<()> {
-        self.server_store.call( move |conn| { 
-            conn.execute("DELETE FROM Backups_Files WHERE id = ?", &[&id])?;
-            Ok(())
-        }).await?;
+        self.server_store
+            .call(move |conn| {
+                conn.execute("DELETE FROM Backups_Files WHERE id = ?", &[&id])?;
+                Ok(())
+            })
+            .await?;
         Ok(())
     }
 
-
     //ERRORS
-     pub async fn get_backup_error(&self, backup_error_id: &str) -> Result<Option<BackupError>> {
+    pub async fn get_backup_error(&self, backup_error_id: &str) -> Result<Option<BackupError>> {
         let backup_error_id = backup_error_id.to_owned();
         let row = self.server_store.call( move |conn| { 
             let mut query = conn.prepare("SELECT id, backup, library, file, date, error FROM Backups_Errors WHERE id = ?")?;
@@ -321,28 +337,34 @@ impl SqliteStore {
     }
 
     pub async fn add_backup_error(&self, error: BackupError) -> Result<()> {
-        self.server_store.call( move |conn| { 
-            conn.execute("INSERT INTO Backups_Errors (id, backup, library, file, date, error)
-            VALUES (?, ?, ? ,?, ?, ?)", params![
-                error.id,
-                error.backup,
-                error.library,
-                error.file,
-                error.date,
-                error.error,
-            ])?;
-            
-            Ok(())
-        }).await?;
+        self.server_store
+            .call(move |conn| {
+                conn.execute(
+                    "INSERT INTO Backups_Errors (id, backup, library, file, date, error)
+            VALUES (?, ?, ? ,?, ?, ?)",
+                    params![
+                        error.id,
+                        error.backup,
+                        error.library,
+                        error.file,
+                        error.date,
+                        error.error,
+                    ],
+                )?;
+
+                Ok(())
+            })
+            .await?;
         Ok(())
     }
 
     pub async fn remove_backup_error(&self, id: String) -> Result<()> {
-        self.server_store.call( move |conn| { 
-            conn.execute("DELETE FROM Backups_Errors WHERE id = ?", &[&id])?;
-            Ok(())
-        }).await?;
+        self.server_store
+            .call(move |conn| {
+                conn.execute("DELETE FROM Backups_Errors WHERE id = ?", &[&id])?;
+                Ok(())
+            })
+            .await?;
         Ok(())
     }
-
 }

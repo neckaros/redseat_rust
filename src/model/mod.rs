@@ -131,6 +131,9 @@ pub struct ModelController {
     pub convert_queue: Arc<RwLock<VecDeque<VideoConvertQueueElement>>>,
     pub convert_current: Arc<RwLock<bool>>,
     pub convert_current_process: Arc<RwLock<Option<JoinHandle<()>>>>,
+    pub plugin_convert_scheduler_running: Arc<RwLock<bool>>,
+    pub plugin_convert_concurrency_limits:
+        Arc<RwLock<HashMap<String, (Option<usize>, std::time::Instant)>>>,
 
     pub backup_processes: Arc<RwLock<Vec<BackupProcessStatus>>>,
 
@@ -146,7 +149,8 @@ pub struct ModelController {
     pub active_streams: Arc<RwLock<HashMap<String, HashSet<String>>>>,
 
     /// Media HLS sessions: key = "library:media:convert_hash"
-    pub media_hls_sessions: Arc<RwLock<HashMap<String, crate::tools::media_hls_session::MediaHlsSession>>>,
+    pub media_hls_sessions:
+        Arc<RwLock<HashMap<String, crate::tools::media_hls_session::MediaHlsSession>>>,
 }
 
 // Constructor
@@ -168,6 +172,8 @@ impl ModelController {
             convert_queue: Arc::new(RwLock::new(VecDeque::new())),
             convert_current: Arc::new(RwLock::new(false)),
             convert_current_process: Arc::new(RwLock::new(None)),
+            plugin_convert_scheduler_running: Arc::new(RwLock::new(false)),
+            plugin_convert_concurrency_limits: Arc::new(RwLock::new(HashMap::new())),
 
             backup_processes: Arc::new(RwLock::new(vec![])),
             sse_tx,
@@ -234,9 +240,13 @@ impl ModelController {
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-                let released = crate::tools::hls_session::cleanup_stale_sessions(&mc_cleanup.hls_sessions).await;
+                let released =
+                    crate::tools::hls_session::cleanup_stale_sessions(&mc_cleanup.hls_sessions)
+                        .await;
                 for (library_id, channel_id) in released {
-                    mc_cleanup.release_stream_slot(&library_id, &channel_id).await;
+                    mc_cleanup
+                        .release_stream_slot(&library_id, &channel_id)
+                        .await;
                 }
             }
         });
@@ -246,9 +256,14 @@ impl ModelController {
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                crate::tools::media_hls_session::cleanup_stale_sessions(&mc_media_cleanup.media_hls_sessions).await;
+                crate::tools::media_hls_session::cleanup_stale_sessions(
+                    &mc_media_cleanup.media_hls_sessions,
+                )
+                .await;
             }
         });
+
+        mc.start_plugin_convert_scheduler();
 
         Ok(mc)
     }
@@ -303,13 +318,21 @@ impl ModelController {
     }
 
     /// Get all (media_id, source) pairs for a library (used by encryption migration task)
-    pub async fn get_all_media_id_sources(&self, library_id: &str) -> RsResult<Vec<(String, String)>> {
+    pub async fn get_all_media_id_sources(
+        &self,
+        library_id: &str,
+    ) -> RsResult<Vec<(String, String)>> {
         let store = self.store.get_library_store(library_id)?;
         Ok(store.get_all_media_id_sources().await?)
     }
 
     /// Update the source reference for a media record
-    pub async fn update_media_source(&self, library_id: &str, media_id: &str, new_source: &str) -> RsResult<()> {
+    pub async fn update_media_source(
+        &self,
+        library_id: &str,
+        media_id: &str,
+        new_source: &str,
+    ) -> RsResult<()> {
         let store = self.store.get_library_store(library_id)?;
         Ok(store.update_media_source(media_id, new_source).await?)
     }
@@ -462,7 +485,8 @@ impl ModelController {
                             .await?;
                         // Decrypt the original image before resizing if library is encrypted
                         let stream = if let Some(key) = &encryption_key {
-                            let decrypted: AsyncReadPinBox = Box::pin(CtrDecryptReader::new(reader.stream, key));
+                            let decrypted: AsyncReadPinBox =
+                                Box::pin(CtrDecryptReader::new(reader.stream, key));
                             decrypted
                         } else {
                             reader.stream
@@ -572,7 +596,8 @@ impl ModelController {
         let (_, writer) = m.get_file_write_stream(&source_filepath).await?;
         tokio::pin!(reader);
         if let Some(key) = self.get_library_encryption_key(library_id).await {
-            let mut enc_writer = CtrEncryptWriter::new(writer, &key).map_err(|e| Error::Other(e.to_string()))?;
+            let mut enc_writer =
+                CtrEncryptWriter::new(writer, &key).map_err(|e| Error::Other(e.to_string()))?;
             copy(&mut reader, &mut enc_writer).await?;
             tokio::io::AsyncWriteExt::shutdown(&mut enc_writer).await?;
         } else {

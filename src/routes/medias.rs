@@ -35,7 +35,10 @@ use axum::{
 use axum_extra::extract::Query;
 use futures::TryStreamExt;
 use hyper::{header::ACCEPT_RANGES, StatusCode};
-use rs_plugin_common_interfaces::{request::{RsGroupDownload, RsRequest}, video::{RsVideoTranscodeStatus, VideoConvertRequest}};
+use rs_plugin_common_interfaces::{
+    request::{RsGroupDownload, RsRequest},
+    video::{RsVideoTranscodeStatus, VideoConvertRequest},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -556,7 +559,10 @@ async fn handler_multi_delete(
         medias: removed
             .iter()
             .map(|m| MediaWithAction {
-                media: ItemWithRelations { item: m.clone(), relations: None },
+                media: ItemWithRelations {
+                    item: m.clone(),
+                    relations: None,
+                },
                 action: ElementAction::Deleted,
             })
             .collect(),
@@ -593,7 +599,10 @@ async fn handler_multi_patch(
         medias: updated
             .iter()
             .map(|m| MediaWithAction {
-                media: ItemWithRelations { item: m.clone(), relations: None },
+                media: ItemWithRelations {
+                    item: m.clone(),
+                    relations: None,
+                },
                 action: ElementAction::Updated,
             })
             .collect(),
@@ -619,10 +628,7 @@ async fn handler_download(
 
         Ok(Json(json!({"downloading": true})))
     } else {
-        match mc
-            .download_library_url(&library_id, download, &user)
-            .await
-        {
+        match mc.download_library_url(&library_id, download, &user).await {
             Ok(body) => Ok(Json(json!(body))),
             Err(crate::Error::Model(crate::model::error::Error::NeedFileSelection(request))) => {
                 Ok(Json(json!({
@@ -653,10 +659,11 @@ async fn handler_add_request(
         group_mime,
         ..Default::default()
     };
-    let added = mc
-        .download_library_url(&library_id, group, &user)
-        .await?;
-    let added = added.into_iter().next().ok_or(Error::Error("No media added".to_string()))?;
+    let added = mc.download_library_url(&library_id, group, &user).await?;
+    let added = added
+        .into_iter()
+        .next()
+        .ok_or(Error::Error("No media added".to_string()))?;
 
     Ok(Json(json!(added)))
 }
@@ -760,7 +767,10 @@ struct MediaHlsQuery {
 /// Look up a media HLS session by exact key or by library:media prefix.
 /// Touches the session to reset inactivity timeout.
 fn find_media_hls_session<'a>(
-    sessions: &'a std::collections::HashMap<String, crate::tools::media_hls_session::MediaHlsSession>,
+    sessions: &'a std::collections::HashMap<
+        String,
+        crate::tools::media_hls_session::MediaHlsSession,
+    >,
     query_key: &Option<String>,
     library_id: &str,
     media_id: &str,
@@ -798,8 +808,8 @@ async fn handler_media_hls_playlist(
     State(mc): State<ModelController>,
     Query(query): Query<MediaHlsQuery>,
 ) -> Result<Response> {
-    use http::header::{CACHE_CONTROL, CONTENT_TYPE};
     use crate::tools::media_hls_session::MEDIA_PLAYLIST_READY_TIMEOUT_MS;
+    use http::header::{CACHE_CONTROL, CONTENT_TYPE};
 
     // Find the session
     let (playlist_path, key) = {

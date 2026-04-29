@@ -149,7 +149,7 @@ interface ConvertProgress {
   convertedId?: string | null;
   done: boolean;
   percent: number;
-  status: string;
+  status: string; // queued | pending | downloading | processing | completed | failed | canceled
   remainingSecondes?: number | null;
   request?: VideoConvertRequest | null;
 }

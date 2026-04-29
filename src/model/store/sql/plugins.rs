@@ -1,25 +1,37 @@
 use std::str::FromStr;
 
-use crate::{domain::plugin::{Plugin, PluginForInsert, PluginForUpdate, PluginSettings}, model::{error::Error, plugins::PluginQuery, store::{from_comma_separated, to_comma_separated, to_comma_separated_optional, SqliteStore}}, plugins::sources::error::SourcesError, tools::array_tools::replace_add_remove_from_array};
+use crate::{
+    domain::plugin::{Plugin, PluginForInsert, PluginForUpdate, PluginSettings},
+    model::{
+        error::Error,
+        plugins::PluginQuery,
+        store::{
+            from_comma_separated, to_comma_separated, to_comma_separated_optional, SqliteStore,
+        },
+    },
+    plugins::sources::error::SourcesError,
+    tools::array_tools::replace_add_remove_from_array,
+};
 
 use super::{QueryBuilder, QueryWhereType, Result};
-use rusqlite::{params, params_from_iter, types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef}, OptionalExtension, Row, ToSql};
+use rusqlite::{
+    params, params_from_iter,
+    types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef},
+    OptionalExtension, Row, ToSql,
+};
 
-use std::collections::HashMap;
 use rs_plugin_common_interfaces::{CustomParam, CustomParamTypes, PluginType};
-
+use std::collections::HashMap;
 
 // endregion: ---
-
-
 
 // region:    --- plugin Settings
 
 impl FromSql for PluginSettings {
     fn column_result(value: ValueRef) -> FromSqlResult<Self> {
         String::column_result(value).and_then(|as_string| {
-
-            let r = serde_json::from_str::<PluginSettings>(&as_string).map_err(|_| FromSqlError::InvalidType)?;
+            let r = serde_json::from_str::<PluginSettings>(&as_string)
+                .map_err(|_| FromSqlError::InvalidType)?;
 
             Ok(r)
         })
@@ -28,7 +40,8 @@ impl FromSql for PluginSettings {
 
 impl ToSql for PluginSettings {
     fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
-        let r = serde_json::to_string(&self).map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?;
+        let r = serde_json::to_string(&self)
+            .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?;
         Ok(ToSqlOutput::from(r))
     }
 }
@@ -39,9 +52,8 @@ fn params_to_json(params: &[CustomParam]) -> Option<String> {
     if params.is_empty() {
         None
     } else {
-        let map: HashMap<&str, &CustomParamTypes> = params.iter()
-            .map(|p| (p.name.as_str(), &p.param))
-            .collect();
+        let map: HashMap<&str, &CustomParamTypes> =
+            params.iter().map(|p| (p.name.as_str(), &p.param)).collect();
         serde_json::to_string(&map).ok()
     }
 }
@@ -49,12 +61,16 @@ fn params_to_json(params: &[CustomParam]) -> Option<String> {
 /// Deserialize params from DB: reconstruct partial CustomParam (name + value only)
 fn params_from_json(json: Option<String>) -> Vec<CustomParam> {
     json.and_then(|s| serde_json::from_str::<HashMap<String, CustomParamTypes>>(&s).ok())
-        .map(|map| map.into_iter().map(|(name, param)| CustomParam {
-            name,
-            param,
-            description: None,
-            required: false,
-        }).collect())
+        .map(|map| {
+            map.into_iter()
+                .map(|(name, param)| CustomParam {
+                    name,
+                    param,
+                    description: None,
+                    required: false,
+                })
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -64,21 +80,20 @@ fn params_to_json_optional(params: Option<Vec<CustomParam>>) -> Option<String> {
 }
 
 impl SqliteStore {
-
     fn row_to_plugin(row: &Row) -> rusqlite::Result<Plugin> {
         Ok(Plugin {
             id: row.get(0)?,
             name: row.get(1)?,
-            path:  row.get(2)?,
-            capabilities:  from_comma_separated(row.get(3)?),
-            settings:  row.get(4)?,
+            path: row.get(2)?,
+            capabilities: from_comma_separated(row.get(3)?),
+            settings: row.get(4)?,
             libraries: from_comma_separated(row.get(5)?),
-            credential:  row.get(6)?,
-            credential_type:  row.get(7)?,
-            description:  row.get(8)?,
-            version:  row.get(9)?,
-            repo:  row.get(10)?,
-            repov:  row.get(11)?,
+            credential: row.get(6)?,
+            credential_type: row.get(7)?,
+            description: row.get(8)?,
+            version: row.get(9)?,
+            repo: row.get(10)?,
+            repov: row.get(11)?,
             params: params_from_json(row.get(12)?),
             installed: true,
             ..Default::default()
@@ -86,7 +101,7 @@ impl SqliteStore {
     }
     pub async fn get_plugin(&self, plugin_id: &str) -> Result<Option<Plugin>> {
         let plugin_id = plugin_id.to_string();
-            let row = self.server_store.call( move |conn| { 
+        let row = self.server_store.call( move |conn| { 
                 let row = conn.query_row(
                 "SELECT id, name, path, kind, settings, libraries, credential, credtype, desc, version, repo, repov, params FROM plugins WHERE id = ?1",
                 [&plugin_id],
@@ -97,7 +112,7 @@ impl SqliteStore {
         }).await?;
         Ok(row)
     }
-    
+
     pub async fn get_plugins(&self, query: PluginQuery) -> Result<Vec<Plugin>> {
         let row = self.server_store.call( move |conn| { 
 
@@ -123,10 +138,12 @@ impl SqliteStore {
     }
 
     pub async fn remove_plugin(&self, plugin_id: String) -> Result<()> {
-        self.server_store.call( move |conn| { 
-            conn.execute("DELETE FROM plugins WHERE id = ?", [&plugin_id])?;
-            Ok(())
-        }).await?;
+        self.server_store
+            .call(move |conn| {
+                conn.execute("DELETE FROM plugins WHERE id = ?", [&plugin_id])?;
+                Ok(())
+            })
+            .await?;
         Ok(())
     }
 
@@ -154,50 +171,60 @@ impl SqliteStore {
         }).await?;
         Ok(())
     }
-    
+
     pub async fn update_plugin(&self, plugin_id: &str, update: PluginForUpdate) -> Result<()> {
         let plugin_id = plugin_id.to_string();
-        let existing = self.get_plugin(&plugin_id).await?.ok_or_else( || SourcesError::UnableToFindPlugin(plugin_id.to_string(), "update_media".to_string()))?;
-        self.server_store.call( move |conn| { 
-            let mut where_query = QueryBuilder::new();
-            
-            
-            where_query.add_update(&update.name, "name");
-            where_query.add_update(&update.path, "path");
-            where_query.add_update(&update.description, "desc");
-            where_query.add_update(&update.version, "version");
-            where_query.add_update(&update.credential_type, "credtype");
-            where_query.add_update(&update.settings, "settings");
-            where_query.add_update(&update.credential, "credential");
-            where_query.add_update(&update.repo, "repo");
-            where_query.add_update(&update.repov, "repov");
-            
-            let capa = to_comma_separated_optional(update.capabilities);
-            where_query.add_update(&capa, "kind");
+        let existing = self.get_plugin(&plugin_id).await?.ok_or_else(|| {
+            SourcesError::UnableToFindPlugin(plugin_id.to_string(), "update_media".to_string())
+        })?;
+        self.server_store
+            .call(move |conn| {
+                let mut where_query = QueryBuilder::new();
 
-            let params_json = params_to_json_optional(update.params);
-            where_query.add_update(&params_json, "params");
+                where_query.add_update(&update.name, "name");
+                where_query.add_update(&update.path, "path");
+                where_query.add_update(&update.description, "desc");
+                where_query.add_update(&update.version, "version");
+                where_query.add_update(&update.credential_type, "credtype");
+                where_query.add_update(&update.settings, "settings");
+                where_query.add_update(&update.credential, "credential");
+                where_query.add_update(&update.repo, "repo");
+                where_query.add_update(&update.repov, "repov");
 
-            where_query.add_update(&update.credential, "credential");
+                let capa = to_comma_separated_optional(update.capabilities);
+                where_query.add_update(&capa, "kind");
 
-            if update.remove_credential {
-                where_query.add_nullify("credential");
-            }
+                let params_json = params_to_json_optional(update.params);
+                where_query.add_update(&params_json, "params");
 
-            //println!("{:?}", update);
-            let libraries = replace_add_remove_from_array(Some(existing.libraries.clone()), update.libraries, update.add_libraries, update.remove_libraries);
-            let v = to_comma_separated_optional(libraries);
-            where_query.add_update(&v, "libraries");
+                where_query.add_update(&update.credential, "credential");
 
-            where_query.add_where(QueryWhereType::Equal("id", &plugin_id));
-            if !where_query.columns_update.is_empty() {
-                let update_sql = format!("UPDATE plugins SET {} {}", where_query.format_update(), where_query.format());
-                conn.execute(&update_sql, where_query.values())?;
-            }
-            Ok(())
-        }).await?;
+                if update.remove_credential {
+                    where_query.add_nullify("credential");
+                }
+
+                //println!("{:?}", update);
+                let libraries = replace_add_remove_from_array(
+                    Some(existing.libraries.clone()),
+                    update.libraries,
+                    update.add_libraries,
+                    update.remove_libraries,
+                );
+                let v = to_comma_separated_optional(libraries);
+                where_query.add_update(&v, "libraries");
+
+                where_query.add_where(QueryWhereType::Equal("id", &plugin_id));
+                if !where_query.columns_update.is_empty() {
+                    let update_sql = format!(
+                        "UPDATE plugins SET {} {}",
+                        where_query.format_update(),
+                        where_query.format()
+                    );
+                    conn.execute(&update_sql, where_query.values())?;
+                }
+                Ok(())
+            })
+            .await?;
         Ok(())
     }
-
-    
-    }
+}

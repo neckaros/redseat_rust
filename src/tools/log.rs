@@ -8,7 +8,7 @@ pub enum LogServiceType {
     Plugin,
     Scheduler,
     Source,
-    Other
+    Other,
 }
 impl LogServiceType {
     fn as_str(&self) -> &'static str {
@@ -20,19 +20,34 @@ impl LogServiceType {
             LogServiceType::Plugin => "PLUGIN",
             LogServiceType::Source => "SOURCE",
             LogServiceType::Scheduler => "SCHEDULER",
-            LogServiceType::Other => "OTHER"
+            LogServiceType::Other => "OTHER",
         }
     }
 }
 
 pub fn log_info(service: LogServiceType, message: String) {
-    println!("{} - {} - {}", Local::now().format("%Y-%m-%d %H:%M:%S%.3f"), service.as_str(), message)
+    println!(
+        "{} - {} - {}",
+        Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+        service.as_str(),
+        message
+    )
 }
 
 pub fn log_error(service: LogServiceType, message: String) {
-    println!("{} - ERROR - {} - {}", Local::now().format("%Y-%m-%d %H:%M:%S%.3f"), service.as_str(), message)
+    println!(
+        "{} - ERROR - {} - {}",
+        Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+        service.as_str(),
+        message
+    )
 }
 
 pub fn log_warn(service: LogServiceType, message: String) {
-    println!("{} - WARN - {} - {}", Local::now().format("%Y-%m-%d %H:%M:%S%.3f"), service.as_str(), message)
+    println!(
+        "{} - WARN - {} - {}",
+        Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+        service.as_str(),
+        message
+    )
 }

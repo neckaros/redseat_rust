@@ -1,9 +1,16 @@
-use rusqlite::{params, Row};
 use super::{Result, SqliteLibraryStore};
-use crate::{domain::{deleted::RsDeleted, media_progress::RsMediaProgress, media_rating::RsMediaRating}, model::{media_progresses::MediaProgressesQuery, store::{sql::{OrderBuilder, RsQueryBuilder, SqlWhereType}, SqliteStore}}};
+use crate::{
+    domain::{deleted::RsDeleted, media_progress::RsMediaProgress, media_rating::RsMediaRating},
+    model::{
+        media_progresses::MediaProgressesQuery,
+        store::{
+            sql::{OrderBuilder, RsQueryBuilder, SqlWhereType},
+            SqliteStore,
+        },
+    },
+};
 use rs_plugin_common_interfaces::domain::element_type::element_type_rusqlite;
-
-
+use rusqlite::{params, Row};
 
 impl SqliteLibraryStore {
     fn row_to_media_progress(row: &Row) -> rusqlite::Result<RsMediaProgress> {
@@ -11,48 +18,63 @@ impl SqliteLibraryStore {
             media_ref: row.get(0)?,
             user_ref: row.get(1)?,
             progress: row.get(2)?,
-            modified: row.get(3)?
-            
+            modified: row.get(3)?,
         })
     }
 
+    pub async fn get_medias_progresses(
+        &self,
+        query: MediaProgressesQuery,
+        user_ref: String,
+    ) -> Result<Vec<RsMediaProgress>> {
+        let row = self
+            .connection
+            .call(move |conn| {
+                let mut where_query = RsQueryBuilder::new();
+                if let Some(q) = query.after {
+                    where_query.add_where(SqlWhereType::After("modified".to_owned(), Box::new(q)));
+                }
+                if let Some(q) = query.media {
+                    where_query.add_where(SqlWhereType::Equal("media_ref".to_owned(), Box::new(q)));
+                }
+                where_query.add_where(SqlWhereType::Equal(
+                    "user_ref".to_owned(),
+                    Box::new(user_ref),
+                ));
+                where_query.add_oder(OrderBuilder::new("modified".to_owned(), query.order));
 
-    pub async fn get_medias_progresses(&self, query: MediaProgressesQuery, user_ref: String) -> Result<Vec<RsMediaProgress>> {
-        let row = self.connection.call( move |conn| { 
-            let mut where_query = RsQueryBuilder::new();
-            if let Some(q) = query.after {
-                where_query.add_where(SqlWhereType::After("modified".to_owned(), Box::new(q)));
-            }
-            if let Some(q) = query.media {
-                where_query.add_where(SqlWhereType::Equal("media_ref".to_owned(), Box::new(q)));
-            }
-            where_query.add_where(SqlWhereType::Equal("user_ref".to_owned(), Box::new(user_ref)));
-            where_query.add_oder(OrderBuilder::new("modified".to_owned(), query.order));
+                let mut query = conn.prepare(&format!(
+                    "SELECT media_ref, user_ref, progress, modified FROM media_progress {}{}",
+                    where_query.format(),
+                    where_query.format_order()
+                ))?;
 
-            let mut query = conn.prepare(&format!("SELECT media_ref, user_ref, progress, modified FROM media_progress {}{}", where_query.format(), where_query.format_order()))?;
-
-            let rows = query.query_map(
-            where_query.values(), Self::row_to_media_progress,
-            )?;
-            let backups:Vec<RsMediaProgress> = rows.collect::<std::result::Result<Vec<RsMediaProgress>, rusqlite::Error>>()?; 
-            Ok(backups)
-        }).await?;
+                let rows = query.query_map(where_query.values(), Self::row_to_media_progress)?;
+                let backups: Vec<RsMediaProgress> =
+                    rows.collect::<std::result::Result<Vec<RsMediaProgress>, rusqlite::Error>>()?;
+                Ok(backups)
+            })
+            .await?;
         Ok(row)
     }
 
-    pub async fn set_media_progress(&self, media_ref: String, user_ref: String, progress: u64) -> Result<()> {
-        self.connection.call( move |conn| { 
+    pub async fn set_media_progress(
+        &self,
+        media_ref: String,
+        user_ref: String,
+        progress: u64,
+    ) -> Result<()> {
+        self.connection
+            .call(move |conn| {
+                conn.execute(
+                    "INSERT OR REPLACE INTO media_progress (media_ref, user_ref, progress)
+            VALUES (?, ? ,?)",
+                    params![media_ref, user_ref, progress],
+                )?;
 
-            conn.execute("INSERT OR REPLACE INTO media_progress (media_ref, user_ref, progress)
-            VALUES (?, ? ,?)", params![
-                media_ref,
-                user_ref,
-                progress
-            ])?;
-
-            Ok(())
-        }).await?;
+                Ok(())
+            })
+            .await?;
         Ok(())
     }
-
 }

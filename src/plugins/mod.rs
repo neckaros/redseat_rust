@@ -1,4 +1,8 @@
-use std::{fs::read_dir, path::PathBuf, sync::{Arc, Mutex}};
+use std::{
+    fs::read_dir,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 use extism::{convert::Json, Manifest, PluginBuilder, Wasm};
 use rs_plugin_common_interfaces::{PluginInformation, PluginType, RsRequest};
@@ -7,21 +11,33 @@ use extism::Plugin as ExtismPlugin;
 use sources::plugin_provider::PluginProvider;
 use tokio::{fs::File, io::AsyncReadExt, sync::RwLock};
 
-use crate::{domain::{backup::Backup, library::ServerLibrary, plugin::{self, PluginWasm}}, error::RsResult, model::ModelController, server::get_server_folder_path_array, tools::log::{log_error, log_info, LogServiceType}, Error, Result};
+use crate::{
+    domain::{
+        backup::Backup,
+        library::ServerLibrary,
+        plugin::{self, PluginWasm},
+    },
+    error::RsResult,
+    model::ModelController,
+    server::get_server_folder_path_array,
+    tools::log::{log_error, log_info, LogServiceType},
+    Error, Result,
+};
 
-use self::sources::{error::SourcesResult, path_provider::PathProvider, virtual_provider::VirtualProvider, Source};
+use self::sources::{
+    error::SourcesResult, path_provider::PathProvider, virtual_provider::VirtualProvider, Source,
+};
 
-pub mod sources;
 pub mod error;
 pub mod medias;
+pub mod sources;
 pub mod token;
 
 pub use url::PluginTarget;
 
 pub struct PluginManager {
-    pub plugins: RwLock<Vec<PluginWasm>>
+    pub plugins: RwLock<Vec<PluginWasm>>,
 }
-
 
 pub async fn get_plugin_fodler() -> crate::Result<PathBuf> {
     get_server_folder_path_array(vec!["plugins"]).await
@@ -29,7 +45,10 @@ pub async fn get_plugin_fodler() -> crate::Result<PathBuf> {
 
 pub async fn list_plugins() -> crate::Result<impl Iterator<Item = PluginWasm>> {
     let folder = get_plugin_fodler().await?;
-    log_info(crate::tools::log::LogServiceType::Plugin, format!("Loaded plugins from local path -> {:?}", folder));
+    log_info(
+        crate::tools::log::LogServiceType::Plugin,
+        format!("Loaded plugins from local path -> {:?}", folder),
+    );
     Ok(std::fs::read_dir(folder)?
         // Filter out all those directory entries which couldn't be read
         .filter_map(|res| res.ok())
@@ -54,33 +73,49 @@ pub async fn list_plugins() -> crate::Result<impl Iterator<Item = PluginWasm>> {
                 Ok(mut plugin) => {
                     let infos = plugin.call::<&str, Json<PluginInformation>>("infos", "");
                     if let Ok(Json(res)) = infos {
-                                    if let Some(filename) = path.file_name() {
-                                        log_info(crate::tools::log::LogServiceType::Plugin, format!("Loaded plugin {} ({:?}) -> {:?}", res.name, res.capabilities, path));
-                                        let p = PluginWasm {
-                                            filename: filename.to_str().unwrap().to_string(),
-                                            path,
-                                            infos: res,
-                                            plugin: Arc::new(Mutex::new(plugin)),
-                                        };
-                                        Some(p)
-                                    } else {
-                                        log_error(crate::tools::log::LogServiceType::Other, format!("Error getting plugin informations: {:?}", &path));
-                                        None
-                                    }
-                                } else {
-                                    log_error(crate::tools::log::LogServiceType::Other, format!("Error getting plugin informations: {:?} {:?}", &path, infos.err()));
-                                    None
-                                }
-                }
-                Err(err) => {
-                            log_error(crate::tools::log::LogServiceType::Other, format!("Error loading plugin: {:?} {:?}", &path, err));
+                        if let Some(filename) = path.file_name() {
+                            log_info(
+                                crate::tools::log::LogServiceType::Plugin,
+                                format!(
+                                    "Loaded plugin {} ({:?}) -> {:?}",
+                                    res.name, res.capabilities, path
+                                ),
+                            );
+                            let p = PluginWasm {
+                                filename: filename.to_str().unwrap().to_string(),
+                                path,
+                                infos: res,
+                                plugin: Arc::new(Mutex::new(plugin)),
+                            };
+                            Some(p)
+                        } else {
+                            log_error(
+                                crate::tools::log::LogServiceType::Other,
+                                format!("Error getting plugin informations: {:?}", &path),
+                            );
                             None
                         }
+                    } else {
+                        log_error(
+                            crate::tools::log::LogServiceType::Other,
+                            format!(
+                                "Error getting plugin informations: {:?} {:?}",
+                                &path,
+                                infos.err()
+                            ),
+                        );
+                        None
+                    }
+                }
+                Err(err) => {
+                    log_error(
+                        crate::tools::log::LogServiceType::Other,
+                        format!("Error loading plugin: {:?} {:?}", &path, err),
+                    );
+                    None
+                }
             }
-                
         }))
-
-       
 }
 
 pub async fn list_other_plugins() -> crate::Result<Vec<PluginInformation>> {
@@ -98,24 +133,19 @@ pub async fn list_other_plugins() -> crate::Result<Vec<PluginInformation>> {
                 None
             }
         });
-    
+
     let mut plugins = vec![];
     for path in files.into_iter() {
         let mut file = File::open(path).await?;
-  
+
         let mut manifest_string = String::new();
         file.read_to_string(&mut manifest_string).await?;
         let info: PluginInformation = serde_json::from_str(&manifest_string)?;
         plugins.push(info);
-        
-      
     }
 
     Ok(plugins)
-
-       
 }
-
 
 /*pub fn parse_url_plugin(url: String, plugin: PluginInformation) {
     let manifest = Manifest::new([plugin.]);
@@ -125,29 +155,36 @@ pub async fn list_other_plugins() -> crate::Result<Vec<PluginInformation>> {
         let Json(res) = plugin.call::<&str, Json<PluginInformation>>("infos", "")?;
 }*/
 
-pub mod url;
 pub mod provider;
+pub mod url;
 
 impl PluginManager {
     pub async fn new() -> Result<Self> {
-        Ok(
-            PluginManager { plugins: RwLock::new(vec![]) }
-        )
+        Ok(PluginManager {
+            plugins: RwLock::new(vec![]),
+        })
     }
 
     pub async fn reload(&self) -> Result<()> {
         let mut plugins: Vec<PluginWasm> = list_plugins().await?.collect();
-        log_info(LogServiceType::Plugin, format!("Reloaded {} plugins", plugins.len()));
+        log_info(
+            LogServiceType::Plugin,
+            format!("Reloaded {} plugins", plugins.len()),
+        );
         self.plugins.write().await.clear();
         self.plugins.write().await.append(&mut plugins);
         Ok(())
     }
 
-
     pub async fn load_wasm_plugin(&self, filename: &str) -> RsResult<PluginInformation> {
         let mut folder = get_plugin_fodler().await?;
         folder.push(filename);
-        let existing = self.plugins.read().await.iter().position(|e| e.path == folder);
+        let existing = self
+            .plugins
+            .read()
+            .await
+            .iter()
+            .position(|e| e.path == folder);
         if let Some(existing) = existing {
             self.plugins.write().await.swap_remove(existing);
         }
@@ -156,11 +193,17 @@ impl PluginManager {
             .with_wasi(true)
             .with_http_response_headers(true)
             .build()?;
-    
+
         let Json(infos) = plugin.call::<&str, Json<PluginInformation>>("infos", "")?;
-       
+
         let filename = folder.file_name().unwrap().to_str().unwrap();
-        log_info(crate::tools::log::LogServiceType::Plugin, format!("Loaded wasm plugin {} ({:?}) -> {:?}", infos.name, infos.capabilities, folder));
+        log_info(
+            crate::tools::log::LogServiceType::Plugin,
+            format!(
+                "Loaded wasm plugin {} ({:?}) -> {:?}",
+                infos.name, infos.capabilities, folder
+            ),
+        );
         let p = PluginWasm {
             filename: filename.to_string(),
             path: folder,
@@ -171,7 +214,11 @@ impl PluginManager {
         Ok(infos)
     }
 
-    pub async fn source_for_library(&self, library: ServerLibrary, controller: ModelController) -> RsResult<Box<dyn Source>> {
+    pub async fn source_for_library(
+        &self,
+        library: ServerLibrary,
+        controller: ModelController,
+    ) -> RsResult<Box<dyn Source>> {
         let source: Box<dyn Source> = if library.source == "PathProvider" {
             let source = PathProvider::new(library, controller).await?;
             Box::new(source)
@@ -185,7 +232,11 @@ impl PluginManager {
         Ok(source)
     }
 
-    pub async fn provider_for_backup(&self, backup: Backup, controller: ModelController) -> RsResult<Box<dyn Source>> {
+    pub async fn provider_for_backup(
+        &self,
+        backup: Backup,
+        controller: ModelController,
+    ) -> RsResult<Box<dyn Source>> {
         let source: Box<dyn Source> = if backup.source == "PathProvider" {
             let source = PathProvider::new_from_backup(backup, controller).await?;
             Box::new(source)
@@ -198,9 +249,4 @@ impl PluginManager {
         };
         Ok(source)
     }
-
-
-
-
-
 }

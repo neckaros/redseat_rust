@@ -1,14 +1,24 @@
 use nanoid::nanoid;
-use rusqlite::{params, params_from_iter, OptionalExtension, Row};
 use rs_plugin_common_interfaces::domain::other_ids::OtherIds;
+use rusqlite::{params, params_from_iter, OptionalExtension, Row};
 
-use crate::{domain::tag::{Tag, TagForUpdate}, model::{store::{from_pipe_separated_optional, sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder}, to_pipe_separated_optional}, tags::{TagForAdd, TagForInsert, TagQuery}}, plugins::sources::error::SourcesError, tools::array_tools::replace_add_remove_from_array};
 use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
-
+use crate::{
+    domain::tag::{Tag, TagForUpdate},
+    model::{
+        store::{
+            from_pipe_separated_optional,
+            sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder},
+            to_pipe_separated_optional,
+        },
+        tags::{TagForAdd, TagForInsert, TagQuery},
+    },
+    plugins::sources::error::SourcesError,
+    tools::array_tools::replace_add_remove_from_array,
+};
 
 impl SqliteLibraryStore {
-  
     fn row_to_tag(row: &Row) -> rusqlite::Result<Tag> {
         Ok(Tag {
             id: row.get(0)?,
@@ -100,7 +110,13 @@ impl SqliteLibraryStore {
 
     pub async fn update_tag(&self, tag_id: &str, update: TagForUpdate) -> Result<()> {
         let id = tag_id.to_string();
-        let existing_tag = self.get_tag(&tag_id).await?.ok_or_else(|| SourcesError::UnableToFindTag("store".to_string() ,tag_id.to_string(), "update_serie".to_string()))?;
+        let existing_tag = self.get_tag(&tag_id).await?.ok_or_else(|| {
+            SourcesError::UnableToFindTag(
+                "store".to_string(),
+                tag_id.to_string(),
+                "update_serie".to_string(),
+            )
+        })?;
         self.connection.call( move |conn| { 
             let tx = conn.transaction()?;
             let mut where_query = QueryBuilder::new();
@@ -162,8 +178,6 @@ impl SqliteLibraryStore {
         Ok(())
     }
 
-    
-
     pub async fn add_tag(&self, tag: TagForInsert) -> Result<()> {
         self.connection.call( move |conn| { 
             let new_path = if let Some(parent) = &tag.parent {
@@ -193,25 +207,50 @@ impl SqliteLibraryStore {
         Ok(())
     }
 
-    pub async fn get_or_create_path(&self, mut path: Vec<&str>, template: TagForUpdate) -> Result<Tag> {
+    pub async fn get_or_create_path(
+        &self,
+        mut path: Vec<&str>,
+        template: TagForUpdate,
+    ) -> Result<Tag> {
         let path_string = path.join("/");
-        let tag_by_path = self.get_tags(TagQuery::new_with_path(path_string)).await?.into_iter().nth(0);
+        let tag_by_path = self
+            .get_tags(TagQuery::new_with_path(path_string))
+            .await?
+            .into_iter()
+            .nth(0);
         if let Some(tag) = tag_by_path {
             return Ok(tag);
         }
         let mut parent: Option<String> = None;
 
-        let last_element = path.pop().ok_or(Error::ServiceError("Empty path".into(), None))?;
+        let last_element = path
+            .pop()
+            .ok_or(Error::ServiceError("Empty path".into(), None))?;
 
         for element in path {
             let previous_parent = parent.clone();
 
-            let tag_by_name_and_parent = self.get_tags( TagQuery::new_with_name_and_parent(element, previous_parent.clone())).await?.into_iter().nth(0);
+            let tag_by_name_and_parent = self
+                .get_tags(TagQuery::new_with_name_and_parent(
+                    element,
+                    previous_parent.clone(),
+                ))
+                .await?
+                .into_iter()
+                .nth(0);
             parent = if let Some(parent) = tag_by_name_and_parent {
                 Some(parent.id.clone())
             } else {
                 let id = nanoid!();
-                self.add_tag(TagForInsert {id: id.clone(), name: element.to_string(), parent: previous_parent, generated: template.generated.unwrap_or(false), alt: template.alt.clone(), ..Default::default() } ).await?;
+                self.add_tag(TagForInsert {
+                    id: id.clone(),
+                    name: element.to_string(),
+                    parent: previous_parent,
+                    generated: template.generated.unwrap_or(false),
+                    alt: template.alt.clone(),
+                    ..Default::default()
+                })
+                .await?;
                 Some(id)
             }
         }
@@ -220,16 +259,34 @@ impl SqliteLibraryStore {
         all_names.insert(0, last_element.to_string());
 
         for name in all_names {
-            let tag_by_name_and_parent = self.get_tags(TagQuery::new_with_name_and_parent(&name, parent.as_ref().and_then(|t| Some(t.clone())))).await?.into_iter().nth(0);
+            let tag_by_name_and_parent = self
+                .get_tags(TagQuery::new_with_name_and_parent(
+                    &name,
+                    parent.as_ref().and_then(|t| Some(t.clone())),
+                ))
+                .await?
+                .into_iter()
+                .nth(0);
             if let Some(tag) = tag_by_name_and_parent {
                 return Ok(tag);
             }
         }
         let new_tag_id = nanoid!();
-        self.add_tag(TagForInsert { id: new_tag_id.clone(), name: last_element.to_string(), parent: parent.and_then(|t| Some(t.clone())), generated: template.generated.unwrap_or(false), alt: template.alt.clone(), ..Default::default() }).await?;
-        let result_tag = self.get_tag(&new_tag_id).await?.ok_or(Error::TagNotFound(new_tag_id.clone()))?;
+        self.add_tag(TagForInsert {
+            id: new_tag_id.clone(),
+            name: last_element.to_string(),
+            parent: parent.and_then(|t| Some(t.clone())),
+            generated: template.generated.unwrap_or(false),
+            alt: template.alt.clone(),
+            ..Default::default()
+        })
+        .await?;
+        let result_tag = self
+            .get_tag(&new_tag_id)
+            .await?
+            .ok_or(Error::TagNotFound(new_tag_id.clone()))?;
         Ok(result_tag)
-	}
+    }
 
     pub async fn remove_tag(&self, tag_id: String) -> Result<()> {
         self.connection.call( move |conn| { 

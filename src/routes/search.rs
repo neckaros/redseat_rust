@@ -60,7 +60,11 @@ async fn handler_search_global(
 
     let body: Vec<SearchResultGroup> = groups
         .into_iter()
-        .map(|(source_id, source_name, data)| SearchResultGroup { source_id, source_name, data })
+        .map(|(source_id, source_name, data)| SearchResultGroup {
+            source_id,
+            source_name,
+            data,
+        })
         .collect();
 
     Ok(Json(json!(body)))

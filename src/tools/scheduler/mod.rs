@@ -1,28 +1,39 @@
-use std::{collections::{HashMap, HashSet}, pin::Pin, sync::Arc};
 use crate::{error::RsResult, model::ModelController};
 use axum::async_trait;
 use serde::{Deserialize, Serialize};
+use std::{
+    collections::{HashMap, HashSet},
+    pin::Pin,
+    sync::Arc,
+};
 use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
-use self::{ip::RefreshIpTask, iptv_refresh::IptvRefreshTask, refresh::RefreshTask, series::SerieTask, face_recognition::FaceRecognitionTask, request_progress::RequestProgressTask, encrypt_library::EncryptLibraryTask};
+use self::{
+    encrypt_library::EncryptLibraryTask, face_recognition::FaceRecognitionTask, ip::RefreshIpTask,
+    iptv_refresh::IptvRefreshTask, refresh::RefreshTask, request_progress::RequestProgressTask,
+    series::SerieTask,
+};
 
-use super::{get_time, log::{log_error, log_info}};
+use super::{
+    get_time,
+    log::{log_error, log_info},
+};
 
-pub mod series;
-pub mod refresh;
-pub mod ip;
 pub mod backup;
-pub mod face_recognition;
-pub mod iptv_refresh;
-pub mod request_progress;
 pub mod encrypt_library;
+pub mod face_recognition;
+pub mod ip;
+pub mod iptv_refresh;
+pub mod refresh;
+pub mod request_progress;
+pub mod series;
 
 #[derive(Debug, Clone)]
 pub struct RsScheduler {
     queue: Arc<Mutex<HashSet<RsSchedulerItem>>>,
     running: Arc<Mutex<HashMap<RsSchedulerItem, RsRunningTask>>>,
-    token: Arc<RwLock<Option<CancellationToken>>>
+    token: Arc<RwLock<Option<CancellationToken>>>,
 }
 
 impl RsScheduler {
@@ -48,21 +59,28 @@ impl RsScheduler {
                 cloned_self.tick(mc.clone()).await;
                 tokio::time::sleep(tokio::time::Duration::from_secs(15)).await;
             }
-            log_info(super::log::LogServiceType::Scheduler, "Scheduler stopped".into());
-            
+            log_info(
+                super::log::LogServiceType::Scheduler,
+                "Scheduler stopped".into(),
+            );
         });
         *token = Some(new_token);
         Ok(())
     }
 
     /// when should be a timestamp in secondes, use 0 to start asap
-    pub async fn add<T: Serialize>(&self, kind: RsTaskType, when: RsSchedulerWhen, params: T) -> RsResult<()> {
+    pub async fn add<T: Serialize>(
+        &self,
+        kind: RsTaskType,
+        when: RsSchedulerWhen,
+        params: T,
+    ) -> RsResult<()> {
         let serialized = serde_json::to_string(&params)?;
         let item = RsSchedulerItem {
             kind,
             task: serialized,
             when,
-            created: get_time().as_secs()
+            created: get_time().as_secs(),
         };
         let mut queue = self.queue.lock().await;
         queue.insert(item);
@@ -81,54 +99,65 @@ impl RsScheduler {
 
         let mut queue = self.queue.lock().await;
         let now = get_time().as_secs();
-        let tasks: Vec<RsSchedulerItem> = queue.iter().filter(|t| t.schedule_time() < now).map(|l| l.clone()).collect();
+        let tasks: Vec<RsSchedulerItem> = queue
+            .iter()
+            .filter(|t| t.schedule_time() < now)
+            .map(|l| l.clone())
+            .collect();
         for task in tasks {
             let item = queue.take(&task);
             if let Some(item) = item {
                 let scheduler = self.clone();
                 let mc = mc.clone();
                 tokio::spawn(async move {
-                    
                     let task = {
                         let mut running = scheduler.running.lock().await;
                         let token = CancellationToken::new();
                         let task = item.to_task().unwrap();
-                        running.insert(item.clone(), RsRunningTask {
-                            token,
-                            message: None,
-                        });
+                        running.insert(
+                            item.clone(),
+                            RsRunningTask {
+                                token,
+                                message: None,
+                            },
+                        );
                         task
                     };
                     let exec_request = task.execute(mc).await;
                     if let Err(error) = exec_request {
-                        log_error(super::log::LogServiceType::Scheduler, format!("Error executing task {:?} {:#}", item.kind, error));
+                        log_error(
+                            super::log::LogServiceType::Scheduler,
+                            format!("Error executing task {:?} {:#}", item.kind, error),
+                        );
                     }
                     let new_item = {
                         let mut running = scheduler.running.lock().await;
                         running.remove(&item);
                         match item.when {
                             RsSchedulerWhen::At(_) => None,
-                            RsSchedulerWhen::Every(_) => {
-                                Some(item)
-                            },
+                            RsSchedulerWhen::Every(_) => Some(item),
                         }
                     };
                     if let Some(item) = new_item {
                         if let Err(error) = scheduler.readd(item.clone()).await {
-                            log_error(super::log::LogServiceType::Scheduler, format!("Unavble to reschedule task {:?}, {:#}", item, error))
+                            log_error(
+                                super::log::LogServiceType::Scheduler,
+                                format!("Unavble to reschedule task {:?}, {:#}", item, error),
+                            )
                         }
                     }
-                    
                 });
-
             } else {
-                log_error(super::log::LogServiceType::Scheduler, format!("Unexpected disapeared task {:?}", item))
+                log_error(
+                    super::log::LogServiceType::Scheduler,
+                    format!("Unexpected disapeared task {:?}", item),
+                )
             }
         }
     }
 
     pub async fn is_cancelled(&self) -> bool {
-        if let Some(token) = & *self.token.read().await {
+        if let Some(token) = &*self.token.read().await {
             token.is_cancelled()
         } else {
             true
@@ -136,7 +165,7 @@ impl RsScheduler {
     }
 
     // pub async fn start_task(&mut self, ) {
-        
+
     //     let handle = tokio::spawn(async move {
 
     //     });
@@ -148,15 +177,14 @@ pub struct RsSchedulerItem {
     kind: RsTaskType,
     task: String,
     when: RsSchedulerWhen,
-    created: u64
+    created: u64,
 }
 
 #[derive(PartialEq, Eq, Hash, Debug, Clone)]
 pub enum RsSchedulerWhen {
     At(u64),
-    Every(u64)
+    Every(u64),
 }
-
 
 #[derive(PartialEq, Eq, Hash, Debug, Clone)]
 pub enum RsTaskType {
@@ -168,7 +196,6 @@ pub enum RsTaskType {
     IptvRefresh,
 }
 
-
 #[derive(Debug)]
 pub struct RsRunningTask {
     token: CancellationToken,
@@ -176,35 +203,33 @@ pub struct RsRunningTask {
 }
 
 impl RsSchedulerItem {
-    pub fn to_task(&self) -> RsResult<Pin<Box<dyn RsSchedulerTask + Send>>>{
+    pub fn to_task(&self) -> RsResult<Pin<Box<dyn RsSchedulerTask + Send>>> {
         match self.kind {
             RsTaskType::Refresh => {
                 let deserialized: RefreshTask = serde_json::from_str(&self.task)?;
                 Ok(Box::pin(deserialized))
-            },
+            }
             RsTaskType::Ip => {
                 let deserialized: RefreshIpTask = serde_json::from_str(&self.task)?;
                 Ok(Box::pin(deserialized))
-            },
+            }
             RsTaskType::Face => {
                 let deserialized: FaceRecognitionTask = serde_json::from_str(&self.task)?;
                 Ok(Box::pin(deserialized))
-            },
+            }
             RsTaskType::RequestProgress => {
                 let deserialized: RequestProgressTask = serde_json::from_str(&self.task)?;
                 Ok(Box::pin(deserialized))
-            },
+            }
             RsTaskType::EncryptLibrary => {
                 let deserialized: EncryptLibraryTask = serde_json::from_str(&self.task)?;
                 Ok(Box::pin(deserialized))
-            },
+            }
             RsTaskType::IptvRefresh => {
                 let deserialized: IptvRefreshTask = serde_json::from_str(&self.task)?;
                 Ok(Box::pin(deserialized))
-            },
+            }
         }
-            
-      
     }
 
     pub fn schedule_time(&self) -> u64 {
@@ -216,6 +241,6 @@ impl RsSchedulerItem {
 }
 
 #[async_trait]
-pub trait RsSchedulerTask: {
+pub trait RsSchedulerTask {
     async fn execute(&self, mc: ModelController) -> RsResult<()>;
 }

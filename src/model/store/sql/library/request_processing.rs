@@ -1,7 +1,9 @@
-use rusqlite::{params, OptionalExtension, Row};
 use super::{Result, SqliteLibraryStore};
-use crate::domain::request_processing::{RsRequestProcessing, RsRequestProcessingForInsert, RsRequestProcessingForUpdate};
+use crate::domain::request_processing::{
+    RsRequestProcessing, RsRequestProcessingForInsert, RsRequestProcessingForUpdate,
+};
 use rs_plugin_common_interfaces::request::RsProcessingStatus;
+use rusqlite::{params, OptionalExtension, Row};
 use std::str::FromStr;
 
 impl SqliteLibraryStore {
@@ -36,7 +38,10 @@ impl SqliteLibraryStore {
         Ok(result)
     }
 
-    pub async fn get_request_processings_by_status(&self, status: RsProcessingStatus) -> Result<Vec<RsRequestProcessing>> {
+    pub async fn get_request_processings_by_status(
+        &self,
+        status: RsProcessingStatus,
+    ) -> Result<Vec<RsRequestProcessing>> {
         let status_str = status.to_string();
         let results = self.connection.call(move |conn| {
             let mut stmt = conn.prepare(
@@ -64,7 +69,8 @@ impl SqliteLibraryStore {
     }
 
     pub async fn add_request_processing(&self, insert: RsRequestProcessingForInsert) -> Result<()> {
-        let original_request_json = insert.original_request
+        let original_request_json = insert
+            .original_request
             .as_ref()
             .and_then(|r| serde_json::to_string(r).ok());
         self.connection.call(move |conn| {
@@ -85,45 +91,59 @@ impl SqliteLibraryStore {
         Ok(())
     }
 
-    pub async fn update_request_processing(&self, id: &str, update: RsRequestProcessingForUpdate) -> Result<()> {
+    pub async fn update_request_processing(
+        &self,
+        id: &str,
+        update: RsRequestProcessingForUpdate,
+    ) -> Result<()> {
         let id = id.to_string();
-        self.connection.call(move |conn| {
-            let mut updates = vec![];
-            let mut values: Vec<Box<dyn rusqlite::ToSql + Send>> = vec![];
+        self.connection
+            .call(move |conn| {
+                let mut updates = vec![];
+                let mut values: Vec<Box<dyn rusqlite::ToSql + Send>> = vec![];
 
-            if let Some(progress) = update.progress {
-                updates.push("progress = ?");
-                values.push(Box::new(progress as i64));
-            }
-            if let Some(status) = update.status {
-                updates.push("status = ?");
-                values.push(Box::new(status.to_string()));
-            }
-            if let Some(ref error) = update.error {
-                updates.push("error = ?");
-                values.push(Box::new(error.clone()));
-            }
-            if let Some(eta) = update.eta {
-                updates.push("eta = ?");
-                values.push(Box::new(eta));
-            }
+                if let Some(progress) = update.progress {
+                    updates.push("progress = ?");
+                    values.push(Box::new(progress as i64));
+                }
+                if let Some(status) = update.status {
+                    updates.push("status = ?");
+                    values.push(Box::new(status.to_string()));
+                }
+                if let Some(ref error) = update.error {
+                    updates.push("error = ?");
+                    values.push(Box::new(error.clone()));
+                }
+                if let Some(eta) = update.eta {
+                    updates.push("eta = ?");
+                    values.push(Box::new(eta));
+                }
 
-            if !updates.is_empty() {
-                values.push(Box::new(id));
-                let sql = format!("UPDATE request_processing SET {} WHERE id = ?", updates.join(", "));
-                conn.execute(&sql, rusqlite::params_from_iter(values.iter().map(|v| v.as_ref())))?;
-            }
-            Ok(())
-        }).await?;
+                if !updates.is_empty() {
+                    values.push(Box::new(id));
+                    let sql = format!(
+                        "UPDATE request_processing SET {} WHERE id = ?",
+                        updates.join(", ")
+                    );
+                    conn.execute(
+                        &sql,
+                        rusqlite::params_from_iter(values.iter().map(|v| v.as_ref())),
+                    )?;
+                }
+                Ok(())
+            })
+            .await?;
         Ok(())
     }
 
     pub async fn remove_request_processing(&self, id: &str) -> Result<()> {
         let id = id.to_string();
-        self.connection.call(move |conn| {
-            conn.execute("DELETE FROM request_processing WHERE id = ?", params![id])?;
-            Ok(())
-        }).await?;
+        self.connection
+            .call(move |conn| {
+                conn.execute("DELETE FROM request_processing WHERE id = ?", params![id])?;
+                Ok(())
+            })
+            .await?;
         Ok(())
     }
 }

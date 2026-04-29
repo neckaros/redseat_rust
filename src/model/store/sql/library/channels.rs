@@ -51,7 +51,10 @@ impl SqliteLibraryStore {
                 let mut values: Vec<Box<dyn rusqlite::types::ToSql + Send>> = Vec::new();
 
                 if let Some(ref t) = tag {
-                    conditions.push(format!("c.id IN (SELECT channel_ref FROM channel_tag_mapping WHERE tag_ref = ?{})", conditions.len() + 1));
+                    conditions.push(format!(
+                        "c.id IN (SELECT channel_ref FROM channel_tag_mapping WHERE tag_ref = ?{})",
+                        conditions.len() + 1
+                    ));
                     values.push(Box::new(t.clone()));
                 }
                 if let Some(ref name) = name_filter {
@@ -66,9 +69,13 @@ impl SqliteLibraryStore {
                 sql.push_str(" ORDER BY c.channel_number ASC, c.name ASC");
 
                 let mut statement = conn.prepare(&sql)?;
-                let params: Vec<&dyn rusqlite::types::ToSql> = values.iter().map(|v| v.as_ref() as &dyn rusqlite::types::ToSql).collect();
+                let params: Vec<&dyn rusqlite::types::ToSql> = values
+                    .iter()
+                    .map(|v| v.as_ref() as &dyn rusqlite::types::ToSql)
+                    .collect();
                 let rows = statement.query_map(params.as_slice(), Self::row_to_channel)?;
-                let channels = rows.collect::<std::result::Result<Vec<Channel>, rusqlite::Error>>()?;
+                let channels =
+                    rows.collect::<std::result::Result<Vec<Channel>, rusqlite::Error>>()?;
                 Ok(channels)
             })
             .await?;
@@ -178,7 +185,10 @@ impl SqliteLibraryStore {
                         idx
                     );
                     values.push(Box::new(channel_id));
-                    let params: Vec<&dyn rusqlite::types::ToSql> = values.iter().map(|v| v.as_ref() as &dyn rusqlite::types::ToSql).collect();
+                    let params: Vec<&dyn rusqlite::types::ToSql> = values
+                        .iter()
+                        .map(|v| v.as_ref() as &dyn rusqlite::types::ToSql)
+                        .collect();
                     conn.execute(&sql, params.as_slice())?;
                 }
                 Ok(())
@@ -203,8 +213,14 @@ impl SqliteLibraryStore {
     pub async fn remove_channel(&self, channel_id: String) -> Result<()> {
         self.connection
             .call(move |conn| {
-                conn.execute("DELETE FROM channel_tag_mapping WHERE channel_ref = ?", [&channel_id])?;
-                conn.execute("DELETE FROM channel_variants WHERE channel_ref = ?", [&channel_id])?;
+                conn.execute(
+                    "DELETE FROM channel_tag_mapping WHERE channel_ref = ?",
+                    [&channel_id],
+                )?;
+                conn.execute(
+                    "DELETE FROM channel_variants WHERE channel_ref = ?",
+                    [&channel_id],
+                )?;
                 conn.execute("DELETE FROM channels WHERE id = ?", [&channel_id])?;
                 Ok(())
             })
@@ -227,7 +243,12 @@ impl SqliteLibraryStore {
 
     // --- Channel Tag Mapping ---
 
-    pub async fn add_channel_tag(&self, channel_id: &str, tag_id: &str, confidence: Option<i32>) -> Result<()> {
+    pub async fn add_channel_tag(
+        &self,
+        channel_id: &str,
+        tag_id: &str,
+        confidence: Option<i32>,
+    ) -> Result<()> {
         let channel_id = channel_id.to_string();
         let tag_id = tag_id.to_string();
         self.connection
@@ -363,7 +384,10 @@ impl SqliteLibraryStore {
         let channel_ref = channel_ref.to_string();
         self.connection
             .call(move |conn| {
-                conn.execute("DELETE FROM channel_variants WHERE channel_ref = ?", [&channel_ref])?;
+                conn.execute(
+                    "DELETE FROM channel_variants WHERE channel_ref = ?",
+                    [&channel_ref],
+                )?;
                 Ok(())
             })
             .await?;

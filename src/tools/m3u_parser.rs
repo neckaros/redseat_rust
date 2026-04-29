@@ -176,7 +176,8 @@ pub fn parse_m3u(content: &str) -> M3uParseResult {
             let tvg_id = extract_attribute(&extinf_line, "tvg-id").filter(|s| !s.is_empty());
             let tvg_name = extract_attribute(&extinf_line, "tvg-name").filter(|s| !s.is_empty());
             let tvg_logo = extract_attribute(&extinf_line, "tvg-logo").filter(|s| !s.is_empty());
-            let group_title = extract_attribute(&extinf_line, "group-title").filter(|s| !s.is_empty());
+            let group_title =
+                extract_attribute(&extinf_line, "group-title").filter(|s| !s.is_empty());
 
             // Display name is the text after the last comma in the EXTINF line
             let display_name = extinf_line
@@ -320,7 +321,10 @@ http://host:80/series/user/pass/197898.mkv"#;
         let entry = &result.entries[0];
         assert_eq!(entry.tvg_id, Some("TF1.fr".to_string()));
         assert_eq!(entry.tvg_name, Some("|FR| TF1 SD".to_string()));
-        assert_eq!(entry.tvg_logo, Some("https://i.imgur.com/LMxTAzY.png".to_string()));
+        assert_eq!(
+            entry.tvg_logo,
+            Some("https://i.imgur.com/LMxTAzY.png".to_string())
+        );
         assert_eq!(entry.group_title, Some("FR TV SD (FRANCE)".to_string()));
         assert_eq!(entry.display_name, "|FR| TF1 SD");
         assert_eq!(entry.url, "http://host:80/user/pass/12071");

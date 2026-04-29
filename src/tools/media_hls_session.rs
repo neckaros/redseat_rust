@@ -55,11 +55,7 @@ impl MediaHlsSession {
 
 /// Spawn FFmpeg in copy mode (no transcoding) for HLS VOD output
 #[cfg(test)]
-fn build_copy_mode_command(
-    input_uri: &str,
-    output_dir: &Path,
-    playlist_path: &Path,
-) -> Command {
+fn build_copy_mode_command(input_uri: &str, output_dir: &Path, playlist_path: &Path) -> Command {
     let ffmpeg_path = VideoCommandBuilder::get_ffmpeg_path();
     let segment_pattern = output_dir.join("seg_%05d.ts");
 
@@ -74,10 +70,7 @@ fn build_copy_mode_command(
         .args(["-hls_time", &MEDIA_HLS_SEGMENT_DURATION.to_string()])
         .args(["-hls_playlist_type", "event"])
         .args(["-hls_flags", "temp_file+append_list"])
-        .args([
-            "-hls_segment_filename",
-            &segment_pattern.to_string_lossy(),
-        ])
+        .args(["-hls_segment_filename", &segment_pattern.to_string_lossy()])
         .args(["-hls_allow_cache", "1"])
         .arg(playlist_path.to_string_lossy().as_ref())
         .stdout(std::process::Stdio::piped())
@@ -159,7 +152,10 @@ async fn spawn_compatible_hls(
 
     let cmd = builder.build_command_for_hls(output_dir, playlist_path, MEDIA_HLS_SEGMENT_DURATION);
     cmd.spawn().map_err(|e| {
-        crate::error::RsError::Error(format!("Failed to spawn FFmpeg for HLS compatible mode: {}", e))
+        crate::error::RsError::Error(format!(
+            "Failed to spawn FFmpeg for HLS compatible mode: {}",
+            e
+        ))
     })
 }
 
@@ -248,11 +244,8 @@ async fn build_and_spawn_media_hls(
     let spawn_result = if let Some(request) = convert_request {
         let mut builder = VideoCommandBuilder::new(input_uri.to_string()).await;
         builder.set_request(request).await?;
-        let cmd = builder.build_command_for_hls(
-            &output_dir,
-            &playlist_path,
-            MEDIA_HLS_SEGMENT_DURATION,
-        );
+        let cmd =
+            builder.build_command_for_hls(&output_dir, &playlist_path, MEDIA_HLS_SEGMENT_DURATION);
         cmd.spawn().map_err(|e| {
             crate::error::RsError::Error(format!("Failed to spawn FFmpeg for HLS transcode: {}", e))
         })
@@ -315,7 +308,10 @@ pub async fn start_media_hls_session(
         if sessions.contains_key(&key) {
             log_info(
                 LogServiceType::Other,
-                format!("Media HLS [{}]: Duplicate session detected during creation, cancelling ours", key),
+                format!(
+                    "Media HLS [{}]: Duplicate session detected during creation, cancelling ours",
+                    key
+                ),
             );
             session.cancel_token.cancel();
             return Ok(());

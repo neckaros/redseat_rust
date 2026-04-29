@@ -18,10 +18,7 @@ use http::{StatusCode, Uri};
 use hyper::header::{ACCEPT, AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, REFERER, REFERRER_POLICY};
 use model::{server::AuthMessage, store::SqliteStore, ModelController};
 use plugins::{
-    medias::{
-        imdb::ImdbContext,
-        trakt::TraktContext,
-    },
+    medias::{imdb::ImdbContext, trakt::TraktContext},
     PluginManager,
 };
 use routes::{mw_auth, mw_range};
@@ -263,10 +260,7 @@ async fn app() -> Result<Router> {
             "/libraries/:libraryid/plugins",
             routes::library_plugins::routes(mc.clone()),
         )
-        .nest(
-            "/libraries/:libraryid",
-            routes::search::routes(mc.clone()),
-        )
+        .nest("/libraries/:libraryid", routes::search::routes(mc.clone()))
         .nest("/library", routes::libraries::routes(mc.clone())) // duplicate for legacy
         .nest("/users", routes::users::routes(mc.clone()))
         .nest("/credentials", routes::credentials::routes(mc.clone()))

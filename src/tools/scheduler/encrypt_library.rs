@@ -57,7 +57,10 @@ impl RsSchedulerTask for EncryptLibraryTask {
             None => {
                 log_info(
                     LogServiceType::Scheduler,
-                    format!("No password for library {}, skipping encryption task", self.library_id),
+                    format!(
+                        "No password for library {}, skipping encryption task",
+                        self.library_id
+                    ),
                 );
                 return Ok(());
             }
@@ -119,7 +122,10 @@ impl RsSchedulerTask for EncryptLibraryTask {
                         errors += 1;
                         log_error(
                             LogServiceType::Scheduler,
-                            format!("Error processing remote file {} (media {}): {:?}", media_source, media_id, e),
+                            format!(
+                                "Error processing remote file {} (media {}): {:?}",
+                                media_source, media_id, e
+                            ),
                         );
                     }
                 }
@@ -131,7 +137,11 @@ impl RsSchedulerTask for EncryptLibraryTask {
                     library: self.library_id.clone(),
                     message: format!(
                         "{} library files... ({}/{}, {} errors)",
-                        if self.decrypt { "Decrypting" } else { "Encrypting" },
+                        if self.decrypt {
+                            "Decrypting"
+                        } else {
+                            "Encrypting"
+                        },
                         i + 1,
                         total,
                         errors,
@@ -141,7 +151,9 @@ impl RsSchedulerTask for EncryptLibraryTask {
         }
 
         // Process thumbs and portraits folders (always stored locally via PathProvider)
-        let local_provider = mc.library_source_for_library(&self.library_id).await
+        let local_provider = mc
+            .library_source_for_library(&self.library_id)
+            .await
             .map_err(|e| RsError::Error(format!("Failed to get local provider: {:?}", e)))?;
         if let Some(root_path) = local_provider.local_path("") {
             for folder in &[".thumbs", ".portraits", ".series", ".books", ".faces"] {
@@ -171,7 +183,11 @@ impl RsSchedulerTask for EncryptLibraryTask {
             library: self.library_id.clone(),
             message: format!(
                 "Library {} complete. {} files processed, {} errors.",
-                if self.decrypt { "decryption" } else { "encryption" },
+                if self.decrypt {
+                    "decryption"
+                } else {
+                    "encryption"
+                },
                 processed,
                 errors,
             ),
@@ -182,7 +198,11 @@ impl RsSchedulerTask for EncryptLibraryTask {
             format!(
                 "Library {} {} complete. {} files processed, {} errors.",
                 self.library_id,
-                if self.decrypt { "decryption" } else { "encryption" },
+                if self.decrypt {
+                    "decryption"
+                } else {
+                    "encryption"
+                },
                 processed,
                 errors,
             ),
@@ -301,12 +321,16 @@ impl EncryptLibraryTask {
 
         // Update the media record to point to the new source
         if new_source != old_source {
-            mc.update_media_source(library_id, media_id, &new_source).await?;
+            mc.update_media_source(library_id, media_id, &new_source)
+                .await?;
             // Remove the old file from the provider
             if let Err(e) = source_provider.remove(old_source).await {
                 log_error(
                     LogServiceType::Scheduler,
-                    format!("Warning: could not remove old source {}: {:?}", old_source, e),
+                    format!(
+                        "Warning: could not remove old source {}: {:?}",
+                        old_source, e
+                    ),
                 );
             }
         }
@@ -315,48 +339,52 @@ impl EncryptLibraryTask {
     }
 
     /// Process all files in a directory, recursing into subdirectories.
-    fn process_folder<'a>(folder: &'a PathBuf, key: &'a [u8; 32], decrypt: bool) -> std::pin::Pin<Box<dyn std::future::Future<Output = RsResult<u64>> + Send + 'a>> {
+    fn process_folder<'a>(
+        folder: &'a PathBuf,
+        key: &'a [u8; 32],
+        decrypt: bool,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = RsResult<u64>> + Send + 'a>> {
         Box::pin(async move {
-        let mut count = 0u64;
-        let mut entries = fs::read_dir(folder).await?;
-        while let Some(entry) = entries.next_entry().await? {
-            let path = entry.path();
-            if path.is_dir() {
-                // Recurse into subdirectories (e.g. .series/{serie_id}/)
-                match Self::process_folder(&path, key, decrypt).await {
-                    Ok(sub_count) => count += sub_count,
-                    Err(e) => {
-                        log_error(
-                            LogServiceType::Scheduler,
-                            format!("Error processing subfolder {}: {:?}", path.display(), e),
-                        );
+            let mut count = 0u64;
+            let mut entries = fs::read_dir(folder).await?;
+            while let Some(entry) = entries.next_entry().await? {
+                let path = entry.path();
+                if path.is_dir() {
+                    // Recurse into subdirectories (e.g. .series/{serie_id}/)
+                    match Self::process_folder(&path, key, decrypt).await {
+                        Ok(sub_count) => count += sub_count,
+                        Err(e) => {
+                            log_error(
+                                LogServiceType::Scheduler,
+                                format!("Error processing subfolder {}: {:?}", path.display(), e),
+                            );
+                        }
                     }
-                }
-            } else if path.is_file() {
-                // Skip temp files
-                if let Some(ext) = path.extension() {
-                    if ext == "encrypting_tmp" || ext == "decrypting_tmp" {
-                        continue;
+                } else if path.is_file() {
+                    // Skip temp files
+                    if let Some(ext) = path.extension() {
+                        if ext == "encrypting_tmp" || ext == "decrypting_tmp" {
+                            continue;
+                        }
                     }
-                }
-                let result = if decrypt {
-                    Self::decrypt_local_file(&path, key).await
-                } else {
-                    Self::encrypt_local_file(&path, key).await
-                };
-                match result {
-                    Ok(true) => count += 1,
-                    Ok(false) => {}
-                    Err(e) => {
-                        log_error(
-                            LogServiceType::Scheduler,
-                            format!("Error processing {}: {:?}", path.display(), e),
-                        );
+                    let result = if decrypt {
+                        Self::decrypt_local_file(&path, key).await
+                    } else {
+                        Self::encrypt_local_file(&path, key).await
+                    };
+                    match result {
+                        Ok(true) => count += 1,
+                        Ok(false) => {}
+                        Err(e) => {
+                            log_error(
+                                LogServiceType::Scheduler,
+                                format!("Error processing {}: {:?}", path.display(), e),
+                            );
+                        }
                     }
                 }
             }
-        }
-        Ok(count)
+            Ok(count)
         })
     }
 }

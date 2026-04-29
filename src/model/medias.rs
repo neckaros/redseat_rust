@@ -51,7 +51,12 @@ use crate::{
         media::{
             self, ConvertMessage, ConvertProgress, RsGpsPosition, VideoMergeRequest, DEFAULT_MIME,
         },
-        plugin, MediaElement,
+        plugin,
+        plugin_convert_queue::{
+            PluginConvertQueueForInsert, PluginConvertQueueForUpdate, PluginConvertQueueItem,
+            PluginConvertQueueStatus,
+        },
+        MediaElement,
     },
     error::RsError,
     model::store::sql::SqlOrder,
@@ -66,7 +71,6 @@ use crate::{
     },
 };
 
-use rs_plugin_common_interfaces::domain::ItemWithRelations;
 use crate::{
     domain::{
         library::{LibraryLimits, LibraryRole},
@@ -98,6 +102,7 @@ use crate::{
         zip_range::extract_zip_page_from_request,
     },
 };
+use rs_plugin_common_interfaces::domain::ItemWithRelations;
 
 use super::{
     error::{Error, Result},
@@ -109,6 +114,7 @@ use super::{
 use crate::routes::sse::SseEvent;
 
 pub const CRYPTO_HEADER_SIZE: u64 = 16 + 4 + 4 + 32 + 256;
+const PLUGIN_CONVERT_CONCURRENCY_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
@@ -271,14 +277,12 @@ impl ModelController {
         let mut archive = zip::ZipArchive::new(cursor)
             .map_err(|_| RsError::Error("Unable to open zip file".to_string()))?;
         let pages = archive.len();
-        let mut file = archive
-            .by_index(page.saturating_sub(1))
-            .map_err(|_| {
-                RsError::Error(format!(
-                    "Unable to get file at page {}. Files in zip: {}",
-                    page, pages
-                ))
-            })?;
+        let mut file = archive.by_index(page.saturating_sub(1)).map_err(|_| {
+            RsError::Error(format!(
+                "Unable to get file at page {}. Files in zip: {}",
+                page, pages
+            ))
+        })?;
         let mut page_data = Vec::new();
         file.read_to_end(&mut page_data)?;
         let size = page_data.len() as u64;
@@ -304,7 +308,8 @@ impl ModelController {
             SourceRead::Stream(mut reader) => {
                 let placeholder: AsyncReadPinBox = Box::pin(tokio::io::empty());
                 let original_stream = std::mem::replace(&mut reader.stream, placeholder);
-                let decrypted: AsyncReadPinBox = Box::pin(CtrDecryptReader::new(original_stream, key));
+                let decrypted: AsyncReadPinBox =
+                    Box::pin(CtrDecryptReader::new(original_stream, key));
                 reader.stream = decrypted;
                 reader.size = reader.size.map(|s| s.saturating_sub(CTR_NONCE_SIZE));
                 SourceRead::Stream(reader)
@@ -347,7 +352,11 @@ impl ModelController {
     ) -> RsResult<()> {
         origin.file = origin_filename;
         if !ignore_duplicate {
-            if let Some(existing) = store.get_media_by_origin(origin.clone()).await.map(|iwr| iwr.item) {
+            if let Some(existing) = store
+                .get_media_by_origin(origin.clone())
+                .await
+                .map(|iwr| iwr.item)
+            {
                 if let Some(tx) = tx_progress {
                     let _ = tx
                         .send(RsProgress {
@@ -379,7 +388,11 @@ impl ModelController {
         tx_progress: Option<&mpsc::Sender<RsProgress>>,
         upload_id: &str,
     ) -> RsResult<()> {
-        if let Some(existing) = store.get_media_by_hash(hash.to_owned(), true).await.map(|iwr| iwr.item) {
+        if let Some(existing) = store
+            .get_media_by_hash(hash.to_owned(), true)
+            .await
+            .map(|iwr| iwr.item)
+        {
             let m = self.source_for_library(library_id).await?;
             m.remove(source_path).await?;
             if let Some(tx) = tx_progress {
@@ -578,8 +591,14 @@ impl ModelController {
         }
 
         if let Some(rating) = update.rating.clone() {
-            self.set_media_rating(library_id, ElementType::Media, media_id.clone(), rating as f64, requesting_user)
-                .await?;
+            self.set_media_rating(
+                library_id,
+                ElementType::Media,
+                media_id.clone(),
+                rating as f64,
+                requesting_user,
+            )
+            .await?;
         }
         if let Some(progress) = update.progress.clone() {
             self.set_media_progress(
@@ -791,7 +810,11 @@ impl ModelController {
 
         let crypted = self.cache_get_library_crypt(library_id).await;
         let id = nanoid!();
-        let disk_filename = if crypted { id.clone() } else { filename.clone() };
+        let disk_filename = if crypted {
+            id.clone()
+        } else {
+            filename.clone()
+        };
         let m = self.source_for_library(&library_id).await?;
         let (source, mut file) = m.writerseek(&disk_filename).await?;
         //let file = file.compat_write();
@@ -848,13 +871,18 @@ impl ModelController {
         m.fill_infos(&source, &mut infos).await?;
 
         if let Some(hash) = &infos.md5 {
-            let existing = store.get_media_by_hash(hash.to_owned(), true).await.map(|iwr| iwr.item);
+            let existing = store
+                .get_media_by_hash(hash.to_owned(), true)
+                .await
+                .map(|iwr| iwr.item);
             if let Some(existing) = existing {
                 m.remove(&source).await?;
                 //let _ = tx_progress.send(RsProgress { id: upload_id.clone(), total: existing.size, current: existing.size, kind: RsProgressType::Duplicate(existing.id.clone()), filename: Some(existing.name.to_owned()) }).await;
-                return Err(
-                    Error::Duplicate(existing.id.to_owned(), MediaElement::Media(existing)).into(),
-                );
+                return Err(Error::Duplicate(
+                    existing.id.to_owned(),
+                    MediaElement::Media(existing),
+                )
+                .into());
             }
         }
 
@@ -1034,9 +1062,14 @@ impl ModelController {
                         None,
                     )
                     .await?;
-                let decrypted: AsyncReadPinBox = Box::pin(CtrDecryptReader::new(full_read.stream, key));
+                let decrypted: AsyncReadPinBox =
+                    Box::pin(CtrDecryptReader::new(full_read.stream, key));
                 let mut decrypted_bytes = Vec::new();
-                tokio::io::AsyncReadExt::read_to_end(&mut tokio::io::BufReader::new(decrypted), &mut decrypted_bytes).await?;
+                tokio::io::AsyncReadExt::read_to_end(
+                    &mut tokio::io::BufReader::new(decrypted),
+                    &mut decrypted_bytes,
+                )
+                .await?;
                 return Self::extract_zip_page_from_bytes(
                     &decrypted_bytes,
                     query.page.unwrap_or(1) as usize,
@@ -1086,8 +1119,7 @@ impl ModelController {
                         let (data, name) =
                             extract_zip_page_from_request(request, page, file_size).await?;
                         let size = data.len() as u64;
-                        let async_reader: AsyncReadPinBox =
-                            Box::pin(std::io::Cursor::new(data));
+                        let async_reader: AsyncReadPinBox = Box::pin(std::io::Cursor::new(data));
                         return Ok(SourceRead::Stream(FileStreamResult {
                             stream: async_reader,
                             size: Some(size),
@@ -1127,7 +1159,15 @@ impl ModelController {
 
             if let Some(ref original_range) = client_range {
                 // Range request: read nonce separately, then decrypt at offset
-                let nonce_read = m.get_file(&existing.source, Some(RangeDefinition { start: Some(0), end: Some(CTR_NONCE_SIZE) })).await?;
+                let nonce_read = m
+                    .get_file(
+                        &existing.source,
+                        Some(RangeDefinition {
+                            start: Some(0),
+                            end: Some(CTR_NONCE_SIZE),
+                        }),
+                    )
+                    .await?;
                 let mut nonce_read = nonce_read
                     .into_reader(
                         Some(library_id),
@@ -1144,9 +1184,12 @@ impl ModelController {
                 if let SourceRead::Stream(ref mut stream_reader) = reader_response {
                     let placeholder: AsyncReadPinBox = Box::pin(tokio::io::empty());
                     let original_stream = std::mem::replace(&mut stream_reader.stream, placeholder);
-                    let decrypted: AsyncReadPinBox = Box::pin(
-                        CtrDecryptReader::new_at_offset(original_stream, key, &nonce, plaintext_start)
-                    );
+                    let decrypted: AsyncReadPinBox = Box::pin(CtrDecryptReader::new_at_offset(
+                        original_stream,
+                        key,
+                        &nonce,
+                        plaintext_start,
+                    ));
                     stream_reader.stream = decrypted;
                 }
             } else {
@@ -1353,9 +1396,23 @@ impl ModelController {
 
         let encryption_key = self.get_library_encryption_key(library_id).await;
         let id = nanoid!();
-        let disk_filename = if encryption_key.is_some() { id.clone() } else { filename.to_string() };
+        let disk_filename = if encryption_key.is_some() {
+            id.clone()
+        } else {
+            filename.to_string()
+        };
         let (source, mut file) = m
-            .writer(&disk_filename, infos.size.map(|s| if encryption_key.is_some() { s + CTR_NONCE_SIZE } else { s }), infos.mimetype.clone())
+            .writer(
+                &disk_filename,
+                infos.size.map(|s| {
+                    if encryption_key.is_some() {
+                        s + CTR_NONCE_SIZE
+                    } else {
+                        s
+                    }
+                }),
+                infos.mimetype.clone(),
+            )
             .await?;
         if let Some(ref key) = encryption_key {
             let mut enc_file = CtrEncryptWriter::new(file, key)?;
@@ -1374,7 +1431,10 @@ impl ModelController {
             let _ = m.fill_infos(&source, &mut infos).await;
         }
         if let Some(hash) = &infos.md5 {
-            let existing = store.get_media_by_hash(hash.to_owned(), true).await.map(|iwr| iwr.item);
+            let existing = store
+                .get_media_by_hash(hash.to_owned(), true)
+                .await
+                .map(|iwr| iwr.item);
             if let Some(existing) = existing {
                 m.remove(&source).await?;
                 let _ = tx_progress
@@ -1386,9 +1446,11 @@ impl ModelController {
                         filename: Some(existing.name.to_owned()),
                     })
                     .await;
-                return Err(
-                    Error::Duplicate(existing.id.to_owned(), MediaElement::Media(existing)).into(),
-                );
+                return Err(Error::Duplicate(
+                    existing.id.to_owned(),
+                    MediaElement::Media(existing),
+                )
+                .into());
             }
         }
 
@@ -1636,7 +1698,6 @@ impl ModelController {
         let m = self.source_for_library(library_id).await?;
         let thumbnail = files.group_thumbnail_url.clone();
         let first_request = files.requests.first();
-    
 
         let mut infos = MediaForUpdate {
             name: files.group_filename.clone(),
@@ -1656,7 +1717,7 @@ impl ModelController {
             description: first_request.and_then(|r| r.description.clone()),
             movie: first_request.and_then(|r| r.movie.clone()),
             book: first_request.and_then(|r| r.book.as_ref().map(|f| f.id.clone())),
-            
+
             origin: origin.clone(),
             ..Default::default()
         };
@@ -1694,11 +1755,16 @@ impl ModelController {
         let encryption_key = self.get_library_encryption_key(library_id).await;
         let id = nanoid!();
         let filename = format!("{}.zip", nanoid!());
-        let disk_filename = if encryption_key.is_some() { id.clone() } else { filename.clone() };
+        let disk_filename = if encryption_key.is_some() {
+            id.clone()
+        } else {
+            filename.clone()
+        };
         println!("Zip name: {}", filename);
         let (source_promise, file) = m.writer(&disk_filename, None, None).await?;
         // If library has password, wrap writer with encryption
-        let mut enc_writer: Option<CtrEncryptWriter<Pin<Box<dyn tokio::io::AsyncWrite + Send>>>> = None;
+        let mut enc_writer: Option<CtrEncryptWriter<Pin<Box<dyn tokio::io::AsyncWrite + Send>>>> =
+            None;
         let mut plain_writer: Option<Pin<Box<dyn tokio::io::AsyncWrite + Send>>> = None;
         if let Some(ref key) = encryption_key {
             enc_writer = Some(CtrEncryptWriter::new(file, key)?);
@@ -1706,11 +1772,12 @@ impl ModelController {
             plain_writer = Some(file);
         }
         // Get a mutable reference to whichever writer is active
-        let writer_ref: &mut (dyn tokio::io::AsyncWrite + Unpin + Send) = if let Some(ref mut w) = enc_writer {
-            w
-        } else {
-            plain_writer.as_mut().unwrap()
-        };
+        let writer_ref: &mut (dyn tokio::io::AsyncWrite + Unpin + Send) =
+            if let Some(ref mut w) = enc_writer {
+                w
+            } else {
+                plain_writer.as_mut().unwrap()
+            };
         let mut zip_writer = ZipFileWriter::with_tokio(writer_ref);
 
         let mut pages = 0usize;
@@ -1881,19 +1948,24 @@ impl ModelController {
             self.plugin_manager.fill_infos(&mut request).await;
 
             let mut infos: MediaForUpdate = request.clone().into();
-            infos.origin = origin.clone().or_else(|| Some(RsLink {
-                platform: "link".to_owned(),
-                kind: Some(RsLinkType::Post),
-                id: request.url.clone(),
-                ..Default::default()
-            }));
+            infos.origin = origin.clone().or_else(|| {
+                Some(RsLink {
+                    platform: "link".to_owned(),
+                    kind: Some(RsLinkType::Post),
+                    id: request.url.clone(),
+                    ..Default::default()
+                })
+            });
 
             let tx_progress =
                 self.create_progress_sender(library_id.to_owned(), Some(upload_id.clone()));
 
             // Check for origin duplicate
             if let Some(origin) = &mut infos.origin {
-                let origin_filename = request.selected_file.clone().or_else(|| filename_from_path(&request.url));
+                let origin_filename = request
+                    .selected_file
+                    .clone()
+                    .or_else(|| filename_from_path(&request.url));
                 self.check_origin_duplicate(
                     store,
                     origin,
@@ -1959,7 +2031,11 @@ impl ModelController {
             );
             let encryption_key = self.get_library_encryption_key(library_id).await;
             let id = nanoid!();
-            let disk_filename = if encryption_key.is_some() { id.clone() } else { filename.clone() };
+            let disk_filename = if encryption_key.is_some() {
+                id.clone()
+            } else {
+                filename.clone()
+            };
             let (source, mut file) = m.writerseek(&disk_filename).await?;
             if let Some(ref key) = encryption_key {
                 let mut enc_file = CtrEncryptWriter::new(file, key)?;
@@ -2168,14 +2244,9 @@ impl ModelController {
                 } else {
                     reader.stream
                 };
-                let image = resize_image_reader(
-                    stream,
-                    512,
-                    image::ImageFormat::Avif,
-                    Some(50),
-                    false,
-                )
-                .await?;
+                let image =
+                    resize_image_reader(stream, 512, image::ImageFormat::Avif, Some(50), false)
+                        .await?;
                 Ok(image)
             }
             FileType::Album => {
@@ -2244,17 +2315,25 @@ impl ModelController {
                     reader.stream
                 };
                 let mut epub_bytes = Vec::new();
-                tokio::io::AsyncReadExt::read_to_end(&mut tokio::io::BufReader::new(stream), &mut epub_bytes).await?;
+                tokio::io::AsyncReadExt::read_to_end(
+                    &mut tokio::io::BufReader::new(stream),
+                    &mut epub_bytes,
+                )
+                .await?;
                 let cover_bytes = tokio::task::spawn_blocking(move || {
                     Self::extract_epub_cover_from_bytes(epub_bytes)
                 })
                 .await
                 .map_err(|_| crate::model::error::Error::UnsupportedTypeForThumb)??;
-                let image_reader: AsyncReadPinBox =
-                    Box::pin(std::io::Cursor::new(cover_bytes));
-                let image =
-                    resize_image_reader(image_reader, 512, image::ImageFormat::Avif, Some(50), false)
-                        .await?;
+                let image_reader: AsyncReadPinBox = Box::pin(std::io::Cursor::new(cover_bytes));
+                let image = resize_image_reader(
+                    image_reader,
+                    512,
+                    image::ImageFormat::Avif,
+                    Some(50),
+                    false,
+                )
+                .await?;
                 Ok(image)
             }
             _ => Err(crate::model::error::Error::UnsupportedTypeForThumb),
@@ -2470,7 +2549,9 @@ impl ModelController {
         }
 
         // Resolve input: local path or temp URL (12 hours for movie sessions)
-        let uri = self.get_media_uri(library_id, media_id, Some(43200)).await?;
+        let uri = self
+            .get_media_uri(library_id, media_id, Some(43200))
+            .await?;
 
         // Create and start the session
         crate::tools::media_hls_session::start_media_hls_session(
@@ -2486,11 +2567,7 @@ impl ModelController {
         Ok(key)
     }
 
-    pub async fn stop_media_hls_session(
-        &self,
-        library_id: &str,
-        media_id: &str,
-    ) -> RsResult<()> {
+    pub async fn stop_media_hls_session(&self, library_id: &str, media_id: &str) -> RsResult<()> {
         let keys_to_stop: Vec<String> = {
             let sessions = self.media_hls_sessions.read().await;
             sessions
@@ -2658,246 +2735,36 @@ impl ModelController {
             requesting_user.clone(),
             request.clone(),
         );
+        // If plugin convert is requested
+        if let Some(plugin_id) = &plugin_id {
+            self.store
+                .add_plugin_convert_queue_item(PluginConvertQueueForInsert {
+                    id: request.id.clone(),
+                    plugin_id: plugin_id.clone(),
+                    library_id: library_id.to_string(),
+                    media_id: media_id.to_string(),
+                    filename,
+                    request: request.clone(),
+                    requested_by: requesting_user.user_id().ok(),
+                })
+                .await?;
+
+            self.send_convert_progress(ConvertMessage {
+                library: library_id.to_string(),
+                progress: ConvertProgress {
+                    status: RsVideoTranscodeStatus::Queued,
+                    ..queue_element.status.clone()
+                },
+            });
+            self.start_plugin_convert_scheduler();
+            return Ok(());
+        }
+
         let message = ConvertMessage {
             library: library_id.to_string(),
             progress: queue_element.status.clone(),
         };
         self.send_convert_progress(message);
-
-        // If plugin convert is requested
-        if let Some(plugin_id) = &plugin_id {
-            let status = self
-                .convert_submit_media(library_id, media_id, request.clone(), &plugin_id)
-                .await?;
-            let job_id = status.id.clone();
-
-            // Clone what you need for the background task
-            let plugin_id_owned = plugin_id.clone();
-            let mc_progress = self.clone(); // or however you get your progress sender
-            let request_clone = request.clone();
-            let lib_progress = library_id.to_string(); // adjust based on your actual type
-            let name_progress = filename.clone();
-            let media_id_progress = media_id.to_string();
-            let media_progress: MediaForUpdate = media.into();
-            // Spawn background task
-            tokio::spawn(async move {
-                let mut poll_interval = Duration::from_secs(2);
-                let start_time = std::time::Instant::now();
-                let mut remaining = None;
-
-                loop {
-                    sleep(poll_interval).await;
-
-                    match mc_progress.convert_status(&job_id, &plugin_id_owned).await {
-                        Ok(current_status) => {
-                            log_info(
-                                crate::tools::log::LogServiceType::Source,
-                                format!("Got convert status: {:?}", current_status),
-                            );
-                            let is_terminal = matches!(
-                                current_status.status,
-                                RsVideoTranscodeStatus::Completed
-                                    | RsVideoTranscodeStatus::Failed
-                                    | RsVideoTranscodeStatus::Canceled
-                            );
-
-                            let done = is_terminal;
-                            let percent = current_status.progress;
-                            if percent > 1.0 {
-                                let percent_ratio = percent / 100.0;
-                                if percent_ratio > 0.01 {
-                                    let duration_from_start = start_time.elapsed().as_secs_f32();
-                                    let remaining_time = duration_from_start / percent_ratio * (1.0 - percent_ratio);
-                                    remaining = Some(remaining_time as u64);
-                                }
-                            }
-
-                            let message = ConvertMessage {
-                                library: lib_progress.clone(),
-                                progress: ConvertProgress {
-                                    percent: (percent / 100f32).into(),
-                                    converted_id: if done { Some(job_id.clone()) } else { None },
-                                    filename: name_progress.clone(),
-                                    done,
-                                    status: current_status.status.clone(),
-                                    id: request_clone.id.clone(),
-                                    request: Some(request_clone.clone()),
-                                    remaining_secondes: remaining,
-                                },
-                            };
-                            mc_progress.send_convert_progress(message);
-
-                            if matches!(current_status.status, RsVideoTranscodeStatus::Completed) {
-                                // Handle all errors here instead of using ?
-                                match mc_progress.convert_link(&job_id, &plugin_id_owned).await {
-                                    Ok(link) => {
-                                        log_info(
-                                            crate::tools::log::LogServiceType::Source,
-                                            format!("Got convert link result: {:?}", link),
-                                        );
-
-                                        let mut attempts = 0;
-                                        let max_attempts = 3;
-                                        let media_result = loop {
-                                            let source = SourceRead::Request(link.clone());
-                                            match source
-                                                .into_reader(
-                                                    Some(&lib_progress),
-                                                    None,
-                                                    None,
-                                                    Some((
-                                                        mc_progress.clone(),
-                                                        &ConnectedUser::ServerAdmin,
-                                                    )),
-                                                    None,
-                                                )
-                                                .await
-                                            {
-                                                Ok(reader) => {
-                                                    attempts += 1;
-                                                    let mut converted_infos = media_progress.clone();
-                                                    converted_infos.size = reader.size;
-                                                    if reader.mime.is_some() {
-                                                        converted_infos.mimetype = reader.mime.clone();
-                                                    }
-
-                                                    match mc_progress
-                                                        .add_library_file(
-                                                            &lib_progress,
-                                                            &name_progress,
-                                                            Some(converted_infos),
-                                                            reader.stream,
-                                                            &ConnectedUser::ServerAdmin,
-                                                        )
-                                                        .await
-                                                    {
-                                                        Ok(media) => break Ok(media),
-                                                        Err(e) if attempts >= max_attempts => {
-                                                            log_error(crate::tools::log::LogServiceType::Source, 
-                                                                        format!("Failed to add library file after {} attempts: {:?}", max_attempts, e));
-                                                            tracing::error!("Failed to add library file after {} attempts: {:?}", max_attempts, e);
-                                                            break Err(e);
-                                                        }
-                                                        Err(e) => {
-                                                            log_warn(crate::tools::log::LogServiceType::Source, 
-                                                                        format!("Attempt {}/{} failed: {:?}. Retrying...", attempts, max_attempts, e));
-                                                            tracing::warn!("Attempt {}/{} failed: {:?}. Retrying...", attempts, max_attempts, e);
-                                                            // Optional: add a delay between retries
-                                                            // tokio::time::sleep(Duration::from_millis(100 * attempts as u64)).await;
-                                                        }
-                                                    }
-                                                }
-                                                Err(e) => {
-                                                    attempts += 1;
-                                                    log_error(
-                                                        crate::tools::log::LogServiceType::Source,
-                                                        format!("Failed to create reader: {:?}", e),
-                                                    );
-                                                    tracing::error!(
-                                                        "Failed to create reader: {:?}",
-                                                        e
-                                                    );
-                                                    if attempts >= max_attempts {
-                                                        break Err(e);
-                                                    }
-                                                }
-                                            }
-                                        };
-
-                                        // Note: Can't use self here, need to use mc_progress
-                                        match media_result {
-                                            Ok(media) => {
-                                                if let Ok(store) = mc_progress.store.get_library_store(&lib_progress) {
-                                                    if let Err(e) = store.copy_media_relations(media_id_progress.clone(), media.id.clone()).await {
-                                                        tracing::warn!("Failed to copy relations to converted media: {:?}", e);
-                                                    }
-                                                }
-
-                                                if let Ok(existing_thumb) = mc_progress.media_image(
-                                                    &lib_progress,
-                                                    &media_id_progress,
-                                                    None,
-                                                    &ConnectedUser::ServerAdmin,
-                                                ).await {
-                                                    if let Err(e) = mc_progress.update_media_image(
-                                                        &lib_progress,
-                                                        &media.id,
-                                                        existing_thumb.stream,
-                                                        &ConnectedUser::ServerAdmin,
-                                                    ).await {
-                                                        tracing::warn!("Failed to copy thumbnail to converted media: {:?}", e);
-                                                    }
-                                                }
-
-                                                log_info(
-                                                    crate::tools::log::LogServiceType::Source,
-                                                    format!(
-                                                        "Successfully added media: {:?}",
-                                                        media
-                                                    ),
-                                                );
-                                                match mc_progress
-                                                    .convert_clean(&job_id, &plugin_id_owned)
-                                                    .await
-                                                {
-                                                    Ok(status) => {
-                                                        log_info(crate::tools::log::LogServiceType::Source, format!("Successfully cleaned download files: {:?}", status));
-                                                    }
-                                                    Err(e) => {
-                                                        log_error(crate::tools::log::LogServiceType::Source, format!("Failed to add library file: {:?}", e));
-                                                        tracing::error!(
-                                                            "Failed to add library file: {:?}",
-                                                            e
-                                                        );
-                                                        // Send error progress update
-                                                    }
-                                                }
-                                                // Success - maybe send final progress update
-                                                tracing::info!(
-                                                    "Successfully added media: {:?}",
-                                                    media
-                                                );
-                                            }
-                                            Err(e) => {
-                                                log_error(
-                                                    crate::tools::log::LogServiceType::Source,
-                                                    format!("Failed to add library file: {:?}", e),
-                                                );
-                                                tracing::error!(
-                                                    "Failed to add library file: {:?}",
-                                                    e
-                                                );
-                                                // Send error progress update
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        log_error(
-                                            crate::tools::log::LogServiceType::Source,
-                                            format!("Got convert link error: {:?}", e),
-                                        );
-                                        tracing::error!("Failed to get convert link: {:?}", e);
-                                    }
-                                }
-                            }
-
-                            if is_terminal {
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            log_error(
-                                crate::tools::log::LogServiceType::Source,
-                                format!("Got convert status error: {:?}", e),
-                            );
-                            tracing::error!("Error polling status: {:?}", e);
-                            break;
-                        }
-                    }
-                }
-            });
-            return Ok(());
-        }
 
         let converting = self.convert_current.read().await;
         let mut queue = self.convert_queue.write().await;
@@ -2928,6 +2795,502 @@ impl ModelController {
         Ok(())
     }
 
+    pub fn start_plugin_convert_scheduler(&self) {
+        let mc = self.clone();
+        tokio::spawn(async move {
+            let mut running = mc.plugin_convert_scheduler_running.write().await;
+            if *running {
+                return;
+            }
+            *running = true;
+            drop(running);
+
+            loop {
+                if let Err(e) = mc.tick_plugin_convert_queue().await {
+                    log_error(
+                        LogServiceType::Source,
+                        format!("Plugin convert queue tick failed: {:?}", e),
+                    );
+                }
+                sleep(Duration::from_secs(2)).await;
+            }
+        });
+    }
+
+    pub async fn list_plugin_convert_jobs(
+        &self,
+        library_id: &str,
+        plugin_id: Option<String>,
+        status: Option<PluginConvertQueueStatus>,
+        requesting_user: &ConnectedUser,
+    ) -> crate::Result<Vec<PluginConvertQueueItem>> {
+        requesting_user.check_library_role(library_id, LibraryRole::Read)?;
+        self.store
+            .list_plugin_convert_queue_items(library_id, plugin_id, status.map(|s| vec![s]))
+            .await
+            .map_err(Into::into)
+    }
+
+    pub async fn remove_plugin_convert_job(
+        &self,
+        library_id: &str,
+        id: &str,
+        requesting_user: &ConnectedUser,
+    ) -> crate::Result<()> {
+        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        let item = self
+            .store
+            .get_plugin_convert_queue_item(id)
+            .await?
+            .ok_or(Error::NotFound(format!(
+                "Plugin convert job {} not found",
+                id
+            )))?;
+        if item.library_id != library_id {
+            return Err(Error::NotFound(format!("Plugin convert job {} not found", id)).into());
+        }
+
+        if let Some(job_id) = &item.plugin_job_id {
+            if item.status.is_active() {
+                self.convert_cancel(RsRequest::default(), job_id, &item.plugin_id)
+                    .await?;
+            }
+        }
+
+        self.store.remove_plugin_convert_queue_item(id).await?;
+        self.send_convert_progress(ConvertMessage {
+            library: item.library_id.clone(),
+            progress: ConvertProgress {
+                id: item.id.clone(),
+                filename: item.filename.clone(),
+                converted_id: item.converted_id.clone(),
+                done: true,
+                percent: item.progress,
+                status: RsVideoTranscodeStatus::Canceled,
+                remaining_secondes: None,
+                request: Some(item.request.clone()),
+            },
+        });
+        Ok(())
+    }
+
+    async fn tick_plugin_convert_queue(&self) -> crate::Result<()> {
+        let active = self.store.list_active_plugin_convert_jobs().await?;
+        for item in active {
+            if let Err(e) = self.poll_plugin_convert_queue_item(item).await {
+                log_error(
+                    LogServiceType::Source,
+                    format!("Failed to poll plugin convert job: {:?}", e),
+                );
+            }
+        }
+
+        let plugin_ids = self.store.list_plugins_with_queued_convert_jobs().await?;
+        for plugin_id in plugin_ids {
+            if let Err(e) = self.start_queued_plugin_convert_jobs(&plugin_id).await {
+                log_error(
+                    LogServiceType::Source,
+                    format!(
+                        "Failed to start queued plugin convert jobs for {}: {:?}",
+                        plugin_id, e
+                    ),
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn start_queued_plugin_convert_jobs(&self, plugin_id: &str) -> crate::Result<()> {
+        let limit = self.plugin_convert_concurrency_limit(plugin_id).await?;
+        let capacity = if let Some(limit) = limit {
+            let active = self
+                .store
+                .count_active_plugin_convert_jobs(plugin_id)
+                .await?;
+            if active >= limit {
+                return Ok(());
+            }
+            Some(limit - active)
+        } else {
+            None
+        };
+
+        let queued = self
+            .store
+            .list_queued_plugin_convert_jobs(plugin_id, capacity)
+            .await?;
+        for item in queued {
+            if let Err(e) = self.submit_plugin_convert_queue_item(item.clone()).await {
+                self.fail_plugin_convert_queue_item(&item, e.to_string())
+                    .await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn plugin_convert_concurrency_limit(
+        &self,
+        plugin_id: &str,
+    ) -> crate::Result<Option<usize>> {
+        if let Some((limit, fetched_at)) = self
+            .plugin_convert_concurrency_limits
+            .read()
+            .await
+            .get(plugin_id)
+            .cloned()
+        {
+            if fetched_at.elapsed() < PLUGIN_CONVERT_CONCURRENCY_CACHE_TTL {
+                return Ok(limit);
+            }
+        }
+
+        let caps = self.get_convert_capabilities(plugin_id).await?;
+        let limit = match caps.max_concurrent_jobs {
+            Some(0) => None,
+            Some(limit) => Some(limit as usize),
+            None => Some(1),
+        };
+
+        self.plugin_convert_concurrency_limits
+            .write()
+            .await
+            .insert(plugin_id.to_string(), (limit, std::time::Instant::now()));
+
+        Ok(limit)
+    }
+
+    async fn submit_plugin_convert_queue_item(
+        &self,
+        item: PluginConvertQueueItem,
+    ) -> crate::Result<()> {
+        let status = self
+            .convert_submit_media(
+                &item.library_id,
+                &item.media_id,
+                item.request.clone(),
+                &item.plugin_id,
+            )
+            .await?;
+        let queue_status = Self::queue_status_from_video_status(&status.status);
+        let progress = Self::normalize_plugin_progress(status.progress);
+        self.store
+            .update_plugin_convert_queue_item(
+                &item.id,
+                PluginConvertQueueForUpdate {
+                    status: Some(queue_status),
+                    plugin_job_id: Some(status.id.clone()),
+                    progress: Some(progress),
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+        self.send_convert_progress(ConvertMessage {
+            library: item.library_id.clone(),
+            progress: ConvertProgress {
+                id: item.id.clone(),
+                filename: item.filename.clone(),
+                converted_id: None,
+                done: false,
+                percent: progress,
+                status: status.status,
+                remaining_secondes: None,
+                request: Some(item.request.clone()),
+            },
+        });
+        Ok(())
+    }
+
+    async fn poll_plugin_convert_queue_item(
+        &self,
+        item: PluginConvertQueueItem,
+    ) -> crate::Result<()> {
+        let Some(job_id) = item.plugin_job_id.clone() else {
+            self.store
+                .update_plugin_convert_queue_item(
+                    &item.id,
+                    PluginConvertQueueForUpdate {
+                        status: Some(PluginConvertQueueStatus::Queued),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+            return Ok(());
+        };
+
+        let current_status = match self.convert_status(&job_id, &item.plugin_id).await {
+            Ok(status) => status,
+            Err(e) => {
+                log_error(
+                    LogServiceType::Source,
+                    format!("Got convert status error for {}: {:?}", item.id, e),
+                );
+                return Ok(());
+            }
+        };
+
+        let progress = Self::normalize_plugin_progress(current_status.progress);
+        let queue_status = Self::queue_status_from_video_status(&current_status.status);
+        self.store
+            .update_plugin_convert_queue_item(
+                &item.id,
+                PluginConvertQueueForUpdate {
+                    status: Some(queue_status),
+                    progress: Some(progress),
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+        let terminal = matches!(
+            current_status.status,
+            RsVideoTranscodeStatus::Completed
+                | RsVideoTranscodeStatus::Failed
+                | RsVideoTranscodeStatus::Canceled
+        );
+        self.send_convert_progress(ConvertMessage {
+            library: item.library_id.clone(),
+            progress: ConvertProgress {
+                id: item.id.clone(),
+                filename: item.filename.clone(),
+                converted_id: item.converted_id.clone(),
+                done: terminal,
+                percent: progress,
+                status: current_status.status.clone(),
+                remaining_secondes: None,
+                request: Some(item.request.clone()),
+            },
+        });
+
+        match current_status.status {
+            RsVideoTranscodeStatus::Completed => {
+                self.finish_plugin_convert_queue_item(item, &job_id).await?;
+            }
+            RsVideoTranscodeStatus::Failed => {
+                self.fail_plugin_convert_queue_item(&item, "Plugin conversion failed".to_string())
+                    .await?;
+            }
+            RsVideoTranscodeStatus::Canceled => {
+                self.store
+                    .update_plugin_convert_queue_item(
+                        &item.id,
+                        PluginConvertQueueForUpdate {
+                            status: Some(PluginConvertQueueStatus::Canceled),
+                            ..Default::default()
+                        },
+                    )
+                    .await?;
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+
+    async fn finish_plugin_convert_queue_item(
+        &self,
+        item: PluginConvertQueueItem,
+        job_id: &str,
+    ) -> crate::Result<()> {
+        let link = self.convert_link(job_id, &item.plugin_id).await?;
+        log_info(
+            LogServiceType::Source,
+            format!("Got convert link result for {}: {:?}", item.id, link),
+        );
+
+        let store = self.store.get_library_store(&item.library_id)?;
+        let media = store
+            .get_media(&item.media_id, None)
+            .await?
+            .ok_or(SourcesError::UnableToFindMedia(
+                item.library_id.clone(),
+                item.media_id.clone(),
+                "finish_plugin_convert_queue_item".to_string(),
+            ))?
+            .item;
+        let media_progress: MediaForUpdate = media.into();
+
+        let mut attempts = 0;
+        let max_attempts = 3;
+        let media_result = loop {
+            attempts += 1;
+            let source = SourceRead::Request(link.clone());
+            match source
+                .into_reader(
+                    Some(&item.library_id),
+                    None,
+                    None,
+                    Some((self.clone(), &ConnectedUser::ServerAdmin)),
+                    None,
+                )
+                .await
+            {
+                Ok(reader) => {
+                    let mut converted_infos = media_progress.clone();
+                    converted_infos.size = reader.size;
+                    if reader.mime.is_some() {
+                        converted_infos.mimetype = reader.mime.clone();
+                    }
+                    match self
+                        .add_library_file(
+                            &item.library_id,
+                            &item.filename,
+                            Some(converted_infos),
+                            reader.stream,
+                            &ConnectedUser::ServerAdmin,
+                        )
+                        .await
+                    {
+                        Ok(media) => break Ok(media),
+                        Err(e) if attempts >= max_attempts => break Err(e),
+                        Err(e) => {
+                            log_warn(
+                                LogServiceType::Source,
+                                format!(
+                                    "Attempt {}/{} failed for plugin convert {}: {:?}",
+                                    attempts, max_attempts, item.id, e
+                                ),
+                            );
+                        }
+                    }
+                }
+                Err(e) if attempts >= max_attempts => break Err(e),
+                Err(e) => {
+                    log_warn(
+                        LogServiceType::Source,
+                        format!(
+                            "Attempt {}/{} failed to create reader for plugin convert {}: {:?}",
+                            attempts, max_attempts, item.id, e
+                        ),
+                    );
+                }
+            }
+        }?;
+
+        if let Err(e) = store
+            .copy_media_relations(item.media_id.clone(), media_result.id.clone())
+            .await
+        {
+            tracing::warn!("Failed to copy relations to converted media: {:?}", e);
+        }
+
+        if let Ok(existing_thumb) = self
+            .media_image(
+                &item.library_id,
+                &item.media_id,
+                None,
+                &ConnectedUser::ServerAdmin,
+            )
+            .await
+        {
+            if let Err(e) = self
+                .update_media_image(
+                    &item.library_id,
+                    &media_result.id,
+                    existing_thumb.stream,
+                    &ConnectedUser::ServerAdmin,
+                )
+                .await
+            {
+                tracing::warn!("Failed to copy thumbnail to converted media: {:?}", e);
+            }
+        }
+
+        if let Err(e) = self.convert_clean(job_id, &item.plugin_id).await {
+            log_error(
+                LogServiceType::Source,
+                format!("Failed to clean plugin convert job {}: {:?}", item.id, e),
+            );
+        }
+
+        self.store
+            .update_plugin_convert_queue_item(
+                &item.id,
+                PluginConvertQueueForUpdate {
+                    status: Some(PluginConvertQueueStatus::Completed),
+                    progress: Some(1.0),
+                    converted_id: Some(media_result.id.clone()),
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+        self.send_convert_progress(ConvertMessage {
+            library: item.library_id.clone(),
+            progress: ConvertProgress {
+                id: item.id.clone(),
+                filename: item.filename.clone(),
+                converted_id: Some(media_result.id),
+                done: true,
+                percent: 1.0,
+                status: RsVideoTranscodeStatus::Completed,
+                remaining_secondes: None,
+                request: Some(item.request.clone()),
+            },
+        });
+
+        Ok(())
+    }
+
+    async fn fail_plugin_convert_queue_item(
+        &self,
+        item: &PluginConvertQueueItem,
+        error: String,
+    ) -> crate::Result<()> {
+        self.store
+            .update_plugin_convert_queue_item(
+                &item.id,
+                PluginConvertQueueForUpdate {
+                    status: Some(PluginConvertQueueStatus::Failed),
+                    error: Some(error.clone()),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        self.send_convert_progress(ConvertMessage {
+            library: item.library_id.clone(),
+            progress: ConvertProgress {
+                id: item.id.clone(),
+                filename: item.filename.clone(),
+                converted_id: item.converted_id.clone(),
+                done: true,
+                percent: item.progress,
+                status: RsVideoTranscodeStatus::Failed,
+                remaining_secondes: None,
+                request: Some(item.request.clone()),
+            },
+        });
+        log_error(
+            LogServiceType::Source,
+            format!("Plugin convert job {} failed: {}", item.id, error),
+        );
+        Ok(())
+    }
+
+    fn normalize_plugin_progress(progress: f32) -> f64 {
+        let progress = progress as f64;
+        if progress > 1.0 {
+            (progress / 100.0).clamp(0.0, 1.0)
+        } else {
+            progress.clamp(0.0, 1.0)
+        }
+    }
+
+    fn queue_status_from_video_status(status: &RsVideoTranscodeStatus) -> PluginConvertQueueStatus {
+        match status {
+            RsVideoTranscodeStatus::Pending | RsVideoTranscodeStatus::Queued => {
+                PluginConvertQueueStatus::Submitted
+            }
+            RsVideoTranscodeStatus::Downloading => PluginConvertQueueStatus::Downloading,
+            RsVideoTranscodeStatus::Processing => PluginConvertQueueStatus::Processing,
+            RsVideoTranscodeStatus::Completed => PluginConvertQueueStatus::Completed,
+            RsVideoTranscodeStatus::Failed => PluginConvertQueueStatus::Failed,
+            RsVideoTranscodeStatus::Canceled => PluginConvertQueueStatus::Canceled,
+        }
+    }
+
     pub async fn convert_element(
         &self,
         mut element: VideoConvertQueueElement,
@@ -2937,16 +3300,15 @@ impl ModelController {
             .check_file_role(&element.library, &element.media, LibraryRole::Write)?;
 
         let store = self.store.get_library_store(&element.library)?;
-        let media =
-            store
-                .get_media(&element.media, None)
-                .await?
-                .ok_or(SourcesError::UnableToFindMedia(
-                    element.library.to_string(),
-                    element.media.to_string(),
-                    "convert_element".to_string(),
-                ))?
-                .item;
+        let media = store
+            .get_media(&element.media, None)
+            .await?
+            .ok_or(SourcesError::UnableToFindMedia(
+                element.library.to_string(),
+                element.media.to_string(),
+                "convert_element".to_string(),
+            ))?
+            .item;
 
         let m = self.source_for_library(&element.library).await?;
         let local = self.library_source_for_library(&element.library).await?;
@@ -3062,7 +3424,10 @@ impl ModelController {
         local.remove(&dest_source).await?;
         match media {
             Ok(media) => {
-                if let Err(e) = store.copy_media_relations(element.media.clone(), media.id.clone()).await {
+                if let Err(e) = store
+                    .copy_media_relations(element.media.clone(), media.id.clone())
+                    .await
+                {
                     tracing::warn!("Failed to copy relations to converted media: {:?}", e);
                 }
 
@@ -3175,7 +3540,8 @@ impl ModelController {
         // Process first segment
         {
             let (_, ref source_path) = media_paths[0];
-            let segment_dest_source = format!(".cache/merge_{}_{}.{}", request.id, 0, output_format);
+            let segment_dest_source =
+                format!(".cache/merge_{}_{}.{}", request.id, 0, output_format);
             let segment_dest = local.get_full_path(&segment_dest_source);
             PathProvider::ensure_filepath(&segment_dest).await?;
 
@@ -3213,12 +3579,7 @@ impl ModelController {
                 .run_file(segment_dest.to_str().unwrap())
                 .await?;
 
-            segment_paths.push(
-                segment_dest
-                    .to_str()
-                    .unwrap()
-                    .to_string(),
-            );
+            segment_paths.push(segment_dest.to_str().unwrap().to_string());
         }
 
         // Probe first segment to get canvas dimensions
@@ -3246,8 +3607,7 @@ impl ModelController {
             let (tx_progress, mut rx_progress) = mpsc::channel::<f64>(100);
             tokio::spawn(async move {
                 while let Some(percent) = rx_progress.recv().await {
-                    let overall =
-                        (segment_index as f64 + percent) * 0.9 / segment_total as f64;
+                    let overall = (segment_index as f64 + percent) * 0.9 / segment_total as f64;
                     let message = ConvertMessage {
                         library: lib_progress.clone(),
                         progress: ConvertProgress {
@@ -3280,12 +3640,7 @@ impl ModelController {
                 .run_file(segment_dest.to_str().unwrap())
                 .await?;
 
-            segment_paths.push(
-                segment_dest
-                    .to_str()
-                    .unwrap()
-                    .to_string(),
-            );
+            segment_paths.push(segment_dest.to_str().unwrap().to_string());
         }
 
         // Concat all segments
@@ -3334,10 +3689,7 @@ impl ModelController {
             Ok(media) => {
                 // Copy relations from first source media
                 if let Err(e) = store
-                    .copy_media_relations(
-                        media_paths[0].0.id.clone(),
-                        media.id.clone(),
-                    )
+                    .copy_media_relations(media_paths[0].0.id.clone(), media.id.clone())
                     .await
                 {
                     tracing::warn!("Failed to copy relations to merged media: {:?}", e);

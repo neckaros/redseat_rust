@@ -1,7 +1,5 @@
 use rs_plugin_common_interfaces::{
-    domain::rs_ids::RsIds,
-    lookup::RsLookupQuery,
-    ExternalImage, ImageType, RsRequest,
+    domain::rs_ids::RsIds, lookup::RsLookupQuery, ExternalImage, ImageType, RsRequest,
 };
 use tokio::io::AsyncWriteExt;
 
@@ -195,7 +193,10 @@ impl ModelController {
             if let Err(e) = refresh_fn.await {
                 log_error(
                     LogServiceType::Source,
-                    format!("Failed to refresh {} image {}: {:#}", config.cache_prefix, entity_id, e),
+                    format!(
+                        "Failed to refresh {} image {}: {:#}",
+                        config.cache_prefix, entity_id, e
+                    ),
                 );
             }
         }
