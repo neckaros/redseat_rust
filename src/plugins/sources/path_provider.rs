@@ -88,6 +88,84 @@ impl PathProvider {
         Ok(())
     }
 
+    fn source_key(source: &str) -> String {
+        source.replace('\\', "/")
+    }
+
+    fn storage_filename(name: &str) -> String {
+        const MAX_WINDOWS_FILENAME_CHARS: usize = 255;
+
+        let mut filename: String = name
+            .chars()
+            .map(|c| match c {
+                '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+                c if c.is_control() => '_',
+                c => c,
+            })
+            .collect();
+
+        filename = filename.trim_matches([' ', '.']).to_string();
+        if filename.is_empty() {
+            filename = "file".to_string();
+        }
+
+        let stem = filename
+            .split('.')
+            .next()
+            .unwrap_or("")
+            .to_ascii_uppercase();
+        if matches!(
+            stem.as_str(),
+            "CON"
+                | "PRN"
+                | "AUX"
+                | "NUL"
+                | "COM1"
+                | "COM2"
+                | "COM3"
+                | "COM4"
+                | "COM5"
+                | "COM6"
+                | "COM7"
+                | "COM8"
+                | "COM9"
+                | "LPT1"
+                | "LPT2"
+                | "LPT3"
+                | "LPT4"
+                | "LPT5"
+                | "LPT6"
+                | "LPT7"
+                | "LPT8"
+                | "LPT9"
+        ) {
+            filename = format!("_{}", filename);
+        }
+
+        Self::truncate_filename(filename, MAX_WINDOWS_FILENAME_CHARS)
+    }
+
+    fn truncate_filename(filename: String, max_chars: usize) -> String {
+        if filename.chars().count() <= max_chars {
+            return filename;
+        }
+
+        let extension = Path::new(&filename)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| format!(".{}", extension))
+            .unwrap_or_default();
+        let extension_chars = extension.chars().count();
+        if extension_chars >= max_chars {
+            return filename.chars().take(max_chars).collect();
+        }
+
+        let stem_limit = max_chars.saturating_sub(extension_chars).max(1);
+        let mut truncated: String = filename.chars().take(stem_limit).collect();
+        truncated.push_str(&extension);
+        truncated
+    }
+
     pub async fn get_file_write_stream(
         &self,
         name: &str,
@@ -363,14 +441,15 @@ impl Source for PathProvider {
 
         let mut file_path = path.clone();
         let original_source = sourcepath.clone();
-        sourcepath.push(name);
+        let storage_name = Self::storage_filename(name);
+        sourcepath.push(&storage_name);
         file_path.push(&sourcepath);
 
         if let Some(p) = file_path.parent() {
             create_dir_all(&p).await?;
         }
 
-        let original_name = name;
+        let original_name = storage_name;
         let mut i = 1;
         while file_path.exists() {
             i += 1;
@@ -417,14 +496,15 @@ impl Source for PathProvider {
 
         let mut file_path = path.clone();
         let original_source = sourcepath.clone();
-        sourcepath.push(name);
+        let storage_name = Self::storage_filename(name);
+        sourcepath.push(&storage_name);
         file_path.push(&sourcepath);
 
         if let Some(p) = file_path.parent() {
             create_dir_all(&p).await?;
         }
 
-        let original_name = name;
+        let original_name = storage_name;
         let mut i = 1;
         while file_path.exists() {
             i += 1;
@@ -457,7 +537,11 @@ impl Source for PathProvider {
         let existing = Self::get_all_file_paths(&self.root, false);
         println!("Got {} paths", existing.len());
         let mut total = 0u64;
-        let mut existing_sources: Vec<String> = Vec::with_capacity(existing.len());
+        let source_keys: HashSet<String> = sources
+            .iter()
+            .map(|source| Self::source_key(source))
+            .collect();
+        let mut existing_source_keys: HashSet<String> = HashSet::with_capacity(existing.len());
         for existing_file in existing.iter() {
             let path = Path::new(&existing_file);
             let existing_as_source = match path.strip_prefix(&self.root) {
@@ -470,9 +554,10 @@ impl Source for PathProvider {
                     continue;
                 }
             };
-            existing_sources.push(existing_as_source.clone());
+            let existing_source_key = Self::source_key(&existing_as_source);
+            existing_source_keys.insert(existing_source_key.clone());
 
-            if !sources.contains(&existing_as_source) {
+            if !source_keys.contains(&existing_source_key) {
                 let metadata = path.metadata()?;
                 println!("{} TO DELETE {}", existing_as_source, metadata.len());
                 result.push((path.to_string_lossy().into_owned(), metadata.len()));
@@ -486,7 +571,7 @@ impl Source for PathProvider {
             human_bytes(total as f64)
         );
         for source in sources {
-            if !existing_sources.contains(&source) {
+            if !existing_source_keys.contains(&Self::source_key(&source)) {
                 log_error(
                     crate::tools::log::LogServiceType::Other,
                     format!("Unable to find file {}", source),
@@ -564,4 +649,42 @@ mod tests {
     // for `collect`
     use serde_json::{json, Value};
     use tower::ServiceExt; // for `call`, `oneshot`, and `ready`
+
+    #[test]
+    fn storage_filename_flattens_remote_path_segments() {
+        assert_eq!(
+            PathProvider::storage_filename("Anna_divina/videos/file.mp4"),
+            "Anna_divina_videos_file.mp4"
+        );
+        assert_eq!(
+            PathProvider::storage_filename(r"Anna_divina\videos\file.mp4"),
+            "Anna_divina_videos_file.mp4"
+        );
+    }
+
+    #[test]
+    fn storage_filename_replaces_windows_invalid_characters() {
+        assert_eq!(
+            PathProvider::storage_filename(r#"bad<name>:with"chars|and?stars*.mp4"#),
+            "bad_name__with_chars_and_stars_.mp4"
+        );
+        assert_eq!(PathProvider::storage_filename("CON.mp4"), "_CON.mp4");
+        assert_eq!(PathProvider::storage_filename("..."), "file");
+    }
+
+    #[test]
+    fn storage_filename_limits_windows_filename_length() {
+        let filename = PathProvider::storage_filename(&format!("{}.mp4", "a".repeat(300)));
+
+        assert_eq!(filename.chars().count(), 255);
+        assert!(filename.ends_with(".mp4"));
+    }
+
+    #[test]
+    fn storage_filename_replaces_question_mark() {
+        assert_eq!(
+            PathProvider::storage_filename("folder/video.mp4?download=true"),
+            "folder_video.mp4_download=true"
+        );
+    }
 }
