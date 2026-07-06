@@ -452,6 +452,19 @@ impl FaceRecognitionService {
     //==============================================================================================================
 
     pub fn detect_faces_retinaface(&self, img: &DynamicImage) -> RsResult<Vec<Detection>> {
+        let detections = self.detect_faces_retinaface_with_padding(img, 0.0)?;
+        if detections.is_empty() {
+            self.detect_faces_retinaface_with_padding(img, 0.5)
+        } else {
+            Ok(detections)
+        }
+    }
+
+    fn detect_faces_retinaface_with_padding(
+        &self,
+        img: &DynamicImage,
+        content_padding_ratio: f32,
+    ) -> RsResult<Vec<Detection>> {
         let cfg = Config {
             name: "mobilenet0.25".to_string(),
             min_sizes: vec![vec![16.0, 32.0], vec![64.0, 128.0], vec![256.0, 512.0]],
@@ -462,13 +475,21 @@ impl FaceRecognitionService {
 
         let target_size = 640;
         let (orig_w, orig_h) = img.dimensions();
-        let scale = target_size as f32 / orig_w.max(orig_h) as f32;
-        let new_w = (orig_w as f32 * scale) as u32;
-        let new_h = (orig_h as f32 * scale) as u32;
-        let pad_w = (32 - (new_w % 32)) % 32;
-        let pad_h = (32 - (new_h % 32)) % 32;
-        let final_w = new_w + pad_w;
-        let final_h = new_h + pad_h;
+        let content_padding_ratio = content_padding_ratio.max(0.0);
+        let content_padding = orig_w.max(orig_h) as f32 * content_padding_ratio;
+        let virtual_w = orig_w as f32 + content_padding * 2.0;
+        let virtual_h = orig_h as f32 + content_padding * 2.0;
+        let scale = target_size as f32 / virtual_w.max(virtual_h);
+        let new_w = ((orig_w as f32 * scale).round() as u32).max(1);
+        let new_h = ((orig_h as f32 * scale).round() as u32).max(1);
+        let offset_x = (content_padding * scale).round() as u32;
+        let offset_y = (content_padding * scale).round() as u32;
+        let content_w = new_w + offset_x * 2;
+        let content_h = new_h + offset_y * 2;
+        let pad_w = (32 - (content_w % 32)) % 32;
+        let pad_h = (32 - (content_h % 32)) % 32;
+        let final_w = content_w + pad_w;
+        let final_h = content_h + pad_h;
 
         let resized = img.resize_exact(new_w, new_h, FilterType::Triangle);
         let rgb = resized.to_rgb8();
@@ -477,9 +498,11 @@ impl FaceRecognitionService {
         for y in 0..new_h {
             for x in 0..new_w {
                 let pixel = rgb.get_pixel(x, y);
-                input[[0, 0, y as usize, x as usize]] = (pixel[0] as f32 - 127.5) / 128.0;
-                input[[0, 1, y as usize, x as usize]] = (pixel[1] as f32 - 127.5) / 128.0;
-                input[[0, 2, y as usize, x as usize]] = (pixel[2] as f32 - 127.5) / 128.0;
+                let input_y = (y + offset_y) as usize;
+                let input_x = (x + offset_x) as usize;
+                input[[0, 0, input_y, input_x]] = (pixel[0] as f32 - 127.5) / 128.0;
+                input[[0, 1, input_y, input_x]] = (pixel[1] as f32 - 127.5) / 128.0;
+                input[[0, 2, input_y, input_x]] = (pixel[2] as f32 - 127.5) / 128.0;
             }
         }
 
@@ -607,24 +630,31 @@ impl FaceRecognitionService {
             let [x1, y1, x2, y2] = bboxes_list[idx];
             // Scale from model input size back to original image size
             let bbox = BBox {
-                x1: x1 / scale,
-                y1: y1 / scale,
-                x2: x2 / scale,
-                y2: y2 / scale,
+                x1: (x1 - offset_x as f32) / scale,
+                y1: (y1 - offset_y as f32) / scale,
+                x2: (x2 - offset_x as f32) / scale,
+                y2: (y2 - offset_y as f32) / scale,
                 confidence: scores_list[idx],
             };
 
             // Scale keypoints back to original image size
             let landmarks: Vec<(f32, f32)> = if idx < kps_list.len() {
+                let content_x1 = offset_x as f32;
+                let content_y1 = offset_y as f32;
+                let content_x2 = content_x1 + new_w as f32;
+                let content_y2 = content_y1 + new_h as f32;
                 kps_list[idx]
                     .iter()
                     .map(|(x, y)| {
                         // First, clip to valid region (removes padding effects)
-                        let x_clipped = x.min(new_w as f32);
-                        let y_clipped = y.min(new_h as f32);
+                        let x_clipped = x.max(content_x1).min(content_x2);
+                        let y_clipped = y.max(content_y1).min(content_y2);
 
                         // Then scale back to original image size
-                        (x_clipped / scale, y_clipped / scale)
+                        (
+                            (x_clipped - offset_x as f32) / scale,
+                            (y_clipped - offset_y as f32) / scale,
+                        )
                     })
                     .collect()
             } else {

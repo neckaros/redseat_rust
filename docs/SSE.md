@@ -127,7 +127,8 @@ type RsProgressType =
   | 'transfert'
   | 'analysing'
   | 'finished'
-  | { duplicate: string };
+  | { duplicate: string }
+  | { failed: string };
 
 interface RsProgress {
   id: string;

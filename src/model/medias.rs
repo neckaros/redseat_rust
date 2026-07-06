@@ -1939,217 +1939,356 @@ impl ModelController {
         store: &crate::model::store::sql::library::SqliteLibraryStore,
         requesting_user: &ConnectedUser,
     ) -> RsResult<Vec<Media>> {
-        let m = self.source_for_library(library_id).await?;
         let mut medias: Vec<Media> = vec![];
+        let request_count = files.requests.len();
+        let mut first_error = None;
 
         for mut request in files.requests {
-            request.apply_selected_file_info();
+            if request.upload_id.is_none() {
+                request.upload_id = Some(nanoid!());
+            }
             let upload_id = request.upload_id.clone().unwrap_or_else(|| nanoid!());
-            self.plugin_manager.fill_infos(&mut request).await;
+            let filename = Self::request_progress_filename(&request);
+            let request_url = request.url.clone();
 
-            let mut infos: MediaForUpdate = request.clone().into();
-            infos.origin = origin.clone().or_else(|| {
-                Some(RsLink {
-                    platform: "link".to_owned(),
-                    kind: Some(RsLinkType::Post),
-                    id: request.url.clone(),
-                    ..Default::default()
-                })
-            });
-
-            let tx_progress =
-                self.create_progress_sender(library_id.to_owned(), Some(upload_id.clone()));
-
-            // Check for origin duplicate
-            if let Some(origin) = &mut infos.origin {
-                let origin_filename = request
-                    .selected_file
-                    .clone()
-                    .or_else(|| filename_from_path(&request.url));
-                self.check_origin_duplicate(
-                    store,
-                    origin,
-                    origin_filename,
-                    infos.ignore_origin_duplicate,
-                    Some(&tx_progress),
-                    &upload_id,
-                )
-                .await?;
-            }
-
-            // Download file
-            let reader = SourceRead::Request(request)
-                .into_reader(
-                    Some(library_id),
-                    None,
-                    Some(tx_progress.clone()),
-                    Some((self.clone(), &ConnectedUser::ServerAdmin)),
-                    None,
-                )
-                .await?;
-
-            if let Some(reader_name) = reader.name {
-                infos.name = Some(reader_name);
-            }
-
-            // Determine filename
-            let mut filename = if let Some(name) = &infos.name {
-                name.clone()
-            } else if let Some(desc) = &infos.description {
-                let re = Regex::new(r"\.\w{2,4}$").unwrap();
-                if re.is_match(desc.trim()) {
-                    desc.clone()
-                } else {
-                    nanoid!()
-                }
-            } else {
-                nanoid!()
-            };
-
-            if infos.mimetype.is_none() {
-                infos.mimetype = reader.mime;
-            }
-
-            if !filename.contains('.') || filename.split('.').last().unwrap_or("").len() > 5 {
-                if let Some(mimetype) = &infos.mimetype {
-                    let suffix = get_extension_from_mime(mimetype);
-                    filename = format!("{}.{}", filename, suffix);
-                }
-            }
-
-            // Write file
-            let mut progress_reader = ProgressReader::new(
-                reader.stream,
-                RsProgress {
-                    id: upload_id.clone(),
-                    total: reader.size,
-                    current: Some(0),
-                    kind: RsProgressType::Transfert,
-                    filename: Some(filename.clone()),
-                },
-                tx_progress.clone(),
-            );
-            let encryption_key = self.get_library_encryption_key(library_id).await;
-            let id = nanoid!();
-            let disk_filename = if encryption_key.is_some() {
-                id.clone()
-            } else {
-                filename.clone()
-            };
-            let (source, mut file) = m.writerseek(&disk_filename).await?;
-            if let Some(ref key) = encryption_key {
-                let mut enc_file = CtrEncryptWriter::new(file, key)?;
-                copy(&mut progress_reader, &mut enc_file).await?;
-                tokio::io::AsyncWriteExt::flush(&mut enc_file).await?;
-                tokio::io::AsyncWriteExt::shutdown(&mut enc_file).await?;
-            } else {
-                copy(&mut progress_reader, &mut file).await?;
-                file.flush().await?;
-            }
-            drop(progress_reader);
-
-            let _ = m.fill_infos(&source, &mut infos).await;
-
-            // Check for hash duplicate
-            if let Some(hash) = &infos.md5 {
-                self.check_hash_duplicate(
+            match self
+                .download_individual_request(
                     library_id,
+                    library,
+                    request,
+                    origin.clone(),
                     store,
-                    &source,
-                    hash,
-                    Some(&tx_progress),
-                    &upload_id,
+                    requesting_user,
                 )
-                .await?;
-            }
-
-            // Create media record
-            let new_file = MediaForAdd {
-                name: filename.to_string(),
-                source: Some(source.to_string()),
-                mimetype: infos.mimetype.clone().unwrap_or(DEFAULT_MIME.to_owned()),
-                created: Some(
-                    infos
-                        .created
-                        .unwrap_or_else(|| Utc::now().timestamp_millis()),
-                ),
-                kind: file_type_from_mime(
-                    &infos.mimetype.clone().unwrap_or(DEFAULT_MIME.to_owned()),
-                ),
-                ..Default::default()
-            };
-
-            if let Err(error) = tx_progress
-                .send(RsProgress {
-                    id: upload_id.clone(),
-                    total: infos.size,
-                    current: infos.size,
-                    kind: RsProgressType::Analysing,
-                    filename: Some(filename.to_owned()),
-                })
                 .await
             {
-                log_error(
-                    LogServiceType::Source,
-                    format!("Unable to send final progress message: {:?}", error),
-                );
+                Ok(media) => medias.push(media),
+                Err(error) => {
+                    let is_duplicate = matches!(&error, RsError::Model(Error::Duplicate(_, _)));
+                    let error_message = format!("{:#}", error);
+
+                    if is_duplicate {
+                        log_warn(
+                            LogServiceType::Source,
+                            format!(
+                                "Skipping duplicate individual download {}: {}",
+                                request_url, error_message
+                            ),
+                        );
+                    } else {
+                        self.send_individual_download_failure(
+                            library_id,
+                            &upload_id,
+                            filename,
+                            &request_url,
+                            &error_message,
+                        );
+                    }
+
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                }
             }
+        }
 
-            store
-                .add_media(MediaForInsert {
-                    id: id.clone(),
-                    media: new_file,
-                })
-                .await?;
-            self.update_media(library_id, id.to_owned(), infos, false, requesting_user)
-                .await?;
-
-            if let Err(e) = self
-                .generate_thumb(library_id, &id, &ConnectedUser::ServerAdmin)
-                .await
-            {
-                log_error(
-                    crate::tools::log::LogServiceType::Source,
-                    format!("Unable to generate thumb {:#}", e),
-                );
+        if medias.is_empty() {
+            if let Some(error) = first_error {
+                if request_count > 1 {
+                    log_error(
+                        LogServiceType::Source,
+                        format!(
+                            "All {} individual downloads failed for library {}",
+                            request_count, library_id
+                        ),
+                    );
+                }
+                return Err(error);
             }
-            self.process_media_spawn(
-                library_id.to_string(),
-                id.clone(),
-                false,
-                library.kind == LibraryType::Photos,
-                ConnectedUser::ServerAdmin,
-            );
-
-            let media = store
-                .get_media(&id, requesting_user.user_id().ok())
-                .await?
-                .ok_or(SourcesError::UnableToFindMedia(
-                    library_id.to_string(),
-                    id.to_string(),
-                    "download_individual".to_string(),
-                ))?;
-            let _ = tx_progress
-                .send(RsProgress {
-                    id: upload_id.clone(),
-                    total: media.item.size,
-                    current: media.item.size,
-                    kind: RsProgressType::Finished,
-                    filename: Some(media.item.name.to_owned()),
-                })
-                .await;
-
-            self.send_media(MediasMessage {
-                library: library_id.to_string(),
-                medias: vec![MediaWithAction {
-                    media: media.clone(),
-                    action: ElementAction::Added,
-                }],
-            });
-            medias.push(media.item);
         }
 
         Ok(medias)
+    }
+
+    async fn download_individual_request(
+        &self,
+        library_id: &str,
+        library: &crate::model::libraries::ServerLibraryForRead,
+        mut request: RsRequest,
+        origin: Option<RsLink>,
+        store: &crate::model::store::sql::library::SqliteLibraryStore,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Media> {
+        let m = self.source_for_library(library_id).await?;
+
+        request.apply_selected_file_info();
+        let upload_id = request.upload_id.clone().unwrap_or_else(|| nanoid!());
+        self.plugin_manager.fill_infos(&mut request).await;
+
+        let mut infos: MediaForUpdate = request.clone().into();
+        infos.origin = origin.or_else(|| {
+            Some(RsLink {
+                platform: "link".to_owned(),
+                kind: Some(RsLinkType::Post),
+                id: request.url.clone(),
+                ..Default::default()
+            })
+        });
+
+        let tx_progress =
+            self.create_progress_sender(library_id.to_owned(), Some(upload_id.clone()));
+
+        // Check for origin duplicate
+        if let Some(origin) = &mut infos.origin {
+            let origin_filename = request
+                .selected_file
+                .clone()
+                .or_else(|| filename_from_path(&request.url));
+            self.check_origin_duplicate(
+                store,
+                origin,
+                origin_filename,
+                infos.ignore_origin_duplicate,
+                Some(&tx_progress),
+                &upload_id,
+            )
+            .await?;
+        }
+
+        // Download file
+        let reader = SourceRead::Request(request.clone())
+            .into_reader(
+                Some(library_id),
+                None,
+                Some(tx_progress.clone()),
+                Some((self.clone(), &ConnectedUser::ServerAdmin)),
+                None,
+            )
+            .await?;
+
+        if let Some(reader_name) = reader.name {
+            infos.name = Some(reader_name);
+        }
+
+        // Determine filename
+        let mut filename = if let Some(name) = &infos.name {
+            name.clone()
+        } else if let Some(desc) = &infos.description {
+            let re = Regex::new(r"\.\w{2,4}$").unwrap();
+            if re.is_match(desc.trim()) {
+                desc.clone()
+            } else {
+                nanoid!()
+            }
+        } else {
+            nanoid!()
+        };
+
+        if infos.mimetype.is_none() {
+            infos.mimetype = reader.mime;
+        }
+
+        if !filename.contains('.') || filename.split('.').last().unwrap_or("").len() > 5 {
+            if let Some(mimetype) = &infos.mimetype {
+                let suffix = get_extension_from_mime(mimetype);
+                filename = format!("{}.{}", filename, suffix);
+            }
+        }
+
+        // Write file
+        let mut progress_reader = ProgressReader::new(
+            reader.stream,
+            RsProgress {
+                id: upload_id.clone(),
+                total: reader.size,
+                current: Some(0),
+                kind: RsProgressType::Transfert,
+                filename: Some(filename.clone()),
+            },
+            tx_progress.clone(),
+        );
+        let encryption_key = self.get_library_encryption_key(library_id).await;
+        let id = nanoid!();
+        let disk_filename = if encryption_key.is_some() {
+            id.clone()
+        } else {
+            filename.clone()
+        };
+        let (source, mut file) = m.writerseek(&disk_filename).await?;
+        let write_result: RsResult<()> = if let Some(ref key) = encryption_key {
+            match CtrEncryptWriter::new(file, key) {
+                Ok(mut enc_file) => {
+                    let result: RsResult<()> = async {
+                        copy(&mut progress_reader, &mut enc_file).await?;
+                        tokio::io::AsyncWriteExt::flush(&mut enc_file).await?;
+                        tokio::io::AsyncWriteExt::shutdown(&mut enc_file).await?;
+                        Ok(())
+                    }
+                    .await;
+                    result
+                }
+                Err(error) => Err(error.into()),
+            }
+        } else {
+            let result: RsResult<()> = async {
+                copy(&mut progress_reader, &mut file).await?;
+                file.flush().await?;
+                file.shutdown().await?;
+                Ok(())
+            }
+            .await;
+            drop(file);
+            result
+        };
+        if let Err(error) = write_result {
+            if let Err(cleanup_error) = m.remove(&source).await {
+                log_error(
+                    LogServiceType::Source,
+                    format!(
+                        "Unable to clean failed download {} after write error: {:#}",
+                        source, cleanup_error
+                    ),
+                );
+            }
+            return Err(error);
+        }
+        drop(progress_reader);
+
+        let _ = m.fill_infos(&source, &mut infos).await;
+
+        // Check for hash duplicate
+        if let Some(hash) = &infos.md5 {
+            self.check_hash_duplicate(
+                library_id,
+                store,
+                &source,
+                hash,
+                Some(&tx_progress),
+                &upload_id,
+            )
+            .await?;
+        }
+
+        // Create media record
+        let new_file = MediaForAdd {
+            name: filename.to_string(),
+            source: Some(source.to_string()),
+            mimetype: infos.mimetype.clone().unwrap_or(DEFAULT_MIME.to_owned()),
+            created: Some(
+                infos
+                    .created
+                    .unwrap_or_else(|| Utc::now().timestamp_millis()),
+            ),
+            kind: file_type_from_mime(&infos.mimetype.clone().unwrap_or(DEFAULT_MIME.to_owned())),
+            ..Default::default()
+        };
+
+        if let Err(error) = tx_progress
+            .send(RsProgress {
+                id: upload_id.clone(),
+                total: infos.size,
+                current: infos.size,
+                kind: RsProgressType::Analysing,
+                filename: Some(filename.to_owned()),
+            })
+            .await
+        {
+            log_error(
+                LogServiceType::Source,
+                format!("Unable to send final progress message: {:?}", error),
+            );
+        }
+
+        store
+            .add_media(MediaForInsert {
+                id: id.clone(),
+                media: new_file,
+            })
+            .await?;
+        self.update_media(library_id, id.to_owned(), infos, false, requesting_user)
+            .await?;
+
+        if let Err(e) = self
+            .generate_thumb(library_id, &id, &ConnectedUser::ServerAdmin)
+            .await
+        {
+            log_error(
+                crate::tools::log::LogServiceType::Source,
+                format!("Unable to generate thumb {:#}", e),
+            );
+        }
+        self.process_media_spawn(
+            library_id.to_string(),
+            id.clone(),
+            false,
+            library.kind == LibraryType::Photos,
+            ConnectedUser::ServerAdmin,
+        );
+
+        let media = store
+            .get_media(&id, requesting_user.user_id().ok())
+            .await?
+            .ok_or(SourcesError::UnableToFindMedia(
+                library_id.to_string(),
+                id.to_string(),
+                "download_individual".to_string(),
+            ))?;
+        let _ = tx_progress
+            .send(RsProgress {
+                id: upload_id.clone(),
+                total: media.item.size,
+                current: media.item.size,
+                kind: RsProgressType::Finished,
+                filename: Some(media.item.name.to_owned()),
+            })
+            .await;
+
+        self.send_media(MediasMessage {
+            library: library_id.to_string(),
+            medias: vec![MediaWithAction {
+                media: media.clone(),
+                action: ElementAction::Added,
+            }],
+        });
+
+        Ok(media.item)
+    }
+
+    fn request_progress_filename(request: &RsRequest) -> Option<String> {
+        request
+            .filename
+            .clone()
+            .or_else(|| request.selected_file.clone())
+            .or_else(|| filename_from_path(&request.url))
+            .or_else(|| Some(request.url.clone()))
+    }
+
+    fn send_individual_download_failure(
+        &self,
+        library_id: &str,
+        upload_id: &str,
+        filename: Option<String>,
+        request_url: &str,
+        error_message: &str,
+    ) {
+        log_error(
+            LogServiceType::Source,
+            format!(
+                "Unable to download individual media request {}: {}",
+                request_url, error_message
+            ),
+        );
+        self.send_upload_progress(UploadProgressMessage {
+            library: library_id.to_owned(),
+            progress: RsProgress {
+                id: upload_id.to_owned(),
+                total: Some(1),
+                current: Some(1),
+                kind: RsProgressType::Failed(error_message.to_owned()),
+                filename,
+            },
+            ..Default::default()
+        });
     }
 
     pub fn create_progress_sender(

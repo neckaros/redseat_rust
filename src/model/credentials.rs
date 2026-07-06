@@ -93,7 +93,8 @@ impl ModelController {
             expires: credential.expires,
         };
         self.store.add_crendential(credential.clone()).await?;
-        self.clear_plugin_convert_concurrency_limit_cache(None).await;
+        self.clear_plugin_convert_concurrency_limit_cache(None)
+            .await;
         Ok(credential)
     }
 
@@ -105,7 +106,8 @@ impl ModelController {
     ) -> Result<Credential> {
         requesting_user.check_role(&UserRole::Admin)?;
         self.store.update_credentials(credential_id, update).await?;
-        self.clear_plugin_convert_concurrency_limit_cache(None).await;
+        self.clear_plugin_convert_concurrency_limit_cache(None)
+            .await;
         let credential = self.store.get_credential(credential_id).await?.ok_or(
             SourcesError::UnableToFindCredentials(
                 "nolib".to_string(),
@@ -134,7 +136,8 @@ impl ModelController {
         self.store
             .remove_credential(credential_id.to_string())
             .await?;
-        self.clear_plugin_convert_concurrency_limit_cache(None).await;
+        self.clear_plugin_convert_concurrency_limit_cache(None)
+            .await;
         Ok(credential)
     }
 }
