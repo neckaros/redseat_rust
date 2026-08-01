@@ -5,12 +5,34 @@ use rs_plugin_common_interfaces::{
     lookup::{RsLookupMetadataResultWrapper, RsLookupMetadataResults, RsLookupQuery},
 };
 
-use crate::{domain::library::LibraryRole, error::RsResult};
+use crate::{
+    domain::library::LibraryRole,
+    error::RsResult,
+    tools::log::{log_warn, LogServiceType},
+};
 
 use super::{users::ConnectedUser, ModelController};
 
 /// Type alias for grouped search results (source_id, source_name, results)
 pub type SearchResultGroups = Vec<(String, String, RsLookupMetadataResults)>;
+
+/// Treat Trakt as one optional search provider. A Trakt failure must not prevent
+/// plugin providers from returning their own results.
+pub fn optional_trakt_search<T>(entity: &str, result: crate::Result<T>) -> Option<T> {
+    match result {
+        Ok(value) => Some(value),
+        Err(error) => {
+            log_warn(
+                LogServiceType::Source,
+                format!(
+                    "Trakt {} search failed; continuing with other providers: {}",
+                    entity, error
+                ),
+            );
+            None
+        }
+    }
+}
 
 /// Merge RsIds across results that share at least one common ID.
 /// Uses union-find for O(n·k) performance where n = total results, k = IDs per result.

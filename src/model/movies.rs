@@ -31,7 +31,7 @@ use crate::{
 
 use super::{
     entity_images::EntityImageConfig,
-    entity_search::merge_result_ids,
+    entity_search::{merge_result_ids, optional_trakt_search},
     error::{Error, Result},
     store::sql::SqlOrder,
     users::{ConnectedUser, HistoryQuery},
@@ -195,16 +195,17 @@ impl ModelController {
             .as_deref()
             .map_or(true, |s| s.iter().any(|id| id == "trakt"));
         let trakt_entries = if include_trakt {
-            let trakt_results = self.trakt.search_movie(&query).await?;
-            Some(
-                trakt_results
-                    .into_iter()
-                    .map(|(movie, match_type)| RsLookupMetadataResultWrapper {
-                        metadata: RsLookupMetadataResult::Movie(movie),
-                        match_type,
-                        ..Default::default()
-                    })
-                    .collect(),
+            optional_trakt_search("movie", self.trakt.search_movie(&query).await).map(
+                |trakt_results| {
+                    trakt_results
+                        .into_iter()
+                        .map(|(movie, match_type)| RsLookupMetadataResultWrapper {
+                            metadata: RsLookupMetadataResult::Movie(movie),
+                            match_type,
+                            ..Default::default()
+                        })
+                        .collect()
+                },
             )
         } else {
             None
@@ -232,16 +233,17 @@ impl ModelController {
             .as_deref()
             .map_or(true, |s| s.iter().any(|id| id == "trakt"));
         let trakt_entries = if include_trakt {
-            let trakt_results = self.trakt.search_movie(&query).await?;
-            Some(
-                trakt_results
-                    .into_iter()
-                    .map(|(movie, match_type)| RsLookupMetadataResultWrapper {
-                        metadata: RsLookupMetadataResult::Movie(movie),
-                        match_type,
-                        ..Default::default()
-                    })
-                    .collect(),
+            optional_trakt_search("movie", self.trakt.search_movie(&query).await).map(
+                |trakt_results| {
+                    trakt_results
+                        .into_iter()
+                        .map(|(movie, match_type)| RsLookupMetadataResultWrapper {
+                            metadata: RsLookupMetadataResult::Movie(movie),
+                            match_type,
+                            ..Default::default()
+                        })
+                        .collect()
+                },
             )
         } else {
             None
