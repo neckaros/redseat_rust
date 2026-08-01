@@ -35,7 +35,7 @@ use crate::{
 
 use super::{
     entity_images::EntityImageConfig,
-    entity_search::merge_result_ids,
+    entity_search::{merge_result_ids, optional_trakt_search},
     episodes::{EpisodeForUpdate, EpisodeQuery},
     error::{Error, Result},
     medias::{MediaQuery, RsSort},
@@ -284,16 +284,17 @@ impl ModelController {
                 .as_deref()
                 .map_or(true, |s| s.iter().any(|id| id == "trakt"));
         let trakt_entries = if include_trakt {
-            let trakt_results = self.trakt.search_show(&query).await?;
-            Some(
-                trakt_results
-                    .into_iter()
-                    .map(|(serie, match_type)| RsLookupMetadataResultWrapper {
-                        metadata: RsLookupMetadataResult::Serie(serie),
-                        match_type,
-                        ..Default::default()
-                    })
-                    .collect(),
+            optional_trakt_search("series", self.trakt.search_show(&query).await).map(
+                |trakt_results| {
+                    trakt_results
+                        .into_iter()
+                        .map(|(serie, match_type)| RsLookupMetadataResultWrapper {
+                            metadata: RsLookupMetadataResult::Serie(serie),
+                            match_type,
+                            ..Default::default()
+                        })
+                        .collect()
+                },
             )
         } else {
             None
@@ -328,16 +329,17 @@ impl ModelController {
                 .as_deref()
                 .map_or(true, |s| s.iter().any(|id| id == "trakt"));
         let trakt_entries = if include_trakt {
-            let trakt_results = self.trakt.search_show(&query).await?;
-            Some(
-                trakt_results
-                    .into_iter()
-                    .map(|(serie, match_type)| RsLookupMetadataResultWrapper {
-                        metadata: RsLookupMetadataResult::Serie(serie),
-                        match_type,
-                        ..Default::default()
-                    })
-                    .collect(),
+            optional_trakt_search("series", self.trakt.search_show(&query).await).map(
+                |trakt_results| {
+                    trakt_results
+                        .into_iter()
+                        .map(|(serie, match_type)| RsLookupMetadataResultWrapper {
+                            metadata: RsLookupMetadataResult::Serie(serie),
+                            match_type,
+                            ..Default::default()
+                        })
+                        .collect()
+                },
             )
         } else {
             None

@@ -162,9 +162,7 @@ impl ModelController {
         let mc = Self {
             store: Arc::new(store),
             plugin_manager: Arc::new(plugin_manager),
-            trakt: Arc::new(TraktContext::new(
-                "fcb0d3a87a808a5a0897291350e23cddbbef14502ccb91f1f7bf9c339cb93bcb".to_string(),
-            )),
+            trakt: Arc::new(TraktContext::from_env()),
             imdb: Arc::new(ImdbContext::new()),
             scheduler: Arc::new(scheduler),
             chache_libraries: Arc::new(RwLock::new(HashMap::new())),
