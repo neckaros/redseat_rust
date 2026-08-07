@@ -75,4 +75,54 @@ mod tests {
             "No face detected when the face fills the frame"
         );
     }
+
+    #[tokio::test]
+    async fn test_rolled_face_is_detected() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let models = root.join("models");
+
+        let service = FaceRecognitionService::new_async(models.to_str().unwrap())
+            .await
+            .unwrap();
+
+        let img_path = root.join("test_data").join("face1.jpg");
+        let img = image::open(&img_path).expect("Failed to open face1.jpg");
+        let rotated = imageproc::geometric_transformations::rotate_about_center(
+            &img.to_rgba8(),
+            35.0_f32.to_radians(),
+            imageproc::geometric_transformations::Interpolation::Bilinear,
+            image::Rgba([0, 0, 0, 0]),
+        );
+
+        let faces = service
+            .detect_and_extract_faces_async(image::DynamicImage::ImageRgba8(rotated))
+            .await
+            .expect("Rolled face extraction failed");
+
+        assert!(!faces.is_empty(), "No face detected in a rolled image");
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_external_face_image_is_detected() {
+        let img_path = std::env::var("REDSEAT_FACE_TEST_IMAGE")
+            .expect("Set REDSEAT_FACE_TEST_IMAGE to the image path to test");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let models = root.join("models");
+
+        let service = FaceRecognitionService::new_async(models.to_str().unwrap())
+            .await
+            .unwrap();
+
+        let img = image::open(&img_path).expect("Failed to open REDSEAT_FACE_TEST_IMAGE");
+        let faces = service
+            .detect_and_extract_faces_async(img)
+            .await
+            .expect("External face extraction failed");
+
+        assert!(
+            !faces.is_empty(),
+            "No face detected in REDSEAT_FACE_TEST_IMAGE"
+        );
+    }
 }

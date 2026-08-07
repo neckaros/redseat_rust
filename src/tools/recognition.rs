@@ -686,13 +686,13 @@ impl FaceRecognitionService {
                 }
 
                 // 3. Pose validation (filter extreme poses that are likely false positives)
-                let (pitch, yaw, roll) = estimate_head_pose(&det.landmarks);
+                let (pitch, yaw, _roll) = estimate_head_pose(&det.landmarks);
 
                 // Filter extreme poses:
                 // - Yaw > 60°: too much profile view (hard to identify)
                 // - Pitch > 45°: looking too far up/down
-                // - Roll > 30°: head tilted too much
-                if yaw.abs() > 60.0 || pitch.abs() > 45.0 || roll.abs() > 30.0 {
+                // Roll is not a hard rejection because alignment normalizes in-plane tilt.
+                if yaw.abs() > 60.0 || pitch.abs() > 45.0 {
                     return false;
                 }
 
