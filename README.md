@@ -29,6 +29,8 @@ REDSEAT_DOMAIN: set domain name (ex redseat.myserver.com)
 
 REDSEAT_NOCERT: **Boolean** | Don't use certificate creation (if your domain already has ssl via proxy)
 
+REDSEAT_TRAKT_CLIENT_ID: Trakt application client ID used for movie, series, and people metadata searches
+
 # Docker install
 Image: 
 `docker pull neckaros/redseat-rust`

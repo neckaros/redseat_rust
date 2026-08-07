@@ -113,6 +113,41 @@ impl SerieForUpdate {
 }
 
 impl ModelController {
+    async fn lookup_serie_metadata(
+        &self,
+        library_id: &str,
+        query: RsLookupSerie,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Option<Serie>> {
+        let lookup_ids = query.ids.clone().unwrap_or_default();
+        let mut groups = self
+            .exec_lookup_metadata_grouped(
+                RsLookupQuery::Serie(query),
+                Some(library_id.to_string()),
+                requesting_user,
+                None,
+                None,
+            )
+            .await?;
+        merge_result_ids(&mut groups);
+
+        Ok(groups.into_iter().flat_map(|(_, _, r)| r.results).find_map(
+            |result| match result.metadata {
+                RsLookupMetadataResult::Serie(serie) => {
+                    let result_ids: RsIds = serie.clone().into();
+                    if lookup_ids.as_all_external_ids().is_empty()
+                        || result_ids.has_common_id(&lookup_ids)
+                    {
+                        Some(serie)
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            },
+        ))
+    }
+
     pub async fn get_series(
         &self,
         library_id: &str,
@@ -146,48 +181,26 @@ impl ModelController {
             if let Some(serie) = serie {
                 Ok(Some(serie))
             } else {
-                // Try plugin lookup first
-                let lookup_query = RsLookupQuery::Serie(RsLookupSerie {
-                    name: Some(String::new()),
+                let lookup_query = RsLookupSerie {
+                    name: None,
                     ids: Some(id.clone()),
                     page_key: None,
-                });
-                let plugin_results = self
-                    .exec_lookup_metadata_grouped(
-                        lookup_query,
-                        Some(library_id.to_string()),
-                        requesting_user,
-                        None,
-                        None,
-                    )
-                    .await?;
-                let plugin_serie = plugin_results
-                    .into_iter()
-                    .flat_map(|(_, _, r)| r.results)
-                    .find_map(|result| match result.metadata {
-                        RsLookupMetadataResult::Serie(serie) => Some(serie),
-                        _ => None,
-                    });
-                if let Some(serie) = plugin_serie {
+                };
+                if let Some(serie) = self
+                    .lookup_serie_metadata(library_id, lookup_query, requesting_user)
+                    .await?
+                {
                     return Ok(Some(ItemWithRelations {
                         item: serie,
                         relations: None,
                     }));
                 }
-
-                // Fallback to Trakt
-                let mut trakt_show = self.trakt.get_serie(&id).await.map_err(|_| {
-                    SourcesError::UnableToFindSerie(
-                        library_id.to_string(),
-                        format!("{:?}", id),
-                        "get_serie".to_string(),
-                    )
-                })?;
-                trakt_show.fill_imdb_ratings(&self.imdb).await;
-                Ok(Some(ItemWithRelations {
-                    item: trakt_show,
-                    relations: None,
-                }))
+                Err(SourcesError::UnableToFindSerie(
+                    library_id.to_string(),
+                    format!("{:?}", id),
+                    "get_serie".to_string(),
+                )
+                .into())
             }
         } else {
             let serie = store.get_serie(&serie_id).await?;
@@ -268,7 +281,9 @@ impl ModelController {
     }
 
     pub async fn trending_shows(&self) -> RsResult<Vec<Serie>> {
-        self.trakt.trending_shows().await
+        Err(crate::Error::NotImplemented(
+            "series trending must come from a metadata plugin".to_string(),
+        ))
     }
 
     pub async fn search_serie(
@@ -278,27 +293,6 @@ impl ModelController {
         sources: Option<Vec<String>>,
         requesting_user: &ConnectedUser,
     ) -> RsResult<Vec<(String, String, RsLookupMetadataResults)>> {
-        let is_books_library = self.is_books_library(library_id).await;
-        let include_trakt = !is_books_library
-            && sources
-                .as_deref()
-                .map_or(true, |s| s.iter().any(|id| id == "trakt"));
-        let trakt_entries = if include_trakt {
-            let trakt_results = self.trakt.search_show(&query).await?;
-            Some(
-                trakt_results
-                    .into_iter()
-                    .map(|(serie, match_type)| RsLookupMetadataResultWrapper {
-                        metadata: RsLookupMetadataResult::Serie(serie),
-                        match_type,
-                        ..Default::default()
-                    })
-                    .collect(),
-            )
-        } else {
-            None
-        };
-
         let lookup_query = RsLookupQuery::Serie(RsLookupSerie {
             name: query.name,
             ids: query.ids,
@@ -308,7 +302,7 @@ impl ModelController {
             library_id,
             lookup_query,
             |r| matches!(r.metadata, RsLookupMetadataResult::Serie(_)),
-            trakt_entries,
+            None,
             sources,
             requesting_user,
         )
@@ -322,27 +316,6 @@ impl ModelController {
         sources: Option<Vec<String>>,
         requesting_user: &ConnectedUser,
     ) -> RsResult<tokio::sync::mpsc::Receiver<(String, String, RsLookupMetadataResults)>> {
-        let is_books_library = self.is_books_library(library_id).await;
-        let include_trakt = !is_books_library
-            && sources
-                .as_deref()
-                .map_or(true, |s| s.iter().any(|id| id == "trakt"));
-        let trakt_entries = if include_trakt {
-            let trakt_results = self.trakt.search_show(&query).await?;
-            Some(
-                trakt_results
-                    .into_iter()
-                    .map(|(serie, match_type)| RsLookupMetadataResultWrapper {
-                        metadata: RsLookupMetadataResult::Serie(serie),
-                        match_type,
-                        ..Default::default()
-                    })
-                    .collect(),
-            )
-        } else {
-            None
-        };
-
         let lookup_query = RsLookupQuery::Serie(RsLookupSerie {
             name: query.name,
             ids: query.ids,
@@ -352,24 +325,11 @@ impl ModelController {
             library_id,
             lookup_query,
             |r| matches!(r.metadata, RsLookupMetadataResult::Serie(_)),
-            trakt_entries,
+            None,
             sources,
             requesting_user,
         )
         .await
-    }
-
-    async fn is_books_library(&self, library_id: &str) -> bool {
-        if let Some(library) = self.cache_get_library(library_id).await {
-            library.kind == LibraryType::Books
-        } else {
-            self.get_internal_library(library_id)
-                .await
-                .ok()
-                .flatten()
-                .map(|library| library.kind == LibraryType::Books)
-                .unwrap_or(false)
-        }
     }
 
     pub async fn update_serie(
@@ -655,7 +615,24 @@ impl ModelController {
                 "remove_serie".to_string(),
             ))?
             .item;
-        let new_serie = self.trakt.get_serie(&ids).await?;
+        let lookup_query = RsLookupSerie {
+            name: Some(serie.name.clone()),
+            ids: Some(ids.clone()),
+            page_key: None,
+        };
+        let new_serie = if let Some(serie) = self
+            .lookup_serie_metadata(library_id, lookup_query, requesting_user)
+            .await?
+        {
+            serie
+        } else {
+            return Err(SourcesError::UnableToFindSerie(
+                library_id.to_string(),
+                serie_id.to_string(),
+                "refresh_serie".to_string(),
+            )
+            .into());
+        };
         let mut updates = SerieForUpdate {
             ..Default::default()
         };
@@ -765,7 +742,24 @@ impl ModelController {
                 )
                 .into())
             } else {
-                let mut new_serie = self.trakt.get_serie(&ids).await?;
+                let lookup_query = RsLookupSerie {
+                    name: None,
+                    ids: Some(ids.clone()),
+                    page_key: None,
+                };
+                let mut new_serie = if let Some(serie) = self
+                    .lookup_serie_metadata(library_id, lookup_query, requesting_user)
+                    .await?
+                {
+                    serie
+                } else {
+                    return Err(SourcesError::UnableToFindSerie(
+                        library_id.to_string(),
+                        serie_id.to_string(),
+                        "import_serie".to_string(),
+                    )
+                    .into());
+                };
                 new_serie.fill_imdb_ratings(&self.imdb).await;
                 let imported_serie = self
                     .add_serie(library_id, new_serie, requesting_user)
@@ -792,7 +786,7 @@ impl ModelController {
             cache_prefix: "serie",
         };
         if RsIds::is_id(serie_id) {
-            let mut serie_ids: RsIds = serie_id.to_string().try_into()?;
+            let serie_ids: RsIds = serie_id.to_string().try_into()?;
             let store = self.store.get_library_store(library_id)?;
             let existing_serie = store.get_serie_by_external_id(serie_ids.clone()).await?;
             if let Some(existing_serie) = existing_serie {
@@ -806,20 +800,8 @@ impl ModelController {
                     )
                     .await;
             }
-            // Enrich IDs via Trakt if needed
-            let mut lookup_name = String::new();
-            if serie_ids.tmdb().is_none() {
-                if let Ok(serie) = self.trakt.get_serie(&serie_ids).await {
-                    lookup_name = serie.name.clone();
-                    serie_ids = serie.into();
-                }
-            }
             let lookup_query = RsLookupQuery::Serie(RsLookupSerie {
-                name: if lookup_name.is_empty() {
-                    None
-                } else {
-                    Some(lookup_name)
-                },
+                name: None,
                 ids: Some(serie_ids),
                 page_key: None,
             });
