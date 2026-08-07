@@ -31,7 +31,7 @@ use crate::{
 
 use super::{
     entity_images::EntityImageConfig,
-    entity_search::{merge_result_ids, optional_trakt_search},
+    entity_search::merge_result_ids,
     error::{Error, Result},
     store::sql::SqlOrder,
     users::{ConnectedUser, HistoryQuery},
@@ -84,6 +84,41 @@ impl MovieQuery {
 }
 
 impl ModelController {
+    async fn lookup_movie_metadata(
+        &self,
+        library_id: &str,
+        query: RsLookupMovie,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Option<Movie>> {
+        let lookup_ids = query.ids.clone().unwrap_or_default();
+        let mut groups = self
+            .exec_lookup_metadata_grouped(
+                RsLookupQuery::Movie(query),
+                Some(library_id.to_string()),
+                requesting_user,
+                None,
+                None,
+            )
+            .await?;
+        merge_result_ids(&mut groups);
+
+        Ok(groups.into_iter().flat_map(|(_, _, r)| r.results).find_map(
+            |result| match result.metadata {
+                RsLookupMetadataResult::Movie(movie) => {
+                    let result_ids: RsIds = movie.clone().into();
+                    if lookup_ids.as_all_external_ids().is_empty()
+                        || result_ids.has_common_id(&lookup_ids)
+                    {
+                        Some(movie)
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            },
+        ))
+    }
+
     pub async fn get_movies(
         &self,
         library_id: &str,
@@ -119,54 +154,37 @@ impl ModelController {
         let store = self.store.get_library_store(library_id)?;
 
         if RsIds::is_id(&movie_id) {
-            let id: RsIds = movie_id.try_into()?;
+            let id: RsIds = movie_id.clone().try_into()?;
             let movie = store.get_movie_by_external_id(id.clone()).await?;
             if let Some(mut movie) = movie {
                 self.fill_movie_watched(&mut movie, requesting_user, Some(library_id.to_string()))
                     .await?;
                 Ok(movie)
             } else {
-                // Try plugin lookup first
-                let lookup_query = RsLookupQuery::Movie(RsLookupMovie {
-                    name: Some(String::new()),
+                let lookup_query = RsLookupMovie {
+                    name: None,
                     ids: Some(id.clone()),
                     page_key: None,
-                });
-                let plugin_results = self
-                    .exec_lookup_metadata_grouped(
-                        lookup_query,
-                        Some(library_id.to_string()),
-                        requesting_user,
-                        None,
-                        None,
-                    )
-                    .await?;
-                let plugin_movie = plugin_results
-                    .into_iter()
-                    .flat_map(|(_, _, r)| r.results)
-                    .find_map(|result| match result.metadata {
-                        RsLookupMetadataResult::Movie(movie) => Some(movie),
-                        _ => None,
-                    });
-                if let Some(mut movie) = plugin_movie {
+                };
+                if let Some(mut movie) = self
+                    .lookup_movie_metadata(library_id, lookup_query, requesting_user)
+                    .await?
+                {
                     self.fill_movie_watched(
                         &mut movie,
                         requesting_user,
                         Some(library_id.to_string()),
                     )
                     .await?;
-                    return Ok(movie);
+                    Ok(movie)
+                } else {
+                    Err(SourcesError::UnableToFindMovie(
+                        library_id.to_string(),
+                        movie_id.to_string(),
+                        "get_movie".to_string(),
+                    )
+                    .into())
                 }
-
-                // Fallback to Trakt
-                let mut trakt_movie = self.trakt.get_movie(&id).await?;
-                self.fill_movie_watched(
-                    &mut trakt_movie,
-                    requesting_user,
-                    Some(library_id.to_string()),
-                )
-                .await?;
-                Ok(trakt_movie)
             }
         } else {
             let mut movie =
@@ -191,31 +209,11 @@ impl ModelController {
         sources: Option<Vec<String>>,
         requesting_user: &ConnectedUser,
     ) -> RsResult<Vec<(String, String, RsLookupMetadataResults)>> {
-        let include_trakt = sources
-            .as_deref()
-            .map_or(true, |s| s.iter().any(|id| id == "trakt"));
-        let trakt_entries = if include_trakt {
-            optional_trakt_search("movie", self.trakt.search_movie(&query).await).map(
-                |trakt_results| {
-                    trakt_results
-                        .into_iter()
-                        .map(|(movie, match_type)| RsLookupMetadataResultWrapper {
-                            metadata: RsLookupMetadataResult::Movie(movie),
-                            match_type,
-                            ..Default::default()
-                        })
-                        .collect()
-                },
-            )
-        } else {
-            None
-        };
-
         self.search_entity(
             library_id,
             RsLookupQuery::Movie(query),
             |r| matches!(r.metadata, RsLookupMetadataResult::Movie(_)),
-            trakt_entries,
+            None,
             sources,
             requesting_user,
         )
@@ -229,31 +227,11 @@ impl ModelController {
         sources: Option<Vec<String>>,
         requesting_user: &ConnectedUser,
     ) -> RsResult<tokio::sync::mpsc::Receiver<(String, String, RsLookupMetadataResults)>> {
-        let include_trakt = sources
-            .as_deref()
-            .map_or(true, |s| s.iter().any(|id| id == "trakt"));
-        let trakt_entries = if include_trakt {
-            optional_trakt_search("movie", self.trakt.search_movie(&query).await).map(
-                |trakt_results| {
-                    trakt_results
-                        .into_iter()
-                        .map(|(movie, match_type)| RsLookupMetadataResultWrapper {
-                            metadata: RsLookupMetadataResult::Movie(movie),
-                            match_type,
-                            ..Default::default()
-                        })
-                        .collect()
-                },
-            )
-        } else {
-            None
-        };
-
         self.search_entity_stream(
             library_id,
             RsLookupQuery::Movie(query),
             |r| matches!(r.metadata, RsLookupMetadataResult::Movie(_)),
-            trakt_entries,
+            None,
             sources,
             requesting_user,
         )
@@ -378,11 +356,10 @@ impl ModelController {
     }
 
     pub async fn trending_movies(&self, requesting_user: &ConnectedUser) -> RsResult<Vec<Movie>> {
-        let mut movies = self.trakt.trending_movies().await?;
-        println!("GOT trending");
-        self.fill_movies_watched(&mut movies, requesting_user, None)
-            .await?;
-        Ok(movies)
+        let _ = requesting_user;
+        Err(crate::Error::NotImplemented(
+            "movie trending must come from a metadata plugin".to_string(),
+        ))
     }
 
     pub async fn update_movie(
@@ -632,7 +609,24 @@ impl ModelController {
             if let Ok(existing) = existing {
                 Err(Error::Duplicate(existing.id.to_owned(), MediaElement::Movie(existing)).into())
             } else {
-                let new_movie = self.trakt.get_movie(&ids).await?;
+                let lookup_query = RsLookupMovie {
+                    name: None,
+                    ids: Some(ids.clone()),
+                    page_key: None,
+                };
+                let new_movie = if let Some(movie) = self
+                    .lookup_movie_metadata(library_id, lookup_query, requesting_user)
+                    .await?
+                {
+                    movie
+                } else {
+                    return Err(SourcesError::UnableToFindMovie(
+                        library_id.to_string(),
+                        movie_id.to_string(),
+                        "import_movie".to_string(),
+                    )
+                    .into());
+                };
                 let imported_movie = self
                     .add_movie(library_id, new_movie, requesting_user)
                     .await?;
@@ -656,7 +650,24 @@ impl ModelController {
         let movie = self
             .get_movie(library_id, movie_id.to_string(), requesting_user)
             .await?;
-        let new_movie = self.trakt.get_movie(&ids).await?;
+        let lookup_query = RsLookupMovie {
+            name: Some(movie.name.clone()),
+            ids: Some(ids.clone()),
+            page_key: None,
+        };
+        let new_movie = if let Some(movie) = self
+            .lookup_movie_metadata(library_id, lookup_query, requesting_user)
+            .await?
+        {
+            movie
+        } else {
+            return Err(SourcesError::UnableToFindMovie(
+                library_id.to_string(),
+                movie_id.to_string(),
+                "refresh_movie".to_string(),
+            )
+            .into());
+        };
         let mut updates = MovieForUpdate {
             ..Default::default()
         };
@@ -707,7 +718,7 @@ impl ModelController {
             cache_prefix: "movie",
         };
         if RsIds::is_id(movie_id) {
-            let mut movie_ids: RsIds = movie_id.to_string().try_into()?;
+            let movie_ids: RsIds = movie_id.to_string().try_into()?;
             let store = self.store.get_library_store(library_id)?;
             let existing_movie = store.get_movie_by_external_id(movie_ids.clone()).await?;
             if let Some(existing_movie) = existing_movie {
@@ -721,19 +732,8 @@ impl ModelController {
                     )
                     .await;
             }
-            // Enrich IDs via Trakt if needed
-            let mut lookup_name = String::new();
-            if movie_ids.tmdb().is_none() {
-                let movie = self.trakt.get_movie(&movie_ids).await?;
-                lookup_name = movie.name.clone();
-                movie_ids = movie.into();
-            }
             let lookup_query = RsLookupQuery::Movie(RsLookupMovie {
-                name: if lookup_name.is_empty() {
-                    None
-                } else {
-                    Some(lookup_name)
-                },
+                name: None,
                 ids: Some(movie_ids),
                 page_key: None,
             });

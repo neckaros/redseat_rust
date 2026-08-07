@@ -5,7 +5,7 @@ use nanoid::nanoid;
 use query_external_ip::SourceError;
 use rs_plugin_common_interfaces::{
     domain::rs_ids::RsIds,
-    lookup::{RsLookupEpisode, RsLookupQuery},
+    lookup::{RsLookupEpisode, RsLookupMetadataResult, RsLookupQuery},
     ImageType, MediaType,
 };
 use serde::{Deserialize, Serialize};
@@ -30,6 +30,7 @@ use crate::{
 };
 
 use super::{
+    entity_search::merge_result_ids,
     error::{Error, Result},
     medias::{RsSort, RsSortOrder},
     store::sql::SqlOrder,
@@ -105,6 +106,61 @@ pub struct EpisodeForUpdate {
 }
 
 impl ModelController {
+    async fn lookup_episodes_metadata(
+        &self,
+        library_id: &str,
+        serie_id: &str,
+        ids: &RsIds,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Vec<Episode>> {
+        let mut episodes = Vec::new();
+        let mut empty_streak = 0;
+
+        for season in 1..=100 {
+            let mut groups = self
+                .exec_lookup_metadata_grouped(
+                    RsLookupQuery::Episode(RsLookupEpisode {
+                        ids: Some(ids.clone()),
+                        season,
+                        number: None,
+                        ..Default::default()
+                    }),
+                    Some(library_id.to_string()),
+                    requesting_user,
+                    None,
+                    None,
+                )
+                .await?;
+            merge_result_ids(&mut groups);
+
+            let season_episodes: Vec<Episode> = groups
+                .into_iter()
+                .flat_map(|(_, _, r)| r.results)
+                .filter_map(|result| match result.metadata {
+                    RsLookupMetadataResult::Episode(mut episode) => {
+                        episode.serie = serie_id.to_string();
+                        Some(episode)
+                    }
+                    _ => None,
+                })
+                .collect();
+
+            if season_episodes.is_empty() {
+                empty_streak += 1;
+                if empty_streak >= 2 && !episodes.is_empty() {
+                    break;
+                }
+            } else {
+                empty_streak = 0;
+                episodes.extend(season_episodes);
+            }
+        }
+
+        episodes.sort_by_key(|episode| (episode.season, episode.number));
+        episodes.dedup_by(|a, b| a.season == b.season && a.number == b.number);
+        Ok(episodes)
+    }
+
     pub async fn get_episodes(
         &self,
         library_id: &str,
@@ -158,12 +214,17 @@ impl ModelController {
                 query.serie_ref = Some(serie.item.id);
                 store.get_episodes(query).await?
             } else {
-                self.trakt.all_episodes(&id).await.map_err(|_| {
-                    SourcesError::NotFound(Some(format!(
-                        "get_episodes_by_id - Unable to find episodes on trakt for {:?}",
+                let episodes = self
+                    .lookup_episodes_metadata(library_id, &serie_id, &id, requesting_user)
+                    .await?;
+                if episodes.is_empty() {
+                    return Err(SourcesError::NotFound(Some(format!(
+                        "get_episodes_by_id - Unable to find episodes for {:?}",
                         id
                     )))
-                })?
+                    .into());
+                }
+                episodes
             }
         } else {
             store.get_episodes(query).await?
@@ -459,16 +520,16 @@ impl ModelController {
         let ids = self
             .get_serie_ids(library_id, serie_id, requesting_user)
             .await?;
-        let all_episodes: Vec<Episode> = self
-            .trakt
-            .all_episodes(&ids)
-            .await?
-            .into_iter()
-            .map(|mut e| {
-                e.serie = serie_id.to_owned();
-                e
-            })
-            .collect();
+        let mut all_episodes = self
+            .lookup_episodes_metadata(library_id, serie_id, &ids, requesting_user)
+            .await?;
+        if all_episodes.is_empty() {
+            return Err(SourcesError::NotFound(Some(format!(
+                "refresh_episodes - Unable to find episodes for {:?}",
+                ids
+            )))
+            .into());
+        }
         let store = self.store.get_library_store_optional(library_id).ok_or(
             Error::LibraryStoreNotFoundFor(
                 library_id.clone().to_string(),
@@ -501,7 +562,7 @@ impl ModelController {
         use super::entity_images::EntityImageConfig;
 
         if RsIds::is_id(serie_id) {
-            let mut serie_ids: RsIds = serie_id.to_string().try_into()?;
+            let serie_ids: RsIds = serie_id.to_string().try_into()?;
             let store = self.store.get_library_store_optional(library_id).ok_or(
                 Error::LibraryStoreNotFoundFor(
                     library_id.clone().to_string(),
@@ -520,11 +581,6 @@ impl ModelController {
                         requesting_user,
                     )
                     .await;
-            }
-            // Enrich IDs via Trakt if needed
-            if serie_ids.tmdb().is_none() {
-                let serie = self.trakt.get_serie(&serie_ids).await?;
-                serie_ids = serie.into();
             }
             let composite_id = format!("{}-episode-{}x{}", serie_id, season, episode);
             let query = RsLookupQuery::Episode(RsLookupEpisode {
