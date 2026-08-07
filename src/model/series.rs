@@ -106,6 +106,33 @@ pub struct SerieForUpdate {
     pub max_created: Option<i64>,
 }
 
+enum ExternalSerieImageFallback {
+    ReturnRawError,
+    RetryWithResolvedLocalId(String),
+    RetryWithEnrichedLookup { name: String, ids: RsIds },
+}
+
+fn external_serie_image_fallback(
+    requested_id: &str,
+    requested_ids: RsIds,
+    resolved_serie: Option<ItemWithRelations<Serie>>,
+) -> ExternalSerieImageFallback {
+    let Some(serie) = resolved_serie else {
+        return ExternalSerieImageFallback::ReturnRawError;
+    };
+
+    if serie.item.id != requested_id && !RsIds::is_id(&serie.item.id) {
+        return ExternalSerieImageFallback::RetryWithResolvedLocalId(serie.item.id);
+    }
+
+    let name = serie.item.name.clone();
+
+    ExternalSerieImageFallback::RetryWithEnrichedLookup {
+        name,
+        ids: RsIds::from(serie.item),
+    }
+}
+
 impl SerieForUpdate {
     pub fn has_update(&self) -> bool {
         self != &SerieForUpdate::default()
@@ -800,20 +827,57 @@ impl ModelController {
                     )
                     .await;
             }
-            let lookup_query = RsLookupQuery::Serie(RsLookupSerie {
+            let raw_lookup_query = RsLookupQuery::Serie(RsLookupSerie {
                 name: None,
-                ids: Some(serie_ids),
+                ids: Some(serie_ids.clone()),
                 page_key: None,
             });
-            self.serve_cached_entity_image(
-                library_id,
-                serie_id,
-                lookup_query,
-                &kind,
-                &config,
-                requesting_user,
-            )
-            .await
+            let raw_result = self
+                .serve_cached_entity_image(
+                    library_id,
+                    serie_id,
+                    raw_lookup_query,
+                    &kind,
+                    &config,
+                    requesting_user,
+                )
+                .await;
+            if raw_result.is_ok() {
+                return raw_result;
+            }
+
+            let resolved_serie = self
+                .get_serie(library_id, serie_id.to_string(), requesting_user)
+                .await?;
+            match external_serie_image_fallback(serie_id, serie_ids, resolved_serie) {
+                ExternalSerieImageFallback::ReturnRawError => raw_result,
+                ExternalSerieImageFallback::RetryWithResolvedLocalId(local_id) => {
+                    self.serie_image(
+                        library_id,
+                        &local_id,
+                        Some(kind),
+                        size,
+                        requesting_user,
+                    )
+                    .await
+                }
+                ExternalSerieImageFallback::RetryWithEnrichedLookup { name, ids } => {
+                    let lookup_query = RsLookupQuery::Serie(RsLookupSerie {
+                        name: Some(name),
+                        ids: Some(ids),
+                        page_key: None,
+                    });
+                    self.serve_cached_entity_image(
+                        library_id,
+                        serie_id,
+                        lookup_query,
+                        &kind,
+                        &config,
+                        requesting_user,
+                    )
+                    .await
+                }
+            }
         } else {
             self.serve_local_entity_image(
                 library_id,
@@ -967,5 +1031,79 @@ impl ModelController {
             }],
         });
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{external_serie_image_fallback, ExternalSerieImageFallback};
+    use crate::domain::serie::Serie;
+    use rs_plugin_common_interfaces::domain::{rs_ids::RsIds, ItemWithRelations};
+
+    #[test]
+    fn external_serie_image_fallback_returns_raw_error_when_resolution_fails() {
+        let fallback =
+            external_serie_image_fallback("tmdb:203744", RsIds::from_tmdb(203744), None);
+
+        assert!(matches!(
+            fallback,
+            ExternalSerieImageFallback::ReturnRawError
+        ));
+    }
+
+    #[test]
+    fn external_serie_image_fallback_retries_with_local_id_when_entity_exists_locally() {
+        let resolved = ItemWithRelations {
+            item: Serie {
+                id: "local-serie-id".to_string(),
+                name: "Sugar".to_string(),
+                tmdb: Some(203744),
+                tvdb: Some(421070),
+                ..Default::default()
+            },
+            relations: None,
+        };
+
+        let fallback = external_serie_image_fallback(
+            "tmdb:203744",
+            RsIds::from_tmdb(203744),
+            Some(resolved),
+        );
+
+        match fallback {
+            ExternalSerieImageFallback::RetryWithResolvedLocalId(local_id) => {
+                assert_eq!(local_id, "local-serie-id");
+            }
+            _ => panic!("expected local-id retry"),
+        }
+    }
+
+    #[test]
+    fn external_serie_image_fallback_retries_with_enriched_ids_for_external_results() {
+        let resolved = ItemWithRelations {
+            item: Serie {
+                id: "tmdb:203744".to_string(),
+                name: "Sugar".to_string(),
+                tmdb: Some(203744),
+                tvdb: Some(421070),
+                ..Default::default()
+            },
+            relations: None,
+        };
+
+        let fallback = external_serie_image_fallback(
+            "tmdb:203744",
+            RsIds::from_tmdb(203744),
+            Some(resolved),
+        );
+
+        match fallback {
+            ExternalSerieImageFallback::RetryWithEnrichedLookup { name, ids } => {
+                assert_eq!(name, "Sugar");
+                assert_eq!(ids.tmdb(), Some(203744));
+                assert_eq!(ids.tvdb(), Some(421070));
+            }
+            _ => panic!("expected enriched lookup retry"),
+        }
     }
 }

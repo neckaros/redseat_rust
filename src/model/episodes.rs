@@ -105,6 +105,13 @@ pub struct EpisodeForUpdate {
     pub trakt_votes: Option<u64>,
 }
 
+fn should_retry_episode_lookup_with_enriched_ids(
+    original_ids: &RsIds,
+    enriched_ids: &RsIds,
+) -> bool {
+    enriched_ids.as_all_external_ids() != original_ids.as_all_external_ids()
+}
+
 impl ModelController {
     async fn lookup_episodes_metadata(
         &self,
@@ -214,9 +221,27 @@ impl ModelController {
                 query.serie_ref = Some(serie.item.id);
                 store.get_episodes(query).await?
             } else {
-                let episodes = self
+                let mut episodes = self
                     .lookup_episodes_metadata(library_id, &serie_id, &id, requesting_user)
                     .await?;
+                if episodes.is_empty() {
+                    if let Some(serie) = self
+                        .get_serie(library_id, serie_id.clone(), requesting_user)
+                        .await?
+                    {
+                        let enriched_ids: RsIds = serie.item.into();
+                        if should_retry_episode_lookup_with_enriched_ids(&id, &enriched_ids) {
+                            episodes = self
+                                .lookup_episodes_metadata(
+                                    library_id,
+                                    &serie_id,
+                                    &enriched_ids,
+                                    requesting_user,
+                                )
+                                .await?;
+                        }
+                    }
+                }
                 if episodes.is_empty() {
                     return Err(SourcesError::NotFound(Some(format!(
                         "get_episodes_by_id - Unable to find episodes for {:?}",
@@ -700,5 +725,34 @@ impl ModelController {
             requesting_user,
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_retry_episode_lookup_with_enriched_ids;
+    use rs_plugin_common_interfaces::domain::rs_ids::RsIds;
+
+    #[test]
+    fn enriched_episode_lookup_retries_when_new_external_ids_are_added() {
+        let original = RsIds::from_tmdb(203744);
+        let mut enriched = RsIds::from_tmdb(203744);
+        enriched.set("tvdb", 421070u64);
+
+        assert!(should_retry_episode_lookup_with_enriched_ids(
+            &original,
+            &enriched
+        ));
+    }
+
+    #[test]
+    fn enriched_episode_lookup_does_not_retry_when_external_ids_are_unchanged() {
+        let original = RsIds::from_tmdb(203744);
+        let enriched = RsIds::from_tmdb(203744);
+
+        assert!(!should_retry_episode_lookup_with_enriched_ids(
+            &original,
+            &enriched
+        ));
     }
 }
