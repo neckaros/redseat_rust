@@ -33,6 +33,7 @@ use super::{
     entity_images::EntityImageConfig,
     entity_search::merge_result_ids,
     error::{Error, Result},
+    history::{history_id_rsids, movie_history_id},
     store::sql::SqlOrder,
     users::{ConnectedUser, HistoryQuery},
     ModelController,
@@ -245,11 +246,14 @@ impl ModelController {
         library_id: Option<String>,
     ) -> RsResult<()> {
         movie.fill_imdb_ratings(&self.imdb).await;
-
-        let ids: RsIds = movie.clone().into();
+        let history_id = movie_history_id(movie);
 
         let progress = self
-            .get_view_progress(ids, requesting_user, library_id.clone())
+            .get_view_progress(
+                history_id_rsids(history_id.clone()),
+                requesting_user,
+                library_id.clone(),
+            )
             .await?;
         if let Some(progress) = progress {
             movie.progress = Some(progress.progress);
@@ -259,7 +263,7 @@ impl ModelController {
             .get_watched(
                 HistoryQuery {
                     types: vec![MediaType::Movie],
-                    id: Some(movie.clone().into()),
+                    id: Some(history_id_rsids(history_id)),
                     ..Default::default()
                 },
                 requesting_user,
@@ -305,18 +309,12 @@ impl ModelController {
             .map(|e| (e.id, e.date))
             .collect::<HashMap<_, _>>();
         for movie in movies {
-            let ids = RsIds::from(movie.clone());
-            let ids_string: Vec<String> = ids.into();
-
-            for id in ids_string {
-                let watch = watched.get(&id);
-                if let Some(watch) = watch {
-                    movie.watched = Some(*watch);
-                }
-                let progress = progresses.get(&id);
-                if let Some(progress) = progress {
-                    movie.progress = Some(*progress);
-                }
+            let history_id = movie_history_id(movie);
+            if let Some(watch) = watched.get(&history_id) {
+                movie.watched = Some(*watch);
+            }
+            if let Some(progress) = progresses.get(&history_id) {
+                movie.progress = Some(*progress);
             }
 
             movie.fill_imdb_ratings(&self.imdb).await;

@@ -31,6 +31,23 @@ use super::{
     SqlOrder, SqlWhereType,
 };
 
+#[derive(Debug, Clone)]
+pub struct HistoryIdRewrite {
+    pub kind: MediaType,
+    pub old_id: String,
+    pub new_id: String,
+    pub user_ref: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProgressIdRewrite {
+    pub kind: MediaType,
+    pub old_id: String,
+    pub new_id: String,
+    pub new_parent: Option<String>,
+    pub user_ref: String,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct WatchedQuery {
     #[serde(rename = "type")]
@@ -527,6 +544,22 @@ impl SqliteStore {
         Ok(row)
     }
 
+    pub async fn get_all_view_progress_rows(&self) -> Result<Vec<ViewProgress>> {
+        let row = self
+            .server_store
+            .call(move |conn| {
+                let mut query = conn.prepare(
+                    "SELECT type, id, user_ref, progress, parent, modified FROM progress",
+                )?;
+                let rows = query.query_map(params![], Self::row_to_view_progress)?;
+                let progresses: Vec<ViewProgress> =
+                    rows.collect::<std::result::Result<Vec<ViewProgress>, rusqlite::Error>>()?;
+                Ok(progresses)
+            })
+            .await?;
+        Ok(row)
+    }
+
     pub async fn get_view_progess(
         &self,
         ids: RsIds,
@@ -586,5 +619,155 @@ impl SqliteStore {
             })
             .await?;
         Ok(())
+    }
+
+    pub async fn apply_history_rewrites(
+        &self,
+        watched_rewrites: Vec<HistoryIdRewrite>,
+        progress_rewrites: Vec<ProgressIdRewrite>,
+    ) -> Result<(usize, usize)> {
+        let row = self
+            .server_store
+            .call(move |conn| {
+                let tx = conn.transaction()?;
+                let mut watched_count = 0usize;
+                let mut progress_count = 0usize;
+
+                for rewrite in watched_rewrites {
+                    if rewrite.old_id == rewrite.new_id {
+                        continue;
+                    }
+
+                    let source = tx
+                        .query_row(
+                            "SELECT date FROM Watched WHERE type = ? AND id = ? AND user_ref = ?",
+                            params![rewrite.kind, rewrite.old_id, rewrite.user_ref],
+                            |row| row.get::<_, i64>(0),
+                        )
+                        .optional()?;
+
+                    let Some(source_date) = source else {
+                        continue;
+                    };
+
+                    let existing = tx
+                        .query_row(
+                            "SELECT date FROM Watched WHERE type = ? AND id = ? AND user_ref = ?",
+                            params![rewrite.kind, rewrite.new_id, rewrite.user_ref],
+                            |row| row.get::<_, i64>(0),
+                        )
+                        .optional()?;
+
+                    if let Some(existing_date) = existing {
+                        tx.execute(
+                            "UPDATE Watched SET date = ? WHERE type = ? AND id = ? AND user_ref = ?",
+                            params![
+                                existing_date.max(source_date),
+                                rewrite.kind,
+                                rewrite.new_id,
+                                rewrite.user_ref
+                            ],
+                        )?;
+                        tx.execute(
+                            "DELETE FROM Watched WHERE type = ? AND id = ? AND user_ref = ?",
+                            params![rewrite.kind, rewrite.old_id, rewrite.user_ref],
+                        )?;
+                    } else {
+                        tx.execute(
+                            "UPDATE Watched SET id = ? WHERE type = ? AND id = ? AND user_ref = ?",
+                            params![rewrite.new_id, rewrite.kind, rewrite.old_id, rewrite.user_ref],
+                        )?;
+                    }
+                    watched_count += 1;
+                }
+
+                for rewrite in progress_rewrites {
+                    if rewrite.old_id == rewrite.new_id {
+                        continue;
+                    }
+
+                    let source = tx
+                        .query_row(
+                            "SELECT progress, parent, modified FROM progress WHERE type = ? AND id = ? AND user_ref = ?",
+                            params![rewrite.kind, rewrite.old_id, rewrite.user_ref],
+                            |row| {
+                                Ok((
+                                    row.get::<_, u64>(0)?,
+                                    row.get::<_, Option<String>>(1)?,
+                                    row.get::<_, u64>(2)?,
+                                ))
+                            },
+                        )
+                        .optional()?;
+
+                    let Some((source_progress, source_parent, source_modified)) = source else {
+                        continue;
+                    };
+
+                    let existing = tx
+                        .query_row(
+                            "SELECT progress, parent, modified FROM progress WHERE type = ? AND id = ? AND user_ref = ?",
+                            params![rewrite.kind, rewrite.new_id, rewrite.user_ref],
+                            |row| {
+                                Ok((
+                                    row.get::<_, u64>(0)?,
+                                    row.get::<_, Option<String>>(1)?,
+                                    row.get::<_, u64>(2)?,
+                                ))
+                            },
+                        )
+                        .optional()?;
+
+                    if let Some((existing_progress, existing_parent, existing_modified)) = existing {
+                        let (merged_progress, merged_parent) =
+                            if source_modified >= existing_modified {
+                                (
+                                    source_progress,
+                                    rewrite
+                                        .new_parent
+                                        .clone()
+                                        .or(source_parent.clone())
+                                        .or(existing_parent.clone()),
+                                )
+                            } else {
+                                (
+                                    existing_progress,
+                                    rewrite.new_parent.clone().or(existing_parent.clone()),
+                                )
+                            };
+                        tx.execute(
+                            "UPDATE progress SET progress = ?, parent = ? WHERE type = ? AND id = ? AND user_ref = ?",
+                            params![
+                                merged_progress,
+                                merged_parent,
+                                rewrite.kind,
+                                rewrite.new_id,
+                                rewrite.user_ref
+                            ],
+                        )?;
+                        tx.execute(
+                            "DELETE FROM progress WHERE type = ? AND id = ? AND user_ref = ?",
+                            params![rewrite.kind, rewrite.old_id, rewrite.user_ref],
+                        )?;
+                    } else {
+                        tx.execute(
+                            "UPDATE progress SET id = ?, parent = ? WHERE type = ? AND id = ? AND user_ref = ?",
+                            params![
+                                rewrite.new_id,
+                                rewrite.new_parent,
+                                rewrite.kind,
+                                rewrite.old_id,
+                                rewrite.user_ref
+                            ],
+                        )?;
+                    }
+                    progress_count += 1;
+                }
+
+                tx.commit()?;
+                Ok((watched_count, progress_count))
+            })
+            .await?;
+        Ok(row)
     }
 }

@@ -1,10 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use async_recursion::async_recursion;
 use nanoid::nanoid;
 use query_external_ip::SourceError;
 use rs_plugin_common_interfaces::{
-    domain::rs_ids::RsIds,
+    domain::rs_ids::{ApplyRsIds, RsIds},
     lookup::{RsLookupEpisode, RsLookupMetadataResult, RsLookupQuery},
     ImageType, MediaType,
 };
@@ -32,6 +32,7 @@ use crate::{
 use super::{
     entity_search::merge_result_ids,
     error::{Error, Result},
+    history::{episode_history_id, history_id_rsids},
     medias::{RsSort, RsSortOrder},
     store::sql::SqlOrder,
     users::{ConnectedUser, HistoryQuery},
@@ -106,6 +107,22 @@ pub struct EpisodeForUpdate {
 }
 
 impl ModelController {
+    async fn episode_series_by_ref(
+        &self,
+        library_id: &str,
+        episodes: &[Episode],
+    ) -> RsResult<HashMap<String, Serie>> {
+        let store = self.store.get_library_store(library_id)?;
+        let serie_refs: HashSet<String> = episodes.iter().map(|episode| episode.serie.clone()).collect();
+        let mut series = HashMap::new();
+        for serie_ref in serie_refs {
+            if let Some(serie) = store.get_serie(&serie_ref).await? {
+                series.insert(serie_ref, serie.item);
+            }
+        }
+        Ok(series)
+    }
+
     async fn lookup_episodes_metadata(
         &self,
         library_id: &str,
@@ -245,27 +262,35 @@ impl ModelController {
         requesting_user: &ConnectedUser,
         library_id: Option<String>,
     ) -> RsResult<()> {
-        let ids: RsIds = episode.clone().into();
-        let watched = self
-            .get_watched(
-                HistoryQuery {
-                    types: vec![MediaType::Episode],
-                    id: Some(ids.clone()),
-                    ..Default::default()
-                },
-                requesting_user,
-                library_id.clone(),
-            )
-            .await?;
-        let progress = self
-            .get_view_progress(ids, requesting_user, library_id)
-            .await?;
-        if let Some(progress) = progress {
-            episode.progress = Some(progress.progress);
-        }
-        let watched = watched.first();
-        if let Some(watched) = watched {
-            episode.watched = Some(watched.date);
+        if let Some(library_id) = library_id {
+            let store = self.store.get_library_store(&library_id)?;
+            if let Some(serie) = store.get_serie(&episode.serie).await? {
+                let history_id = episode_history_id(&serie.item, episode);
+                let watched = self
+                    .get_watched(
+                        HistoryQuery {
+                            types: vec![MediaType::Episode],
+                            id: Some(history_id_rsids(history_id.clone())),
+                            ..Default::default()
+                        },
+                        requesting_user,
+                        Some(library_id.clone()),
+                    )
+                    .await?;
+                let progress = self
+                    .get_view_progress(
+                        history_id_rsids(history_id),
+                        requesting_user,
+                        Some(library_id),
+                    )
+                    .await?;
+                if let Some(progress) = progress {
+                    episode.progress = Some(progress.progress);
+                }
+                if let Some(watched) = watched.first() {
+                    episode.watched = Some(watched.date);
+                }
+            }
         }
         episode.fill_imdb_ratings(&self.imdb).await;
         Ok(())
@@ -276,6 +301,11 @@ impl ModelController {
         requesting_user: &ConnectedUser,
         library_id: Option<String>,
     ) -> RsResult<()> {
+        let series_by_ref = if let Some(library_id) = library_id.as_deref() {
+            self.episode_series_by_ref(library_id, episodes).await?
+        } else {
+            HashMap::new()
+        };
         let watched = self
             .get_watched(
                 HistoryQuery {
@@ -304,15 +334,12 @@ impl ModelController {
             .collect::<HashMap<_, _>>();
 
         for episode in episodes {
-            let ids = RsIds::from(episode.clone());
-            let ids_string: Vec<String> = ids.into();
-            for id in ids_string {
-                let watch = watched.get(&id);
-                if let Some(watch) = watch {
+            if let Some(serie) = series_by_ref.get(&episode.serie) {
+                let history_id = episode_history_id(serie, episode);
+                if let Some(watch) = watched.get(&history_id) {
                     episode.watched = Some(*watch);
                 }
-                let progress = progresses.get(&id);
-                if let Some(progress) = progress {
+                if let Some(progress) = progresses.get(&history_id) {
                     episode.progress = Some(*progress);
                 }
             }
@@ -520,6 +547,20 @@ impl ModelController {
         let ids = self
             .get_serie_ids(library_id, serie_id, requesting_user)
             .await?;
+        let existing_episodes = self
+            .get_episodes(
+                library_id,
+                EpisodeQuery {
+                    serie_ref: Some(serie_id.to_string()),
+                    ..Default::default()
+                },
+                requesting_user,
+            )
+            .await?;
+        let existing_ids_by_episode: HashMap<(u32, u32), RsIds> = existing_episodes
+            .into_iter()
+            .map(|episode| ((episode.season, episode.number), RsIds::from(episode)))
+            .collect();
         let mut all_episodes = self
             .lookup_episodes_metadata(library_id, serie_id, &ids, requesting_user)
             .await?;
@@ -529,6 +570,15 @@ impl ModelController {
                 ids
             )))
             .into());
+        }
+        for episode in &mut all_episodes {
+            if let Some(existing_ids) =
+                existing_ids_by_episode.get(&(episode.season, episode.number))
+            {
+                let mut merged_ids = RsIds::from(episode.clone());
+                merged_ids.merge(existing_ids);
+                episode.apply_rs_ids(&merged_ids);
+            }
         }
         let store = self.store.get_library_store_optional(library_id).ok_or(
             Error::LibraryStoreNotFoundFor(
