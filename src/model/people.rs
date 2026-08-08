@@ -445,7 +445,7 @@ impl ModelController {
         size: Option<ImageSize>,
         requesting_user: &ConnectedUser,
     ) -> crate::Result<FileStreamResult<AsyncReadPinBox>> {
-        let target_kind = kind.unwrap_or(ImageType::Poster);
+        let target_kind = kind.clone().unwrap_or(ImageType::Poster);
         let config = EntityImageConfig {
             folder: ".portraits",
             cache_prefix: "person",
@@ -465,7 +465,7 @@ impl ModelController {
                     .person_image(
                         library_id,
                         &existing_person.id,
-                        Some(target_kind),
+                        kind,
                         size,
                         requesting_user,
                     )
@@ -502,7 +502,7 @@ impl ModelController {
                         .person_image(
                             library_id,
                             &person.id,
-                            Some(target_kind),
+                            kind,
                             size,
                             requesting_user,
                         )
@@ -530,7 +530,7 @@ impl ModelController {
                     library_id,
                     ".portraits",
                     person_id,
-                    Some(target_kind.clone()),
+                    kind.clone(),
                     requesting_user,
                 )
                 .await?
@@ -540,7 +540,7 @@ impl ModelController {
                     .refresh_person_image(
                         library_id,
                         person_id,
-                        &Some(target_kind.clone()),
+                        &kind,
                         requesting_user,
                     )
                     .await;
@@ -552,7 +552,7 @@ impl ModelController {
                             format!(
                                 "Successfully refreshed person image from external source: {} {:?}",
                                 person_id,
-                                Some(target_kind.clone())
+                                kind.clone()
                             ),
                         );
                     }
@@ -593,7 +593,7 @@ impl ModelController {
                                                 .update_person_image(
                                                     library_id,
                                                     person_id,
-                                                    &Some(target_kind.clone()),
+                                                    &kind,
                                                     reader,
                                                     &ConnectedUser::ServerAdmin,
                                                 )
@@ -626,7 +626,7 @@ impl ModelController {
                     library_id,
                     ".portraits",
                     person_id,
-                    Some(target_kind),
+                    kind,
                     size,
                     requesting_user,
                 )
