@@ -13,24 +13,34 @@ use super::{
     ModelController,
 };
 
-const HISTORY_MIGRATION: &str = "canonical_history_ids_v2";
+const HISTORY_MIGRATION: &str = "canonical_history_ids_v4";
+
+fn non_empty_id(id: Option<&str>) -> Option<&str> {
+    id.map(str::trim).filter(|id| !id.is_empty())
+}
+
+fn series_history_key(serie: &Serie) -> String {
+    non_empty_id(serie.imdb.as_deref())
+        .map(|imdb| format!("imdb/{imdb}"))
+        .unwrap_or_else(|| format!("redseat/{}", serie.id))
+}
 
 pub fn series_history_id(serie: &Serie) -> String {
-    format!("series:redseat/{}", serie.id)
+    format!("series:{}", series_history_key(serie))
 }
 
 pub fn movie_history_id(movie: &Movie) -> String {
-    movie
-        .imdb
-        .as_ref()
+    non_empty_id(movie.imdb.as_deref())
         .map(|imdb| format!("movie:imdb/{imdb}"))
         .unwrap_or_else(|| format!("movie:redseat/{}", movie.id))
 }
 
 pub fn episode_history_id(serie: &Serie, episode: &Episode) -> String {
     format!(
-        "episode:redseat/{}/{}/{}",
-        serie.id, episode.season, episode.number
+        "episode:{}/{}/{}",
+        series_history_key(serie),
+        episode.season,
+        episode.number
     )
 }
 
@@ -111,7 +121,7 @@ fn episode_legacy_ids(serie: &Serie, episode: &Episode) -> HashSet<String> {
         .collect();
 
     for key in [
-        serie.imdb.as_ref().map(|id| format!("imdb/{id}")),
+        non_empty_id(serie.imdb.as_deref()).map(|id| format!("imdb/{id}")),
         serie.tmdb.map(|id| format!("tmdb/{id}")),
         serie.tvdb.map(|id| format!("tvdb/{id}")),
         Some(format!("redseat/{}", serie.id)),
@@ -150,8 +160,22 @@ fn unique_candidates<T>(candidates: HashMap<String, HashSet<T>>) -> HashMap<Stri
 
 fn is_current_history_id(kind: &MediaType, id: &str) -> bool {
     match kind {
-        MediaType::Movie => id.starts_with("movie:imdb/") || id.starts_with("movie:redseat/"),
-        MediaType::Episode => id.starts_with("episode:redseat/"),
+        MediaType::Movie => ["movie:imdb/", "movie:redseat/"]
+            .into_iter()
+            .any(|prefix| non_empty_id(id.strip_prefix(prefix)).is_some()),
+        MediaType::Episode => {
+            let Some(path) = id.strip_prefix("episode:imdb/") else {
+                return false;
+            };
+            let mut parts = path.split('/');
+            matches!(
+                (parts.next(), parts.next(), parts.next(), parts.next()),
+                (Some(imdb), Some(season), Some(number), None)
+                    if non_empty_id(Some(imdb)).is_some()
+                        && season.parse::<u32>().is_ok()
+                        && number.parse::<u32>().is_ok()
+            )
+        }
         _ => true,
     }
 }
@@ -166,20 +190,27 @@ impl ModelController {
             return Ok(());
         }
 
-        let watched = self.store.get_all_watched().await?;
-        let progress = self.store.get_all_view_progress_rows().await?;
+        let tombstones_removed = self.store.purge_watched_tombstones().await?;
+        let mut watched = self.store.get_all_watched().await?;
+        let mut progress = self.store.get_all_view_progress_rows().await?;
+        watched.sort_by(|a, b| b.modified.cmp(&a.modified));
+        progress.sort_by(|a, b| b.modified.cmp(&a.modified));
         let legacy_movie_ids: HashSet<String> = watched
             .iter()
             .map(|row| (&row.kind, &row.id))
             .chain(progress.iter().map(|row| (&row.kind, &row.id)))
-            .filter(|(kind, id)| **kind == MediaType::Movie && !is_current_history_id(kind, id))
+            .filter(|(kind, id)| {
+                **kind == MediaType::Movie && !is_current_history_id(kind, id)
+            })
             .map(|(_, id)| id.clone())
             .collect();
         let legacy_episode_ids: HashSet<String> = watched
             .iter()
             .map(|row| (&row.kind, &row.id))
             .chain(progress.iter().map(|row| (&row.kind, &row.id)))
-            .filter(|(kind, id)| **kind == MediaType::Episode && !is_current_history_id(kind, id))
+            .filter(|(kind, id)| {
+                **kind == MediaType::Episode && !is_current_history_id(kind, id)
+            })
             .map(|(_, id)| id.clone())
             .collect();
 
@@ -285,8 +316,8 @@ impl ModelController {
         log_info(
             LogServiceType::Database,
             format!(
-                "History migration complete: watched rewrites={}, progress rewrites={}",
-                watched_count, progress_count
+                "History migration complete: watched rewrites={}, progress rewrites={}, tombstones removed={}",
+                watched_count, progress_count, tombstones_removed
             ),
         );
         Ok(())
@@ -327,6 +358,56 @@ impl ModelController {
                 new_id: new_id.clone(),
                 new_parent: None,
                 user_ref: row.user_ref,
+            })
+            .collect();
+        self.store
+            .apply_history_rewrites(watched_rewrites, progress_rewrites)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn migrate_series_history_ids(
+        &self,
+        old_serie: &Serie,
+        new_serie: &Serie,
+    ) -> crate::Result<()> {
+        let old_prefix = format!("episode:{}/", series_history_key(old_serie));
+        let new_prefix = format!("episode:{}/", series_history_key(new_serie));
+        if old_prefix == new_prefix {
+            return Ok(());
+        }
+
+        let watched_rewrites = self
+            .store
+            .get_all_watched()
+            .await?
+            .into_iter()
+            .filter(|row| row.kind == MediaType::Episode)
+            .filter_map(|row| {
+                let suffix = row.id.strip_prefix(&old_prefix)?;
+                Some(HistoryIdRewrite {
+                    new_id: format!("{new_prefix}{suffix}"),
+                    kind: row.kind,
+                    old_id: row.id,
+                    user_ref: row.user_ref?,
+                })
+            })
+            .collect();
+        let progress_rewrites = self
+            .store
+            .get_all_view_progress_rows()
+            .await?
+            .into_iter()
+            .filter(|row| row.kind == MediaType::Episode)
+            .filter_map(|row| {
+                let suffix = row.id.strip_prefix(&old_prefix)?;
+                Some(ProgressIdRewrite {
+                    new_id: format!("{new_prefix}{suffix}"),
+                    new_parent: Some(series_history_id(new_serie)),
+                    kind: row.kind,
+                    old_id: row.id,
+                    user_ref: row.user_ref,
+                })
             })
             .collect();
         self.store

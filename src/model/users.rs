@@ -449,11 +449,6 @@ pub struct HistoryQuery {
 
     pub page_key: Option<u64>,
 
-    /// Include items with date=0 (unwatched/deleted).
-    /// When true, returns all items including soft-deleted ones for sync purposes.
-    /// Clients can use this with `after` parameter to sync deletions that occurred while offline.
-    #[serde(default)]
-    pub include_deleted: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -534,6 +529,18 @@ impl ModelController {
     ) -> RsResult<()> {
         user.check_role(&UserRole::Read)?;
         watched.id = normalize_history_id(&watched.kind, watched.id);
+        if watched.date <= 0 {
+            return self
+                .remove_watched(
+                    WatchedForDelete {
+                        kind: watched.kind,
+                        ids: vec![watched.id],
+                    },
+                    user,
+                    library_id,
+                )
+                .await;
+        }
 
         let user_id = user.user_id()?;
         let modified = now().timestamp_millis() as u64;

@@ -42,9 +42,11 @@ class EpisodeRow:
     trakt: int | None
     tvdb: int | None
 
-    @property
-    def redseat_id(self) -> str:
-        return f"episode:redseat/{self.serie_ref}/{self.season}/{self.number}"
+
+def episode_history_id(series: SeriesRow, episode: EpisodeRow) -> str:
+    imdb = series.imdb.strip() if series.imdb else ""
+    key = f"imdb/{imdb}" if imdb else f"redseat/{series.id}"
+    return f"episode:{key}/{episode.season}/{episode.number}"
 
 
 class TraktClient:
@@ -192,7 +194,7 @@ def build_episode_map(
             fieldnames=[
                 "source",
                 "trakt_episode_id",
-                "redseat_episode_id",
+                "history_episode_id",
                 "serie_ref",
                 "serie_name",
                 "serie_imdb",
@@ -208,22 +210,27 @@ def build_episode_map(
         )
         writer.writeheader()
 
+        series_by_id = {series.id: series for series in series_rows}
         for episode in local_episodes.values():
             if not episode.trakt:
                 continue
+            series = series_by_id.get(episode.serie_ref)
+            if not series:
+                continue
             trakt_key = f"trakt:{episode.trakt}"
-            mapping[trakt_key] = episode.redseat_id
+            history_id = episode_history_id(series, episode)
+            mapping[trakt_key] = history_id
             writer.writerow(
                 {
                     "source": "local_db",
                     "trakt_episode_id": trakt_key,
-                    "redseat_episode_id": episode.redseat_id,
+                    "history_episode_id": history_id,
                     "serie_ref": episode.serie_ref,
-                    "serie_name": "",
-                    "serie_imdb": "",
-                    "serie_tmdb": "",
-                    "serie_tvdb": "",
-                    "serie_trakt": "",
+                    "serie_name": series.name,
+                    "serie_imdb": series.imdb or "",
+                    "serie_tmdb": series.tmdb or "",
+                    "serie_tvdb": series.tvdb or "",
+                    "serie_trakt": series.trakt or "",
                     "season": episode.season,
                     "episode": episode.number,
                     "episode_imdb": episode.imdb or "",
@@ -259,12 +266,13 @@ def build_episode_map(
                         continue
 
                     trakt_key = f"trakt:{trakt_episode_id}"
-                    mapping[trakt_key] = local_episode.redseat_id
+                    history_id = episode_history_id(series, local_episode)
+                    mapping[trakt_key] = history_id
                     writer.writerow(
                         {
                             "source": "trakt_api",
                             "trakt_episode_id": trakt_key,
-                            "redseat_episode_id": local_episode.redseat_id,
+                            "history_episode_id": history_id,
                             "serie_ref": series.id,
                             "serie_name": series.name,
                             "serie_imdb": series.imdb or "",
@@ -351,15 +359,19 @@ def rewrite_history(
         "progress_updated": 0,
         "progress_merged": 0,
         "progress_unresolved": 0,
+        "tombstones_removed": 0,
     }
 
     try:
+        conn.execute("BEGIN IMMEDIATE")
+        stats["tombstones_removed"] = conn.execute(
+            "DELETE FROM Watched WHERE date <= 0"
+        ).rowcount
         rows = list(
             conn.execute(
                 "SELECT type, id, user_ref, date, modified FROM Watched ORDER BY type, user_ref, id"
             )
         )
-        conn.execute("BEGIN IMMEDIATE")
         for row in rows:
             kind = row["type"]
             old_id = row["id"]
@@ -415,7 +427,7 @@ def rewrite_history(
                 stats[updated_key] += 1
             conn.execute(
                 """
-                UPDATE Watched SET date = 0
+                DELETE FROM Watched
                 WHERE type = ? AND id = ? AND user_ref = ?
                 """,
                 (kind, old_id, row["user_ref"]),
@@ -447,7 +459,8 @@ def rewrite_history(
             ).fetchone()
             parent = row["parent"]
             if kind == "episode":
-                parent = f"series:redseat/{new_id.split('/')[1]}"
+                prefix, series_id, _, _ = new_id.split("/")
+                parent = f"{prefix.replace('episode:', 'series:')}/{series_id}"
             if destination:
                 if destination["modified"] > row["modified"]:
                     value = destination["progress"]

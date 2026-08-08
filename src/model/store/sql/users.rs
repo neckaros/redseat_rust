@@ -361,11 +361,6 @@ impl SqliteStore {
             .call(move |conn| {
                 let mut where_query = RsQueryBuilder::new();
 
-                // Filter out deleted (date = 0) items unless include_deleted is true
-                if !query.include_deleted {
-                    where_query.add_where(SqlWhereType::After("date".to_owned(), Box::new(0i64)));
-                }
-
                 if let Some(q) = query.after {
                     where_query.add_where(SqlWhereType::After("modified".to_owned(), Box::new(q)));
                 }
@@ -443,26 +438,19 @@ impl SqliteStore {
         Ok(())
     }
 
-    /// Marks watched entries as deleted by setting date=0
-    /// This allows clients to sync deletions via the history API with ?includeDeleted=true
-    /// Returns the list of IDs that were actually marked as deleted
+    /// Deletes watched entries and returns the IDs that existed.
     pub async fn delete_watched(
         &self,
         kind: MediaType,
         ids: Vec<String>,
         user_ref: String,
     ) -> Result<Vec<String>> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as i64;
-
         let deleted_ids = self.server_store.call(move |conn| {
             let mut deleted_ids = Vec::new();
             for id in ids {
                 let rows_affected = conn.execute(
-                    "UPDATE Watched SET date = 0, modified = ? WHERE type = ? AND id = ? AND user_ref = ? AND date != 0",
-                    params![now, kind, &id, &user_ref]
+                    "DELETE FROM Watched WHERE type = ? AND id = ? AND user_ref = ?",
+                    params![kind, &id, &user_ref]
                 )?;
                 if rows_affected > 0 {
                     deleted_ids.push(id);
@@ -680,7 +668,7 @@ impl SqliteStore {
                         )?;
                     }
                     tx.execute(
-                        "UPDATE Watched SET date = 0 WHERE type = ? AND id = ? AND user_ref = ?",
+                        "DELETE FROM Watched WHERE type = ? AND id = ? AND user_ref = ?",
                         params![rewrite.kind, rewrite.old_id, rewrite.user_ref],
                     )?;
                     watched_count += 1;
@@ -774,6 +762,14 @@ impl SqliteStore {
             })
             .await?;
         Ok(row)
+    }
+
+    pub async fn purge_watched_tombstones(&self) -> Result<usize> {
+        let removed = self
+            .server_store
+            .call(|conn| Ok(conn.execute("DELETE FROM Watched WHERE date <= 0", [])?))
+            .await?;
+        Ok(removed)
     }
 
     pub async fn is_data_migration_complete(&self, name: &str) -> Result<bool> {

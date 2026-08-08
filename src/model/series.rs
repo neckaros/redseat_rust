@@ -372,6 +372,21 @@ impl ModelController {
         }
         if update.has_update() {
             let store = self.store.get_library_store(library_id)?;
+            let old_serie = store
+                .get_serie(&serie_id)
+                .await?
+                .ok_or(SourcesError::UnableToFindSerie(
+                    library_id.to_string(),
+                    serie_id.clone(),
+                    "get_serie".to_string(),
+                ))?
+                .item;
+            let mut updated_serie = old_serie.clone();
+            if let Some(imdb) = &update.imdb {
+                updated_serie.imdb = Some(imdb.clone());
+            }
+            self.migrate_series_history_ids(&old_serie, &updated_serie)
+                .await?;
             store.update_serie(&serie_id, update).await?;
             let serie = store
                 .get_serie(&serie_id)
