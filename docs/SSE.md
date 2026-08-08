@@ -235,7 +235,7 @@ interface MediasRatingMessage {
 // Watched events (user-specific). IDs include the media type and identity scheme.
 interface Watched {
   type: string;  // MediaType: "movie", "episode", etc.
-  id: string;    // e.g. "movie:imdb/tt1234567" or "episode:redseat/seriesId/1/2"
+  id: string;    // e.g. "movie:imdb/tt1234567" or "episode:imdb/tt0108778/1/2"
   userRef?: string;
   date: number;  // Timestamp when content was watched
   modified: number;
@@ -653,10 +653,11 @@ History IDs include the media type so IDs from different domains cannot collide.
 |---------|--------|---------|
 | Movie with IMDb ID | `movie:imdb/<imdbId>` | `movie:imdb/tt1234567` |
 | Movie without IMDb ID | `movie:redseat/<movieId>` | `movie:redseat/abc123` |
-| Series progress parent | `series:redseat/<seriesId>` | `series:redseat/series123` |
-| Episode | `episode:redseat/<seriesId>/<season>/<episode>` | `episode:redseat/series123/1/2` |
+| Series progress parent | `series:imdb/<seriesImdbId>` | `series:imdb/tt0108778` |
+| Episode | `episode:imdb/<seriesImdbId>/<season>/<episode>` | `episode:imdb/tt0108778/1/2` |
+| Episode fallback | `episode:redseat/<seriesId>/<season>/<episode>` | `episode:redseat/series123/1/2` |
 
-Episode IDs deliberately use the immutable local series ID and numeric season/episode tuple. Plugin metadata refreshes therefore cannot change watched state or progress IDs.
+Episode IDs use the series IMDb ID and numeric season/episode tuple so watched state follows the same show across libraries. Series without an IMDb ID temporarily use the RedSeat fallback; if IMDb metadata is added later, the server migrates watched state and progress immediately.
 
 ### REST API Endpoints
 
