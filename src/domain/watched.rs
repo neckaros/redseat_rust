@@ -35,7 +35,7 @@ pub struct WatchedLight {
 pub struct WatchedForDelete {
     #[serde(rename = "type")]
     pub kind: MediaType,
-    /// Multiple possible IDs to try (imdb, trakt, tmdb, local, etc.)
+    /// History IDs to mark as deleted.
     pub ids: Vec<String>,
 }
 
@@ -44,7 +44,7 @@ pub struct WatchedForDelete {
 pub struct Unwatched {
     #[serde(rename = "type")]
     pub kind: MediaType,
-    /// All possible IDs for this content (imdb, trakt, tmdb, local, etc.)
+    /// History IDs marked as deleted.
     pub ids: Vec<String>,
     pub user_ref: Option<String>,
     pub modified: u64,

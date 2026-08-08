@@ -32,7 +32,7 @@ use crate::{
 use super::{
     entity_search::merge_result_ids,
     error::{Error, Result},
-    history::{episode_history_id, history_id_rsids},
+    history::{episode_history_id, episode_history_ids},
     medias::{RsSort, RsSortOrder},
     store::sql::SqlOrder,
     users::{ConnectedUser, HistoryQuery},
@@ -265,12 +265,12 @@ impl ModelController {
         if let Some(library_id) = library_id {
             let store = self.store.get_library_store(&library_id)?;
             if let Some(serie) = store.get_serie(&episode.serie).await? {
-                let history_id = episode_history_id(&serie.item, episode);
+                let history_ids = episode_history_ids(&serie.item, episode);
                 let watched = self
                     .get_watched(
                         HistoryQuery {
                             types: vec![MediaType::Episode],
-                            id: Some(history_id_rsids(history_id.clone())),
+                            id: Some(history_ids.clone()),
                             ..Default::default()
                         },
                         requesting_user,
@@ -279,7 +279,7 @@ impl ModelController {
                     .await?;
                 let progress = self
                     .get_view_progress(
-                        history_id_rsids(history_id),
+                        history_ids,
                         requesting_user,
                         Some(library_id),
                     )
@@ -335,11 +335,11 @@ impl ModelController {
 
         for episode in episodes {
             if let Some(serie) = series_by_ref.get(&episode.serie) {
-                let history_id = episode_history_id(serie, episode);
-                if let Some(watch) = watched.get(&history_id) {
+                let history_ids = episode_history_ids(serie, episode).as_all_ids();
+                if let Some(watch) = history_ids.iter().find_map(|id| watched.get(id)) {
                     episode.watched = Some(*watch);
                 }
-                if let Some(progress) = progresses.get(&history_id) {
+                if let Some(progress) = history_ids.iter().find_map(|id| progresses.get(id)) {
                     episode.progress = Some(*progress);
                 }
             }

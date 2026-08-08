@@ -14,7 +14,7 @@ use crate::{
     error::RsError,
     model::{
         episodes::{EpisodeForUpdate, EpisodeQuery},
-        history::{episode_history_id, history_id_rsids, series_history_id},
+        history::{episode_history_id, episode_history_ids, series_history_id},
         medias::MediaQuery,
         users::{ConnectedUser, HistoryQuery},
         ModelController,
@@ -420,7 +420,7 @@ async fn handler_progress_get(
         .await?;
     let progress = mc
         .get_view_progress(
-            history_id_rsids(episode_history_id(
+            episode_history_ids(
                 &mc.get_serie(&library_id, episode.serie.clone(), &user)
                     .await?
                     .ok_or(Error::NotFound(format!(
@@ -428,7 +428,7 @@ async fn handler_progress_get(
                     )))?
                     .item,
                 &episode,
-            )),
+            ),
             &user,
             Some(library_id.to_string()),
         )
@@ -512,7 +512,7 @@ async fn handler_watched_get(
         .await?
         .ok_or(Error::NotFound(format!("Unable to find serie for watched get")))?;
     let query = HistoryQuery {
-        id: Some(history_id_rsids(episode_history_id(&serie.item, &episode))),
+        id: Some(episode_history_ids(&serie.item, &episode)),
         ..Default::default()
     };
     let progress = mc

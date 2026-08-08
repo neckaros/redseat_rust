@@ -11,7 +11,7 @@ use crate::{
     error::RsError,
     model::{
         episodes::EpisodeQuery,
-        history::{history_id_rsids, movie_history_id},
+        history::{movie_history_id, movie_history_ids},
         medias::MediaQuery,
         movies::{MovieQuery, RsMovieSort},
         store::sql::SqlOrder,
@@ -343,7 +343,7 @@ async fn handler_progress_get(
     let movie = mc.get_movie(&library_id, movie_id, &user).await?;
     let progress = mc
         .get_view_progress(
-            history_id_rsids(movie_history_id(&movie)),
+            movie_history_ids(&movie),
             &user,
             Some(library_id.to_string()),
         )
@@ -407,7 +407,7 @@ async fn handler_watched_get(
 ) -> Result<Json<Value>> {
     let movie = mc.get_movie(&library_id, movie_id, &user).await?;
     let query = HistoryQuery {
-        id: Some(history_id_rsids(movie_history_id(&movie))),
+        id: Some(movie_history_ids(&movie)),
         ..Default::default()
     };
     let progress = mc

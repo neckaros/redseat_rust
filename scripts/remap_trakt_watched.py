@@ -44,7 +44,7 @@ class EpisodeRow:
 
     @property
     def redseat_id(self) -> str:
-        return f"redseat:{self.serie_ref}x{self.season}x{self.number}"
+        return f"episode:redseat/{self.serie_ref}/{self.season}/{self.number}"
 
 
 class TraktClient:
@@ -159,15 +159,21 @@ def load_tv_library(tv_db: Path) -> tuple[list[SeriesRow], dict[tuple[str, int, 
         conn.close()
 
 
-def load_watched(server_db: Path) -> list[sqlite3.Row]:
+def load_history(server_db: Path) -> tuple[list[sqlite3.Row], list[sqlite3.Row]]:
     conn = sqlite3.connect(server_db)
     conn.row_factory = sqlite3.Row
     try:
-        return list(
+        watched = list(
             conn.execute(
                 "SELECT type, id, user_ref, date, modified FROM Watched ORDER BY type, user_ref, id"
             )
         )
+        progress = list(
+            conn.execute(
+                "SELECT type, id, user_ref, progress, parent, modified FROM progress ORDER BY type, user_ref, id"
+            )
+        )
+        return watched, progress
     finally:
         conn.close()
 
@@ -277,13 +283,13 @@ def build_episode_map(
 
 def build_movie_map(
     client: TraktClient,
-    watched_rows: list[sqlite3.Row],
+    history_rows: list[sqlite3.Row],
     out_csv: Path,
 ) -> tuple[dict[str, str], list[str]]:
     movie_ids = sorted(
         {
             int(row["id"].split(":", 1)[1])
-            for row in watched_rows
+            for row in history_rows
             if row["type"] == "movie" and row["id"].startswith("trakt:")
         }
     )
@@ -309,7 +315,7 @@ def build_movie_map(
                 continue
 
             trakt_key = f"trakt:{trakt_movie_id}"
-            imdb_key = f"imdb:{imdb_id}"
+            imdb_key = f"movie:imdb/{imdb_id}"
             mapping[trakt_key] = imdb_key
             writer.writerow(
                 {
@@ -322,7 +328,7 @@ def build_movie_map(
     return mapping, unresolved
 
 
-def rewrite_watched(
+def rewrite_history(
     server_db: Path,
     episode_map: dict[str, str],
     movie_map: dict[str, str],
@@ -342,6 +348,9 @@ def rewrite_watched(
         "movies_updated": 0,
         "movies_merged": 0,
         "movies_unresolved": 0,
+        "progress_updated": 0,
+        "progress_merged": 0,
+        "progress_unresolved": 0,
     }
 
     try:
@@ -381,7 +390,11 @@ def rewrite_watched(
             ).fetchone()
 
             if destination:
-                merged_date = max(destination["date"], row["date"])
+                merged_date = (
+                    row["date"]
+                    if row["modified"] >= destination["modified"]
+                    else destination["date"]
+                )
                 conn.execute(
                     """
                     UPDATE Watched
@@ -390,24 +403,78 @@ def rewrite_watched(
                     """,
                     (merged_date, kind, new_id, row["user_ref"]),
                 )
-                conn.execute(
-                    """
-                    DELETE FROM Watched
-                    WHERE type = ? AND id = ? AND user_ref = ?
-                    """,
-                    (kind, old_id, row["user_ref"]),
-                )
                 stats[merged_key] += 1
             else:
                 conn.execute(
                     """
-                    UPDATE Watched
-                    SET id = ?
-                    WHERE type = ? AND id = ? AND user_ref = ?
+                    INSERT INTO Watched (type, id, user_ref, date)
+                    VALUES (?, ?, ?, ?)
                     """,
-                    (new_id, kind, old_id, row["user_ref"]),
+                    (kind, new_id, row["user_ref"], row["date"]),
                 )
                 stats[updated_key] += 1
+            conn.execute(
+                """
+                UPDATE Watched SET date = 0
+                WHERE type = ? AND id = ? AND user_ref = ?
+                """,
+                (kind, old_id, row["user_ref"]),
+            )
+
+        progress_rows = list(
+            conn.execute(
+                "SELECT type, id, user_ref, progress, parent, modified FROM progress ORDER BY type, user_ref, id"
+            )
+        )
+        for row in progress_rows:
+            kind = row["type"]
+            old_id = row["id"]
+            mapping = episode_map if kind == "episode" else movie_map if kind == "movie" else None
+            if mapping is None:
+                continue
+            new_id = mapping.get(old_id)
+            if not new_id or new_id == old_id:
+                if old_id.startswith("trakt:"):
+                    stats["progress_unresolved"] += 1
+                continue
+
+            destination = conn.execute(
+                """
+                SELECT progress, parent, modified FROM progress
+                WHERE type = ? AND id = ? AND user_ref = ?
+                """,
+                (kind, new_id, row["user_ref"]),
+            ).fetchone()
+            parent = row["parent"]
+            if kind == "episode":
+                parent = f"series:redseat/{new_id.split('/')[1]}"
+            if destination:
+                if destination["modified"] > row["modified"]:
+                    value = destination["progress"]
+                    parent = destination["parent"] or parent
+                else:
+                    value = row["progress"]
+                conn.execute(
+                    """
+                    UPDATE progress SET progress = ?, parent = ?
+                    WHERE type = ? AND id = ? AND user_ref = ?
+                    """,
+                    (value, parent, kind, new_id, row["user_ref"]),
+                )
+                stats["progress_merged"] += 1
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO progress (type, id, user_ref, progress, parent)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (kind, new_id, row["user_ref"], row["progress"], parent),
+                )
+                stats["progress_updated"] += 1
+            conn.execute(
+                "DELETE FROM progress WHERE type = ? AND id = ? AND user_ref = ?",
+                (kind, old_id, row["user_ref"]),
+            )
         conn.commit()
     except Exception:
         conn.rollback()
@@ -434,7 +501,7 @@ def main() -> int:
     if args.client_secret:
         print("client_secret provided but not used by this script.", file=sys.stderr)
 
-    watched_rows = load_watched(args.server_db)
+    watched_rows, progress_rows = load_history(args.server_db)
     series_rows, local_episodes = load_tv_library(args.tv_db)
     client = TraktClient(args.client_id)
 
@@ -447,8 +514,10 @@ def main() -> int:
     episode_map, unresolved_series = build_episode_map(
         client, series_rows, local_episodes, episode_csv
     )
-    movie_map, unresolved_movies = build_movie_map(client, watched_rows, movie_csv)
-    stats = rewrite_watched(args.server_db, episode_map, movie_map)
+    movie_map, unresolved_movies = build_movie_map(
+        client, watched_rows + progress_rows, movie_csv
+    )
+    stats = rewrite_history(args.server_db, episode_map, movie_map)
 
     unresolved_series_txt.write_text("\n".join(unresolved_series), encoding="utf-8")
     unresolved_movies_txt.write_text("\n".join(unresolved_movies), encoding="utf-8")
@@ -460,7 +529,7 @@ def main() -> int:
         "movie_map_count": len(movie_map),
         "unresolved_series_count": len(unresolved_series),
         "unresolved_movie_count": len(unresolved_movies),
-        "watched_rewrite": stats,
+        "history_rewrite": stats,
         "files": {
             "episode_csv": str(episode_csv),
             "movie_csv": str(movie_csv),

@@ -640,44 +640,49 @@ impl SqliteStore {
 
                     let source = tx
                         .query_row(
-                            "SELECT date FROM Watched WHERE type = ? AND id = ? AND user_ref = ?",
+                            "SELECT date, modified FROM Watched WHERE type = ? AND id = ? AND user_ref = ?",
                             params![rewrite.kind, rewrite.old_id, rewrite.user_ref],
-                            |row| row.get::<_, i64>(0),
+                            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, u64>(1)?)),
                         )
                         .optional()?;
 
-                    let Some(source_date) = source else {
+                    let Some((source_date, source_modified)) = source else {
                         continue;
                     };
 
                     let existing = tx
                         .query_row(
-                            "SELECT date FROM Watched WHERE type = ? AND id = ? AND user_ref = ?",
+                            "SELECT date, modified FROM Watched WHERE type = ? AND id = ? AND user_ref = ?",
                             params![rewrite.kind, rewrite.new_id, rewrite.user_ref],
-                            |row| row.get::<_, i64>(0),
+                            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, u64>(1)?)),
                         )
                         .optional()?;
 
-                    if let Some(existing_date) = existing {
+                    if let Some((existing_date, existing_modified)) = existing {
+                        let merged_date = if source_modified >= existing_modified {
+                            source_date
+                        } else {
+                            existing_date
+                        };
                         tx.execute(
                             "UPDATE Watched SET date = ? WHERE type = ? AND id = ? AND user_ref = ?",
                             params![
-                                existing_date.max(source_date),
+                                merged_date,
                                 rewrite.kind,
                                 rewrite.new_id,
                                 rewrite.user_ref
                             ],
                         )?;
-                        tx.execute(
-                            "DELETE FROM Watched WHERE type = ? AND id = ? AND user_ref = ?",
-                            params![rewrite.kind, rewrite.old_id, rewrite.user_ref],
-                        )?;
                     } else {
                         tx.execute(
-                            "UPDATE Watched SET id = ? WHERE type = ? AND id = ? AND user_ref = ?",
-                            params![rewrite.new_id, rewrite.kind, rewrite.old_id, rewrite.user_ref],
+                            "INSERT INTO Watched (type, id, user_ref, date) VALUES (?, ?, ?, ?)",
+                            params![rewrite.kind, rewrite.new_id, rewrite.user_ref, source_date],
                         )?;
                     }
+                    tx.execute(
+                        "UPDATE Watched SET date = 0 WHERE type = ? AND id = ? AND user_ref = ?",
+                        params![rewrite.kind, rewrite.old_id, rewrite.user_ref],
+                    )?;
                     watched_count += 1;
                 }
 
@@ -769,5 +774,35 @@ impl SqliteStore {
             })
             .await?;
         Ok(row)
+    }
+
+    pub async fn is_data_migration_complete(&self, name: &str) -> Result<bool> {
+        let name = name.to_string();
+        let complete = self
+            .server_store
+            .call(move |conn| {
+                let complete = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM migrations WHERE name = ?)",
+                    params![name],
+                    |row| row.get(0),
+                )?;
+                Ok(complete)
+            })
+            .await?;
+        Ok(complete)
+    }
+
+    pub async fn complete_data_migration(&self, name: &str) -> Result<()> {
+        let name = name.to_string();
+        self.server_store
+            .call(move |conn| {
+                conn.execute(
+                    "INSERT INTO migrations (name, up, down) SELECT ?, '', '' WHERE NOT EXISTS (SELECT 1 FROM migrations WHERE name = ?)",
+                    params![name, name],
+                )?;
+                Ok(())
+            })
+            .await?;
+        Ok(())
     }
 }
