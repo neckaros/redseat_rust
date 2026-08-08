@@ -13,6 +13,7 @@ pub mod deleted;
 pub mod entity_images;
 pub mod entity_search;
 pub mod episodes;
+pub mod history;
 pub mod media_progresses;
 pub mod media_ratings;
 pub mod medias;
@@ -188,6 +189,7 @@ impl ModelController {
         });
 
         mc.cache_update_all_libraries().await?;
+        mc.migrate_history_ids().await?;
 
         let scheduler = &mc.scheduler;
         scheduler.start(mc.clone()).await?;

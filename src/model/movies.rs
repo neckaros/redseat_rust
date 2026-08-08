@@ -33,6 +33,7 @@ use super::{
     entity_images::EntityImageConfig,
     entity_search::merge_result_ids,
     error::{Error, Result},
+    history::{movie_history_id, movie_history_ids},
     store::sql::SqlOrder,
     users::{ConnectedUser, HistoryQuery},
     ModelController,
@@ -245,11 +246,14 @@ impl ModelController {
         library_id: Option<String>,
     ) -> RsResult<()> {
         movie.fill_imdb_ratings(&self.imdb).await;
-
-        let ids: RsIds = movie.clone().into();
+        let history_ids = movie_history_ids(movie);
 
         let progress = self
-            .get_view_progress(ids, requesting_user, library_id.clone())
+            .get_view_progress(
+                history_ids.clone(),
+                requesting_user,
+                library_id.clone(),
+            )
             .await?;
         if let Some(progress) = progress {
             movie.progress = Some(progress.progress);
@@ -259,7 +263,7 @@ impl ModelController {
             .get_watched(
                 HistoryQuery {
                     types: vec![MediaType::Movie],
-                    id: Some(movie.clone().into()),
+                    id: Some(history_ids),
                     ..Default::default()
                 },
                 requesting_user,
@@ -305,18 +309,12 @@ impl ModelController {
             .map(|e| (e.id, e.date))
             .collect::<HashMap<_, _>>();
         for movie in movies {
-            let ids = RsIds::from(movie.clone());
-            let ids_string: Vec<String> = ids.into();
-
-            for id in ids_string {
-                let watch = watched.get(&id);
-                if let Some(watch) = watch {
-                    movie.watched = Some(*watch);
-                }
-                let progress = progresses.get(&id);
-                if let Some(progress) = progress {
-                    movie.progress = Some(*progress);
-                }
+            let history_ids = movie_history_ids(movie).as_all_ids();
+            if let Some(watch) = history_ids.iter().find_map(|id| watched.get(id)) {
+                movie.watched = Some(*watch);
+            }
+            if let Some(progress) = history_ids.iter().find_map(|id| progresses.get(id)) {
+                movie.progress = Some(*progress);
             }
 
             movie.fill_imdb_ratings(&self.imdb).await;
@@ -375,8 +373,18 @@ impl ModelController {
         }
         if update.has_update() {
             let store = self.store.get_library_store(library_id)?;
+            let old_movie =
+                store
+                    .get_movie(&movie_id)
+                    .await?
+                    .ok_or(SourcesError::UnableToFindMovie(
+                        library_id.to_string(),
+                        movie_id.clone(),
+                        "update_movie".to_string(),
+                    ))?;
+            let old_history_id = movie_history_id(&old_movie);
             store.update_movie(&movie_id, update).await?;
-            let person =
+            let movie =
                 store
                     .get_movie(&movie_id)
                     .await?
@@ -385,14 +393,16 @@ impl ModelController {
                         movie_id.to_string(),
                         "update_movie".to_string(),
                     ))?;
+            self.migrate_movie_history_id(old_history_id, movie_history_id(&movie))
+                .await?;
             self.send_movie(MoviesMessage {
                 library: library_id.to_string(),
                 movies: vec![MovieWithAction {
                     action: ElementAction::Updated,
-                    movie: person.clone(),
+                    movie: movie.clone(),
                 }],
             });
-            Ok(person)
+            Ok(movie)
         } else {
             let movie = self
                 .get_movie(library_id, movie_id, requesting_user)

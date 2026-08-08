@@ -232,24 +232,20 @@ interface MediasRatingMessage {
   rating: Rating;
 }
 
-// Watched events (user-specific)
-// IMPORTANT: The `id` field uses external IDs, NOT local database IDs.
-// Format: "provider:id" (e.g., "imdb:tt1234567", "trakt:123456", "tmdb:550")
-// For movies: Uses the best available external ID (priority: imdb > trakt > tmdb > tvdb > slug)
-// For episodes: Uses external IDs or falls back to local "redseat:{id}" if no external IDs exist
+// Watched events (user-specific). IDs include the media type and identity scheme.
 interface Watched {
   type: string;  // MediaType: "movie", "episode", etc.
-  id: string;    // External ID in format "provider:value" (e.g., "imdb:tt1234567")
+  id: string;    // e.g. "movie:imdb/tt1234567" or "episode:redseat/seriesId/1/2"
   userRef?: string;
   date: number;  // Timestamp when content was watched
   modified: number;
 }
 
 // Unwatched events (user-specific)
-// NOTE: Different structure from Watched - contains ALL possible IDs for client matching
+// NOTE: Different structure from Watched because the delete API accepts multiple IDs.
 interface Unwatched {
   type: string;     // MediaType: "movie", "episode", etc.
-  ids: string[];    // All possible IDs in format "provider:value" (e.g., ["imdb:tt1234567", "trakt:12345", "tmdb:550"])
+  ids: string[];    // History IDs marked as deleted
   userRef?: string;
   modified: number;
 }
@@ -364,7 +360,7 @@ eventSource.addEventListener('unwatched', (event) => {
   const data: SseEvent = JSON.parse(event.data);
   if ('Unwatched' in data) {
     const unwatched = data.Unwatched;
-    // Unwatched events contain ALL possible IDs for the content
+    // Unwatched events contain the history IDs marked as deleted
     console.log(`Unmarked as watched: ${unwatched.type} with IDs: ${unwatched.ids.join(', ')}`);
   }
 });
@@ -574,14 +570,14 @@ Search endpoints support SSE streaming so clients receive results progressively 
 
 Each SSE event has event type `results`. The data is a JSON object with a single key: the provider name, and the value is an array of results from that provider.
 
-Results arrive one provider at a time. For series and movies, Trakt results are sent first, followed by each plugin (e.g., Anilist). For books, only plugin results are sent (no Trakt).
+Results arrive one metadata plugin at a time.
 
 ### Event Format
 
 Each `results` event contains one provider's results:
 
 ```json
-{"trakt": [{"metadata": {"serie": { ... }}, "images": []}]}
+{"TMDB": [{"metadata": {"serie": { ... }}, "images": []}]}
 ```
 
 Then a second event for the next provider:
@@ -605,7 +601,7 @@ const resultsByProvider: Record<string, SearchResult[]> = {};
 
 eventSource.addEventListener('results', (event) => {
   const data = JSON.parse(event.data);
-  // data is e.g. { "trakt": [...] } or { "Anilist": [...] }
+  // data is e.g. { "TMDB": [...] } or { "Anilist": [...] }
   for (const [provider, results] of Object.entries(data)) {
     resultsByProvider[provider] = results;
   }
@@ -634,7 +630,7 @@ Response format:
 
 ```json
 {
-  "trakt": [{"metadata": {"movie": { ... }}, "images": []}],
+  "TMDB": [{"metadata": {"movie": { ... }}, "images": []}],
   "Anilist": [{"metadata": {"movie": { ... }}, "images": [...]}]
 }
 ```
@@ -651,22 +647,16 @@ When a client falls behind and misses events (lag), the server will skip the mis
 
 ### Understanding the ID Format
 
-The `watched` and `unwatched` events use **external IDs** (from providers like IMDb, Trakt, TMDb) rather than local database IDs. This allows watch history to be portable across different servers and sync with external services.
+History IDs include the media type so IDs from different domains cannot collide.
 
-**ID Format**: `provider:value`
+| Content | Format | Example |
+|---------|--------|---------|
+| Movie with IMDb ID | `movie:imdb/<imdbId>` | `movie:imdb/tt1234567` |
+| Movie without IMDb ID | `movie:redseat/<movieId>` | `movie:redseat/abc123` |
+| Series progress parent | `series:redseat/<seriesId>` | `series:redseat/series123` |
+| Episode | `episode:redseat/<seriesId>/<season>/<episode>` | `episode:redseat/series123/1/2` |
 
-| Provider | Example | Content Types |
-|----------|---------|---------------|
-| `imdb` | `imdb:tt1234567` | Movies, Episodes |
-| `trakt` | `trakt:123456` | Movies, Episodes, Series |
-| `tmdb` | `tmdb:550` | Movies, Episodes, Series |
-| `tvdb` | `tvdb:78901` | Episodes, Series |
-| `slug` | `slug:the-matrix` | Movies, Series |
-| `redseat` | `redseat:abc123` | Local fallback (episodes only) |
-
-**ID Selection Priority**:
-- **Movies**: Uses the best external ID (priority: imdb > trakt > tmdb > slug)
-- **Episodes**: Uses external IDs, or falls back to local `redseat:` ID if no external IDs exist
+Episode IDs deliberately use the immutable local series ID and numeric season/episode tuple. Plugin metadata refreshes therefore cannot change watched state or progress IDs.
 
 ### REST API Endpoints
 
@@ -682,14 +672,16 @@ The `watched` and `unwatched` events use **external IDs** (from providers like I
 { "date": 1705766400000 }
 ```
 
-**Direct History** (requires knowing the external ID): `POST /users/me/history`
+**Direct History**: `POST /users/me/history`
 ```json
 {
   "type": "movie",
-  "id": "imdb:tt1234567",
+  "id": "movie:imdb/tt1234567",
   "date": 1705766400000
 }
 ```
+
+For movie compatibility, `imdb:tt1234567` is also accepted and normalized to the typed form. Other media should send the typed history ID returned by the history API or SSE event.
 
 #### Unmark as Watched (Remove from History)
 
@@ -697,15 +689,15 @@ The `watched` and `unwatched` events use **external IDs** (from providers like I
 
 **Episodes**: `DELETE /libraries/:libraryId/series/:serieId/seasons/:season/episodes/:number/watched`
 
-**Direct History** (with multiple possible IDs): `DELETE /users/me/history`
+**Direct History**: `DELETE /users/me/history`
 ```json
 {
   "type": "movie",
-  "ids": ["imdb:tt1234567", "trakt:12345", "tmdb:550"]
+  "ids": ["movie:imdb/tt1234567"]
 }
 ```
 
-The delete endpoints accept multiple IDs because the watched entry could have been created with any of the available external IDs. The server will try to delete entries matching any of the provided IDs.
+The delete endpoint accepts an array so clients can delete more than one known history ID in one request.
 
 ### Example: Handling Watch State Changes
 
@@ -737,25 +729,19 @@ eventSource.addEventListener('unwatched', (event) => {
 
 ### Matching SSE Events to Local Content
 
-Since SSE events use external IDs, you need to match them against your local content's external IDs:
+Match SSE events against the same typed history ID used by the REST API:
 
 ```typescript
 interface LocalMovie {
   id: string;        // Local database ID
   imdb?: string;     // "tt1234567"
-  trakt?: number;    // 12345
-  tmdb?: number;     // 550
 }
 
-// For Watched events (single ID)
 function isMatchingWatchedEvent(movie: LocalMovie, eventId: string): boolean {
-  const [provider, value] = eventId.split(':');
-  switch (provider) {
-    case 'imdb': return movie.imdb === value;
-    case 'trakt': return movie.trakt?.toString() === value;
-    case 'tmdb': return movie.tmdb?.toString() === value;
-    default: return false;
-  }
+  const historyId = movie.imdb
+    ? `movie:imdb/${movie.imdb}`
+    : `movie:redseat/${movie.id}`;
+  return eventId === historyId;
 }
 
 // For Unwatched events (array of IDs)
@@ -824,14 +810,14 @@ syncHistory();
 [
   {
     "type": "movie",
-    "id": "imdb:tt1234567",
+    "id": "movie:imdb/tt1234567",
     "userRef": "user123",
     "date": 1705766400000,
     "modified": 1705852800000
   },
   {
     "type": "movie",
-    "id": "trakt:98765",
+    "id": "movie:imdb/tt9876543",
     "userRef": "user123",
     "date": 0,
     "modified": 1705939200000
