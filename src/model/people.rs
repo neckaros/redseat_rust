@@ -11,7 +11,7 @@ use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use strum_macros::EnumString;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::{
     domain::{
@@ -28,7 +28,7 @@ use crate::{
     model::medias::MediaFileQuery,
     plugins::sources::{error::SourcesError, AsyncReadPinBox, FileStreamResult, Source},
     tools::{
-        image_tools::{convert_image_reader, resize_image_reader, ImageSize},
+        image_tools::{convert_image_reader, ImageSize},
         log::log_info,
         recognition::{BBox, DetectedFace, FaceRecognitionService},
         video_tools::VideoTime,
@@ -46,6 +46,7 @@ use rs_plugin_common_interfaces::{
 use tokio_util::io::StreamReader;
 
 use super::{
+    entity_images::EntityImageConfig,
     entity_search::optional_trakt_search,
     error::{Error, Result},
     users::ConnectedUser,
@@ -444,8 +445,13 @@ impl ModelController {
         size: Option<ImageSize>,
         requesting_user: &ConnectedUser,
     ) -> crate::Result<FileStreamResult<AsyncReadPinBox>> {
+        let target_kind = kind.unwrap_or(ImageType::Poster);
+        let config = EntityImageConfig {
+            folder: ".portraits",
+            cache_prefix: "person",
+        };
         if RsIds::is_id(person_id) {
-            let mut person_ids: RsIds = person_id.to_string().try_into()?;
+            let person_ids: RsIds = person_id.to_string().try_into()?;
             let store = self.store.get_library_store_optional(library_id).ok_or(
                 SourcesError::UnableToFindPerson(
                     library_id.to_string(),
@@ -456,65 +462,67 @@ impl ModelController {
             let existing_person = store.get_person_by_external_id(person_ids.clone()).await?;
             if let Some(existing_person) = existing_person {
                 let image = self
-                    .person_image(library_id, &existing_person.id, kind, size, requesting_user)
+                    .person_image(
+                        library_id,
+                        &existing_person.id,
+                        Some(target_kind),
+                        size,
+                        requesting_user,
+                    )
                     .await?;
                 Ok(image)
             } else {
-                let target_kind = kind.unwrap_or(ImageType::Poster);
-                let local_provider = self.library_source_for_library(library_id).await?;
-                let image_path = format!(
-                    "cache/person-{}-{}.avif",
-                    person_id.replace(':', "-"),
-                    target_kind
-                );
+                let raw_lookup_query = RsLookupQuery::Person(RsLookupPerson {
+                    name: Some(String::new()),
+                    ids: Some(person_ids.clone()),
+                    page_key: None,
+                });
+                let raw_result = self
+                    .serve_cached_entity_image(
+                        library_id,
+                        person_id,
+                        raw_lookup_query,
+                        &target_kind,
+                        &config,
+                        requesting_user,
+                    )
+                    .await;
+                if raw_result.is_ok() {
+                    return raw_result;
+                }
 
-                if !local_provider.exists(&image_path).await {
-                    let lookup_query = RsLookupPerson {
-                        name: Some(String::new()),
-                        ids: Some(person_ids.clone()),
-                        page_key: None,
-                    };
-                    let image_request = self
-                        .get_person_image_url(
-                            lookup_query,
-                            Some(library_id.to_string()),
-                            &target_kind,
+                let resolved_person =
+                    self.get_person(library_id, person_id.to_string(), requesting_user).await?;
+                let Some(person) = resolved_person else {
+                    return raw_result;
+                };
+
+                if person.id != person_id && !RsIds::is_id(&person.id) {
+                    return self
+                        .person_image(
+                            library_id,
+                            &person.id,
+                            Some(target_kind),
+                            size,
                             requesting_user,
                         )
-                        .await?
-                        .ok_or(crate::Error::NotFound(format!(
-                            "Unable to get person image url: {:?} kind {:?}",
-                            person_ids, target_kind
-                        )))?;
-                    let (_, mut writer) = local_provider.get_file_write_stream(&image_path).await?;
-                    let image_reader = crate::plugins::sources::SourceRead::Request(image_request)
-                        .into_reader(
-                            Some(library_id),
-                            None,
-                            None,
-                            Some((self.clone(), requesting_user)),
-                            None,
-                        )
-                        .await?;
-                    let resized = resize_image_reader(
-                        image_reader.stream,
-                        ImageSize::Large.to_size(),
-                        image::ImageFormat::Avif,
-                        Some(70),
-                        false,
-                    )
-                    .await?;
-
-                    writer.write_all(&resized).await?;
+                        .await;
                 }
 
-                let source = local_provider.get_file(&image_path, None).await?;
-                match source {
-                    crate::plugins::sources::SourceRead::Stream(s) => Ok(s),
-                    crate::plugins::sources::SourceRead::Request(_) => {
-                        Err(crate::Error::GenericRedseatError)
-                    }
-                }
+                let lookup_query = RsLookupQuery::Person(RsLookupPerson {
+                    name: Some(person.name.clone()),
+                    ids: Some(person.into()),
+                    page_key: None,
+                });
+                self.serve_cached_entity_image(
+                    library_id,
+                    person_id,
+                    lookup_query,
+                    &target_kind,
+                    &config,
+                    requesting_user,
+                )
+                .await
             }
         } else {
             if !self
@@ -522,14 +530,19 @@ impl ModelController {
                     library_id,
                     ".portraits",
                     person_id,
-                    kind.clone(),
+                    Some(target_kind.clone()),
                     requesting_user,
                 )
                 .await?
             {
                 // Try to refresh from external source first
                 let refresh_result = self
-                    .refresh_person_image(library_id, person_id, &kind, requesting_user)
+                    .refresh_person_image(
+                        library_id,
+                        person_id,
+                        &Some(target_kind.clone()),
+                        requesting_user,
+                    )
                     .await;
                 match refresh_result {
                     Ok(_) => {
@@ -539,7 +552,7 @@ impl ModelController {
                             format!(
                                 "Successfully refreshed person image from external source: {} {:?}",
                                 person_id,
-                                kind.clone()
+                                Some(target_kind.clone())
                             ),
                         );
                     }
@@ -580,7 +593,7 @@ impl ModelController {
                                                 .update_person_image(
                                                     library_id,
                                                     person_id,
-                                                    &kind,
+                                                    &Some(target_kind.clone()),
                                                     reader,
                                                     &ConnectedUser::ServerAdmin,
                                                 )
@@ -613,7 +626,7 @@ impl ModelController {
                     library_id,
                     ".portraits",
                     person_id,
-                    kind,
+                    Some(target_kind),
                     size,
                     requesting_user,
                 )
