@@ -358,15 +358,19 @@ def rewrite_history(
         "progress_updated": 0,
         "progress_merged": 0,
         "progress_unresolved": 0,
+        "tombstones_removed": 0,
     }
 
     try:
+        conn.execute("BEGIN IMMEDIATE")
+        stats["tombstones_removed"] = conn.execute(
+            "DELETE FROM Watched WHERE date <= 0"
+        ).rowcount
         rows = list(
             conn.execute(
                 "SELECT type, id, user_ref, date, modified FROM Watched ORDER BY type, user_ref, id"
             )
         )
-        conn.execute("BEGIN IMMEDIATE")
         for row in rows:
             kind = row["type"]
             old_id = row["id"]
@@ -422,7 +426,7 @@ def rewrite_history(
                 stats[updated_key] += 1
             conn.execute(
                 """
-                UPDATE Watched SET date = 0
+                DELETE FROM Watched
                 WHERE type = ? AND id = ? AND user_ref = ?
                 """,
                 (kind, old_id, row["user_ref"]),

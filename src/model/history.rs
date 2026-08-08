@@ -13,8 +13,7 @@ use super::{
     ModelController,
 };
 
-const HISTORY_MIGRATION: &str = "canonical_history_ids_v3";
-const PREVIOUS_HISTORY_MIGRATION: &str = "canonical_history_ids_v2";
+const HISTORY_MIGRATION: &str = "canonical_history_ids_v4";
 
 fn series_history_key(serie: &Serie) -> String {
     serie
@@ -177,20 +176,17 @@ impl ModelController {
             return Ok(());
         }
 
-        let watched = self.store.get_all_watched().await?;
-        let progress = self.store.get_all_view_progress_rows().await?;
-        let previous_migration_complete = self
-            .store
-            .is_data_migration_complete(PREVIOUS_HISTORY_MIGRATION)
-            .await?;
+        let tombstones_removed = self.store.purge_watched_tombstones().await?;
+        let mut watched = self.store.get_all_watched().await?;
+        let mut progress = self.store.get_all_view_progress_rows().await?;
+        watched.sort_by(|a, b| b.modified.cmp(&a.modified));
+        progress.sort_by(|a, b| b.modified.cmp(&a.modified));
         let legacy_movie_ids: HashSet<String> = watched
             .iter()
             .map(|row| (&row.kind, &row.id))
             .chain(progress.iter().map(|row| (&row.kind, &row.id)))
             .filter(|(kind, id)| {
-                !previous_migration_complete
-                    && **kind == MediaType::Movie
-                    && !is_current_history_id(kind, id)
+                **kind == MediaType::Movie && !is_current_history_id(kind, id)
             })
             .map(|(_, id)| id.clone())
             .collect();
@@ -199,12 +195,7 @@ impl ModelController {
             .map(|row| (&row.kind, &row.id))
             .chain(progress.iter().map(|row| (&row.kind, &row.id)))
             .filter(|(kind, id)| {
-                **kind == MediaType::Episode
-                    && if previous_migration_complete {
-                        id.starts_with("episode:redseat/")
-                    } else {
-                        !is_current_history_id(kind, id)
-                    }
+                **kind == MediaType::Episode && !is_current_history_id(kind, id)
             })
             .map(|(_, id)| id.clone())
             .collect();
@@ -311,8 +302,8 @@ impl ModelController {
         log_info(
             LogServiceType::Database,
             format!(
-                "History migration complete: watched rewrites={}, progress rewrites={}",
-                watched_count, progress_count
+                "History migration complete: watched rewrites={}, progress rewrites={}, tombstones removed={}",
+                watched_count, progress_count, tombstones_removed
             ),
         );
         Ok(())

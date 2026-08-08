@@ -753,79 +753,24 @@ function isMatchingUnwatchedEvent(movie: LocalMovie, eventIds: string[]): boolea
 
 ## Offline Sync for Watch History
 
-When clients are offline or disconnected from SSE, they can miss `unwatched` events. The REST API provides a mechanism to sync these missed deletions.
-
-### How It Works
-
-- **`date > 0`**: Item is actively watched (timestamp indicates when it was watched)
-- **`date = 0`**: Item was unwatched/deleted (soft-deleted, kept for sync purposes)
-
-When content is marked as unwatched, instead of being deleted from the database, the `date` field is set to `0` and the `modified` timestamp is updated. This allows clients to fetch all changes (including deletions) via the history API.
+Unwatching content permanently deletes its history row. The server does not retain deletion tombstones.
 
 ### Client Sync Flow
 
 ```typescript
-// 1. Store last sync timestamp locally
-let lastSyncTimestamp = localStorage.getItem('lastHistorySync') || '0';
-
-// 2. Fetch all history changes since last sync, including deleted items
+// Replace local watched state with a complete server snapshot.
 async function syncHistory() {
-  const response = await fetch(
-    `/users/me/history?after=${lastSyncTimestamp}&includeDeleted=true`
-  );
+  const response = await fetch('/users/me/history');
   const items: Watched[] = await response.json();
-
-  for (const item of items) {
-    if (item.date > 0) {
-      // Active watched item - add or update in local state
-      addToLocalWatched(item);
-    } else {
-      // Deleted item (date = 0) - remove from local state
-      removeFromLocalWatched(item.type, item.id);
-    }
-
-    // Track highest modified timestamp for next sync
-    if (item.modified > parseInt(lastSyncTimestamp)) {
-      lastSyncTimestamp = item.modified.toString();
-    }
-  }
-
-  localStorage.setItem('lastHistorySync', lastSyncTimestamp);
+  replaceLocalWatched(items);
 }
-
-// 3. Call on app startup and periodically while online
-syncHistory();
 ```
+
+Connected clients can apply live `watched` and `unwatched` SSE events. After being offline, clients must perform this full reload because incremental history queries cannot report deletions.
 
 ### API Query Parameters
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `after` | number | Only return items modified after this timestamp (milliseconds) |
-| `includeDeleted` | boolean | Include items with `date=0` (unwatched). Default: `false` |
+| `after` | number | Only return watched items modified after this timestamp (milliseconds). This does not report deletions. |
 | `types` | string[] | Filter by content types (e.g., `movie`, `episode`) |
-
-### Example Response with Deleted Items
-
-```json
-[
-  {
-    "type": "movie",
-    "id": "movie:imdb/tt1234567",
-    "userRef": "user123",
-    "date": 1705766400000,
-    "modified": 1705852800000
-  },
-  {
-    "type": "movie",
-    "id": "movie:imdb/tt9876543",
-    "userRef": "user123",
-    "date": 0,
-    "modified": 1705939200000
-  }
-]
-```
-
-In this response:
-- First item: Movie was watched at timestamp `1705766400000`
-- Second item: Movie was unwatched (`date=0`), client should remove it from local state
