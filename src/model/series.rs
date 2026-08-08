@@ -381,6 +381,12 @@ impl ModelController {
                     "get_serie".to_string(),
                 ))?
                 .item;
+            let mut updated_serie = old_serie.clone();
+            if let Some(imdb) = &update.imdb {
+                updated_serie.imdb = Some(imdb.clone());
+            }
+            self.migrate_series_history_ids(&old_serie, &updated_serie)
+                .await?;
             store.update_serie(&serie_id, update).await?;
             let serie = store
                 .get_serie(&serie_id)
@@ -391,8 +397,6 @@ impl ModelController {
                     "get_serie".to_string(),
                 ))?
                 .item;
-            self.migrate_series_history_ids(library_id, &old_serie, &serie)
-                .await?;
             self.send_serie(SeriesMessage {
                 library: library_id.to_string(),
                 series: vec![SerieWithAction {

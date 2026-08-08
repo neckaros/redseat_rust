@@ -44,7 +44,8 @@ class EpisodeRow:
 
 
 def episode_history_id(series: SeriesRow, episode: EpisodeRow) -> str:
-    key = f"imdb/{series.imdb}" if series.imdb else f"redseat/{series.id}"
+    imdb = series.imdb.strip() if series.imdb else ""
+    key = f"imdb/{imdb}" if imdb else f"redseat/{series.id}"
     return f"episode:{key}/{episode.season}/{episode.number}"
 
 
