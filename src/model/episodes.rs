@@ -437,12 +437,22 @@ impl ModelController {
         let store = self.store.get_library_store_optional(library_id).ok_or(
             Error::LibraryStoreNotFoundFor(serie_id.clone().to_string(), "get_episode".to_string()),
         )?;
-        let mut episode = store.get_episode(&serie_id, season, number).await?.ok_or(
-            SourcesError::UnableToFindEpisodes(
-                format!("{} {} {}", serie_id, season, number),
-                "get_episode".to_string(),
-            ),
-        )?;
+        let mut episode = match store.get_episode(&serie_id, season, number).await? {
+            Some(episode) => episode,
+            None => store
+                .get_episodes(EpisodeQuery {
+                    serie_ref: Some(serie_id.clone()),
+                    season: Some(season),
+                    ..Default::default()
+                })
+                .await?
+                .into_iter()
+                .find(|episode| episode.number == number)
+                .ok_or(SourcesError::UnableToFindEpisodes(
+                    format!("{} {} {}", serie_id, season, number),
+                    "get_episode".to_string(),
+                ))?,
+        };
         self.fill_episode_watched_imdb(&mut episode, requesting_user, Some(library_id.to_string()))
             .await?;
         Ok(episode)
