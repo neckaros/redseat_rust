@@ -732,9 +732,47 @@ impl ModelController {
                     )
                     .await;
             }
-            let lookup_query = RsLookupQuery::Movie(RsLookupMovie {
+            let raw_lookup_query = RsLookupQuery::Movie(RsLookupMovie {
                 name: None,
-                ids: Some(movie_ids),
+                ids: Some(movie_ids.clone()),
+                page_key: None,
+            });
+            let raw_result = self
+                .serve_cached_entity_image(
+                    library_id,
+                    movie_id,
+                    raw_lookup_query,
+                    &kind,
+                    &config,
+                    requesting_user,
+                )
+                .await;
+            if raw_result.is_ok() {
+                return raw_result;
+            }
+
+            let resolved_movie = self
+                .get_movie(library_id, movie_id.to_string(), requesting_user)
+                .await;
+            let Ok(movie) = resolved_movie else {
+                return raw_result;
+            };
+
+            if movie.id != movie_id && !RsIds::is_id(&movie.id) {
+                return self
+                    .movie_image(
+                        library_id,
+                        &movie.id,
+                        Some(kind),
+                        size,
+                        requesting_user,
+                    )
+                    .await;
+            }
+
+            let lookup_query = RsLookupQuery::Movie(RsLookupMovie {
+                name: Some(movie.name.clone()),
+                ids: Some(movie.into()),
                 page_key: None,
             });
             self.serve_cached_entity_image(

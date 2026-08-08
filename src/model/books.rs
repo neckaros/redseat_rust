@@ -588,10 +588,49 @@ impl ModelController {
                     )
                     .await;
             }
-            let lookup_query = RsLookupQuery::Book(RsLookupBook {
+            let raw_lookup_query = RsLookupQuery::Book(RsLookupBook {
                 name: None,
                 author: None,
-                ids: Some(book_ids),
+                ids: Some(book_ids.clone()),
+                page_key: None,
+            });
+            let raw_result = self
+                .serve_cached_entity_image(
+                    library_id,
+                    book_id,
+                    raw_lookup_query,
+                    &target_kind,
+                    &config,
+                    requesting_user,
+                )
+                .await;
+            if raw_result.is_ok() {
+                return raw_result;
+            }
+
+            let resolved_book = self
+                .get_book(library_id, book_id.to_string(), requesting_user)
+                .await;
+            let Ok(book) = resolved_book else {
+                return raw_result;
+            };
+
+            if book.item.id != book_id && !RsIds::is_id(&book.item.id) {
+                return self
+                    .book_image(
+                        library_id,
+                        &book.item.id,
+                        Some(target_kind),
+                        size,
+                        requesting_user,
+                    )
+                    .await;
+            }
+
+            let lookup_query = RsLookupQuery::Book(RsLookupBook {
+                name: Some(book.item.name.clone()),
+                author: None,
+                ids: Some(book.item.into()),
                 page_key: None,
             });
             self.serve_cached_entity_image(
