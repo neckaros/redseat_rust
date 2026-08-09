@@ -6,7 +6,7 @@ use query_external_ip::SourceError;
 use rs_plugin_common_interfaces::{
     domain::rs_ids::{ApplyRsIds, RsIds},
     lookup::{RsLookupEpisode, RsLookupMetadataResult, RsLookupQuery},
-    ImageType, MediaType,
+    ImageType, MediaType, PluginType,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -38,6 +38,7 @@ use super::{
     error::{Error, Result},
     history::{episode_history_id, episode_history_ids},
     medias::{RsSort, RsSortOrder},
+    plugins::PluginQuery,
     store::sql::SqlOrder,
     users::{ConnectedUser, HistoryQuery},
     ModelController,
@@ -173,7 +174,15 @@ impl ModelController {
         let mut episodes = Vec::new();
         let mut empty_streak = 0;
         let mut selected_source: Option<String> = None;
-        let mut available_sources: Vec<String> = Vec::new();
+        let available_sources: Vec<String> = self
+            .get_plugins_with_credential(PluginQuery {
+                kind: Some(PluginType::LookupMetadata),
+                library: Some(library_id.to_string()),
+                ..Default::default()
+            })
+            .await?
+            .map(|plugin| plugin.plugin.path)
+            .collect();
 
         for season in 1..=100 {
             let source_filter = selected_source.as_ref().map(std::slice::from_ref);
@@ -191,13 +200,6 @@ impl ModelController {
                     source_filter,
                 )
                 .await?;
-            if selected_source.is_none() {
-                available_sources = groups
-                    .iter()
-                    .map(|(source_id, _, _)| source_id.clone())
-                    .collect();
-            }
-
             let season_episodes = if let Some((source_id, season_episodes)) =
                 take_episode_source(groups, serie_id, None)
             {
