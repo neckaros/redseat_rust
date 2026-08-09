@@ -44,19 +44,41 @@ impl RsSchedulerTask for RefreshTask {
             libraries
         };
 
+        let mut libraries_with_series = Vec::with_capacity(libraries.len());
         for library in libraries {
+            let series = mc
+                .get_series(&library.id, SerieQuery::new_empty(), &connected_user)
+                .await?
+                .into_iter()
+                .map(|iwr| iwr.item)
+                .collect::<Vec<Serie>>();
+            libraries_with_series.push((library, series));
+        }
+        if let Err(error) = mc.imdb.prime_episode_ids(
+            libraries_with_series
+                .iter()
+                .flat_map(|(_, series)| series)
+                .filter(|serie| {
+                    serie.status != Some(SerieStatus::Ended)
+                        && serie.status != Some(SerieStatus::Canceled)
+                })
+                .filter_map(|serie| serie.imdb.as_deref()),
+        )
+        .await
+        {
+            log_error(
+                crate::tools::log::LogServiceType::Scheduler,
+                format!("Unable to prime IMDB episode identifiers: {:#}", error),
+            );
+        }
+
+        for (library, series) in libraries_with_series {
             log_info(
                 crate::tools::log::LogServiceType::Scheduler,
                 format!("Refreshing library {:?}", library.name),
             );
             let source = mc.library_source_for_library(&library.id).await?;
 
-            let series: Vec<Serie> = mc
-                .get_series(&library.id, SerieQuery::new_empty(), &connected_user)
-                .await?
-                .into_iter()
-                .map(|iwr| iwr.item)
-                .collect();
             for serie in series {
                 let refreshed = mc
                     .refresh_serie(&library.id, &serie.id, &connected_user)
