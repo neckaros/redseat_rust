@@ -1,11 +1,16 @@
+use std::collections::{HashMap, HashSet};
+
 use rusqlite::{params, OptionalExtension, Row, ToSql};
 
 use super::{Result, SqliteLibraryStore};
 use crate::model::Error;
 use crate::{
-    domain::episode::{self, Episode, EpisodeWithShow},
+    domain::{
+        episode::{self, Episode, EpisodeWithAction, EpisodeWithShow},
+        ElementAction,
+    },
     model::{
-        episodes::{EpisodeForUpdate, EpisodeQuery},
+        episodes::{EpisodeForUpdate, EpisodeQuery, EpisodeSyncResult},
         store::{
             from_pipe_separated_optional,
             sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder},
@@ -351,18 +356,172 @@ ORDER BY airdate ASC
         }).await?;
         Ok(())
     }
-    pub async fn remove_all_serie_episodes(&self, serie_ref: String) -> Result<()> {
-        self.connection
+
+    pub async fn sync_serie_episodes(
+        &self,
+        serie_ref: &str,
+        episodes: Vec<Episode>,
+    ) -> Result<EpisodeSyncResult> {
+        let serie_ref = serie_ref.to_string();
+        let result = self
+            .connection
             .call(move |conn| {
-                conn.execute(
-                    "DELETE FROM episodes WHERE serie_ref = ?",
-                    params![serie_ref],
-                )?;
-                Ok(())
+                let tx = conn.transaction()?;
+                let existing: HashMap<(u32, u32), Episode> = {
+                    let mut query = tx.prepare(
+                        "SELECT serie_ref, season, number, abs, name, overview, airdate, duration, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, modified, added, imdb_rating, imdb_votes, trakt_rating, trakt_votes, null as serie_name
+                         FROM episodes WHERE serie_ref = ? ORDER BY season, number",
+                    )?;
+                    let rows = query.query_map([&serie_ref], Self::row_to_episode)?;
+                    rows.collect::<std::result::Result<Vec<_>, _>>()?
+                        .into_iter()
+                        .map(|episode| ((episode.season, episode.number), episode))
+                        .collect()
+                };
+                let incoming_keys: HashSet<(u32, u32)> = episodes
+                    .iter()
+                    .map(|episode| (episode.season, episode.number))
+                    .collect();
+                let mut changed_keys: HashMap<(u32, u32), ElementAction> = HashMap::new();
+
+                for episode in episodes {
+                    let key = (episode.season, episode.number);
+                    let existed = existing.contains_key(&key);
+                    let changed = tx.execute(
+                        "INSERT INTO episodes (
+                            serie_ref, season, number, abs, name, overview, airdate, duration,
+                            alt, params, imdb, slug, tmdb, trakt, tvdb, otherids,
+                            imdb_rating, imdb_votes, trakt_rating, trakt_votes
+                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         ON CONFLICT(serie_ref, season, number) DO UPDATE SET
+                            abs = excluded.abs,
+                            name = excluded.name,
+                            overview = excluded.overview,
+                            airdate = excluded.airdate,
+                            duration = excluded.duration,
+                            alt = excluded.alt,
+                            params = excluded.params,
+                            imdb = excluded.imdb,
+                            slug = excluded.slug,
+                            tmdb = excluded.tmdb,
+                            trakt = excluded.trakt,
+                            tvdb = excluded.tvdb,
+                            otherids = excluded.otherids,
+                            imdb_rating = excluded.imdb_rating,
+                            imdb_votes = excluded.imdb_votes,
+                            trakt_rating = excluded.trakt_rating,
+                            trakt_votes = excluded.trakt_votes
+                         WHERE episodes.abs IS NOT excluded.abs
+                            OR episodes.name IS NOT excluded.name
+                            OR episodes.overview IS NOT excluded.overview
+                            OR episodes.airdate IS NOT excluded.airdate
+                            OR episodes.duration IS NOT excluded.duration
+                            OR episodes.alt IS NOT excluded.alt
+                            OR episodes.params IS NOT excluded.params
+                            OR episodes.imdb IS NOT excluded.imdb
+                            OR episodes.slug IS NOT excluded.slug
+                            OR episodes.tmdb IS NOT excluded.tmdb
+                            OR episodes.trakt IS NOT excluded.trakt
+                            OR episodes.tvdb IS NOT excluded.tvdb
+                            OR episodes.otherids IS NOT excluded.otherids
+                            OR episodes.imdb_rating IS NOT excluded.imdb_rating
+                            OR episodes.imdb_votes IS NOT excluded.imdb_votes
+                            OR episodes.trakt_rating IS NOT excluded.trakt_rating
+                            OR episodes.trakt_votes IS NOT excluded.trakt_votes",
+                        params![
+                            episode.serie,
+                            episode.season,
+                            episode.number,
+                            episode.abs,
+                            episode.name,
+                            episode.overview,
+                            episode.airdate,
+                            episode.duration,
+                            to_pipe_separated_optional(episode.alt),
+                            episode.params,
+                            episode.imdb,
+                            episode.slug,
+                            episode.tmdb,
+                            episode.trakt,
+                            episode.tvdb,
+                            episode.otherids,
+                            episode.imdb_rating,
+                            episode.imdb_votes,
+                            episode.trakt_rating,
+                            episode.trakt_votes,
+                        ],
+                    )?;
+                    if changed > 0 {
+                        changed_keys.insert(
+                            key,
+                            if existed {
+                                ElementAction::Updated
+                            } else {
+                                ElementAction::Added
+                            },
+                        );
+                    }
+                }
+
+                let mut deleted = Vec::new();
+                for (key, episode) in &existing {
+                    if incoming_keys.contains(key) {
+                        continue;
+                    }
+                    let removed = tx.execute(
+                        "DELETE FROM episodes
+                         WHERE serie_ref = ? AND season = ? AND number = ?
+                           AND NOT EXISTS (
+                               SELECT 1 FROM media_serie_mapping
+                               WHERE serie_ref = ? AND season = ? AND episode = ?
+                           )",
+                        params![
+                            serie_ref,
+                            key.0,
+                            key.1,
+                            serie_ref,
+                            key.0,
+                            key.1,
+                        ],
+                    )?;
+                    if removed > 0 {
+                        deleted.push(EpisodeWithAction {
+                            action: ElementAction::Deleted,
+                            episode: episode.clone(),
+                        });
+                    }
+                }
+
+                let refreshed = {
+                    let mut query = tx.prepare(
+                        "SELECT serie_ref, season, number, abs, name, overview, airdate, duration, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, modified, added, imdb_rating, imdb_votes, trakt_rating, trakt_votes, null as serie_name
+                         FROM episodes WHERE serie_ref = ? ORDER BY season, number",
+                    )?;
+                    let rows = query.query_map([&serie_ref], Self::row_to_episode)?;
+                    rows.collect::<std::result::Result<Vec<_>, _>>()?
+                };
+                let mut changes: Vec<EpisodeWithAction> = refreshed
+                    .iter()
+                    .filter_map(|episode| {
+                        changed_keys
+                            .remove(&(episode.season, episode.number))
+                            .map(|action| EpisodeWithAction {
+                                action,
+                                episode: episode.clone(),
+                            })
+                    })
+                    .collect();
+                changes.extend(deleted);
+                tx.commit()?;
+                Ok(EpisodeSyncResult {
+                    episodes: refreshed,
+                    changes,
+                })
             })
             .await?;
-        Ok(())
+        Ok(result)
     }
+
     pub async fn remove_episode(&self, serie_ref: String, season: u32, number: u32) -> Result<()> {
         self.connection
             .call(move |conn| {
@@ -374,5 +533,102 @@ ORDER BY airdate ASC
             })
             .await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SqliteLibraryStore;
+    use crate::{domain::episode::Episode, domain::ElementAction};
+
+    fn episode(number: u32, name: &str) -> Episode {
+        Episode {
+            serie: "serie-1".to_string(),
+            season: 1,
+            number,
+            name: Some(name.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn episode_sync_upserts_in_one_snapshot_and_preserves_media_mappings() {
+        let connection = tokio_rusqlite::Connection::open_in_memory().await.unwrap();
+        let store = SqliteLibraryStore::new(connection).await.unwrap();
+        store.add_episode(episode(1, "Old title")).await.unwrap();
+        store.add_episode(episode(2, "Mapped episode")).await.unwrap();
+        store.add_episode(episode(4, "Removed episode")).await.unwrap();
+        let original_modified = store
+            .get_episode("serie-1", 1, 1)
+            .await
+            .unwrap()
+            .unwrap()
+            .modified;
+        store
+            .connection
+            .call(|conn| {
+                conn.execute(
+                    "INSERT INTO media_serie_mapping (media_ref, serie_ref, season, episode)
+                     VALUES ('media-1', 'serie-1', 1, 2)",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let incoming = vec![episode(1, "New title"), episode(3, "New episode")];
+        let sync = store
+            .sync_serie_episodes("serie-1", incoming.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            sync.episodes
+                .iter()
+                .map(|episode| episode.number)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        assert!(
+            sync.episodes
+                .iter()
+                .find(|episode| episode.number == 1)
+                .unwrap()
+                .modified
+                > original_modified,
+            "metadata updates with a null abs must advance modified"
+        );
+        assert!(sync.changes.iter().any(|change| {
+            change.episode.number == 1 && matches!(change.action, ElementAction::Updated)
+        }));
+        assert!(sync.changes.iter().any(|change| {
+            change.episode.number == 3 && matches!(change.action, ElementAction::Added)
+        }));
+        assert!(sync.changes.iter().any(|change| {
+            change.episode.number == 4 && matches!(change.action, ElementAction::Deleted)
+        }));
+
+        let mapping_count = store
+            .connection
+            .call(|conn| {
+                Ok(conn.query_row(
+                    "SELECT COUNT(*) FROM media_serie_mapping
+                     WHERE media_ref = 'media-1' AND serie_ref = 'serie-1'
+                       AND season = 1 AND episode = 2",
+                    [],
+                    |row| row.get::<_, u32>(0),
+                )?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(mapping_count, 1);
+
+        let unchanged = store
+            .sync_serie_episodes("serie-1", incoming)
+            .await
+            .unwrap();
+        assert!(unchanged.changes.is_empty());
     }
 }
