@@ -181,6 +181,8 @@ impl RsSchedulerTask for RefreshTask {
             //Imdb rating
             mc.refresh_movies_imdb(&library.id, &ConnectedUser::ServerAdmin)
                 .await?;
+            mc.refresh_series_imdb(&library.id, &ConnectedUser::ServerAdmin)
+                .await?;
 
             let mut stream = source
                 .get_file_write_library_overwrite(&refresh_path)

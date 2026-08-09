@@ -20,7 +20,7 @@ use serde_json::Value;
 use crate::{
     domain::{
         deleted::RsDeleted,
-        episode::EpisodeExt,
+        episode::{Episode, EpisodeExt},
         library::{LibraryRole, LibraryType},
         serie::{Serie, SerieExt, SerieWithAction, SeriesMessage},
         ElementAction, MediaElement,
@@ -110,6 +110,14 @@ enum ExternalSerieImageFallback {
     ReturnRawError,
     RetryWithResolvedLocalId(String),
     RetryWithEnrichedLookup { name: String, ids: RsIds },
+}
+
+fn episode_imdb_update(episode: &Episode) -> EpisodeForUpdate {
+    EpisodeForUpdate {
+        imdb_rating: episode.imdb_rating,
+        imdb_votes: episode.imdb_votes,
+        ..Default::default()
+    }
 }
 
 fn external_serie_image_fallback(
@@ -709,6 +717,7 @@ impl ModelController {
         library_id: &str,
         requesting_user: &ConnectedUser,
     ) -> RsResult<()> {
+        let store = self.store.get_library_store(library_id)?;
         let all_series: Vec<Serie> = self
             .get_series(&library_id, SerieQuery::default(), &requesting_user)
             .await?
@@ -733,15 +742,14 @@ impl ModelController {
                 )
                 .await?;
             }
-            let episodes = self
-                .get_episodes(
-                    library_id,
-                    EpisodeQuery {
-                        serie_ref: Some(serieid.clone()),
-                        ..Default::default()
-                    },
-                    &ConnectedUser::ServerAdmin,
-                )
+            // Read the stored values directly. The public getter enriches IMDb
+            // ratings in memory, which would make the change detection below a
+            // no-op and prevent refreshed values from being persisted.
+            let episodes = store
+                .get_episodes(EpisodeQuery {
+                    serie_ref: Some(serieid.clone()),
+                    ..Default::default()
+                })
                 .await?;
             for mut episode in episodes {
                 let existing_votes = episode.imdb_votes.unwrap_or(0);
@@ -752,11 +760,7 @@ impl ModelController {
                         serieid.clone(),
                         episode.season,
                         episode.number,
-                        EpisodeForUpdate {
-                            imdb_rating: serie.imdb_rating,
-                            imdb_votes: serie.imdb_votes,
-                            ..Default::default()
-                        },
+                        episode_imdb_update(&episode),
                         &ConnectedUser::ServerAdmin,
                     )
                     .await?;
@@ -1051,8 +1055,8 @@ impl ModelController {
 
 #[cfg(test)]
 mod tests {
-    use super::{external_serie_image_fallback, ExternalSerieImageFallback};
-    use crate::domain::serie::Serie;
+    use super::{episode_imdb_update, external_serie_image_fallback, ExternalSerieImageFallback};
+    use crate::domain::{episode::Episode, serie::Serie};
     use rs_plugin_common_interfaces::domain::{rs_ids::RsIds, ItemWithRelations};
 
     #[test]
@@ -1120,5 +1124,19 @@ mod tests {
             }
             _ => panic!("expected enriched lookup retry"),
         }
+    }
+
+    #[test]
+    fn episode_imdb_update_uses_the_episode_rating() {
+        let episode = Episode {
+            imdb_rating: Some(7.8),
+            imdb_votes: Some(1_234),
+            ..Default::default()
+        };
+
+        let update = episode_imdb_update(&episode);
+
+        assert_eq!(update.imdb_rating, episode.imdb_rating);
+        assert_eq!(update.imdb_votes, episode.imdb_votes);
     }
 }
