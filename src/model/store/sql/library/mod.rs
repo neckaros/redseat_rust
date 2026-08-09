@@ -329,6 +329,17 @@ impl SqliteLibraryStore {
                         format!("Update Library Database to version: {}", version),
                     );
                 }
+                if version < 53 {
+                    let initial =
+                        String::from_utf8_lossy(include_bytes!("053 - EPISODE MODIFIED.sql"));
+                    conn.execute_batch(&initial)?;
+                    version = 53;
+                    conn.pragma_update(None, "user_version", version)?;
+                    log_info(
+                        LogServiceType::Database,
+                        format!("Update Library Database to version: {}", version),
+                    );
+                }
 
                 conn.execute("VACUUM;", params![])?;
                 Ok((initial_version, version))
@@ -379,7 +390,7 @@ mod tests {
         let connection = tokio_rusqlite::Connection::open_in_memory().await.unwrap();
         let store = SqliteLibraryStore::new(connection).await.unwrap();
         let version = store.migrate().await.unwrap();
-        assert_eq!(version, 52);
+        assert_eq!(version, 53);
 
         // Set up: insert a book and a media attached to it
         store

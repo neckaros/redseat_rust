@@ -125,8 +125,12 @@ fn should_retry_episode_lookup_with_enriched_ids(
 fn take_episode_source(
     groups: Vec<(String, String, rs_plugin_common_interfaces::lookup::RsLookupMetadataResults)>,
     serie_id: &str,
+    excluded_source: Option<&str>,
 ) -> Option<(String, Vec<Episode>)> {
     groups.into_iter().find_map(|(source_id, _, results)| {
+        if excluded_source == Some(source_id.as_str()) {
+            return None;
+        }
         let episodes: Vec<Episode> = results
             .results
             .into_iter()
@@ -169,6 +173,7 @@ impl ModelController {
         let mut episodes = Vec::new();
         let mut empty_streak = 0;
         let mut selected_source: Option<String> = None;
+        let mut available_sources: Vec<String> = Vec::new();
 
         for season in 1..=100 {
             let source_filter = selected_source.as_ref().map(std::slice::from_ref);
@@ -186,14 +191,64 @@ impl ModelController {
                     source_filter,
                 )
                 .await?;
+            if selected_source.is_none() {
+                available_sources = groups
+                    .iter()
+                    .map(|(source_id, _, _)| source_id.clone())
+                    .collect();
+            }
 
             let season_episodes = if let Some((source_id, season_episodes)) =
-                take_episode_source(groups, serie_id)
+                take_episode_source(groups, serie_id, None)
             {
                 selected_source.get_or_insert(source_id);
                 season_episodes
             } else {
                 Vec::new()
+            };
+
+            let season_episodes = if season_episodes.is_empty() {
+                if let Some(selected) = selected_source.clone() {
+                    let fallback_sources: Vec<String> = available_sources
+                        .iter()
+                        .filter(|source| source.as_str() != selected.as_str())
+                        .cloned()
+                        .collect();
+                    if fallback_sources.is_empty() {
+                        season_episodes
+                    } else {
+                        let fallback_groups = self
+                            .exec_lookup_metadata_grouped(
+                                RsLookupQuery::Episode(RsLookupEpisode {
+                                    ids: Some(ids.clone()),
+                                    season,
+                                    number: None,
+                                    ..Default::default()
+                                }),
+                                Some(library_id.to_string()),
+                                requesting_user,
+                                None,
+                                Some(&fallback_sources),
+                            )
+                            .await?;
+                        if let Some((source_id, fallback_episodes)) =
+                            take_episode_source(
+                                fallback_groups,
+                                serie_id,
+                                Some(selected.as_str()),
+                            )
+                        {
+                            selected_source = Some(source_id);
+                            fallback_episodes
+                        } else {
+                            season_episodes
+                        }
+                    }
+                } else {
+                    season_episodes
+                }
+            } else {
+                season_episodes
             };
 
             if season_episodes.is_empty() {
@@ -932,10 +987,15 @@ mod tests {
             ),
         ];
 
-        let (source, episodes) = take_episode_source(groups, "serie-1").unwrap();
+        let (source, episodes) = take_episode_source(groups.clone(), "serie-1", None).unwrap();
         assert_eq!(source, "primary");
         assert_eq!(episodes.len(), 1);
         assert_eq!(episodes[0].serie, "serie-1");
         assert_eq!(episodes[0].number, 1);
+
+        let (source, episodes) =
+            take_episode_source(groups, "serie-1", Some("primary")).unwrap();
+        assert_eq!(source, "secondary");
+        assert_eq!(episodes[0].number, 2);
     }
 }

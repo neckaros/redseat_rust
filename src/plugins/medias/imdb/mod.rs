@@ -3,7 +3,7 @@ use crate::{
     server::get_server_file_path_array,
     tools::{
         get_time,
-        log::{log_info, LogServiceType},
+        log::{log_info, log_warn, LogServiceType},
     },
     Error,
 };
@@ -35,6 +35,7 @@ pub struct ImdbContext {
 struct ImdbEpisodeCache {
     source_modified: u64,
     loaded_parents: HashSet<String>,
+    download_retry_after: u64,
 }
 
 impl ImdbContext {
@@ -67,27 +68,36 @@ impl ImdbContext {
         let now = get_time().as_secs();
         let mut source_modified = file_modified_seconds(&local_path).await;
 
-        if source_modified == 0 || now.saturating_sub(source_modified) > 86_400 {
+        let source_is_stale = source_modified == 0
+            || now.saturating_sub(source_modified) > 86_400;
+        if source_is_stale && now >= cache.download_retry_after {
             log_info(
                 LogServiceType::Other,
                 "Refreshing IMDB episode identifiers".to_owned(),
             );
-            let download_path = local_path.with_extension("tsv.gz.download");
-            let reader = reqwest::get("https://datasets.imdbws.com/title.episode.tsv.gz")
-                .await?
-                .error_for_status()?
-                .bytes_stream()
-                .map_err(|e| io::Error::new(ErrorKind::Other, e));
-            let mut stream = StreamReader::new(reader);
-            let mut file = File::create(&download_path).await?;
-            tokio::io::copy(&mut stream, &mut file).await?;
-            file.flush().await?;
-            drop(file);
-            if fs::try_exists(&local_path).await? {
-                fs::remove_file(&local_path).await?;
+            match download_episode_dataset(&local_path).await {
+                Ok(()) => {
+                    cache.download_retry_after = 0;
+                    source_modified = file_modified_seconds(&local_path).await;
+                }
+                Err(error) => {
+                    cache.download_retry_after = now.saturating_add(3_600);
+                    if source_modified == 0 {
+                        return Err(error);
+                    }
+                    log_warn(
+                        LogServiceType::Other,
+                        format!(
+                            "Unable to refresh IMDB episode identifiers; using stale cache: {:#}",
+                            error
+                        ),
+                    );
+                }
             }
-            fs::rename(download_path, &local_path).await?;
-            source_modified = file_modified_seconds(&local_path).await;
+        } else if source_modified == 0 {
+            return Err(Error::Message(
+                "IMDB episode identifier download is temporarily backed off".to_string(),
+            ));
         }
 
         if cache.source_modified != source_modified {
@@ -220,6 +230,25 @@ impl ImdbContext {
         }
         Ok(now)
     }
+}
+
+async fn download_episode_dataset(local_path: &std::path::Path) -> RsResult<()> {
+    let download_path = local_path.with_extension("tsv.gz.download");
+    let reader = reqwest::get("https://datasets.imdbws.com/title.episode.tsv.gz")
+        .await?
+        .error_for_status()?
+        .bytes_stream()
+        .map_err(|e| io::Error::new(ErrorKind::Other, e));
+    let mut stream = StreamReader::new(reader);
+    let mut file = File::create(&download_path).await?;
+    tokio::io::copy(&mut stream, &mut file).await?;
+    file.flush().await?;
+    drop(file);
+    if fs::try_exists(local_path).await? {
+        fs::remove_file(local_path).await?;
+    }
+    fs::rename(download_path, local_path).await?;
+    Ok(())
 }
 
 async fn file_modified_seconds(path: &std::path::Path) -> u64 {

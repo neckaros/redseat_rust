@@ -46,12 +46,25 @@ impl RsSchedulerTask for RefreshTask {
 
         let mut libraries_with_series = Vec::with_capacity(libraries.len());
         for library in libraries {
-            let series = mc
+            let series = match mc
                 .get_series(&library.id, SerieQuery::new_empty(), &connected_user)
-                .await?
-                .into_iter()
-                .map(|iwr| iwr.item)
-                .collect::<Vec<Serie>>();
+                .await
+            {
+                Ok(series) => series
+                    .into_iter()
+                    .map(|iwr| iwr.item)
+                    .collect::<Vec<Serie>>(),
+                Err(error) => {
+                    log_error(
+                        crate::tools::log::LogServiceType::Scheduler,
+                        format!(
+                            "Unable to load series for library {}: {:#}",
+                            library.name, error
+                        ),
+                    );
+                    continue;
+                }
+            };
             libraries_with_series.push((library, series));
         }
         if let Err(error) = mc.imdb.prime_episode_ids(

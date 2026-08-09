@@ -558,6 +558,12 @@ mod tests {
         store.add_episode(episode(1, "Old title")).await.unwrap();
         store.add_episode(episode(2, "Mapped episode")).await.unwrap();
         store.add_episode(episode(4, "Removed episode")).await.unwrap();
+        let original_modified = store
+            .get_episode("serie-1", 1, 1)
+            .await
+            .unwrap()
+            .unwrap()
+            .modified;
         store
             .connection
             .call(|conn| {
@@ -571,6 +577,7 @@ mod tests {
             .await
             .unwrap();
 
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         let incoming = vec![episode(1, "New title"), episode(3, "New episode")];
         let sync = store
             .sync_serie_episodes("serie-1", incoming.clone())
@@ -583,6 +590,15 @@ mod tests {
                 .map(|episode| episode.number)
                 .collect::<Vec<_>>(),
             vec![1, 2, 3]
+        );
+        assert!(
+            sync.episodes
+                .iter()
+                .find(|episode| episode.number == 1)
+                .unwrap()
+                .modified
+                > original_modified,
+            "metadata updates with a null abs must advance modified"
         );
         assert!(sync.changes.iter().any(|change| {
             change.episode.number == 1 && matches!(change.action, ElementAction::Updated)
