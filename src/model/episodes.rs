@@ -22,10 +22,7 @@ use crate::{
         ElementAction,
     },
     error::RsResult,
-    plugins::{
-        medias::imdb::ImdbContext,
-        sources::{error::SourcesError, AsyncReadPinBox, FileStreamResult},
-    },
+    plugins::sources::{error::SourcesError, AsyncReadPinBox, FileStreamResult},
     tools::{
         array_tools::Dedup,
         clock::now,
@@ -269,6 +266,39 @@ impl ModelController {
         Ok(episodes)
     }
 
+    async fn enrich_episode_imdb_metadata(
+        &self,
+        episodes: &mut [Episode],
+        parent_imdb: Option<&str>,
+    ) {
+        if let Some(parent_imdb) = parent_imdb {
+            match self.imdb.episode_ids(parent_imdb).await {
+                Ok(imdb_episode_ids) => {
+                    for episode in episodes.iter_mut() {
+                        if episode.imdb.is_none() {
+                            episode.imdb = imdb_episode_ids
+                                .get(&(episode.season, episode.number))
+                                .cloned();
+                        }
+                    }
+                }
+                Err(error) => {
+                    log_error(
+                        LogServiceType::Other,
+                        format!(
+                            "Unable to enrich episodes for {} from IMDB: {:#}",
+                            parent_imdb, error
+                        ),
+                    );
+                }
+            }
+        }
+
+        for episode in episodes {
+            episode.fill_imdb_ratings(&self.imdb).await;
+        }
+    }
+
     pub async fn get_episodes(
         &self,
         library_id: &str,
@@ -286,7 +316,7 @@ impl ModelController {
         )?;
         let mut episodes = store.get_episodes(query).await?;
 
-        self.fill_episodes_watched_imdb(
+        self.fill_episodes_watched(
             &mut episodes,
             requesting_user,
             Some(library_id.to_string()),
@@ -322,25 +352,45 @@ impl ModelController {
                 query.serie_ref = Some(serie.item.id);
                 store.get_episodes(query).await?
             } else {
+                let mut enriched_ids = id.clone();
                 let mut episodes = self
                     .lookup_episodes_metadata(library_id, &serie_id, &id, requesting_user)
                     .await?;
-                if episodes.is_empty() {
-                    if let Some(serie) = self
+                if episodes.is_empty() || enriched_ids.imdb().is_none() {
+                    match self
                         .get_serie(library_id, serie_id.clone(), requesting_user)
-                        .await?
+                        .await
                     {
-                        let enriched_ids: RsIds = serie.item.into();
-                        if should_retry_episode_lookup_with_enriched_ids(&id, &enriched_ids) {
-                            episodes = self
-                                .lookup_episodes_metadata(
-                                    library_id,
-                                    &serie_id,
-                                    &enriched_ids,
-                                    requesting_user,
+                        Ok(Some(serie)) => {
+                            let looked_up_ids: RsIds = serie.item.into();
+                            if episodes.is_empty()
+                                && should_retry_episode_lookup_with_enriched_ids(
+                                    &id,
+                                    &looked_up_ids,
                                 )
-                                .await?;
+                            {
+                                episodes = self
+                                    .lookup_episodes_metadata(
+                                        library_id,
+                                        &serie_id,
+                                        &looked_up_ids,
+                                        requesting_user,
+                                    )
+                                    .await?;
+                            }
+                            enriched_ids.merge(&looked_up_ids);
                         }
+                        Err(error) if episodes.is_empty() => return Err(error),
+                        Err(error) => {
+                            log_error(
+                                LogServiceType::Other,
+                                format!(
+                                    "Unable to enrich external serie {}: {:#}",
+                                    serie_id, error
+                                ),
+                            );
+                        }
+                        Ok(None) => {}
                     }
                 }
                 if episodes.is_empty() {
@@ -350,13 +400,16 @@ impl ModelController {
                     )))
                     .into());
                 }
+                // External lookup results have no stored IMDb metadata yet.
+                self.enrich_episode_imdb_metadata(&mut episodes, enriched_ids.imdb())
+                    .await;
                 episodes
             }
         } else {
             store.get_episodes(query).await?
         };
 
-        self.fill_episodes_watched_imdb(
+        self.fill_episodes_watched(
             &mut episodes,
             requesting_user,
             Some(library_id.to_string()),
@@ -365,7 +418,7 @@ impl ModelController {
         Ok(episodes)
     }
 
-    pub async fn fill_episode_watched_imdb(
+    pub async fn fill_episode_watched(
         &self,
         episode: &mut Episode,
         requesting_user: &ConnectedUser,
@@ -401,10 +454,9 @@ impl ModelController {
                 }
             }
         }
-        episode.fill_imdb_ratings(&self.imdb).await;
         Ok(())
     }
-    pub async fn fill_episodes_watched_imdb(
+    pub async fn fill_episodes_watched(
         &self,
         episodes: &mut Vec<Episode>,
         requesting_user: &ConnectedUser,
@@ -452,7 +504,6 @@ impl ModelController {
                     episode.progress = Some(*progress);
                 }
             }
-            episode.fill_imdb_ratings(&self.imdb).await;
         }
         Ok(())
     }
@@ -471,7 +522,7 @@ impl ModelController {
             ),
         )?;
         let mut episodes = store.get_episodes_upcoming(query).await?;
-        self.fill_episodes_watched_imdb(
+        self.fill_episodes_watched(
             &mut episodes,
             requesting_user,
             Some(library_id.to_string()),
@@ -494,7 +545,7 @@ impl ModelController {
             ),
         )?;
         let mut episodes = store.get_episodes_aired(query).await?;
-        self.fill_episodes_watched_imdb(
+        self.fill_episodes_watched(
             &mut episodes,
             requesting_user,
             Some(library_id.to_string()),
@@ -537,7 +588,7 @@ impl ModelController {
                     "get_episode".to_string(),
                 ))?,
         };
-        self.fill_episode_watched_imdb(&mut episode, requesting_user, Some(library_id.to_string()))
+        self.fill_episode_watched(&mut episode, requesting_user, Some(library_id.to_string()))
             .await?;
         Ok(episode)
     }
@@ -703,34 +754,11 @@ impl ModelController {
             }
         }
 
-        if let Some(parent_imdb) = ids.imdb() {
-            match self.imdb.episode_ids(parent_imdb).await {
-                Ok(imdb_episode_ids) => {
-                    for episode in &mut all_episodes {
-                        if episode.imdb.is_none() {
-                            episode.imdb = imdb_episode_ids
-                                .get(&(episode.season, episode.number))
-                                .cloned();
-                        }
-                    }
-                }
-                Err(error) => {
-                    log_error(
-                        LogServiceType::Other,
-                        format!(
-                            "Unable to enrich episodes for {} from IMDB: {:#}",
-                            parent_imdb, error
-                        ),
-                    );
-                }
-            }
-        }
-        for episode in &mut all_episodes {
-            episode.fill_imdb_ratings(&self.imdb).await;
-        }
+        self.enrich_episode_imdb_metadata(&mut all_episodes, ids.imdb())
+            .await;
 
         let mut sync = store.sync_serie_episodes(serie_id, all_episodes).await?;
-        self.fill_episodes_watched_imdb(
+        self.fill_episodes_watched(
             &mut sync.episodes,
             requesting_user,
             Some(library_id.to_string()),

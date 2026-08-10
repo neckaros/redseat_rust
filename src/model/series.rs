@@ -26,10 +26,7 @@ use crate::{
         ElementAction, MediaElement,
     },
     error::RsResult,
-    plugins::{
-        medias::imdb::ImdbContext,
-        sources::{error::SourcesError, AsyncReadPinBox, FileStreamResult},
-    },
+    plugins::sources::{error::SourcesError, AsyncReadPinBox, FileStreamResult},
     tools::image_tools::{convert_image_reader, ImageSize},
 };
 
@@ -221,10 +218,12 @@ impl ModelController {
                     ids: Some(id.clone()),
                     page_key: None,
                 };
-                if let Some(serie) = self
+                if let Some(mut serie) = self
                     .lookup_serie_metadata(library_id, lookup_query, requesting_user)
                     .await?
                 {
+                    // External lookup results have no stored rating yet.
+                    serie.fill_imdb_ratings(&self.imdb).await;
                     return Ok(Some(ItemWithRelations {
                         item: serie,
                         relations: None,
@@ -742,9 +741,7 @@ impl ModelController {
                 )
                 .await?;
             }
-            // Read the stored values directly. The public getter enriches IMDb
-            // ratings in memory, which would make the change detection below a
-            // no-op and prevent refreshed values from being persisted.
+            // Compare the stored values with the latest IMDb dataset values.
             let episodes = store
                 .get_episodes(EpisodeQuery {
                     serie_ref: Some(serieid.clone()),

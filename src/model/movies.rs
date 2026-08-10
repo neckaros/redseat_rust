@@ -22,10 +22,7 @@ use crate::{
         ElementAction, MediaElement,
     },
     error::RsResult,
-    plugins::{
-        medias::imdb::ImdbContext,
-        sources::{error::SourcesError, AsyncReadPinBox, FileStreamResult},
-    },
+    plugins::sources::{error::SourcesError, AsyncReadPinBox, FileStreamResult},
     tools::image_tools::{convert_image_reader, ImageSize},
 };
 
@@ -171,6 +168,8 @@ impl ModelController {
                     .lookup_movie_metadata(library_id, lookup_query, requesting_user)
                     .await?
                 {
+                    // External lookup results have no stored rating yet.
+                    movie.fill_imdb_ratings(&self.imdb).await;
                     self.fill_movie_watched(
                         &mut movie,
                         requesting_user,
@@ -245,7 +244,6 @@ impl ModelController {
         requesting_user: &ConnectedUser,
         library_id: Option<String>,
     ) -> RsResult<()> {
-        movie.fill_imdb_ratings(&self.imdb).await;
         let history_ids = movie_history_ids(movie);
 
         let progress = self
@@ -316,8 +314,6 @@ impl ModelController {
             if let Some(progress) = history_ids.iter().find_map(|id| progresses.get(id)) {
                 movie.progress = Some(*progress);
             }
-
-            movie.fill_imdb_ratings(&self.imdb).await;
         }
         Ok(())
     }
