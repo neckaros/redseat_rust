@@ -490,4 +490,52 @@ mod tests {
             .await
             .unwrap();
     }
+
+    #[tokio::test]
+    async fn paginated_tags_and_people_have_stable_tiebreakers() {
+        let connection = tokio_rusqlite::Connection::open_in_memory().await.unwrap();
+        let store = SqliteLibraryStore::new(connection).await.unwrap();
+
+        store
+            .connection
+            .call(|conn| {
+                conn.execute_batch(
+                    "DROP TRIGGER inserted_tags;
+                     DROP TRIGGER modified_tags;
+                     DROP TRIGGER inserted_people;
+                     DROP TRIGGER modified_people;
+                     INSERT INTO tags (id, name, modified, added) VALUES
+                         ('tag-b', 'Same', 10, 10),
+                         ('tag-a', 'Same', 10, 10);
+                     INSERT INTO people (id, name, modified, added) VALUES
+                         ('person-b', 'Same', 10, 10),
+                         ('person-a', 'Same', 10, 10);",
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        let tags = store
+            .get_tags(TagQuery {
+                offset: Some(1),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            tags.iter().map(|tag| tag.id.as_str()).collect::<Vec<_>>(),
+            vec!["tag-b"]
+        );
+
+        let people = store
+            .get_people(PeopleQuery {
+                limit: Some(1),
+                offset: Some(1),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(people[0].id, "person-b");
+    }
 }

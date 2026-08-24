@@ -9,7 +9,7 @@ use crate::{
     model::{
         store::{
             from_pipe_separated_optional,
-            sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder},
+            sql::{pagination_clause, OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder},
             to_pipe_separated_optional,
         },
         tags::{TagForAdd, TagForInsert, TagQuery},
@@ -37,8 +37,8 @@ impl SqliteLibraryStore {
     }
 
     pub async fn get_tags(&self, query: TagQuery) -> Result<Vec<Tag>> {
+        let pagination = pagination_clause(query.limit, query.offset)?;
         let row = self.connection.call( move |conn| { 
-            let pagination = query.limit.map(|limit| format!(" LIMIT {} OFFSET {}", limit.min(5000), query.offset.unwrap_or(0))).unwrap_or_default();
             let mut where_query = QueryBuilder::new();
             
             if let Some(q) = &query.parent {
@@ -51,7 +51,7 @@ impl SqliteLibraryStore {
                 where_query.add_where(QueryWhereType::After("modified", q));
             }
 
-            if query.after.is_some() {
+            if query.after.is_some() || query.limit.is_some() || query.offset.is_some() {
                 where_query.add_oder(OrderBuilder::new("modified".to_string(), SqlOrder::ASC));
                 where_query.add_oder(OrderBuilder::new("id".to_string(), SqlOrder::ASC));
             }

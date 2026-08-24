@@ -13,7 +13,8 @@ use crate::{
         store::{
             from_comma_separated_optional,
             sql::{
-                OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType,
+                pagination_clause, OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder,
+                SqlOrder, SqlWhereType,
             },
         },
         Error,
@@ -82,10 +83,10 @@ impl SqliteLibraryStore {
     }
 
     pub async fn get_books(&self, query: BookQuery) -> Result<Vec<ItemWithRelations<Book>>> {
+        let pagination = pagination_clause(query.limit, query.offset)?;
         let row = self
             .connection
             .call(move |conn| {
-                let pagination = query.limit.map(|limit| format!(" LIMIT {} OFFSET {}", limit.min(5000), query.offset.unwrap_or(0))).unwrap_or_default();
                 let mut where_query = RsQueryBuilder::new();
                 if let Some(after) = query.after {
                     where_query.add_where(SqlWhereType::After("modified".to_string(), Box::new(after)));

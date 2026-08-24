@@ -13,7 +13,7 @@ use crate::{
         episodes::{EpisodeForUpdate, EpisodeQuery, EpisodeSyncResult},
         store::{
             from_pipe_separated_optional,
-            sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder},
+            sql::{pagination_clause, OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder},
             to_pipe_separated_optional,
         },
     },
@@ -68,10 +68,10 @@ impl SqliteLibraryStore {
     }
 
     pub async fn get_episodes(&self, query: EpisodeQuery) -> Result<Vec<Episode>> {
+        let pagination = pagination_clause(query.limit, query.offset)?;
         let row = self
             .connection
             .call(move |conn| {
-                let pagination = query.limit.map(|limit| format!(" LIMIT {} OFFSET {}", limit.min(5000), query.offset.unwrap_or(0))).unwrap_or_default();
                 let mut where_query = QueryBuilder::new();
                 if let Some(q) = &query.after {
                     if q > &0 {

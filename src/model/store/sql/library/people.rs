@@ -10,8 +10,8 @@ use crate::{
         store::{
             from_pipe_separated_optional,
             sql::{
-                deserialize_from_row, OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder,
-                SqlOrder, SqlWhereType,
+                deserialize_from_row, pagination_clause, OrderBuilder, QueryBuilder,
+                QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType,
             },
             to_pipe_separated_optional,
         },
@@ -52,8 +52,8 @@ impl SqliteLibraryStore {
     }
 
     pub async fn get_people(&self, query: PeopleQuery) -> Result<Vec<Person>> {
+        let pagination = pagination_clause(query.limit, query.offset)?;
         let row = self.connection.call( move |conn| { 
-            let pagination = query.limit.map(|limit| format!(" LIMIT {} OFFSET {}", limit.min(5000), query.offset.unwrap_or(0))).unwrap_or_default();
             let mut where_query = RsQueryBuilder::new();
             if let Some(q) = query.after {
                 where_query.add_where(SqlWhereType::After("modified".to_owned(), Box::new(q)));
@@ -65,7 +65,8 @@ impl SqliteLibraryStore {
                 if query.name.is_some() {
                     where_query.add_oder(OrderBuilder::new("score".to_string(), SqlOrder::DESC));
                 }
-                where_query.add_oder(OrderBuilder::new("name".to_string(), SqlOrder::ASC))
+                where_query.add_oder(OrderBuilder::new("name".to_string(), SqlOrder::ASC));
+                where_query.add_oder(OrderBuilder::new("id".to_string(), SqlOrder::ASC));
             }
             
 

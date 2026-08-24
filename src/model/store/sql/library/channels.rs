@@ -2,6 +2,7 @@ use rs_plugin_common_interfaces::ImageType;
 use rusqlite::{params, OptionalExtension, Row};
 
 use crate::domain::channel::{Channel, ChannelForUpdate, ChannelVariant};
+use crate::model::store::sql::pagination_clause;
 
 use super::{Result, SqliteLibraryStore};
 
@@ -45,6 +46,7 @@ impl SqliteLibraryStore {
         limit: Option<u32>,
         offset: Option<u32>,
     ) -> Result<Vec<Channel>> {
+        let pagination = pagination_clause(limit, offset)?;
         let rows = self
             .connection
             .call(move |conn| {
@@ -70,9 +72,7 @@ impl SqliteLibraryStore {
                 }
                 sql.push_str(" ORDER BY c.channel_number ASC, c.name ASC");
                 sql.push_str(" , c.id ASC");
-                if let Some(limit) = limit {
-                    sql.push_str(&format!(" LIMIT {} OFFSET {}", limit.min(5000), offset.unwrap_or(0)));
-                }
+                sql.push_str(&pagination);
 
                 let mut statement = conn.prepare(&sql)?;
                 let params: Vec<&dyn rusqlite::types::ToSql> = values
