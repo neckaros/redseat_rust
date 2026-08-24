@@ -36,6 +36,7 @@ pub type RsError = Error;
 pub enum Error {
     Error(String),
     Message(String),
+    InvalidParams(String),
     LoginFail,
 
     NotFound(String),
@@ -238,6 +239,13 @@ impl Error {
         #[allow(unreachable_patterns)]
         match self {
             Self::NotFound(_) => (StatusCode::NOT_FOUND, ClientError::NOT_FOUND),
+
+            Self::InvalidParams(message) => (
+                StatusCode::BAD_REQUEST,
+                ClientError::Custom {
+                    message: message.clone(),
+                },
+            ),
 
             Self::UnavailableForCryptedLibraries => (
                 StatusCode::UNPROCESSABLE_ENTITY,

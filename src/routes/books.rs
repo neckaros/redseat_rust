@@ -25,7 +25,7 @@ use crate::{
     domain::book::{Book, BookForUpdate},
     model::{books::BookQuery, medias::MediaQuery, users::ConnectedUser, ModelController},
     routes::{
-        ImageRequestOptions, ImageUploadOptions, RatingUpdateBody, SearchQuery, SearchResultGroup,
+        ImageRequestOptions, ImageUploadOptions, RatingUpdateBody, SearchResultGroup,
         SseLookupSearchEvent, SseLookupSearchResult, SseSearchEvent,
     },
     Error, Result,
@@ -92,6 +92,61 @@ struct AddBookOptions {
     upsert_serie: bool,
 }
 
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct BookMetadataSearchQuery {
+    name: Option<String>,
+    author: Option<String>,
+    isbn13: Option<String>,
+    page_key: Option<String>,
+    source: Option<String>,
+}
+
+impl BookMetadataSearchQuery {
+    fn sources(&self) -> Option<Vec<String>> {
+        self.source.as_deref().map(|source| {
+            source
+                .split(',')
+                .map(str::trim)
+                .filter(|source| !source.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+    }
+
+    fn into_lookup(self) -> Result<RsLookupBook> {
+        let name = self.name.and_then(non_empty_value);
+        let author = self.author.and_then(non_empty_value);
+        let ids = self.isbn13.and_then(|isbn13| {
+            let isbn13 = isbn13.trim();
+            if isbn13.is_empty() {
+                return None;
+            }
+            let mut ids = RsIds::default();
+            ids.set("isbn13", isbn13);
+            Some(ids)
+        });
+
+        if name.is_none() && author.is_none() && ids.is_none() {
+            return Err(Error::InvalidParams(
+                "At least one of name, author, or isbn13 is required".to_string(),
+            ));
+        }
+
+        Ok(RsLookupBook {
+            name,
+            author,
+            ids,
+            page_key: self.page_key.and_then(non_empty_value),
+        })
+    }
+}
+
+fn non_empty_value(value: String) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
 async fn handler_post(
     Path(library_id): Path<String>,
     State(mc): State<ModelController>,
@@ -144,10 +199,10 @@ async fn handler_search_books(
     Path(library_id): Path<String>,
     State(mc): State<ModelController>,
     user: ConnectedUser,
-    Query(query): Query<SearchQuery<RsLookupBook>>,
+    Query(query): Query<BookMetadataSearchQuery>,
 ) -> Result<Json<Value>> {
     let sources = query.sources();
-    let lookup_query = RsLookupQuery::Book(query.lookup);
+    let lookup_query = RsLookupQuery::Book(query.into_lookup()?);
     let groups = mc
         .exec_lookup_metadata_grouped(
             lookup_query,
@@ -172,10 +227,10 @@ async fn handler_search_books_stream(
     Path(library_id): Path<String>,
     State(mc): State<ModelController>,
     user: ConnectedUser,
-    Query(query): Query<SearchQuery<RsLookupBook>>,
+    Query(query): Query<BookMetadataSearchQuery>,
 ) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>> {
     let sources = query.sources();
-    let lookup_query = RsLookupQuery::Book(query.lookup);
+    let lookup_query = RsLookupQuery::Book(query.into_lookup()?);
     let mut rx = mc
         .exec_lookup_metadata_stream_grouped(
             lookup_query,
@@ -426,4 +481,47 @@ async fn handler_post_image(
     }
 
     Ok(Json(json!({"data": "ok"})))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BookMetadataSearchQuery;
+    use crate::Error;
+    use axum::http::StatusCode;
+
+    #[test]
+    fn book_metadata_search_combines_title_author_and_isbn() {
+        let lookup = BookMetadataSearchQuery {
+            name: Some("  The Book  ".to_string()),
+            author: Some("  Jane Doe  ".to_string()),
+            isbn13: Some(" 9781402894626 ".to_string()),
+            page_key: None,
+            source: None,
+        }
+        .into_lookup()
+        .unwrap();
+
+        assert_eq!(lookup.name.as_deref(), Some("The Book"));
+        assert_eq!(lookup.author.as_deref(), Some("Jane Doe"));
+        assert_eq!(
+            lookup.ids.as_ref().and_then(|ids| ids.isbn13()),
+            Some("9781402894626")
+        );
+    }
+
+    #[test]
+    fn book_metadata_search_rejects_empty_criteria() {
+        let result = BookMetadataSearchQuery {
+            name: Some("  ".to_string()),
+            author: None,
+            isbn13: Some(" ".to_string()),
+            page_key: None,
+            source: Some("openlibrary".to_string()),
+        }
+        .into_lookup();
+
+        let error = result.unwrap_err();
+        assert!(matches!(&error, Error::InvalidParams(_)));
+        assert_eq!(error.client_status_and_error().0, StatusCode::BAD_REQUEST);
+    }
 }

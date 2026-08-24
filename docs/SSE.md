@@ -563,7 +563,7 @@ Search endpoints support SSE streaming so clients receive results progressively 
 |----------|-----------------|-------------|
 | `GET /libraries/:libraryId/series/searchstream` | `name` (required), `ids` (optional) | Stream series search results |
 | `GET /libraries/:libraryId/movies/searchstream` | `name` (required), `ids` (optional) | Stream movie search results |
-| `GET /libraries/:libraryId/books/searchstream` | `name` (required), `ids` (optional) | Stream book search results |
+| `GET /libraries/:libraryId/books/searchstream` | `name`, `author`, `isbn13` (at least one required) | Stream book search results; supplied fields are passed to plugins together |
 | `GET /libraries/:libraryId/people/searchstream` | `name` (required), `ids` (optional) | Stream people search results |
 
 ### How It Works
