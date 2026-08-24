@@ -25,17 +25,20 @@ impl SqliteLibraryStore {
         let row = self
             .connection
             .call(move |conn| {
+                let pagination = query.limit.map(|limit| format!(" LIMIT {} OFFSET {}", limit.min(5000), query.offset.unwrap_or(0))).unwrap_or_default();
                 let mut where_query = RsQueryBuilder::new();
                 if let Some(q) = query.after {
                     where_query.add_where(SqlWhereType::After("date".to_owned(), Box::new(q)));
                 }
 
-                where_query.add_oder(OrderBuilder::new("date".to_owned(), query.order));
+                where_query.add_oder(OrderBuilder::new("date".to_owned(), query.order.clone()));
+                where_query.add_oder(OrderBuilder::new("id".to_owned(), query.order));
 
                 let mut query = conn.prepare(&format!(
-                    "SELECT type, id, date FROM deleted {}{}",
+                    "SELECT type, id, date FROM deleted {}{}{}",
                     where_query.format(),
-                    where_query.format_order()
+                    where_query.format_order(),
+                    pagination
                 ))?;
 
                 let rows = query.query_map(where_query.values(), Self::row_to_deleted)?;

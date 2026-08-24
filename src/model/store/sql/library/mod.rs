@@ -340,8 +340,23 @@ impl SqliteLibraryStore {
                         format!("Update Library Database to version: {}", version),
                     );
                 }
+                if version < 54 {
+                    let initial =
+                        String::from_utf8_lossy(include_bytes!("054 - SYNC INDEXES.sql"));
+                    conn.execute_batch(&initial)?;
+                    version = 54;
+                    conn.pragma_update(None, "user_version", version)?;
+                    log_info(
+                        LogServiceType::Database,
+                        format!("Update Library Database to version: {}", version),
+                    );
+                }
 
-                conn.execute("VACUUM;", params![])?;
+                // VACUUM is expensive on large media libraries; schema startup
+                // should be read-only once the database is current.
+                if initial_version != version {
+                    conn.execute("VACUUM;", params![])?;
+                }
                 Ok((initial_version, version))
             })
             .await?;
@@ -384,13 +399,17 @@ impl SqliteLibraryStore {
 #[cfg(test)]
 mod tests {
     use super::SqliteLibraryStore;
+    use crate::model::{
+        books::BookQuery, deleted::DeletedQuery, movies::MovieQuery, people::PeopleQuery,
+        series::SerieQuery, tags::TagQuery,
+    };
 
     #[tokio::test]
     async fn cascade_delete_triggers() {
         let connection = tokio_rusqlite::Connection::open_in_memory().await.unwrap();
         let store = SqliteLibraryStore::new(connection).await.unwrap();
         let version = store.migrate().await.unwrap();
-        assert_eq!(version, 53);
+        assert_eq!(version, 54);
 
         // Set up: insert a book and a media attached to it
         store
@@ -435,5 +454,40 @@ mod tests {
             store.get_media("m2", None).await.unwrap().is_none(),
             "media should be cascade deleted when movie is deleted"
         );
+    }
+
+    #[tokio::test]
+    async fn paginated_sync_queries_prepare() {
+        let connection = tokio_rusqlite::Connection::open_in_memory().await.unwrap();
+        let store = SqliteLibraryStore::new(connection).await.unwrap();
+
+        store
+            .get_people(PeopleQuery { limit: Some(1), offset: Some(0), ..Default::default() })
+            .await
+            .unwrap();
+        store
+            .get_tags(TagQuery { limit: Some(1), offset: Some(0), ..Default::default() })
+            .await
+            .unwrap();
+        store
+            .get_series(SerieQuery { limit: Some(1), offset: Some(0), ..Default::default() })
+            .await
+            .unwrap();
+        store
+            .get_movies(MovieQuery { limit: Some(1), offset: Some(0), ..Default::default() })
+            .await
+            .unwrap();
+        store
+            .get_books(BookQuery { limit: Some(1), offset: Some(0), ..Default::default() })
+            .await
+            .unwrap();
+        store
+            .get_deleted(DeletedQuery { limit: Some(1), offset: Some(0), ..Default::default() })
+            .await
+            .unwrap();
+        store
+            .get_channels(None, None, Some(1), Some(0))
+            .await
+            .unwrap();
     }
 }

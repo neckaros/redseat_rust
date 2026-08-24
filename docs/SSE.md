@@ -27,6 +27,7 @@ Example: `/sse?libraries=lib1,lib2` will only receive events for those libraries
 
 | Event Name | Description | Required Permission |
 |------------|-------------|---------------------|
+| `heartbeat` | Transport keepalive emitted every 30 seconds; clients should ignore its `{}` payload | None beyond SSE authentication |
 | `library` | Library created/updated/deleted | Library read access |
 | `library-status` | Library status changes | Library admin |
 | `medias` | Media items created/updated/deleted | Library read access |
@@ -45,6 +46,10 @@ Example: `/sse?libraries=lib1,lib2` will only receive events for those libraries
 | `watched` | Content marked as watched | User-specific (only watched owner) |
 | `unwatched` | Content unmarked as watched | User-specific (only watched owner) |
 | `request_processing` | Request processing status updates | Library read access |
+
+The endpoint sends `Cache-Control: no-cache, no-transform` and
+`X-Accel-Buffering: no` so reverse proxies flush heartbeat and data events
+immediately instead of buffering an otherwise idle stream.
 
 `library-status` is also used for async library deletion lifecycle updates. Current messages include:
 - `delete-started`

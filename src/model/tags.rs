@@ -81,6 +81,8 @@ pub struct TagQuery {
     pub parent: Option<String>,
     pub path: Option<String>,
     pub after: Option<i64>,
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
 }
 
 impl TagQuery {

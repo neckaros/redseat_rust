@@ -85,6 +85,7 @@ impl SqliteLibraryStore {
         let row = self
             .connection
             .call(move |conn| {
+                let pagination = query.limit.map(|limit| format!(" LIMIT {} OFFSET {}", limit.min(5000), query.offset.unwrap_or(0))).unwrap_or_default();
                 let mut where_query = RsQueryBuilder::new();
                 if let Some(after) = query.after {
                     where_query.add_where(SqlWhereType::After("modified".to_string(), Box::new(after)));
@@ -120,15 +121,17 @@ impl SqliteLibraryStore {
                     where_query.add_where(SqlWhereType::Equal("asin".to_string(), Box::new(asin)));
                 }
                 where_query.add_oder(OrderBuilder::new(query.sort.to_string(), query.order));
+                where_query.add_oder(OrderBuilder::new("b.id".to_string(), SqlOrder::ASC));
                 let mut statement = conn.prepare(&format!(
                     "SELECT
                     b.id, b.name, b.type, b.serie_ref, b.volume, b.chapter, b.year, b.airdate, b.overview, b.pages, b.params, b.lang, b.original,
                     b.isbn13, b.openlibrary_edition_id, b.openlibrary_work_id, b.google_books_volume_id, b.asin, b.otherids, b.modified, b.added,
                     (SELECT GROUP_CONCAT(tag_ref || '|' || IFNULL(confidence, 100)) FROM book_tag_mapping WHERE book_ref = b.id) AS tags,
                     (SELECT GROUP_CONCAT(people_ref) FROM book_people_mapping WHERE book_ref = b.id) AS people
-                    FROM books b {}{}",
+                    FROM books b {}{}{}",
                     where_query.format(),
-                    where_query.format_order()
+                    where_query.format_order(),
+                    pagination
                 ))?;
                 let rows = statement.query_map(where_query.values(), Self::row_to_book)?;
                 let values = rows.collect::<std::result::Result<Vec<ItemWithRelations<Book>>, rusqlite::Error>>()?;

@@ -36,6 +36,8 @@ pub struct ChannelQuery {
     #[serde(alias = "groupTag")]
     pub tag: Option<String>,
     pub name: Option<String>,
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -59,14 +61,20 @@ impl ModelController {
     ) -> RsResult<Vec<Channel>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id)?;
-        let mut channels = store.get_channels(query.tag, query.name).await?;
+        let mut channels = store
+            .get_channels(query.tag, query.name, query.limit, query.offset)
+            .await?;
 
-        // Attach variants to each channel
+        let channel_ids = channels.iter().map(|channel| channel.id.clone()).collect();
+        let mut variants_by_channel: HashMap<String, Vec<ChannelVariant>> = HashMap::new();
+        for variant in store.get_channel_variants_for_channels(channel_ids).await? {
+            variants_by_channel
+                .entry(variant.channel_ref.clone())
+                .or_default()
+                .push(variant);
+        }
         for channel in &mut channels {
-            let variants = store.get_channel_variants(&channel.id).await?;
-            if !variants.is_empty() {
-                channel.variants = Some(variants);
-            }
+            channel.variants = variants_by_channel.remove(&channel.id);
         }
 
         Ok(channels)

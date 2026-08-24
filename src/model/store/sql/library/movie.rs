@@ -68,6 +68,7 @@ impl SqliteLibraryStore {
         let row = self
             .connection
             .call(move |conn| {
+                let pagination = query.limit.map(|limit| format!(" LIMIT {} OFFSET {}", limit.min(5000), query.offset.unwrap_or(0))).unwrap_or_default();
                 let mut where_query = RsQueryBuilder::new();
                 if let Some(q) = query.after {
                     where_query.add_where(SqlWhereType::After("modified".to_owned(), Box::new(q)));
@@ -92,6 +93,7 @@ impl SqliteLibraryStore {
                     column: query.sort.to_string(),
                     order: query.order.unwrap_or(SqlOrder::ASC),
                 });
+                where_query.add_oder(OrderBuilder::new("id".to_string(), SqlOrder::ASC));
 
                 let mut query = conn.prepare(&format!(
                     "SELECT 
@@ -100,9 +102,10 @@ impl SqliteLibraryStore {
             lang, original,
             imdb, slug, tmdb, trakt, otherids, 
             imdb_rating, imdb_votes, trakt_rating, trakt_votes, trailer,
-            modified, added, posterv, backgroundv, cardv FROM movies {}{}",
+            modified, added, posterv, backgroundv, cardv FROM movies {}{}{}",
                     where_query.format(),
-                    where_query.format_order()
+                    where_query.format_order(),
+                    pagination
                 ))?;
                 let rows = query.query_map(where_query.values(), Self::row_to_movie)?;
                 let backups: Vec<Movie> =

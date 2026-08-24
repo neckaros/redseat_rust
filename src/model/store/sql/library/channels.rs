@@ -42,6 +42,8 @@ impl SqliteLibraryStore {
         &self,
         tag: Option<String>,
         name_filter: Option<String>,
+        limit: Option<u32>,
+        offset: Option<u32>,
     ) -> Result<Vec<Channel>> {
         let rows = self
             .connection
@@ -67,6 +69,10 @@ impl SqliteLibraryStore {
                     sql.push_str(&conditions.join(" AND "));
                 }
                 sql.push_str(" ORDER BY c.channel_number ASC, c.name ASC");
+                sql.push_str(" , c.id ASC");
+                if let Some(limit) = limit {
+                    sql.push_str(&format!(" LIMIT {} OFFSET {}", limit.min(5000), offset.unwrap_or(0)));
+                }
 
                 let mut statement = conn.prepare(&sql)?;
                 let params: Vec<&dyn rusqlite::types::ToSql> = values
@@ -321,6 +327,40 @@ impl SqliteLibraryStore {
                 )?;
                 let rows = statement.query_map([channel_ref], Self::row_to_variant)?;
                 let variants = rows.collect::<std::result::Result<Vec<ChannelVariant>, rusqlite::Error>>()?;
+                Ok(variants)
+            })
+            .await?;
+        Ok(rows)
+    }
+
+    /// Load all variants in one query so channel list responses do not perform
+    /// one SQLite round trip per channel.
+    pub async fn get_channel_variants_for_channels(
+        &self,
+        channel_refs: Vec<String>,
+    ) -> Result<Vec<ChannelVariant>> {
+        if channel_refs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = self
+            .connection
+            .call(move |conn| {
+                let mut variants = Vec::new();
+                for refs in channel_refs.chunks(900) {
+                    let placeholders = std::iter::repeat("?").take(refs.len())
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    let sql = format!(
+                        "SELECT id, channel_ref, quality, stream_url, name, tvg_name, modified, added FROM channel_variants WHERE channel_ref IN ({}) ORDER BY channel_ref ASC, quality ASC",
+                        placeholders
+                    );
+                    let mut statement = conn.prepare(&sql)?;
+                    let rows = statement.query_map(
+                        rusqlite::params_from_iter(refs.iter()),
+                        Self::row_to_variant,
+                    )?;
+                    variants.extend(rows.collect::<std::result::Result<Vec<ChannelVariant>, rusqlite::Error>>()?);
+                }
                 Ok(variants)
             })
             .await?;

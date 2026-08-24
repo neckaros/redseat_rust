@@ -64,6 +64,8 @@ pub struct MovieQuery {
     #[serde(default)]
     pub sort: RsMovieSort,
     pub order: Option<SqlOrder>,
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
 }
 
 impl MovieQuery {

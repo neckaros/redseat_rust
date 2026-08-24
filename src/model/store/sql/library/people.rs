@@ -53,12 +53,14 @@ impl SqliteLibraryStore {
 
     pub async fn get_people(&self, query: PeopleQuery) -> Result<Vec<Person>> {
         let row = self.connection.call( move |conn| { 
+            let pagination = query.limit.map(|limit| format!(" LIMIT {} OFFSET {}", limit.min(5000), query.offset.unwrap_or(0))).unwrap_or_default();
             let mut where_query = RsQueryBuilder::new();
             if let Some(q) = query.after {
                 where_query.add_where(SqlWhereType::After("modified".to_owned(), Box::new(q)));
             }
             if query.after.is_some() {
-                where_query.add_oder(OrderBuilder::new("modified".to_string(), SqlOrder::ASC))
+                where_query.add_oder(OrderBuilder::new("modified".to_string(), SqlOrder::ASC));
+                where_query.add_oder(OrderBuilder::new("id".to_string(), SqlOrder::ASC));
             } else {
                 if query.name.is_some() {
                     where_query.add_oder(OrderBuilder::new("score".to_string(), SqlOrder::DESC));
@@ -81,7 +83,7 @@ else 0 end) as score", q, q, q, q, q, q);
                 where_query.add_where(SqlWhereType::Or(name_queries));
             }
 
-            let mut query = conn.prepare(&format!("SELECT {}{}  FROM people {}{}", Self::PEOPLE_FIELDS, score, where_query.format(), where_query.format_order()))?;
+            let mut query = conn.prepare(&format!("SELECT {}{}  FROM people {}{}{}", Self::PEOPLE_FIELDS, score, where_query.format(), where_query.format_order(), pagination))?;
 
             //println!("sql: {:?}", query.expanded_sql());
 
