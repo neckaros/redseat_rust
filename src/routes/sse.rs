@@ -2,7 +2,11 @@ use std::{convert::Infallible, time::Duration};
 
 use axum::{
     extract::{Query, State},
-    response::sse::{Event, KeepAlive, Sse},
+    http::{header::CACHE_CONTROL, HeaderName, HeaderValue},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Response,
+    },
     routing::get,
     Router,
 };
@@ -180,7 +184,7 @@ async fn handler_sse(
     State(mc): State<ModelController>,
     user: ConnectedUser,
     Query(params): Query<SseQueryParams>,
-) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
+) -> Response {
     // Parse library filter if provided
     let library_filter: Option<Vec<String>> = params
         .libraries
@@ -210,7 +214,7 @@ async fn handler_sse(
 
                     // Serialize and send event
                     if let Ok(data) = serde_json::to_string(&event) {
-                        yield Ok(Event::default()
+                        yield Ok::<Event, Infallible>(Event::default()
                             .event(event.event_name())
                             .data(data));
                     }
@@ -227,11 +231,25 @@ async fn handler_sse(
         }
     };
 
-    Sse::new(stream).keep_alive(
-        KeepAlive::new()
-            .interval(Duration::from_secs(30))
-            .text("ping"),
-    )
+    // Use a real SSE event rather than a comment. Some mobile/proxy stacks
+    // buffer or discard comment-only chunks, which makes the client activity
+    // watchdog tear down a healthy connection every 90 seconds.
+    let mut response = Sse::new(stream)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(30))
+                .event(Event::default().event("heartbeat").data("{}")),
+        )
+        .into_response();
+    response.headers_mut().insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static("no-cache, no-transform"),
+    );
+    response.headers_mut().insert(
+        HeaderName::from_static("x-accel-buffering"),
+        HeaderValue::from_static("no"),
+    );
+    response
 }
 
 #[cfg(test)]

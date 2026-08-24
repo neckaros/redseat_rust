@@ -4,7 +4,7 @@ use crate::{
     model::{
         deleted::DeletedQuery,
         store::{
-            sql::{OrderBuilder, RsQueryBuilder, SqlWhereType},
+            sql::{pagination_clause, OrderBuilder, RsQueryBuilder, SqlWhereType},
             SqliteStore,
         },
     },
@@ -22,6 +22,7 @@ impl SqliteLibraryStore {
     }
 
     pub async fn get_deleted(&self, query: DeletedQuery) -> Result<Vec<RsDeleted>> {
+        let pagination = pagination_clause(query.limit, query.offset)?;
         let row = self
             .connection
             .call(move |conn| {
@@ -30,12 +31,14 @@ impl SqliteLibraryStore {
                     where_query.add_where(SqlWhereType::After("date".to_owned(), Box::new(q)));
                 }
 
-                where_query.add_oder(OrderBuilder::new("date".to_owned(), query.order));
+                where_query.add_oder(OrderBuilder::new("date".to_owned(), query.order.clone()));
+                where_query.add_oder(OrderBuilder::new("id".to_owned(), query.order));
 
                 let mut query = conn.prepare(&format!(
-                    "SELECT type, id, date FROM deleted {}{}",
+                    "SELECT type, id, date FROM deleted {}{}{}",
                     where_query.format(),
-                    where_query.format_order()
+                    where_query.format_order(),
+                    pagination
                 ))?;
 
                 let rows = query.query_map(where_query.values(), Self::row_to_deleted)?;

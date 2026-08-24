@@ -13,7 +13,8 @@ use crate::{
         store::{
             from_pipe_separated_optional,
             sql::{
-                OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType,
+                pagination_clause, OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder,
+                SqlOrder, SqlWhereType,
             },
             to_pipe_separated_optional,
         },
@@ -65,6 +66,7 @@ impl SqliteLibraryStore {
     }
 
     pub async fn get_movies(&self, query: MovieQuery) -> Result<Vec<Movie>> {
+        let pagination = pagination_clause(query.limit, query.offset)?;
         let row = self
             .connection
             .call(move |conn| {
@@ -92,6 +94,7 @@ impl SqliteLibraryStore {
                     column: query.sort.to_string(),
                     order: query.order.unwrap_or(SqlOrder::ASC),
                 });
+                where_query.add_oder(OrderBuilder::new("id".to_string(), SqlOrder::ASC));
 
                 let mut query = conn.prepare(&format!(
                     "SELECT 
@@ -100,9 +103,10 @@ impl SqliteLibraryStore {
             lang, original,
             imdb, slug, tmdb, trakt, otherids, 
             imdb_rating, imdb_votes, trakt_rating, trakt_votes, trailer,
-            modified, added, posterv, backgroundv, cardv FROM movies {}{}",
+            modified, added, posterv, backgroundv, cardv FROM movies {}{}{}",
                     where_query.format(),
-                    where_query.format_order()
+                    where_query.format_order(),
+                    pagination
                 ))?;
                 let rows = query.query_map(where_query.values(), Self::row_to_movie)?;
                 let backups: Vec<Movie> =

@@ -91,6 +91,8 @@ pub struct PersonForInsert {
 pub struct PeopleQuery {
     pub after: Option<i64>,
     pub name: Option<String>,
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
 }
 
 impl PeopleQuery {

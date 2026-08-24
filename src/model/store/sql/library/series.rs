@@ -13,7 +13,8 @@ use crate::{
         store::{
             from_pipe_separated_optional,
             sql::{
-                OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder, SqlOrder, SqlWhereType,
+                pagination_clause, OrderBuilder, QueryBuilder, QueryWhereType, RsQueryBuilder,
+                SqlOrder, SqlWhereType,
             },
             to_pipe_separated_optional,
         },
@@ -68,6 +69,7 @@ impl SqliteLibraryStore {
     }
 
     pub async fn get_series(&self, query: SerieQuery) -> Result<Vec<ItemWithRelations<Serie>>> {
+        let pagination = pagination_clause(query.limit, query.offset)?;
         let row = self
             .connection
             .call(move |conn| {
@@ -90,12 +92,14 @@ impl SqliteLibraryStore {
                 }
 
                 where_query.add_oder(OrderBuilder::new(query.sort.to_string(), query.order));
+                where_query.add_oder(OrderBuilder::new("id".to_string(), SqlOrder::ASC));
 
                 let mut query = conn.prepare(&format!(
-                    "SELECT {}  FROM series {}{}",
+                    "SELECT {}  FROM series {}{}{}",
                     SERIE_SQL_FIELDS,
                     where_query.format(),
-                    where_query.format_order()
+                    where_query.format_order(),
+                    pagination
                 ))?;
                 let rows = query.query_map(where_query.values(), Self::row_to_serie)?;
                 let backups: Vec<ItemWithRelations<Serie>> = rows

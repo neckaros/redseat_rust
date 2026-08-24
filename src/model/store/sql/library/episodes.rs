@@ -13,7 +13,7 @@ use crate::{
         episodes::{EpisodeForUpdate, EpisodeQuery, EpisodeSyncResult},
         store::{
             from_pipe_separated_optional,
-            sql::{OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder},
+            sql::{pagination_clause, OrderBuilder, QueryBuilder, QueryWhereType, SqlOrder},
             to_pipe_separated_optional,
         },
     },
@@ -68,6 +68,7 @@ impl SqliteLibraryStore {
     }
 
     pub async fn get_episodes(&self, query: EpisodeQuery) -> Result<Vec<Episode>> {
+        let pagination = pagination_clause(query.limit, query.offset)?;
         let row = self
             .connection
             .call(move |conn| {
@@ -104,6 +105,9 @@ impl SqliteLibraryStore {
                 for sorts in query.sorts {
                     where_query.add_oder(OrderBuilder::new(sorts.sort.to_string(), sorts.order));
                 }
+                where_query.add_oder(OrderBuilder::new("serie_ref".to_string(), SqlOrder::ASC));
+                where_query.add_oder(OrderBuilder::new("season".to_string(), SqlOrder::ASC));
+                where_query.add_oder(OrderBuilder::new("number".to_string(), SqlOrder::ASC));
 
                 //where_query.add_oder(OrderBuilder::new("season".to_string(), SqlOrder::ASC));
                 //where_query.add_oder(OrderBuilder::new("number".to_string(), SqlOrder::ASC));
@@ -176,9 +180,10 @@ ON
     {}
     )
     as u
-    {}",
+    {}{}",
                     where_query.format_order(),
-                    where_query.format()
+                    where_query.format(),
+                    pagination
                 ))?;
                 //println!("query {:?}", query.expanded_sql());
                 let rows = query.query_map(where_query.values(), Self::row_to_episode)?;
@@ -539,7 +544,7 @@ ORDER BY airdate ASC
 #[cfg(test)]
 mod tests {
     use super::SqliteLibraryStore;
-    use crate::{domain::episode::Episode, domain::ElementAction};
+    use crate::{domain::episode::Episode, domain::ElementAction, model::episodes::EpisodeQuery};
 
     fn episode(number: u32, name: &str) -> Episode {
         Episode {
@@ -630,5 +635,26 @@ mod tests {
             .await
             .unwrap();
         assert!(unchanged.changes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn episode_query_applies_stable_limit_and_offset() {
+        let connection = tokio_rusqlite::Connection::open_in_memory().await.unwrap();
+        let store = SqliteLibraryStore::new(connection).await.unwrap();
+        store.add_episode(episode(1, "One")).await.unwrap();
+        store.add_episode(episode(2, "Two")).await.unwrap();
+        store.add_episode(episode(3, "Three")).await.unwrap();
+
+        let page = store
+            .get_episodes(EpisodeQuery {
+                limit: Some(1),
+                offset: Some(1),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].number, 2);
     }
 }

@@ -60,6 +60,7 @@ pub struct EpisodeQuery {
     pub sorts: Vec<RsSortOrder>,
 
     pub limit: Option<u32>,
+    pub offset: Option<u32>,
 }
 
 pub struct EpisodeSyncResult {
