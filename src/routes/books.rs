@@ -114,7 +114,9 @@ impl BookMetadataSearchQuery {
         })
     }
 
-    fn into_lookup(self) -> RsLookupBook {
+    fn into_lookup(self) -> Result<RsLookupBook> {
+        let name = self.name.and_then(non_empty_value);
+        let author = self.author.and_then(non_empty_value);
         let ids = self.isbn13.and_then(|isbn13| {
             let isbn13 = isbn13.trim();
             if isbn13.is_empty() {
@@ -125,12 +127,18 @@ impl BookMetadataSearchQuery {
             Some(ids)
         });
 
-        RsLookupBook {
-            name: self.name.and_then(non_empty_value),
-            author: self.author.and_then(non_empty_value),
+        if name.is_none() && author.is_none() && ids.is_none() {
+            return Err(Error::InvalidParams(
+                "At least one of name, author, or isbn13 is required".to_string(),
+            ));
+        }
+
+        Ok(RsLookupBook {
+            name,
+            author,
             ids,
             page_key: self.page_key.and_then(non_empty_value),
-        }
+        })
     }
 }
 
@@ -194,7 +202,7 @@ async fn handler_search_books(
     Query(query): Query<BookMetadataSearchQuery>,
 ) -> Result<Json<Value>> {
     let sources = query.sources();
-    let lookup_query = RsLookupQuery::Book(query.into_lookup());
+    let lookup_query = RsLookupQuery::Book(query.into_lookup()?);
     let groups = mc
         .exec_lookup_metadata_grouped(
             lookup_query,
@@ -222,7 +230,7 @@ async fn handler_search_books_stream(
     Query(query): Query<BookMetadataSearchQuery>,
 ) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>> {
     let sources = query.sources();
-    let lookup_query = RsLookupQuery::Book(query.into_lookup());
+    let lookup_query = RsLookupQuery::Book(query.into_lookup()?);
     let mut rx = mc
         .exec_lookup_metadata_stream_grouped(
             lookup_query,
@@ -478,6 +486,8 @@ async fn handler_post_image(
 #[cfg(test)]
 mod tests {
     use super::BookMetadataSearchQuery;
+    use crate::Error;
+    use axum::http::StatusCode;
 
     #[test]
     fn book_metadata_search_combines_title_author_and_isbn() {
@@ -488,7 +498,8 @@ mod tests {
             page_key: None,
             source: None,
         }
-        .into_lookup();
+        .into_lookup()
+        .unwrap();
 
         assert_eq!(lookup.name.as_deref(), Some("The Book"));
         assert_eq!(lookup.author.as_deref(), Some("Jane Doe"));
@@ -496,5 +507,21 @@ mod tests {
             lookup.ids.as_ref().and_then(|ids| ids.isbn13()),
             Some("9781402894626")
         );
+    }
+
+    #[test]
+    fn book_metadata_search_rejects_empty_criteria() {
+        let result = BookMetadataSearchQuery {
+            name: Some("  ".to_string()),
+            author: None,
+            isbn13: Some(" ".to_string()),
+            page_key: None,
+            source: Some("openlibrary".to_string()),
+        }
+        .into_lookup();
+
+        let error = result.unwrap_err();
+        assert!(matches!(&error, Error::InvalidParams(_)));
+        assert_eq!(error.client_status_and_error().0, StatusCode::BAD_REQUEST);
     }
 }
