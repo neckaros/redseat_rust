@@ -323,8 +323,13 @@ async fn handler_lookup_stream(
 
     let stream = async_stream::stream! {
         while let Some((source_id, source_name, groups)) = rx.recv().await {
-            let results = SseLookupSearchResult::from_groups(groups);
-            if let Ok(data) = serde_json::to_string(&SseLookupSearchEvent { source_id: &source_id, source_name: &source_name, results: &results }) {
+            let results = SseLookupSearchResult::from_groups(&groups);
+            if let Ok(data) = serde_json::to_string(&SseLookupSearchEvent {
+                source_id: &source_id,
+                source_name: &source_name,
+                results: &results,
+                downloads: &groups,
+            }) {
                 yield Ok(Event::default().event("results").data(data));
             }
         }

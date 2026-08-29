@@ -72,7 +72,11 @@ impl<T> SearchQuery<T> {
 pub struct SseLookupSearchEvent<'a> {
     pub source_id: &'a str,
     pub source_name: &'a str,
+    /// Legacy flattened results. This must remain unchanged so older clients
+    /// continue to see every request in a grouped download.
     pub results: &'a [SseLookupSearchResult],
+    /// Complete download groups for clients that understand grouped results.
+    pub downloads: &'a [RsGroupDownload],
 }
 
 #[derive(Serialize)]
@@ -83,20 +87,79 @@ pub struct SseLookupSearchResult {
 }
 
 impl SseLookupSearchResult {
-    pub fn from_groups(groups: Vec<RsGroupDownload>) -> Vec<Self> {
+    pub fn from_groups(groups: &[RsGroupDownload]) -> Vec<Self> {
         groups
-            .into_iter()
-            .flat_map(|group| {
-                let match_type = group.match_type;
-                group
+            .iter()
+            .flat_map(|download| {
+                download
                     .requests
-                    .into_iter()
-                    .map(move |request| SseLookupSearchResult {
+                    .iter()
+                    .cloned()
+                    .map(|request| SseLookupSearchResult {
                         request,
-                        match_type: match_type.clone(),
+                        match_type: download.match_type.clone(),
                     })
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SseLookupSearchEvent, SseLookupSearchResult};
+    use rs_plugin_common_interfaces::request::{RsGroupDownload, RsRequest};
+
+    #[test]
+    fn lookup_stream_keeps_legacy_results_flattened() {
+        let first = RsRequest {
+            url: "https://example.test/page-1.jpg".to_string(),
+            ..Default::default()
+        };
+        let second = RsRequest {
+            url: "https://example.test/page-2.jpg".to_string(),
+            ..Default::default()
+        };
+        let group = RsGroupDownload {
+            group: true,
+            group_filename: Some("Chapter 1".to_string()),
+            requests: vec![first.clone(), second.clone()],
+            ..Default::default()
+        };
+
+        let results = SseLookupSearchResult::from_groups(std::slice::from_ref(&group));
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].request, first);
+        assert_eq!(results[1].request, second);
+    }
+
+    #[test]
+    fn lookup_stream_serializes_complete_downloads_alongside_legacy_results() {
+        let group = RsGroupDownload {
+            group: true,
+            group_filename: Some("Chapter 1".to_string()),
+            requests: vec![RsRequest {
+                url: "https://example.test/page-1.jpg".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let results = SseLookupSearchResult::from_groups(std::slice::from_ref(&group));
+        let event = SseLookupSearchEvent {
+            source_id: "plugin-id",
+            source_name: "Plugin name",
+            results: &results,
+            downloads: std::slice::from_ref(&group),
+        };
+        let value = serde_json::to_value(event).expect("serialize lookup event");
+
+        assert_eq!(value["results"].as_array().map(Vec::len), Some(1));
+        assert_eq!(value["downloads"][0]["group"], true);
+        assert_eq!(value["downloads"][0]["groupFilename"], "Chapter 1");
+        assert_eq!(
+            value["downloads"][0]["requests"].as_array().map(Vec::len),
+            Some(1)
+        );
     }
 }
 
