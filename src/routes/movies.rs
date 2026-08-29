@@ -44,8 +44,8 @@ use tokio::io::AsyncRead;
 use tokio_util::io::{ReaderStream, StreamReader};
 
 use super::{
-    ImageRequestOptions, ImageUploadOptions, RatingUpdateBody, SearchQuery, SearchResultGroup,
-    SseLookupSearchEvent, SseLookupSearchResult, SseSearchEvent,
+    bind_downloads_to_movie, ImageRequestOptions, ImageUploadOptions, RatingUpdateBody,
+    SearchQuery, SearchResultGroup, SseLookupSearchEvent, SseLookupSearchResult, SseSearchEvent,
 };
 
 pub fn routes(mc: ModelController) -> Router {
@@ -243,7 +243,9 @@ async fn handler_lookup_stream(
     State(mc): State<ModelController>,
     user: ConnectedUser,
 ) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>> {
-    let movie = mc.get_movie(&library_id, movie_id, &user).await?;
+    let movie = mc
+        .get_movie(&library_id, movie_id.clone(), &user)
+        .await?;
     let name = movie.name.clone();
     let ids: RsIds = movie.into();
     let query = RsLookupQuery::Movie(RsLookupMovie {
@@ -256,7 +258,8 @@ async fn handler_lookup_stream(
         .await?;
 
     let stream = async_stream::stream! {
-        while let Some((source_id, source_name, groups)) = rx.recv().await {
+        while let Some((source_id, source_name, mut groups)) = rx.recv().await {
+            bind_downloads_to_movie(&mut groups, &movie_id);
             let results = SseLookupSearchResult::from_groups(&groups);
             if let Ok(data) = serde_json::to_string(&SseLookupSearchEvent {
                 source_id: &source_id,
