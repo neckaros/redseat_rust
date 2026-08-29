@@ -2,10 +2,13 @@ use std::collections::{HashMap, HashSet};
 
 use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, MediaType};
 
-use crate::domain::{episode::Episode, library::LibraryType, movie::Movie, serie::Serie};
+use crate::domain::{
+    book::Book, episode::Episode, library::LibraryType, movie::Movie, serie::Serie,
+};
 use crate::tools::log::{log_info, LogServiceType};
 
 use super::{
+    books::BookQuery,
     episodes::EpisodeQuery,
     movies::MovieQuery,
     series::SerieQuery,
@@ -13,7 +16,7 @@ use super::{
     ModelController,
 };
 
-const HISTORY_MIGRATION: &str = "canonical_history_ids_v4";
+const HISTORY_MIGRATION: &str = "canonical_history_ids_v5";
 
 fn non_empty_id(id: Option<&str>) -> Option<&str> {
     id.map(str::trim).filter(|id| !id.is_empty())
@@ -35,6 +38,26 @@ pub fn movie_history_id(movie: &Movie) -> String {
         .unwrap_or_else(|| format!("movie:redseat/{}", movie.id))
 }
 
+fn book_history_key(book: &Book) -> String {
+    let ids: RsIds = book.clone().into();
+    for provider in ["isbn13", "oleid", "olwid", "gbvid", "asin"] {
+        if let Some(value) = non_empty_id(ids.get(provider)) {
+            return format!("{provider}/{value}");
+        }
+    }
+    if let Some((provider, value)) = ids.iter().find(|(provider, value)| {
+        !matches!(provider.as_str(), "redseat" | "volume" | "chapter")
+            && non_empty_id(Some(value.as_str())).is_some()
+    }) {
+        return format!("{provider}/{value}");
+    }
+    format!("redseat/{}", book.id)
+}
+
+pub fn book_history_id(book: &Book) -> String {
+    format!("book:{}", book_history_key(book))
+}
+
 pub fn episode_history_id(serie: &Serie, episode: &Episode) -> String {
     format!(
         "episode:{}/{}/{}",
@@ -52,6 +75,13 @@ fn ids_with_history_id(mut ids: RsIds, history_id: String) -> RsIds {
 
 pub fn movie_history_ids(movie: &Movie) -> RsIds {
     ids_with_history_id(movie.clone().into(), movie_history_id(movie))
+}
+
+pub fn book_history_ids(book: &Book) -> RsIds {
+    let mut ids: RsIds = book.clone().into();
+    ids.remove("volume");
+    ids.remove("chapter");
+    ids_with_history_id(ids, book_history_id(book))
 }
 
 pub fn episode_history_ids(serie: &Serie, episode: &Episode) -> RsIds {
@@ -74,13 +104,15 @@ pub fn normalize_history_id(kind: &MediaType, id: String) -> String {
             .strip_prefix("redseat:")
             .and_then(normalize_legacy_episode_id)
             .unwrap_or(id),
+        MediaType::Book if id.starts_with("book:") => id,
+        MediaType::Book => typed_alias("book", &id).unwrap_or(id),
         _ => id,
     }
 }
 
 pub fn direct_history_ids(id: String) -> crate::Result<RsIds> {
     let mut ids = RsIds::try_from(id.clone())?;
-    for kind in [MediaType::Movie, MediaType::Episode] {
+    for kind in [MediaType::Movie, MediaType::Episode, MediaType::Book] {
         let normalized = normalize_history_id(&kind, id.clone());
         if normalized != id {
             ids.try_add(normalized)?;
@@ -137,6 +169,15 @@ fn episode_legacy_ids(serie: &Serie, episode: &Episode) -> HashSet<String> {
     aliases
 }
 
+fn book_history_aliases(book: &Book) -> HashSet<String> {
+    let ids = book_history_ids(book);
+    ids.as_all_ids()
+        .into_iter()
+        .flat_map(|id| [Some(id.clone()), typed_alias("book", &id)])
+        .flatten()
+        .collect()
+}
+
 fn add_candidate<T: Clone + Eq + std::hash::Hash>(
     candidates: &mut HashMap<String, HashSet<T>>,
     old_id: String,
@@ -176,6 +217,12 @@ fn is_current_history_id(kind: &MediaType, id: &str) -> bool {
                         && number.parse::<u32>().is_ok()
             )
         }
+        MediaType::Book => id
+            .strip_prefix("book:")
+            .and_then(|value| value.split_once('/'))
+            .is_some_and(|(provider, value)| {
+                non_empty_id(Some(provider)).is_some() && non_empty_id(Some(value)).is_some()
+            }),
         _ => true,
     }
 }
@@ -213,8 +260,15 @@ impl ModelController {
             })
             .map(|(_, id)| id.clone())
             .collect();
+        // Every book row is considered so provider aliases can converge on the
+        // strongest canonical identifier currently available for the book.
+        let book_ids: HashSet<String> = watched
+            .iter()
+            .filter(|row| row.kind == MediaType::Book)
+            .map(|row| row.id.clone())
+            .collect();
 
-        if legacy_movie_ids.is_empty() && legacy_episode_ids.is_empty() {
+        if legacy_movie_ids.is_empty() && legacy_episode_ids.is_empty() && book_ids.is_empty() {
             self.store
                 .complete_data_migration(HISTORY_MIGRATION)
                 .await?;
@@ -224,9 +278,13 @@ impl ModelController {
         let libraries = self.store.get_libraries().await?;
         let mut movie_candidates = HashMap::<String, HashSet<String>>::new();
         let mut episode_candidates = HashMap::<String, HashSet<(String, String)>>::new();
+        let mut book_candidates = HashMap::<String, HashSet<String>>::new();
 
         for library in libraries {
-            if !matches!(library.kind, LibraryType::Movies | LibraryType::Shows) {
+            if !matches!(
+                library.kind,
+                LibraryType::Movies | LibraryType::Shows | LibraryType::Books
+            ) {
                 continue;
             }
             let store = self.store.get_library_store(&library.id)?;
@@ -264,10 +322,23 @@ impl ModelController {
                     }
                 }
             }
+
+            if library.kind == LibraryType::Books && !book_ids.is_empty() {
+                for book in store.get_books(BookQuery::default()).await? {
+                    let book = book.item;
+                    let canonical_id = book_history_id(&book);
+                    for alias in book_history_aliases(&book) {
+                        if alias != canonical_id && book_ids.contains(&alias) {
+                            add_candidate(&mut book_candidates, alias, canonical_id.clone());
+                        }
+                    }
+                }
+            }
         }
 
         let movie_targets = unique_candidates(movie_candidates);
         let episode_targets = unique_candidates(episode_candidates);
+        let book_targets = unique_candidates(book_candidates);
         let watched_rewrites = watched
             .into_iter()
             .filter_map(|watched| {
@@ -275,6 +346,7 @@ impl ModelController {
                 let new_id = match watched.kind {
                     MediaType::Movie => movie_targets.get(&watched.id)?.clone(),
                     MediaType::Episode => episode_targets.get(&watched.id)?.0.clone(),
+                    MediaType::Book => book_targets.get(&watched.id)?.clone(),
                     _ => return None,
                 };
                 Some(HistoryIdRewrite {
@@ -414,5 +486,53 @@ impl ModelController {
             .apply_history_rewrites(watched_rewrites, progress_rewrites)
             .await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{book_history_id, book_history_ids, normalize_history_id};
+    use crate::domain::book::Book;
+    use rs_plugin_common_interfaces::{domain::other_ids::OtherIds, MediaType};
+
+    #[test]
+    fn book_history_prefers_isbn13_and_keeps_provider_aliases() {
+        let book = Book {
+            id: "book-local".to_string(),
+            name: "Book".to_string(),
+            isbn13: Some("9783161484100".to_string()),
+            openlibrary_edition_id: Some("OL123M".to_string()),
+            otherids: Some(OtherIds(vec!["goodreads:456".to_string()])),
+            volume: Some(2.0),
+            ..Default::default()
+        };
+
+        assert_eq!(book_history_id(&book), "book:isbn13/9783161484100");
+        let ids = book_history_ids(&book).as_all_ids();
+        assert!(ids.contains(&"book:isbn13/9783161484100".to_string()));
+        assert!(ids.contains(&"oleid:OL123M".to_string()));
+        assert!(ids.contains(&"goodreads:456".to_string()));
+        assert!(!ids.iter().any(|id| id.starts_with("volume:")));
+    }
+
+    #[test]
+    fn book_history_falls_back_to_local_id_and_normalizes_direct_ids() {
+        let book = Book {
+            id: "book-local".to_string(),
+            name: "Book".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(book_history_id(&book), "book:redseat/book-local");
+        assert_eq!(
+            normalize_history_id(&MediaType::Book, "isbn13:9783161484100".to_string()),
+            "book:isbn13/9783161484100"
+        );
+        assert_eq!(
+            normalize_history_id(
+                &MediaType::Book,
+                "book:isbn13/9783161484100".to_string()
+            ),
+            "book:isbn13/9783161484100"
+        );
     }
 }

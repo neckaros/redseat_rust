@@ -77,6 +77,7 @@ impl SqliteLibraryStore {
                 otherids: row.get(18)?,
                 modified: row.get(19)?,
                 added: row.get(20)?,
+                watched: None,
             },
             relations,
         })
@@ -550,6 +551,24 @@ mod tests {
             .unwrap();
         let updated = store.get_book("book-h").await.unwrap().unwrap();
         assert_eq!(updated.item.isbn13.as_deref(), Some("9783161484100"));
+    }
+
+    #[tokio::test]
+    async fn book_watched_projection_is_not_persisted_in_library_storage() {
+        let connection = tokio_rusqlite::Connection::open_in_memory().await.unwrap();
+        let store = SqliteLibraryStore::new(connection).await.unwrap();
+        store
+            .add_book(Book {
+                id: "book-read".to_string(),
+                name: "Read only in user history".to_string(),
+                watched: Some(1_725_000_000_123),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let stored = store.get_book("book-read").await.unwrap().unwrap();
+        assert_eq!(stored.item.watched, None);
     }
 
     #[tokio::test]

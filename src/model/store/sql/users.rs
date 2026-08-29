@@ -249,6 +249,60 @@ impl SqliteStore {
     // endregion:    --- Users
 }
 
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, sync::RwLock};
+
+    use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, MediaType};
+    use tokio_rusqlite::Connection;
+
+    use super::SqliteStore;
+    use crate::{
+        domain::watched::WatchedForAdd,
+        model::{store::sql::migrate_database, users::HistoryQuery},
+    };
+
+    #[tokio::test]
+    async fn book_watched_rows_are_scoped_to_the_user() {
+        let connection = Connection::open_in_memory().await.unwrap();
+        migrate_database(&connection).await.unwrap();
+        let store = SqliteStore {
+            server_store: connection,
+            libraries_stores: RwLock::new(HashMap::new()),
+        };
+        store
+            .add_watched(
+                WatchedForAdd {
+                    kind: MediaType::Book,
+                    id: "book:isbn13/9783161484100".to_string(),
+                    date: 1_725_000_000_123,
+                },
+                "user-a".to_string(),
+            )
+            .await
+            .unwrap();
+
+        let query = HistoryQuery {
+            types: vec![MediaType::Book],
+            id: Some(
+                RsIds::try_from("book:isbn13/9783161484100".to_string()).unwrap(),
+            ),
+            ..Default::default()
+        };
+        let user_a = store
+            .get_watched(query.clone(), "user-a".to_string(), vec![])
+            .await
+            .unwrap();
+        let user_b = store
+            .get_watched(query, "user-b".to_string(), vec![])
+            .await
+            .unwrap();
+
+        assert_eq!(user_a.len(), 1);
+        assert!(user_b.is_empty());
+    }
+}
+
 ///Upload key store
 impl SqliteStore {
     pub async fn get_upload_key(&self, key: String) -> Result<UploadKey> {

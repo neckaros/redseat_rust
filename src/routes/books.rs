@@ -13,7 +13,7 @@ use axum::{
 use futures::{Stream, TryStreamExt};
 use rs_plugin_common_interfaces::domain::{rs_ids::RsIds, ItemWithRelations, Relations};
 use rs_plugin_common_interfaces::lookup::{RsLookupBook, RsLookupQuery};
-use rs_plugin_common_interfaces::{ElementType, ExternalImage, ImageType};
+use rs_plugin_common_interfaces::{ElementType, ExternalImage, ImageType, MediaType};
 
 use crate::tools::log::{log_info, LogServiceType};
 use serde_json::{json, Value};
@@ -22,8 +22,17 @@ use tokio_util::io::{ReaderStream, StreamReader};
 use serde::Deserialize;
 
 use crate::{
-    domain::book::{Book, BookForUpdate},
-    model::{books::BookQuery, medias::MediaQuery, users::ConnectedUser, ModelController},
+    domain::{
+        book::{Book, BookForUpdate},
+        watched::{WatchedForAdd, WatchedForDelete, WatchedLight},
+    },
+    model::{
+        books::BookQuery,
+        history::{book_history_id, book_history_ids},
+        medias::MediaQuery,
+        users::{ConnectedUser, HistoryQuery},
+        ModelController,
+    },
     routes::{
         bind_downloads_to_book, ImageRequestOptions, ImageUploadOptions, RatingUpdateBody,
         SearchResultGroup, SseLookupSearchEvent, SseLookupSearchResult, SseSearchEvent,
@@ -58,6 +67,9 @@ pub fn routes(mc: ModelController) -> Router {
         .route("/:id", get(handler_get))
         .route("/:id", patch(handler_patch))
         .route("/:id", delete(handler_delete))
+        .route("/:id/watched", get(handler_watched_get))
+        .route("/:id/watched", post(handler_watched_set))
+        .route("/:id/watched", delete(handler_watched_delete))
         .route("/:id/medias", get(handler_medias))
         .route("/:id/image", get(handler_image))
         .route("/:id/image/search", get(handler_image_search))
@@ -193,6 +205,67 @@ async fn handler_delete(
 ) -> Result<Json<Value>> {
     let deleted = mc.remove_book(&library_id, &book_id, &user).await?;
     Ok(Json(json!(deleted)))
+}
+
+async fn handler_watched_get(
+    Path((library_id, book_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<Json<Value>> {
+    let book = mc.get_book(&library_id, book_id, &user).await?;
+    let watched = mc
+        .get_watched(
+            HistoryQuery {
+                types: vec![MediaType::Book],
+                id: Some(book_history_ids(&book.item)),
+                ..Default::default()
+            },
+            &user,
+            Some(library_id),
+        )
+        .await?
+        .into_iter()
+        .max_by_key(|entry| entry.date)
+        .ok_or(Error::NotFound("Unable to get watched book".to_string()))?;
+    Ok(Json(json!(watched)))
+}
+
+async fn handler_watched_set(
+    Path((library_id, book_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Json(watched): Json<WatchedLight>,
+) -> Result<()> {
+    let book = mc.get_book(&library_id, book_id, &user).await?;
+    mc.add_watched(
+        WatchedForAdd {
+            kind: MediaType::Book,
+            id: book_history_id(&book.item),
+            date: watched.date,
+        },
+        &user,
+        Some(library_id),
+    )
+    .await?;
+    Ok(())
+}
+
+async fn handler_watched_delete(
+    Path((library_id, book_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<()> {
+    let book = mc.get_book(&library_id, book_id, &user).await?;
+    mc.remove_watched(
+        WatchedForDelete {
+            kind: MediaType::Book,
+            ids: book_history_ids(&book.item).into(),
+        },
+        &user,
+        Some(library_id),
+    )
+    .await?;
+    Ok(())
 }
 
 async fn handler_search_books(
