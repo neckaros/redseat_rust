@@ -51,6 +51,50 @@ The endpoint sends `Cache-Control: no-cache, no-transform` and
 `X-Accel-Buffering: no` so reverse proxies flush heartbeat and data events
 immediately instead of buffering an otherwise idle stream.
 
+## Entity search streams
+
+The following entity-scoped endpoints stream source lookup results as SSE:
+
+- `GET /libraries/{libraryId}/books/{bookId}/searchstream`
+- `GET /libraries/{libraryId}/movies/{movieId}/searchstream`
+- `GET /libraries/{libraryId}/series/{serieId}/seasons/{season}/searchstream`
+- `GET /libraries/{libraryId}/series/{serieId}/seasons/{season}/episodes/{number}/searchstream`
+
+Each source emits a `results` event with both the legacy flattened requests and
+the complete grouped downloads:
+
+```typescript
+interface LookupSearchEvent {
+  sourceId: string;
+  sourceName: string;
+  // Backward-compatible flattened view: one entry per request.
+  results: Array<{
+    request: RsRequest;
+    matchType?: RsLookupMatchType;
+  }>;
+  // Group-aware view: preserves provider grouping and group metadata.
+  downloads: RsGroupDownload[];
+}
+
+interface RsGroupDownload {
+  group: boolean;
+  groupThumbnailUrl?: string;
+  groupFilename?: string;
+  groupMime?: string;
+  requests: RsRequest[];
+  infos?: MediaForUpdate;
+  matchType?: RsLookupMatchType;
+}
+```
+
+Existing clients can continue consuming `results` unchanged. Group-aware
+clients should consume `downloads` instead and must not render both views. A
+provider result that is not grouped is still represented in `downloads` with
+`group: false`. The server adds the searched book, movie, series, season, and
+episode association to each download before emitting it, so a grouped download
+can be posted to `POST /libraries/{libraryId}/medias/download` without losing
+its entity relationship.
+
 `library-status` is also used for async library deletion lifecycle updates. Current messages include:
 - `delete-started`
 - `delete-removing-tracked-media`

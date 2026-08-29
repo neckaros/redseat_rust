@@ -1,4 +1,5 @@
 use rs_plugin_common_interfaces::{
+    domain::media::FileEpisode,
     lookup::{RsLookupMatchType, RsLookupMetadataResults},
     request::{RsGroupDownload, RsRequest},
     ImageType,
@@ -72,31 +73,228 @@ impl<T> SearchQuery<T> {
 pub struct SseLookupSearchEvent<'a> {
     pub source_id: &'a str,
     pub source_name: &'a str,
-    pub results: &'a [SseLookupSearchResult],
+    /// Legacy flattened results. This must remain unchanged so older clients
+    /// continue to see every request in a grouped download.
+    pub results: &'a [SseLookupSearchResult<'a>],
+    /// Complete download groups for clients that understand grouped results.
+    pub downloads: &'a [RsGroupDownload],
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SseLookupSearchResult {
-    pub request: RsRequest,
+pub struct SseLookupSearchResult<'a> {
+    pub request: &'a RsRequest,
     pub match_type: Option<RsLookupMatchType>,
 }
 
-impl SseLookupSearchResult {
-    pub fn from_groups(groups: Vec<RsGroupDownload>) -> Vec<Self> {
+impl<'a> SseLookupSearchResult<'a> {
+    pub fn from_groups(groups: &'a [RsGroupDownload]) -> Vec<Self> {
         groups
-            .into_iter()
-            .flat_map(|group| {
-                let match_type = group.match_type;
-                group
+            .iter()
+            .flat_map(|download| {
+                download
                     .requests
-                    .into_iter()
-                    .map(move |request| SseLookupSearchResult {
+                    .iter()
+                    .map(|request| SseLookupSearchResult {
                         request,
-                        match_type: match_type.clone(),
+                        match_type: download.match_type.clone(),
                     })
             })
             .collect()
+    }
+}
+
+pub fn bind_downloads_to_movie(downloads: &mut [RsGroupDownload], movie_id: &str) {
+    for download in downloads {
+        for request in &mut download.requests {
+            request.movie = Some(movie_id.to_owned());
+        }
+        download.infos.get_or_insert_default().movie = Some(movie_id.to_owned());
+    }
+}
+
+pub fn bind_downloads_to_book(downloads: &mut [RsGroupDownload], book_id: &str) {
+    for download in downloads {
+        for request in &mut download.requests {
+            request.book = Some(FileEpisode {
+                id: book_id.to_owned(),
+                season: None,
+                episode: None,
+                episode_to: None,
+            });
+        }
+        download.infos.get_or_insert_default().book = Some(book_id.to_owned());
+    }
+}
+
+pub fn bind_downloads_to_series(
+    downloads: &mut [RsGroupDownload],
+    serie_id: &str,
+    season: u32,
+    episode: Option<u32>,
+) {
+    for download in downloads {
+        for request in &mut download.requests {
+            request.albums = Some(vec![serie_id.to_owned()]);
+            request.season = Some(season);
+            if episode.is_some() {
+                request.episode = episode;
+            }
+        }
+
+        let association = FileEpisode {
+            id: serie_id.to_owned(),
+            season: Some(season),
+            episode: episode.or_else(|| download.requests.first().and_then(|r| r.episode)),
+            episode_to: None,
+        };
+        let associations = download
+            .infos
+            .get_or_insert_default()
+            .add_series
+            .get_or_insert_default();
+        if let Some(existing) = associations.iter_mut().find(|item| item.id == serie_id) {
+            *existing = association;
+        } else {
+            associations.push(association);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        bind_downloads_to_movie, bind_downloads_to_series, SseLookupSearchEvent,
+        SseLookupSearchResult,
+    };
+    use rs_plugin_common_interfaces::request::{RsGroupDownload, RsRequest};
+
+    #[test]
+    fn lookup_stream_keeps_legacy_results_flattened() {
+        let first = RsRequest {
+            url: "https://example.test/page-1.jpg".to_string(),
+            ..Default::default()
+        };
+        let second = RsRequest {
+            url: "https://example.test/page-2.jpg".to_string(),
+            ..Default::default()
+        };
+        let group = RsGroupDownload {
+            group: true,
+            group_filename: Some("Chapter 1".to_string()),
+            requests: vec![first.clone(), second.clone()],
+            ..Default::default()
+        };
+
+        let results = SseLookupSearchResult::from_groups(std::slice::from_ref(&group));
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].request, &first);
+        assert_eq!(results[1].request, &second);
+        assert!(std::ptr::eq(results[0].request, &group.requests[0]));
+    }
+
+    #[test]
+    fn lookup_stream_serializes_complete_downloads_alongside_legacy_results() {
+        let group = RsGroupDownload {
+            group: true,
+            group_filename: Some("Chapter 1".to_string()),
+            requests: vec![RsRequest {
+                url: "https://example.test/page-1.jpg".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let results = SseLookupSearchResult::from_groups(std::slice::from_ref(&group));
+        let event = SseLookupSearchEvent {
+            source_id: "plugin-id",
+            source_name: "Plugin name",
+            results: &results,
+            downloads: std::slice::from_ref(&group),
+        };
+        let value = serde_json::to_value(event).expect("serialize lookup event");
+
+        assert_eq!(value["results"].as_array().map(Vec::len), Some(1));
+        assert_eq!(value["downloads"][0]["group"], true);
+        assert_eq!(value["downloads"][0]["groupFilename"], "Chapter 1");
+        assert_eq!(
+            value["downloads"][0]["requests"].as_array().map(Vec::len),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn lookup_stream_binds_grouped_downloads_to_the_selected_movie() {
+        let mut downloads = vec![RsGroupDownload {
+            group: true,
+            requests: vec![RsRequest::default(), RsRequest::default()],
+            ..Default::default()
+        }];
+
+        bind_downloads_to_movie(&mut downloads, "movie-id");
+
+        assert!(downloads[0]
+            .requests
+            .iter()
+            .all(|request| request.movie.as_deref() == Some("movie-id")));
+        assert_eq!(
+            downloads[0]
+                .infos
+                .as_ref()
+                .and_then(|infos| infos.movie.as_deref()),
+            Some("movie-id")
+        );
+    }
+
+    #[test]
+    fn lookup_stream_binds_grouped_downloads_to_the_selected_episode() {
+        let mut downloads = vec![RsGroupDownload {
+            group: true,
+            requests: vec![RsRequest::default(), RsRequest::default()],
+            ..Default::default()
+        }];
+
+        bind_downloads_to_series(&mut downloads, "serie-id", 2, Some(3));
+
+        assert!(downloads[0].requests.iter().all(|request| {
+            request.albums.as_deref() == Some(&["serie-id".to_owned()][..])
+                && request.season == Some(2)
+                && request.episode == Some(3)
+        }));
+        let association = downloads[0]
+            .infos
+            .as_ref()
+            .and_then(|infos| infos.add_series.as_ref())
+            .and_then(|series| series.first())
+            .expect("series association");
+        assert_eq!(association.id, "serie-id");
+        assert_eq!(association.season, Some(2));
+        assert_eq!(association.episode, Some(3));
+    }
+
+    #[test]
+    fn lookup_stream_season_binding_preserves_provider_episode_numbers() {
+        let mut downloads = vec![RsGroupDownload {
+            group: true,
+            requests: vec![RsRequest {
+                episode: Some(4),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }];
+
+        bind_downloads_to_series(&mut downloads, "serie-id", 2, None);
+
+        assert_eq!(downloads[0].requests[0].episode, Some(4));
+        let association = downloads[0]
+            .infos
+            .as_ref()
+            .and_then(|infos| infos.add_series.as_ref())
+            .and_then(|series| series.first())
+            .expect("series association");
+        assert_eq!(association.id, "serie-id");
+        assert_eq!(association.season, Some(2));
+        assert_eq!(association.episode, Some(4));
     }
 }
 

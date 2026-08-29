@@ -45,8 +45,8 @@ use tokio::io::AsyncRead;
 use tokio_util::io::{ReaderStream, StreamReader};
 
 use super::{
-    ImageRequestOptions, ImageUploadOptions, RatingUpdateBody, SseLookupSearchEvent,
-    SseLookupSearchResult,
+    bind_downloads_to_series, ImageRequestOptions, ImageUploadOptions, RatingUpdateBody,
+    SseLookupSearchEvent, SseLookupSearchResult,
 };
 
 pub fn routes(mc: ModelController) -> Router {
@@ -296,9 +296,15 @@ async fn handler_lookup_stream(
         .await?;
 
     let stream = async_stream::stream! {
-        while let Some((source_id, source_name, groups)) = rx.recv().await {
-            let results = SseLookupSearchResult::from_groups(groups);
-            if let Ok(data) = serde_json::to_string(&SseLookupSearchEvent { source_id: &source_id, source_name: &source_name, results: &results }) {
+        while let Some((source_id, source_name, mut groups)) = rx.recv().await {
+            bind_downloads_to_series(&mut groups, &serie_id, season, Some(number));
+            let results = SseLookupSearchResult::from_groups(&groups);
+            if let Ok(data) = serde_json::to_string(&SseLookupSearchEvent {
+                source_id: &source_id,
+                source_name: &source_name,
+                results: &results,
+                downloads: &groups,
+            }) {
                 yield Ok(Event::default().event("results").data(data));
             }
         }
@@ -339,9 +345,15 @@ async fn handler_lookup_season_stream(
         .await?;
 
     let stream = async_stream::stream! {
-        while let Some((source_id, source_name, groups)) = rx.recv().await {
-            let results = SseLookupSearchResult::from_groups(groups);
-            if let Ok(data) = serde_json::to_string(&SseLookupSearchEvent { source_id: &source_id, source_name: &source_name, results: &results }) {
+        while let Some((source_id, source_name, mut groups)) = rx.recv().await {
+            bind_downloads_to_series(&mut groups, &serie_id, season, None);
+            let results = SseLookupSearchResult::from_groups(&groups);
+            if let Ok(data) = serde_json::to_string(&SseLookupSearchEvent {
+                source_id: &source_id,
+                source_name: &source_name,
+                results: &results,
+                downloads: &groups,
+            }) {
                 yield Ok(Event::default().event("results").data(data));
             }
         }

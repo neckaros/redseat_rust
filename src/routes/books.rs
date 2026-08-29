@@ -25,8 +25,8 @@ use crate::{
     domain::book::{Book, BookForUpdate},
     model::{books::BookQuery, medias::MediaQuery, users::ConnectedUser, ModelController},
     routes::{
-        ImageRequestOptions, ImageUploadOptions, RatingUpdateBody, SearchResultGroup,
-        SseLookupSearchEvent, SseLookupSearchResult, SseSearchEvent,
+        bind_downloads_to_book, ImageRequestOptions, ImageUploadOptions, RatingUpdateBody,
+        SearchResultGroup, SseLookupSearchEvent, SseLookupSearchResult, SseSearchEvent,
     },
     Error, Result,
 };
@@ -307,7 +307,7 @@ async fn handler_lookup_stream(
     State(mc): State<ModelController>,
     user: ConnectedUser,
 ) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>> {
-    let book = mc.get_book(&library_id, book_id, &user).await?;
+    let book = mc.get_book(&library_id, book_id.clone(), &user).await?;
     let name = book.item.name.clone();
     let author = first_person_name(&mc, &library_id, &book.relations, &user).await;
     let ids: RsIds = book.item.into();
@@ -322,9 +322,15 @@ async fn handler_lookup_stream(
         .await?;
 
     let stream = async_stream::stream! {
-        while let Some((source_id, source_name, groups)) = rx.recv().await {
-            let results = SseLookupSearchResult::from_groups(groups);
-            if let Ok(data) = serde_json::to_string(&SseLookupSearchEvent { source_id: &source_id, source_name: &source_name, results: &results }) {
+        while let Some((source_id, source_name, mut groups)) = rx.recv().await {
+            bind_downloads_to_book(&mut groups, &book_id);
+            let results = SseLookupSearchResult::from_groups(&groups);
+            if let Ok(data) = serde_json::to_string(&SseLookupSearchEvent {
+                source_id: &source_id,
+                source_name: &source_name,
+                results: &results,
+                downloads: &groups,
+            }) {
                 yield Ok(Event::default().event("results").data(data));
             }
         }
