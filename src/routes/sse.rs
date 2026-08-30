@@ -257,8 +257,20 @@ mod tests {
     use super::SseEvent;
     use crate::domain::{
         book::{Book, BookWithAction, BooksMessage},
+        watched::{Unwatched, Watched},
         ElementAction,
     };
+    use crate::model::users::{ConnectedUser, ServerUser, UserRole};
+    use rs_plugin_common_interfaces::MediaType;
+
+    fn connected_user(id: &str) -> ConnectedUser {
+        ConnectedUser::Server(ServerUser {
+            id: id.to_string(),
+            name: id.to_string(),
+            role: UserRole::Read,
+            ..Default::default()
+        })
+    }
 
     #[test]
     fn books_sse_event_name_library_and_serialization() {
@@ -278,5 +290,47 @@ mod tests {
         let serialized = serde_json::to_string(&event).unwrap();
         assert!(serialized.contains("\"books\""));
         assert!(serialized.contains("\"library\":\"lib-books\""));
+    }
+
+    #[test]
+    fn book_watched_events_are_serialized_and_user_scoped() {
+        let owner = connected_user("user-a");
+        let other = connected_user("user-b");
+        let event = SseEvent::Watched(Watched {
+            kind: MediaType::Book,
+            id: "book:isbn13/9783161484100".to_string(),
+            user_ref: Some("user-a".to_string()),
+            date: 1_725_000_000_123,
+            modified: 1_725_000_000_456,
+        });
+
+        assert_eq!(event.event_name(), "watched");
+        assert!(event.should_send_to(&owner));
+        assert!(!event.should_send_to(&other));
+        let serialized = serde_json::to_value(&event).unwrap();
+        assert_eq!(serialized["watched"]["type"], "book");
+        assert_eq!(serialized["watched"]["id"], "book:isbn13/9783161484100");
+    }
+
+    #[test]
+    fn book_unwatched_events_include_aliases_and_remain_user_scoped() {
+        let owner = connected_user("user-a");
+        let other = connected_user("user-b");
+        let event = SseEvent::Unwatched(Unwatched {
+            kind: MediaType::Book,
+            ids: vec![
+                "book:isbn13/9783161484100".to_string(),
+                "oleid:OL123M".to_string(),
+            ],
+            user_ref: Some("user-a".to_string()),
+            modified: 1_725_000_000_456,
+        });
+
+        assert_eq!(event.event_name(), "unwatched");
+        assert!(event.should_send_to(&owner));
+        assert!(!event.should_send_to(&other));
+        let serialized = serde_json::to_value(&event).unwrap();
+        assert_eq!(serialized["unwatched"]["type"], "book");
+        assert_eq!(serialized["unwatched"]["ids"][1], "oleid:OL123M");
     }
 }
