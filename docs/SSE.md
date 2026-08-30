@@ -707,11 +707,12 @@ History IDs include the media type so IDs from different domains cannot collide.
 | Episode fallback | `episode:redseat/<seriesId>/<season>/<episode>` | `episode:redseat/series123/1/2` |
 | Book with ISBN-13 | `book:isbn13/<isbn13>` | `book:isbn13/9783161484100` |
 | Book provider fallback | `book:<provider>/<providerId>` | `book:oleid/OL123M` |
+| Series-backed installment | `book:<provider>/<providerId>\|volume:<volume>\|chapter:<chapter>` | `book:olwid/OL123W\|volume:2\|chapter:2.5` |
 | Book local fallback | `book:redseat/<bookId>` | `book:redseat/book123` |
 
 Episode IDs use the series IMDb ID and numeric season/episode tuple so watched state follows the same show across libraries. Series without an IMDb ID temporarily use the RedSeat fallback; if IMDb metadata is added later, the server migrates watched state and progress immediately.
 
-Book IDs prefer ISBN-13, then Open Library edition/work, Google Books volume, ASIN, another stable provider ID, and finally the RedSeat-local ID. The watched row remains in per-user global history; library book rows do not store it. Book list and detail responses expose `watched` only as a request-user-specific projection hydrated from matching history aliases.
+Book IDs prefer ISBN-13, Open Library edition, Google Books volume, ASIN, Open Library work, another stable provider ID, and finally the RedSeat-local ID. Series-level providers include the volume/chapter tuple as ID details so separate installments do not share watched state. The watched row remains in per-user global history; library book rows do not store it. Book list and detail responses expose `watched` only as a request-user-specific projection hydrated from matching history aliases. When metadata enrichment changes the preferred ID, the server rewrites existing watched rows to the new ID without changing their per-user timestamps.
 
 ### REST API Endpoints
 

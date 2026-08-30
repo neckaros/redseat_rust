@@ -32,7 +32,7 @@ use super::{
     entity_images::EntityImageConfig,
     entity_search::merge_result_ids,
     error::{Error, Result},
-    history::book_history_ids,
+    history::{book_history_id, book_history_ids},
     store::sql::SqlOrder,
     users::{ConnectedUser, HistoryQuery},
     ModelController,
@@ -141,13 +141,11 @@ impl ModelController {
                             _ => None,
                         }
                     });
-                let mut book = plugin_book.ok_or(
-                    SourcesError::UnableToFindMovie(
-                        library_id.to_string(),
-                        format!("{:?}", ids),
-                        "get_book".to_string(),
-                    ),
-                )?;
+                let mut book = plugin_book.ok_or(SourcesError::UnableToFindMovie(
+                    library_id.to_string(),
+                    format!("{:?}", ids),
+                    "get_book".to_string(),
+                ))?;
                 self.fill_book_watched(
                     &mut book.item,
                     requesting_user,
@@ -157,13 +155,15 @@ impl ModelController {
                 Ok(book)
             }
         } else {
-            let mut book = store.get_book(&book_id).await?.ok_or(
-                SourcesError::UnableToFindMovie(
-                    library_id.to_string(),
-                    book_id,
-                    "get_book".to_string(),
-                ),
-            )?;
+            let mut book =
+                store
+                    .get_book(&book_id)
+                    .await?
+                    .ok_or(SourcesError::UnableToFindMovie(
+                        library_id.to_string(),
+                        book_id,
+                        "get_book".to_string(),
+                    ))?;
             self.fill_book_watched(
                 &mut book.item,
                 requesting_user,
@@ -567,6 +567,7 @@ impl ModelController {
                 "update_book".to_string(),
             ))?
             .item;
+        let old_history_id = book_history_id(&existing);
         if update.chapter.is_some() && update.serie_ref.is_none() && existing.serie_ref.is_none() {
             return Err(Error::ServiceError(
                 "invalid book".to_string(),
@@ -584,6 +585,8 @@ impl ModelController {
                 "update_book".to_string(),
             ))?
             .item;
+        self.migrate_book_history_id(old_history_id, book_history_id(&updated))
+            .await?;
         self.send_book(BooksMessage {
             library: library_id.to_string(),
             books: vec![BookWithAction {

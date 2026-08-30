@@ -40,18 +40,40 @@ pub fn movie_history_id(movie: &Movie) -> String {
 
 fn book_history_key(book: &Book) -> String {
     let ids: RsIds = book.clone().into();
-    for provider in ["isbn13", "oleid", "olwid", "gbvid", "asin"] {
+    for provider in ["isbn13", "oleid", "gbvid", "asin", "olwid"] {
         if let Some(value) = non_empty_id(ids.get(provider)) {
-            return format!("{provider}/{value}");
+            return format!(
+                "{provider}/{}",
+                book_history_provider_value(book, provider, value)
+            );
         }
     }
     if let Some((provider, value)) = ids.iter().find(|(provider, value)| {
         !matches!(provider.as_str(), "redseat" | "volume" | "chapter")
             && non_empty_id(Some(value.as_str())).is_some()
     }) {
-        return format!("{provider}/{value}");
+        return format!(
+            "{provider}/{}",
+            book_history_provider_value(book, provider, value)
+        );
     }
     format!("redseat/{}", book.id)
+}
+
+fn book_history_provider_value(book: &Book, provider: &str, value: &str) -> String {
+    let (base, _) = RsIds::split_details(value);
+    if !matches!(provider, "olwid" | "anilist" | "mangadex" | "mal") {
+        return base.to_string();
+    }
+
+    let mut value = base.to_string();
+    if let Some(volume) = book.volume {
+        value.push_str(&format!("|volume:{volume}"));
+    }
+    if let Some(chapter) = book.chapter {
+        value.push_str(&format!("|chapter:{chapter}"));
+    }
+    value
 }
 
 pub fn book_history_id(book: &Book) -> String {
@@ -78,9 +100,14 @@ pub fn movie_history_ids(movie: &Movie) -> RsIds {
 }
 
 pub fn book_history_ids(book: &Book) -> RsIds {
-    let mut ids: RsIds = book.clone().into();
-    ids.remove("volume");
-    ids.remove("chapter");
+    let source_ids: RsIds = book.clone().into();
+    let mut ids = RsIds::default();
+    for (provider, value) in source_ids.iter() {
+        if matches!(provider.as_str(), "volume" | "chapter") {
+            continue;
+        }
+        ids.set(provider, book_history_provider_value(book, provider, value));
+    }
     ids_with_history_id(ids, book_history_id(book))
 }
 
@@ -170,12 +197,20 @@ fn episode_legacy_ids(serie: &Serie, episode: &Episode) -> HashSet<String> {
 }
 
 fn book_history_aliases(book: &Book) -> HashSet<String> {
-    let ids = book_history_ids(book);
-    ids.as_all_ids()
-        .into_iter()
-        .flat_map(|id| [Some(id.clone()), typed_alias("book", &id)])
-        .flatten()
-        .collect()
+    let mut aliases: HashSet<String> = book_history_ids(book).as_all_ids().into_iter().collect();
+    let source_ids: RsIds = book.clone().into();
+    for (provider, value) in source_ids.iter() {
+        if matches!(provider.as_str(), "volume" | "chapter") {
+            continue;
+        }
+        let (base, _) = RsIds::split_details(value);
+        let legacy_id = format!("{provider}:{base}");
+        aliases.insert(legacy_id.clone());
+        if let Some(typed) = typed_alias("book", &legacy_id) {
+            aliases.insert(typed);
+        }
+    }
+    aliases
 }
 
 fn add_candidate<T: Clone + Eq + std::hash::Hash>(
@@ -246,18 +281,14 @@ impl ModelController {
             .iter()
             .map(|row| (&row.kind, &row.id))
             .chain(progress.iter().map(|row| (&row.kind, &row.id)))
-            .filter(|(kind, id)| {
-                **kind == MediaType::Movie && !is_current_history_id(kind, id)
-            })
+            .filter(|(kind, id)| **kind == MediaType::Movie && !is_current_history_id(kind, id))
             .map(|(_, id)| id.clone())
             .collect();
         let legacy_episode_ids: HashSet<String> = watched
             .iter()
             .map(|row| (&row.kind, &row.id))
             .chain(progress.iter().map(|row| (&row.kind, &row.id)))
-            .filter(|(kind, id)| {
-                **kind == MediaType::Episode && !is_current_history_id(kind, id)
-            })
+            .filter(|(kind, id)| **kind == MediaType::Episode && !is_current_history_id(kind, id))
             .map(|(_, id)| id.clone())
             .collect();
         // Every book row is considered so provider aliases can converge on the
@@ -438,6 +469,35 @@ impl ModelController {
         Ok(())
     }
 
+    pub async fn migrate_book_history_id(
+        &self,
+        old_id: String,
+        new_id: String,
+    ) -> crate::Result<()> {
+        if old_id == new_id {
+            return Ok(());
+        }
+        let watched_rewrites = self
+            .store
+            .get_all_watched()
+            .await?
+            .into_iter()
+            .filter(|row| row.kind == MediaType::Book && row.id == old_id)
+            .filter_map(|row| {
+                Some(HistoryIdRewrite {
+                    kind: row.kind,
+                    old_id: row.id,
+                    new_id: new_id.clone(),
+                    user_ref: row.user_ref?,
+                })
+            })
+            .collect();
+        self.store
+            .apply_history_rewrites(watched_rewrites, vec![])
+            .await?;
+        Ok(())
+    }
+
     pub async fn migrate_series_history_ids(
         &self,
         old_serie: &Serie,
@@ -491,7 +551,7 @@ impl ModelController {
 
 #[cfg(test)]
 mod tests {
-    use super::{book_history_id, book_history_ids, normalize_history_id};
+    use super::{book_history_aliases, book_history_id, book_history_ids, normalize_history_id};
     use crate::domain::book::Book;
     use rs_plugin_common_interfaces::{domain::other_ids::OtherIds, MediaType};
 
@@ -528,11 +588,72 @@ mod tests {
             "book:isbn13/9783161484100"
         );
         assert_eq!(
-            normalize_history_id(
-                &MediaType::Book,
-                "book:isbn13/9783161484100".to_string()
-            ),
+            normalize_history_id(&MediaType::Book, "book:isbn13/9783161484100".to_string()),
             "book:isbn13/9783161484100"
         );
+    }
+
+    #[test]
+    fn book_history_distinguishes_series_volumes_and_keeps_legacy_migration_aliases() {
+        let volume_one = Book {
+            id: "volume-one".to_string(),
+            name: "Series volume one".to_string(),
+            serie_ref: Some("series".to_string()),
+            openlibrary_work_id: Some("OL123W".to_string()),
+            volume: Some(1.0),
+            chapter: Some(1.0),
+            ..Default::default()
+        };
+        let volume_two = Book {
+            id: "volume-two".to_string(),
+            name: "Series volume two".to_string(),
+            serie_ref: Some("series".to_string()),
+            openlibrary_work_id: Some("OL123W".to_string()),
+            volume: Some(2.0),
+            chapter: Some(2.5),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            book_history_id(&volume_one),
+            "book:olwid/OL123W|volume:1|chapter:1"
+        );
+        assert_eq!(
+            book_history_id(&volume_two),
+            "book:olwid/OL123W|volume:2|chapter:2.5"
+        );
+
+        let current_ids = book_history_ids(&volume_one).as_all_ids();
+        assert!(current_ids.contains(&"olwid:OL123W|volume:1|chapter:1".to_string()));
+        assert!(!current_ids.contains(&"olwid:OL123W".to_string()));
+
+        let migration_aliases = book_history_aliases(&volume_one);
+        assert!(migration_aliases.contains("olwid:OL123W"));
+        assert!(migration_aliases.contains("book:olwid/OL123W"));
+    }
+
+    #[test]
+    fn book_history_fallback_provider_order_is_deterministic() {
+        let first = Book {
+            id: "first".to_string(),
+            name: "Book".to_string(),
+            otherids: Some(OtherIds(vec![
+                "storygraph:story-1".to_string(),
+                "goodreads:goodreads-1".to_string(),
+            ])),
+            ..Default::default()
+        };
+        let second = Book {
+            id: "second".to_string(),
+            name: "Book".to_string(),
+            otherids: Some(OtherIds(vec![
+                "goodreads:goodreads-1".to_string(),
+                "storygraph:story-1".to_string(),
+            ])),
+            ..Default::default()
+        };
+
+        assert_eq!(book_history_id(&first), "book:goodreads/goodreads-1");
+        assert_eq!(book_history_id(&first), book_history_id(&second));
     }
 }
