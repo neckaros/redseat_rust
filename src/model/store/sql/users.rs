@@ -249,6 +249,112 @@ impl SqliteStore {
     // endregion:    --- Users
 }
 
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, sync::RwLock};
+
+    use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, MediaType};
+    use tokio_rusqlite::Connection;
+
+    use super::SqliteStore;
+    use crate::{
+        domain::watched::WatchedForAdd,
+        model::{
+            store::sql::{migrate_database, users::HistoryIdRewrite},
+            users::HistoryQuery,
+        },
+    };
+
+    #[tokio::test]
+    async fn book_watched_rows_are_scoped_to_the_user() {
+        let connection = Connection::open_in_memory().await.unwrap();
+        migrate_database(&connection).await.unwrap();
+        let store = SqliteStore {
+            server_store: connection,
+            libraries_stores: RwLock::new(HashMap::new()),
+        };
+        store
+            .add_watched(
+                WatchedForAdd {
+                    kind: MediaType::Book,
+                    id: "book:isbn13/9783161484100".to_string(),
+                    date: 1_725_000_000_123,
+                },
+                "user-a".to_string(),
+            )
+            .await
+            .unwrap();
+
+        let query = HistoryQuery {
+            types: vec![MediaType::Book],
+            id: Some(RsIds::try_from("book:isbn13/9783161484100".to_string()).unwrap()),
+            ..Default::default()
+        };
+        let user_a = store
+            .get_watched(query.clone(), "user-a".to_string(), vec![])
+            .await
+            .unwrap();
+        let user_b = store
+            .get_watched(query, "user-b".to_string(), vec![])
+            .await
+            .unwrap();
+
+        assert_eq!(user_a.len(), 1);
+        assert!(user_b.is_empty());
+    }
+
+    #[tokio::test]
+    async fn book_watched_rewrite_preserves_the_user_timestamp() {
+        let connection = Connection::open_in_memory().await.unwrap();
+        migrate_database(&connection).await.unwrap();
+        let store = SqliteStore {
+            server_store: connection,
+            libraries_stores: RwLock::new(HashMap::new()),
+        };
+        store
+            .add_watched(
+                WatchedForAdd {
+                    kind: MediaType::Book,
+                    id: "book:redseat/book-local".to_string(),
+                    date: 1_725_000_000_123,
+                },
+                "user-a".to_string(),
+            )
+            .await
+            .unwrap();
+
+        let (watched_count, progress_count) = store
+            .apply_history_rewrites(
+                vec![HistoryIdRewrite {
+                    kind: MediaType::Book,
+                    old_id: "book:redseat/book-local".to_string(),
+                    new_id: "book:isbn13/9783161484100".to_string(),
+                    user_ref: "user-a".to_string(),
+                }],
+                vec![],
+            )
+            .await
+            .unwrap();
+
+        let watched = store
+            .get_watched(
+                HistoryQuery {
+                    types: vec![MediaType::Book],
+                    id: Some(RsIds::try_from("book:isbn13/9783161484100".to_string()).unwrap()),
+                    ..Default::default()
+                },
+                "user-a".to_string(),
+                vec![],
+            )
+            .await
+            .unwrap();
+
+        assert_eq!((watched_count, progress_count), (1, 0));
+        assert_eq!(watched.len(), 1);
+        assert_eq!(watched[0].date, 1_725_000_000_123);
+    }
+}
+
 ///Upload key store
 impl SqliteStore {
     pub async fn get_upload_key(&self, key: String) -> Result<UploadKey> {
@@ -445,19 +551,22 @@ impl SqliteStore {
         ids: Vec<String>,
         user_ref: String,
     ) -> Result<Vec<String>> {
-        let deleted_ids = self.server_store.call(move |conn| {
-            let mut deleted_ids = Vec::new();
-            for id in ids {
-                let rows_affected = conn.execute(
-                    "DELETE FROM Watched WHERE type = ? AND id = ? AND user_ref = ?",
-                    params![kind, &id, &user_ref]
-                )?;
-                if rows_affected > 0 {
-                    deleted_ids.push(id);
+        let deleted_ids = self
+            .server_store
+            .call(move |conn| {
+                let mut deleted_ids = Vec::new();
+                for id in ids {
+                    let rows_affected = conn.execute(
+                        "DELETE FROM Watched WHERE type = ? AND id = ? AND user_ref = ?",
+                        params![kind, &id, &user_ref],
+                    )?;
+                    if rows_affected > 0 {
+                        deleted_ids.push(id);
+                    }
                 }
-            }
-            Ok(deleted_ids)
-        }).await?;
+                Ok(deleted_ids)
+            })
+            .await?;
         Ok(deleted_ids)
     }
 }
