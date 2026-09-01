@@ -237,6 +237,30 @@ impl LibraryMessage {
     }
 }
 
+fn merged_progress_users(mappings: &[UserMapping], user_id: &str) -> HashSet<String> {
+    let mut users = HashSet::from([user_id.to_string()]);
+    let directly_connected = mappings
+        .iter()
+        .filter(|mapping| mapping.to == user_id || mapping.from == user_id);
+
+    for connected in directly_connected {
+        users.insert(connected.from.clone());
+        users.insert(connected.to.clone());
+
+        for mapping in mappings.iter().filter(|mapping| {
+            mapping.to == connected.to
+                || mapping.from == connected.from
+                || mapping.to == connected.from
+                || mapping.from == connected.to
+        }) {
+            users.insert(mapping.from.clone());
+            users.insert(mapping.to.clone());
+        }
+    }
+
+    users
+}
+
 impl ModelController {
     pub async fn get_library(
         &self,
@@ -336,40 +360,23 @@ impl ModelController {
         return Ok(mappings);
     }
 
-    /// Get list of users that are either in a to or a from mapping with the *user_id* including *user_id*
-    /// plux all users mapped to those users
+    /// Get users that are either side of a mapping with `user_id`, including
+    /// `user_id` itself and users mapped to those directly connected users.
     pub async fn get_library_progress_merged_users(
         &self,
         library_id: &str,
         user_id: String,
     ) -> Result<HashSet<String>> {
-        let mut mappings = HashSet::new();
         let library = self.get_internal_library(library_id).await?.ok_or(
             SourcesError::UnableToFindLibrary(
                 library_id.to_string(),
                 "get_library_mapped_users".to_string(),
             ),
         )?;
-        if let Some(mapping) = library.settings.map_progress {
-            let filtered = mapping
-                .iter()
-                .filter(|m| m.to == user_id || m.from == user_id);
-            for mapped in filtered {
-                mappings.insert(mapped.from.clone());
-                mappings.insert(mapped.to.clone());
-                let subfil = mapping.iter().filter(|m| {
-                    &m.to == &mapped.to
-                        || &m.from == &mapped.from
-                        || &m.to == &mapped.from
-                        || &m.from == &mapped.to
-                });
-                for m in subfil {
-                    mappings.insert(m.from.clone());
-                    mappings.insert(m.to.clone());
-                }
-            }
-        }
-        return Ok(mappings);
+        Ok(merged_progress_users(
+            library.settings.map_progress.as_deref().unwrap_or_default(),
+            &user_id,
+        ))
     }
 
     pub async fn get_library_mapped_user(
@@ -955,5 +962,40 @@ mod tests {
         assert_eq!(LibraryRole::Read > LibraryRole::None, true);
 
         assert_eq!(LibraryRole::Read > LibraryRole::Write, false);
+    }
+
+    #[test]
+    fn merged_progress_users_includes_requester_without_mappings() {
+        assert_eq!(
+            merged_progress_users(&[], "user-a"),
+            HashSet::from(["user-a".to_string()])
+        );
+    }
+
+    #[test]
+    fn merged_progress_users_keeps_existing_mapping_expansion() {
+        let mappings = vec![
+            UserMapping {
+                from: "user-a".to_string(),
+                to: "user-b".to_string(),
+            },
+            UserMapping {
+                from: "user-c".to_string(),
+                to: "user-b".to_string(),
+            },
+            UserMapping {
+                from: "unrelated-a".to_string(),
+                to: "unrelated-b".to_string(),
+            },
+        ];
+
+        assert_eq!(
+            merged_progress_users(&mappings, "user-a"),
+            HashSet::from([
+                "user-a".to_string(),
+                "user-b".to_string(),
+                "user-c".to_string(),
+            ])
+        );
     }
 }
