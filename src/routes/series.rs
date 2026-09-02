@@ -381,7 +381,9 @@ async fn handler_lookup(
             serie_id,
             "handler_lookup".to_string(),
         ))?;
-    let name = serie.item.name.clone();
+    let name = pagination
+        .query()
+        .unwrap_or_else(|| serie.item.name.clone());
     let ids: RsIds = serie.item.into();
     let query = RsLookupQuery::Serie(RsLookupSerie {
         name: Some(name),
