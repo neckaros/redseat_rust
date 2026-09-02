@@ -59,13 +59,44 @@ pub struct SearchQuery<T> {
 
 impl<T> SearchQuery<T> {
     pub fn sources(&self) -> Option<Vec<String>> {
-        self.source.as_deref().map(|s| {
-            s.split(',')
-                .map(|p| p.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect()
-        })
+        parse_sources(self.source.as_deref())
     }
+}
+
+/// Provider-specific pagination options for media/download lookups.
+///
+/// Page keys are opaque values interpreted by lookup plugins. Clients should
+/// send the key back together with the source that produced it.
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct LookupPagination {
+    pub page_key: Option<String>,
+    pub source: Option<String>,
+}
+
+impl LookupPagination {
+    pub fn page_key(&self) -> Option<String> {
+        self.page_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+            .map(str::to_string)
+    }
+
+    pub fn sources(&self) -> Option<Vec<String>> {
+        parse_sources(self.source.as_deref())
+    }
+}
+
+fn parse_sources(source: Option<&str>) -> Option<Vec<String>> {
+    source.map(|source| {
+        source
+            .split(',')
+            .map(str::trim)
+            .filter(|source| !source.is_empty())
+            .map(str::to_string)
+            .collect()
+    })
 }
 
 #[derive(Serialize)]
@@ -164,10 +195,36 @@ pub fn bind_downloads_to_series(
 #[cfg(test)]
 mod tests {
     use super::{
-        bind_downloads_to_movie, bind_downloads_to_series, SseLookupSearchEvent,
+        bind_downloads_to_movie, bind_downloads_to_series, LookupPagination, SseLookupSearchEvent,
         SseLookupSearchResult,
     };
     use rs_plugin_common_interfaces::request::{RsGroupDownload, RsRequest};
+
+    #[test]
+    fn lookup_pagination_normalizes_page_key_and_sources() {
+        let pagination: LookupPagination = serde_json::from_value(serde_json::json!({
+            "pageKey": "  cursor-2  ",
+            "source": "plugin-a, plugin-b"
+        }))
+        .expect("deserialize lookup pagination");
+
+        assert_eq!(pagination.page_key().as_deref(), Some("cursor-2"));
+        assert_eq!(
+            pagination.sources(),
+            Some(vec!["plugin-a".to_string(), "plugin-b".to_string()])
+        );
+    }
+
+    #[test]
+    fn lookup_pagination_ignores_an_empty_page_key() {
+        let pagination = LookupPagination {
+            page_key: Some("   ".to_string()),
+            source: None,
+        };
+
+        assert_eq!(pagination.page_key(), None);
+        assert_eq!(pagination.sources(), None);
+    }
 
     #[test]
     fn lookup_stream_keeps_legacy_results_flattened() {

@@ -44,8 +44,9 @@ use tokio::io::AsyncRead;
 use tokio_util::io::{ReaderStream, StreamReader};
 
 use super::{
-    bind_downloads_to_movie, ImageRequestOptions, ImageUploadOptions, RatingUpdateBody,
-    SearchQuery, SearchResultGroup, SseLookupSearchEvent, SseLookupSearchResult, SseSearchEvent,
+    bind_downloads_to_movie, ImageRequestOptions, ImageUploadOptions, LookupPagination,
+    RatingUpdateBody, SearchQuery, SearchResultGroup, SseLookupSearchEvent, SseLookupSearchResult,
+    SseSearchEvent,
 };
 
 pub fn routes(mc: ModelController) -> Router {
@@ -224,6 +225,7 @@ async fn handler_lookup(
     Path((library_id, movie_id)): Path<(String, String)>,
     State(mc): State<ModelController>,
     user: ConnectedUser,
+    Query(pagination): Query<LookupPagination>,
 ) -> Result<Json<Value>> {
     let movie = mc.get_movie(&library_id, movie_id, &user).await?;
     let name = movie.name.clone();
@@ -231,9 +233,12 @@ async fn handler_lookup(
     let query = RsLookupQuery::Movie(RsLookupMovie {
         name: Some(name),
         ids: Some(ids),
-        page_key: None,
+        page_key: pagination.page_key(),
     });
-    let library = mc.exec_lookup(query, Some(library_id), &user, None).await?;
+    let sources = pagination.sources();
+    let library = mc
+        .exec_lookup(query, Some(library_id), &user, None, sources.as_deref())
+        .await?;
     let body = Json(json!(library));
     Ok(body)
 }
@@ -242,6 +247,7 @@ async fn handler_lookup_stream(
     Path((library_id, movie_id)): Path<(String, String)>,
     State(mc): State<ModelController>,
     user: ConnectedUser,
+    Query(pagination): Query<LookupPagination>,
 ) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>> {
     let movie = mc
         .get_movie(&library_id, movie_id.clone(), &user)
@@ -251,10 +257,11 @@ async fn handler_lookup_stream(
     let query = RsLookupQuery::Movie(RsLookupMovie {
         name: Some(name),
         ids: Some(ids),
-        page_key: None,
+        page_key: pagination.page_key(),
     });
+    let sources = pagination.sources();
     let mut rx = mc
-        .exec_lookup_stream_grouped(query, Some(library_id), &user, None, None)
+        .exec_lookup_stream_grouped(query, Some(library_id), &user, None, sources.as_deref())
         .await?;
 
     let stream = async_stream::stream! {

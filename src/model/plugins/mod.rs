@@ -454,6 +454,7 @@ impl ModelController {
         library_id: Option<String>,
         requesting_user: &ConnectedUser,
         target: Option<PluginTarget>,
+        sources: Option<&[String]>,
     ) -> RsResult<Vec<RsGroupDownload>> {
         if let Some(library_id) = &library_id {
             requesting_user
@@ -468,6 +469,7 @@ impl ModelController {
                 ..Default::default()
             })
             .await?
+            .filter(|p| sources.map_or(true, |s| s.iter().any(|id| id == &p.plugin.path)))
             .collect();
 
         self.plugin_manager.lookup(query, plugins, target).await

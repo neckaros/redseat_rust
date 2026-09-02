@@ -34,8 +34,9 @@ use crate::{
         ModelController,
     },
     routes::{
-        bind_downloads_to_book, ImageRequestOptions, ImageUploadOptions, RatingUpdateBody,
-        SearchResultGroup, SseLookupSearchEvent, SseLookupSearchResult, SseSearchEvent,
+        bind_downloads_to_book, ImageRequestOptions, ImageUploadOptions, LookupPagination,
+        RatingUpdateBody, SearchResultGroup, SseLookupSearchEvent, SseLookupSearchResult,
+        SseSearchEvent,
     },
     Error, Result,
 };
@@ -356,6 +357,7 @@ async fn handler_lookup(
     Path((library_id, book_id)): Path<(String, String)>,
     State(mc): State<ModelController>,
     user: ConnectedUser,
+    Query(pagination): Query<LookupPagination>,
 ) -> Result<Json<Value>> {
     let book = mc.get_book(&library_id, book_id, &user).await?;
     let name = book.item.name.clone();
@@ -365,13 +367,16 @@ async fn handler_lookup(
         name: Some(name),
         author,
         ids: Some(ids),
-        page_key: None,
+        page_key: pagination.page_key(),
     });
     log_info(
         LogServiceType::Source,
         format!("Executing lookup with query: {:?}", query),
     );
-    let results = mc.exec_lookup(query, Some(library_id), &user, None).await?;
+    let sources = pagination.sources();
+    let results = mc
+        .exec_lookup(query, Some(library_id), &user, None, sources.as_deref())
+        .await?;
     Ok(Json(json!(results)))
 }
 
@@ -379,6 +384,7 @@ async fn handler_lookup_stream(
     Path((library_id, book_id)): Path<(String, String)>,
     State(mc): State<ModelController>,
     user: ConnectedUser,
+    Query(pagination): Query<LookupPagination>,
 ) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>> {
     let book = mc.get_book(&library_id, book_id.clone(), &user).await?;
     let name = book.item.name.clone();
@@ -388,10 +394,11 @@ async fn handler_lookup_stream(
         name: Some(name),
         author,
         ids: Some(ids),
-        page_key: None,
+        page_key: pagination.page_key(),
     });
+    let sources = pagination.sources();
     let mut rx = mc
-        .exec_lookup_stream_grouped(query, Some(library_id), &user, None, None)
+        .exec_lookup_stream_grouped(query, Some(library_id), &user, None, sources.as_deref())
         .await?;
 
     let stream = async_stream::stream! {
