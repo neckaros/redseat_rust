@@ -162,9 +162,9 @@ impl ModelController {
         let mc = Self {
             store: Arc::new(store),
             plugin_manager: Arc::new(plugin_manager),
-            trakt: Arc::new(TraktContext::new(
-                "fcb0d3a87a808a5a0897291350e23cddbbef14502ccb91f1f7bf9c339cb93bcb".to_string(),
-            )),
+            // Trakt requires a valid application key. Do not ship a shared credential in the
+            // binary; metadata refresh should use a configured provider instead.
+            trakt: Arc::new(TraktContext::new(String::new())),
             imdb: Arc::new(ImdbContext::new()),
             scheduler: Arc::new(scheduler),
             chache_libraries: Arc::new(RwLock::new(HashMap::new())),

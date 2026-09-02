@@ -59,14 +59,39 @@ pub fn file_type_from_mime(mime: &str) -> FileType {
         FileType::Photo
     } else if mime.starts_with("video") {
         FileType::Video
-    } else if mime == "application/zip" {
+    } else if matches!(
+        mime,
+        "application/zip" | "application/x-zip" | "application/x-zip-compressed"
+    ) {
         FileType::Album
-    } else if mime == "application/vnd.comicbook+cbz" || mime == "application/x-cbr" {
+    } else if matches!(
+        mime,
+        "application/vnd.comicbook+zip"
+            | "application/vnd.comicbook+cbz"
+            | "application/x-cbz"
+            | "application/vnd.comicbook-rar"
+            | "application/x-cbr"
+            | "application/vnd.rar"
+            | "application/x-rar"
+            | "application/x-rar-compressed"
+    ) {
         FileType::Album
     } else if mime == "application/epub+zip" {
         FileType::Book
     } else {
         FileType::Other
+    }
+}
+
+pub fn file_type_from_mime_or_filename(mime: &str, filename: &str) -> FileType {
+    match Path::new(filename)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("zip" | "cbz" | "rar" | "cbr") => FileType::Album,
+        _ => file_type_from_mime(mime),
     }
 }
 
@@ -158,4 +183,37 @@ pub async fn extract_zip(
     }
 
     Ok(extract_result?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{file_type_from_mime, file_type_from_mime_or_filename};
+    use crate::domain::media::FileType;
+
+    #[test]
+    fn classifies_comic_archive_extensions_even_with_generic_mime() {
+        for filename in ["comic.cbz", "comic.CBR", "album.zip", "album.RAR"] {
+            assert_eq!(
+                file_type_from_mime_or_filename("application/octet-stream", filename),
+                FileType::Album
+            );
+        }
+    }
+
+    #[test]
+    fn classifies_archive_mime_types_as_albums() {
+        for mime in [
+            "application/zip",
+            "application/x-zip-compressed",
+            "application/vnd.comicbook+zip",
+            "application/x-cbz",
+            "application/vnd.comicbook-rar",
+            "application/vnd.rar",
+            "application/x-cbr",
+            "application/x-rar",
+            "application/x-rar-compressed",
+        ] {
+            assert_eq!(file_type_from_mime(mime), FileType::Album);
+        }
+    }
 }

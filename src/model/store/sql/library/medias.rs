@@ -43,7 +43,7 @@ use crate::{
     plugins::sources::error::SourcesError,
     tools::{
         array_tools::AddOrSetArray,
-        file_tools::{file_type_from_mime, get_mime_from_filename},
+        file_tools::{file_type_from_mime_or_filename, get_mime_from_filename},
         log::{log_info, LogServiceType},
         text_tools::{extract_people, extract_tags},
     },
@@ -158,10 +158,11 @@ impl SqliteLibraryStore {
         Ok(MediaSource {
             id: row.get(0)?,
             source: row.get(1)?,
-            kind: row.get(2)?,
-            thumb_size: row.get(3)?,
-            size: row.get(4)?,
-            mime: row.get(5)?,
+            name: row.get(2)?,
+            kind: row.get(3)?,
+            thumb_size: row.get(4)?,
+            size: row.get(5)?,
+            mime: row.get(6)?,
         })
     }
 
@@ -673,7 +674,7 @@ impl SqliteLibraryStore {
             .call(move |conn| {
                 let mut query = conn.prepare(
                     "SELECT 
-            id, source, type, thumbsize, size, mimetype
+            id, source, name, type, thumbsize, size, mimetype
             FROM medias
             WHERE id = ?",
                 )?;
@@ -842,8 +843,7 @@ impl SqliteLibraryStore {
         if let Some(rename) = &update.name {
             if let Some(mime) = get_mime_from_filename(&rename) {
                 update.mimetype = Some(mime.clone());
-                update.kind = Some(file_type_from_mime(&mime));
-                println!("UPDATE type {:?} {:?}", update.mimetype, update.kind)
+                update.kind = Some(file_type_from_mime_or_filename(&mime, rename));
             }
         }
 

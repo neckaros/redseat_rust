@@ -6,9 +6,17 @@ use std::{
     str::FromStr,
 };
 
-use async_zip::{tokio::write::ZipFileWriter, Compression, ZipEntryBuilder};
+use async_zip::{
+    base::read1::{seek::ZipArchiveReader, ZipOptions},
+    tokio::write::ZipFileWriter,
+    Compression, DeflateOption, ZipEntryBuilder,
+};
 use chrono::{Datelike, Utc};
-use futures::{channel::mpsc::Sender, TryStreamExt};
+use futures::{
+    channel::mpsc::Sender,
+    io::{AsyncBufRead as FuturesAsyncBufRead, AsyncSeek as FuturesAsyncSeek},
+    TryStreamExt,
+};
 use http::header::CONTENT_TYPE;
 use mime::{Mime, APPLICATION_OCTET_STREAM};
 use mime_guess::get_mime_extensions_str;
@@ -39,10 +47,9 @@ use tokio::{
 };
 use tokio_stream::StreamExt;
 use tokio_util::{
-    compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt},
+    compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt},
     io::{ReaderStream, StreamReader, SyncIoBridge},
 };
-use zip::ZipWriter;
 
 use crate::{
     domain::{
@@ -85,7 +92,7 @@ use crate::{
     plugins::{
         get_plugin_fodler,
         sources::{
-            async_reader_progress::ProgressReader, error::SourcesError, AsyncReadPinBox,
+            async_reader_progress::ProgressReader, error::SourcesError, AsyncReadPinBox, Cleanup,
             FileStreamResult, SourceRead,
         },
     },
@@ -94,12 +101,13 @@ use crate::{
     tools::{
         auth::{sign_local, ClaimsLocal},
         encryption::{CtrDecryptReader, CtrEncryptWriter, CTR_NONCE_SIZE},
-        file_tools::{file_type_from_mime, get_extension_from_mime},
+        file_tools::{file_type_from_mime_or_filename, get_extension_from_mime},
         image_tools::{self, resize_image_reader, ImageSize},
         log::{log_error, log_info, log_warn, LogServiceType},
         prediction::{predict_net, preload_model, PredictionTagResult},
+        rar::{count_rar_pages, is_image_name, read_rar_page},
         video_tools::{self, concat_videos, probe_video, VideoTime},
-        zip_range::extract_zip_page_from_request,
+        zip_range::{count_zip_pages_from_request, extract_zip_page_from_request},
     },
 };
 use rs_plugin_common_interfaces::domain::ItemWithRelations;
@@ -247,12 +255,21 @@ impl MediaQuery {
 pub struct MediaSource {
     pub id: String,
     pub source: String,
+    pub name: String,
     pub kind: FileType,
     pub thumb_size: Option<u64>,
     pub size: Option<u64>,
 
     pub mime: String,
 }
+
+#[derive(Debug)]
+struct TempArchiveCleanup {
+    _path: tempfile::TempPath,
+}
+
+impl Cleanup for TempArchiveCleanup {}
+
 impl TryFrom<Media> for MediaSource {
     type Error = crate::model::error::Error;
     fn try_from(value: Media) -> std::prelude::v1::Result<Self, Self::Error> {
@@ -262,6 +279,7 @@ impl TryFrom<Media> for MediaSource {
         Ok(MediaSource {
             id: value.id,
             source,
+            name: value.name,
             kind: value.kind,
             thumb_size: value.thumbsize,
             size: value.size,
@@ -271,26 +289,118 @@ impl TryFrom<Media> for MediaSource {
 }
 
 impl ModelController {
-    /// Extract a page from a zip archive stored as in-memory bytes.
-    fn extract_zip_page_from_bytes(data: &[u8], page: usize) -> RsResult<SourceRead> {
-        let cursor = std::io::Cursor::new(data);
-        let mut archive = zip::ZipArchive::new(cursor)
-            .map_err(|_| RsError::Error("Unable to open zip file".to_string()))?;
-        let pages = archive.len();
-        let mut file = archive.by_index(page.saturating_sub(1)).map_err(|_| {
+    const MAX_ZIP_PAGE_SIZE: u64 = 512 * 1024 * 1024;
+
+    fn zip_options() -> ZipOptions {
+        ZipOptions {
+            max_uncompressed_size_per_file: Self::MAX_ZIP_PAGE_SIZE,
+            ..ZipOptions::untrusted()
+        }
+    }
+
+    fn is_rar_archive(name: &str, mime: &str) -> bool {
+        match PathBuf::from(name)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| extension.to_ascii_lowercase())
+            .as_deref()
+        {
+            Some("rar" | "cbr") => true,
+            Some("zip" | "cbz") => false,
+            _ => matches!(
+                mime,
+                "application/vnd.comicbook-rar"
+                    | "application/x-cbr"
+                    | "application/vnd.rar"
+                    | "application/x-rar"
+                    | "application/x-rar-compressed"
+            ),
+        }
+    }
+
+    fn archive_entry_name(name: Option<String>, page: usize) -> String {
+        name.and_then(|name| {
+            name.replace('\\', "/")
+                .rsplit('/')
+                .find(|component| !component.is_empty() && *component != "." && *component != "..")
+                .map(str::to_owned)
+        })
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| format!("{page:04}"))
+    }
+
+    fn album_zip_entry(name: String) -> ZipEntryBuilder {
+        // Album images are already compressed, so level 1 avoids spending CPU for negligible
+        // size savings while retaining broad support for streamed data-descriptor entries.
+        ZipEntryBuilder::new(name.into(), Compression::Deflate)
+            .deflate_option(DeflateOption::Other(1))
+    }
+
+    fn zip_page_indexes<R>(archive: &ZipArchiveReader<R>) -> Vec<usize> {
+        let files = archive
+            .cdrs()
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| !entry.insecure_file_name.as_bytes().ends_with(b"/"))
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        let images = files
+            .iter()
+            .copied()
+            .filter(|index| {
+                let name =
+                    String::from_utf8_lossy(archive.cdrs()[*index].insecure_file_name.as_bytes());
+                is_image_name(std::path::Path::new(name.as_ref()))
+            })
+            .collect::<Vec<_>>();
+        if images.is_empty() {
+            files
+        } else {
+            images
+        }
+    }
+
+    async fn count_zip_pages<R>(reader: R) -> RsResult<usize>
+    where
+        R: FuturesAsyncBufRead + FuturesAsyncSeek + Unpin + Send + Sync + 'static,
+    {
+        let archive = ZipArchiveReader::open_with_options(reader, Self::zip_options())
+            .await
+            .map_err(|error| RsError::Error(format!("Unable to open ZIP archive: {error}")))?;
+        Ok(Self::zip_page_indexes(&archive).len())
+    }
+
+    async fn extract_zip_page<R>(
+        reader: R,
+        page: usize,
+        cleanup: Option<tempfile::TempPath>,
+    ) -> RsResult<SourceRead>
+    where
+        R: FuturesAsyncBufRead + FuturesAsyncSeek + Unpin + Send + Sync + 'static,
+    {
+        let page_index = page
+            .checked_sub(1)
+            .ok_or_else(|| RsError::Error("Page index must be >= 1".to_string()))?;
+        let archive = ZipArchiveReader::open_with_options(reader, Self::zip_options())
+            .await
+            .map_err(|error| RsError::Error(format!("Unable to open ZIP archive: {error}")))?;
+        let indexes = Self::zip_page_indexes(&archive);
+        let archive_index = indexes.get(page_index).copied().ok_or_else(|| {
             RsError::Error(format!(
-                "Unable to get file at page {}. Files in zip: {}",
-                page, pages
+                "Unable to get ZIP page {page}. Pages in archive: {}",
+                indexes.len()
             ))
         })?;
-        let mut page_data = Vec::new();
-        file.read_to_end(&mut page_data)?;
-        let size = page_data.len() as u64;
-        let name = file
-            .enclosed_name()
-            .map(|s| s.to_str().unwrap_or_default().to_string());
-        drop(file);
-        let async_reader: AsyncReadPinBox = Box::pin(std::io::Cursor::new(page_data));
+        let entry = &archive.cdrs()[archive_index];
+        let size = entry
+            .uncompressed_size()
+            .map_err(|error| RsError::Error(format!("Invalid ZIP page size: {error}")))?;
+        let name = Some(String::from_utf8_lossy(entry.insecure_file_name.as_bytes()).into_owned());
+        let file = archive
+            .file_oneshot(archive_index)
+            .await
+            .map_err(|error| RsError::Error(format!("Unable to open ZIP page: {error}")))?;
+        let async_reader: AsyncReadPinBox = Box::pin(file.compat());
         Ok(SourceRead::Stream(FileStreamResult {
             stream: async_reader,
             size: Some(size),
@@ -298,8 +408,37 @@ impl ModelController {
             range: None,
             mime: None,
             name,
+            cleanup: cleanup
+                .map(|path| Box::new(TempArchiveCleanup { _path: path }) as Box<dyn Cleanup>),
+        }))
+    }
+
+    async fn extract_rar_page(path: PathBuf, page: usize) -> RsResult<SourceRead> {
+        let page = tokio::task::spawn_blocking(move || read_rar_page(&path, page)).await??;
+        let size = page.data.len() as u64;
+        let async_reader: AsyncReadPinBox = Box::pin(std::io::Cursor::new(page.data));
+        Ok(SourceRead::Stream(FileStreamResult {
+            stream: async_reader,
+            size: Some(size),
+            accept_range: false,
+            range: None,
+            mime: None,
+            name: Some(page.name),
             cleanup: None,
         }))
+    }
+
+    async fn spool_to_temp(
+        mut reader: AsyncReadPinBox,
+        suffix: &str,
+    ) -> RsResult<tempfile::TempPath> {
+        let temp = tempfile::Builder::new().suffix(suffix).tempfile()?;
+        let (file, path) = temp.into_parts();
+        let mut file = tokio::fs::File::from_std(file);
+        tokio::io::copy(&mut reader, &mut file).await?;
+        file.flush().await?;
+        drop(file);
+        Ok(path)
     }
 
     /// Wraps a SourceRead stream with CTR decryption (consumes and rebuilds).
@@ -793,20 +932,24 @@ impl ModelController {
             ))?
             .item;
         let mut infos: MediaForUpdate = media.clone().into();
-        if media.kind != FileType::Album {
+        if file_type_from_mime_or_filename(&media.mimetype, &media.name) != FileType::Album {
             return Err(Error::ServiceError(
                 "SPLIT".to_string(),
                 Some(format!("{} media is not an album", media_id)),
             )
             .into());
         }
-        let filename = format!(
-            "{}-{}-{}.zip",
-            media.name.replace(".zip", "").replace(".cbz", ""),
-            from,
-            to
-        );
-        println!("Zip name: {}", filename);
+        if from == 0 || to < from || media.pages.is_some_and(|pages| to as usize > pages) {
+            return Err(Error::ServiceError(
+                "SPLIT".to_string(),
+                Some(format!(
+                    "Invalid album page range {from}-{to} (album has {} pages)",
+                    media.pages.unwrap_or_default()
+                )),
+            )
+            .into());
+        }
+        let filename = format!("{}-{}-{}.zip", remove_extension(&media.name), from, to);
 
         let crypted = self.cache_get_library_crypt(library_id).await;
         let id = nanoid!();
@@ -823,7 +966,6 @@ impl ModelController {
         let mut zip_writer = ZipFileWriter::with_tokio(&mut file);
 
         let mut pages = 0usize;
-        let mut total_size = 0u64;
         for n in from..=to {
             let file = self
                 .library_file(
@@ -837,8 +979,8 @@ impl ModelController {
                     requesting_user,
                 )
                 .await?;
-            let filename = file.filename().unwrap_or(nanoid!());
-            let mut reader = file
+            let filename = Self::archive_entry_name(file.filename(), n as usize);
+            let reader = file
                 .into_reader(
                     Some(library_id),
                     None,
@@ -848,16 +990,24 @@ impl ModelController {
                 )
                 .await?;
 
-            let mut buffer = vec![];
-            reader.stream.read_to_end(&mut buffer).await?;
-
-            total_size += buffer.len() as u64;
-
-            let builder = ZipEntryBuilder::new(filename.into(), Compression::Deflate);
-            zip_writer
-                .write_entry_whole(builder, &buffer)
+            let builder = Self::album_zip_entry(filename);
+            let mut entry = zip_writer
+                .write_entry_stream(builder)
                 .await
-                .map_err(|_| Error::ServiceError("Unable to save zip entry".to_string(), None))?;
+                .map_err(|error| {
+                    Error::ServiceError(
+                        "Unable to start ZIP entry".to_string(),
+                        Some(error.to_string()),
+                    )
+                })?;
+            let mut input = reader.stream.compat();
+            futures::io::copy(&mut input, &mut entry).await?;
+            entry.close().await.map_err(|error| {
+                Error::ServiceError(
+                    "Unable to save ZIP entry".to_string(),
+                    Some(error.to_string()),
+                )
+            })?;
             pages += 1;
         }
 
@@ -866,7 +1016,6 @@ impl ModelController {
             .await
             .map_err(|_| Error::ServiceError("Unable to close zip file".to_string(), None))?;
         file.flush().await?;
-        println!("CLOSED");
 
         m.fill_infos(&source, &mut infos).await?;
 
@@ -1044,15 +1193,17 @@ impl ModelController {
                 None => None, // No range = read full file including nonce
             };
         }
-        let mut reader_response = m.get_file(&existing.source, range.clone()).await?;
+        let is_rar = Self::is_rar_archive(&existing.name, &existing.mime);
+        let archive_page =
+            (existing.kind == FileType::Album || is_rar) && !query.raw && query.page.is_some();
+        if archive_page {
+            let page = query.page.unwrap_or(1) as usize;
 
-        if existing.kind == FileType::Album && !query.raw && query.page.is_some() {
-            // For password-encrypted zips, we need to decrypt the full file first
-            // since zip requires random access (seeking).
+            // Password-encrypted archives must be decrypted from the beginning before their
+            // directory can be read. A temporary file keeps memory bounded and gives ZIP a
+            // seekable reader and UnRAR the filesystem path it requires.
             if let Some(ref key) = encryption_key {
-                // Read the full encrypted file and decrypt to memory
                 let full_read = m.get_file(&existing.source, None).await?;
-                // Resolve requests (plugin sources) to streams first
                 let full_read = full_read
                     .into_reader(
                         Some(library_id),
@@ -1064,74 +1215,81 @@ impl ModelController {
                     .await?;
                 let decrypted: AsyncReadPinBox =
                     Box::pin(CtrDecryptReader::new(full_read.stream, key));
-                let mut decrypted_bytes = Vec::new();
-                tokio::io::AsyncReadExt::read_to_end(
-                    &mut tokio::io::BufReader::new(decrypted),
-                    &mut decrypted_bytes,
-                )
-                .await?;
-                return Self::extract_zip_page_from_bytes(
-                    &decrypted_bytes,
-                    query.page.unwrap_or(1) as usize,
-                );
+                if is_rar {
+                    let temp_path = Self::spool_to_temp(decrypted, ".rar").await?;
+                    return Self::extract_rar_page(temp_path.to_path_buf(), page).await;
+                }
+                let temp_path = Self::spool_to_temp(decrypted, ".zip").await?;
+                let file = tokio::fs::File::open(&temp_path).await?;
+                let reader = tokio::io::BufReader::with_capacity(64 * 1024, file).compat();
+                return Self::extract_zip_page(reader, page, Some(temp_path)).await;
             }
 
             let local_path = m.local_path(&existing.source);
             if let Some(local_path) = local_path {
-                let archive = std::fs::File::open(local_path)?;
-                let buffreader = std::io::BufReader::new(archive);
-                let mut archive = zip::ZipArchive::new(buffreader)
-                    .map_err(|_| RsError::Error(format!("Unable to open zip file")))?;
-                let pages = archive.len();
-                let mut file = archive
-                    .by_index(query.page.unwrap_or(1) as usize - 1)
-                    .map_err(|_| {
-                        RsError::Error(format!(
-                            "Unable to get file at page {:?}. Files in zip: {}",
-                            query.page, pages
-                        ))
-                    })?;
+                if is_rar {
+                    return Self::extract_rar_page(local_path, page).await;
+                }
+                let file = tokio::fs::File::open(local_path).await?;
+                let reader = tokio::io::BufReader::with_capacity(64 * 1024, file).compat();
+                return Self::extract_zip_page(reader, page, None).await;
+            }
+        }
 
-                let mut data = Vec::new();
-                file.read_to_end(&mut data)?;
-
-                let async_reader: AsyncReadPinBox = Box::pin(std::io::Cursor::new(data));
-                let source_reader = SourceRead::Stream(FileStreamResult {
-                    stream: async_reader,
-                    size: Some(file.size()),
-                    accept_range: false,
-                    range: None,
-                    mime: None,
-                    name: file
-                        .enclosed_name()
-                        .map(|s| s.to_str().unwrap_or_default().to_string()),
-                    cleanup: None,
-                });
-
-                return Ok(source_reader);
-            } else if let SourceRead::Request(ref request) = reader_response {
+        let mut reader_response = m.get_file(&existing.source, range.clone()).await?;
+        if archive_page {
+            let page = query.page.unwrap_or(1) as usize;
+            if is_rar {
+                let reader = reader_response
+                    .into_reader(
+                        Some(library_id),
+                        None,
+                        None,
+                        Some((self.clone(), &requesting_user)),
+                        None,
+                    )
+                    .await?;
+                let temp_path = Self::spool_to_temp(reader.stream, ".rar").await?;
+                return Self::extract_rar_page(temp_path.to_path_buf(), page).await;
+            }
+            if let SourceRead::Request(ref request) = reader_response {
                 if matches!(
                     request.status,
                     RsRequestStatus::FinalPrivate | RsRequestStatus::FinalPublic
                 ) {
                     if let Some(file_size) = existing.size {
-                        let page = query.page.unwrap_or(1) as usize;
-                        let (data, name) =
-                            extract_zip_page_from_request(request, page, file_size).await?;
-                        let size = data.len() as u64;
-                        let async_reader: AsyncReadPinBox = Box::pin(std::io::Cursor::new(data));
-                        return Ok(SourceRead::Stream(FileStreamResult {
-                            stream: async_reader,
-                            size: Some(size),
-                            accept_range: false,
-                            range: None,
-                            mime: None,
-                            name,
-                            cleanup: None,
-                        }));
+                        if let Ok((data, name)) =
+                            extract_zip_page_from_request(request, page, file_size).await
+                        {
+                            let size = data.len() as u64;
+                            let async_reader: AsyncReadPinBox =
+                                Box::pin(std::io::Cursor::new(data));
+                            return Ok(SourceRead::Stream(FileStreamResult {
+                                stream: async_reader,
+                                size: Some(size),
+                                accept_range: false,
+                                range: None,
+                                mime: None,
+                                name,
+                                cleanup: None,
+                            }));
+                        }
                     }
                 }
             }
+            let reader = reader_response
+                .into_reader(
+                    Some(library_id),
+                    None,
+                    None,
+                    Some((self.clone(), &requesting_user)),
+                    None,
+                )
+                .await?;
+            let temp_path = Self::spool_to_temp(reader.stream, ".zip").await?;
+            let file = tokio::fs::File::open(&temp_path).await?;
+            let reader = tokio::io::BufReader::with_capacity(64 * 1024, file).compat();
+            return Self::extract_zip_page(reader, page, Some(temp_path)).await;
         }
 
         if crypted {
@@ -1293,7 +1451,8 @@ impl ModelController {
             );
         }
 
-        if existing.kind == FileType::Video {
+        let effective_kind = file_type_from_mime_or_filename(&existing.mimetype, &existing.name);
+        if effective_kind == FileType::Video {
             let r = self
                 .update_video_infos(library_id, media_id, requesting_user, false)
                 .await;
@@ -1303,7 +1462,7 @@ impl ModelController {
                     format!("unable to get video infos for {}: {:?}", media_id, r),
                 );
             }
-        } else if existing.kind == FileType::Photo {
+        } else if effective_kind == FileType::Photo {
             let r = self
                 .update_photo_infos(library_id, media_id, requesting_user, false)
                 .await;
@@ -1313,7 +1472,7 @@ impl ModelController {
                     format!("unable to get photos infos for {}: {:?}", media_id, r),
                 );
             }
-        } else if existing.kind == FileType::Album {
+        } else if effective_kind == FileType::Album {
             let r = self
                 .update_album_infos(library_id, media_id, requesting_user, false)
                 .await;
@@ -1488,7 +1647,7 @@ impl ModelController {
         };
         self.send_upload_progress(message);
 
-        new_file.kind = file_type_from_mime(&new_file.mimetype);
+        new_file.kind = file_type_from_mime_or_filename(&new_file.mimetype, &new_file.name);
 
         let store = self.store.get_library_store(library_id)?;
         store
@@ -1629,14 +1788,15 @@ impl ModelController {
                 .mimetype
                 .or(infos.mimetype.clone())
                 .unwrap_or(DEFAULT_MIME.to_owned());
+            let name = final_infos.name.or(infos.name.clone()).unwrap_or(nanoid!());
             let new_file = MediaForAdd {
-                name: final_infos.name.or(infos.name.clone()).unwrap_or(nanoid!()),
+                kind: file_type_from_mime_or_filename(&mimetype, &name),
+                name,
                 source: if let Some(selected) = request.selected_file.clone() {
                     Some(format!("{}|{}", request.url, selected))
                 } else {
                     Some(request.url.clone())
                 },
-                kind: file_type_from_mime(&mimetype),
                 mimetype,
                 size: final_infos.size.or(infos.size),
                 created: Some(
@@ -1760,7 +1920,6 @@ impl ModelController {
         } else {
             filename.clone()
         };
-        println!("Zip name: {}", filename);
         let (source_promise, file) = m.writer(&disk_filename, None, None).await?;
         // If library has password, wrap writer with encryption
         let mut enc_writer: Option<CtrEncryptWriter<Pin<Box<dyn tokio::io::AsyncWrite + Send>>>> =
@@ -1795,24 +1954,28 @@ impl ModelController {
                 )
                 .await;
 
-            if let Ok(mut reader) = reader {
-                let mut buffer = vec![];
-                reader.stream.read_to_end(&mut buffer).await?;
-                total_size += buffer.len() as u64;
-
-                let builder = ZipEntryBuilder::new(
-                    request
-                        .filename_or_extract_from_url()
-                        .unwrap_or(nanoid!())
-                        .into(),
-                    Compression::Deflate,
-                );
-                zip_writer
-                    .write_entry_whole(builder, &buffer)
+            if let Ok(reader) = reader {
+                let builder = Self::album_zip_entry(Self::archive_entry_name(
+                    request.filename_or_extract_from_url(),
+                    pages + 1,
+                ));
+                let mut entry = zip_writer
+                    .write_entry_stream(builder)
                     .await
-                    .map_err(|_| {
-                        Error::ServiceError("Unable to save zip entry".to_string(), None)
+                    .map_err(|error| {
+                        Error::ServiceError(
+                            "Unable to start ZIP entry".to_string(),
+                            Some(error.to_string()),
+                        )
                     })?;
+                let mut input = reader.stream.compat();
+                total_size += futures::io::copy(&mut input, &mut entry).await?;
+                entry.close().await.map_err(|error| {
+                    Error::ServiceError(
+                        "Unable to save ZIP entry".to_string(),
+                        Some(error.to_string()),
+                    )
+                })?;
 
                 pages += 1;
                 let estimated = total_size / pages as u64 * len;
@@ -1828,9 +1991,8 @@ impl ModelController {
             } else {
                 log_error(
                     LogServiceType::Source,
-                    format!("Error adding to zip: {}", request.url),
+                    format!("Error adding {} to ZIP: {reader:?}", request.url),
                 );
-                println!("{:?}", reader);
             }
         }
 
@@ -1845,7 +2007,6 @@ impl ModelController {
             w.flush().await?;
             drop(w);
         }
-        println!("CLOSED");
 
         let source = source_promise.await??;
         m.fill_infos(&source, &mut infos).await?;
@@ -2073,8 +2234,9 @@ impl ModelController {
                         .created
                         .unwrap_or_else(|| Utc::now().timestamp_millis()),
                 ),
-                kind: file_type_from_mime(
+                kind: file_type_from_mime_or_filename(
                     &infos.mimetype.clone().unwrap_or(DEFAULT_MIME.to_owned()),
+                    &filename,
                 ),
                 ..Default::default()
             };
@@ -2224,8 +2386,8 @@ impl ModelController {
                 "generate_thumb".to_string(),
             ))?
             .item;
-        //println!("GENERATE THUMB {:?}", media.kind);
-        let thumb = match media.kind {
+        let effective_kind = file_type_from_mime_or_filename(&media.mimetype, &media.name);
+        let thumb = match effective_kind {
             FileType::Photo => {
                 let media_source: MediaSource = media.try_into()?;
                 let reader = m.get_file(&media_source.source, None).await?;
@@ -3896,25 +4058,78 @@ impl ModelController {
                 existing.source.clone().unwrap_or("unknown".to_string()),
                 "update_album_infos".to_string(),
             ))?;
+        let is_rar = Self::is_rar_archive(&existing.name, &existing.mimetype);
         let local_path = m.local_path(&source);
-        if let Some(local_path) = local_path {
-            let mut update = MediaForUpdate::default();
-            let archive = std::fs::File::open(local_path)?;
-            let buffreader = std::io::BufReader::new(archive);
+        let encryption_key = self.get_library_encryption_key(library_id).await;
+        let remote_zip_pages = if !is_rar && encryption_key.is_none() && local_path.is_none() {
+            match (m.get_file(&source, None).await?, existing.size) {
+                (SourceRead::Request(request), Some(file_size))
+                    if matches!(
+                        request.status,
+                        RsRequestStatus::FinalPrivate | RsRequestStatus::FinalPublic
+                    ) =>
+                {
+                    count_zip_pages_from_request(&request, file_size).await.ok()
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let pages = if let Some(pages) = remote_zip_pages {
+            pages
+        } else if encryption_key.is_none() && local_path.is_some() {
+            let local_path = local_path.unwrap();
+            if is_rar {
+                tokio::task::spawn_blocking(move || count_rar_pages(&local_path)).await??
+            } else {
+                let file = tokio::fs::File::open(local_path).await?;
+                let reader = tokio::io::BufReader::with_capacity(64 * 1024, file).compat();
+                Self::count_zip_pages(reader).await?
+            }
+        } else {
+            let reader = self
+                .library_file(
+                    library_id,
+                    media_id,
+                    None,
+                    MediaFileQuery::default(),
+                    requesting_user,
+                )
+                .await?
+                .into_reader(
+                    Some(library_id),
+                    None,
+                    None,
+                    Some((self.clone(), requesting_user)),
+                    None,
+                )
+                .await?;
+            let suffix = if is_rar { ".rar" } else { ".zip" };
+            let temp_path = Self::spool_to_temp(reader.stream, suffix).await?;
+            if is_rar {
+                let path = temp_path.to_path_buf();
+                tokio::task::spawn_blocking(move || count_rar_pages(&path)).await??
+            } else {
+                let file = tokio::fs::File::open(&temp_path).await?;
+                let reader = tokio::io::BufReader::with_capacity(64 * 1024, file).compat();
+                Self::count_zip_pages(reader).await?
+            }
+        };
 
-            let mut archive = zip::ZipArchive::new(buffreader)?;
-
-            update.pages = Some(archive.len());
-
-            self.update_media(
-                library_id,
-                media_id.to_owned(),
-                update,
-                notif,
-                requesting_user,
-            )
-            .await?;
-        }
+        let update = MediaForUpdate {
+            pages: Some(pages),
+            kind: Some(FileType::Album),
+            ..Default::default()
+        };
+        self.update_media(
+            library_id,
+            media_id.to_owned(),
+            update,
+            notif,
+            requesting_user,
+        )
+        .await?;
 
         Ok(())
     }
