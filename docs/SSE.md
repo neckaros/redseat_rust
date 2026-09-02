@@ -63,7 +63,7 @@ The following entity-scoped endpoints stream source lookup results as SSE:
 All entity lookup endpoints, including their non-streaming `/search` variants,
 accept these optional query parameters:
 
-- `q`: a non-empty title/name override to use for the plugin lookup instead of
+- `name`: a non-empty title/name override to use for the plugin lookup instead of
   the entity's stored title/name.
 - `source`: a plugin/source path or stored plugin ID (or a comma-separated list
   when requesting the first page) to query.
@@ -75,7 +75,7 @@ For example, the next page of movie results from one lookup plugin can be
 requested with:
 
 ```text
-GET /libraries/{libraryId}/movies/{movieId}/searchstream?q={alternateTitle}&source={pluginPath}&pageKey={pageKey}
+GET /libraries/{libraryId}/movies/{movieId}/searchstream?name={alternateTitle}&source={pluginPath}&pageKey={pageKey}
 ```
 
 The server does not impose the current 25-result page size. Each plugin decides

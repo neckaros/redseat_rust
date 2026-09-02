@@ -229,7 +229,7 @@ async fn handler_lookup(
 ) -> Result<Json<Value>> {
     let (page_key, sources) = pagination.resolve()?;
     let movie = mc.get_movie(&library_id, movie_id, &user).await?;
-    let name = pagination.query().unwrap_or_else(|| movie.name.clone());
+    let name = pagination.name().unwrap_or_else(|| movie.name.clone());
     let ids: RsIds = movie.into();
     let query = RsLookupQuery::Movie(RsLookupMovie {
         name: Some(name),
@@ -251,7 +251,7 @@ async fn handler_lookup_stream(
 ) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>> {
     let (page_key, sources) = pagination.resolve()?;
     let movie = mc.get_movie(&library_id, movie_id.clone(), &user).await?;
-    let name = pagination.query().unwrap_or_else(|| movie.name.clone());
+    let name = pagination.name().unwrap_or_else(|| movie.name.clone());
     let ids: RsIds = movie.into();
     let query = RsLookupQuery::Movie(RsLookupMovie {
         name: Some(name),

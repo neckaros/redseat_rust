@@ -361,7 +361,7 @@ async fn handler_lookup(
 ) -> Result<Json<Value>> {
     let (page_key, sources) = pagination.resolve()?;
     let book = mc.get_book(&library_id, book_id, &user).await?;
-    let name = pagination.query().unwrap_or_else(|| book.item.name.clone());
+    let name = pagination.name().unwrap_or_else(|| book.item.name.clone());
     let author = first_person_name(&mc, &library_id, &book.relations, &user).await;
     let ids: RsIds = book.item.into();
     let query = RsLookupQuery::Book(RsLookupBook {
@@ -388,7 +388,7 @@ async fn handler_lookup_stream(
 ) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>> {
     let (page_key, sources) = pagination.resolve()?;
     let book = mc.get_book(&library_id, book_id.clone(), &user).await?;
-    let name = pagination.query().unwrap_or_else(|| book.item.name.clone());
+    let name = pagination.name().unwrap_or_else(|| book.item.name.clone());
     let author = first_person_name(&mc, &library_id, &book.relations, &user).await;
     let ids: RsIds = book.item.into();
     let query = RsLookupQuery::Book(RsLookupBook {

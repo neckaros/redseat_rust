@@ -160,7 +160,7 @@ async fn handler_lookup_season(
             "handler_lookup_season".to_string(),
         ))?;
     let name = pagination
-        .query()
+        .name()
         .unwrap_or_else(|| serie.item.name.clone());
     let ids: RsIds = serie.item.into();
     let query_episode = RsLookupEpisode {
@@ -259,7 +259,7 @@ async fn handler_lookup(
             "handler_lookup".to_string(),
         ))?;
     let name = pagination
-        .query()
+        .name()
         .unwrap_or_else(|| serie.item.name.clone());
     let ids: RsIds = serie.item.into();
     let query_episode = RsLookupEpisode {
@@ -296,7 +296,7 @@ async fn handler_lookup_stream(
             "handler_lookup_stream".to_string(),
         ))?;
     let name = pagination
-        .query()
+        .name()
         .unwrap_or_else(|| serie.item.name.clone());
     let ids: RsIds = serie.item.into();
     let query_episode = RsLookupEpisode {
@@ -350,7 +350,7 @@ async fn handler_lookup_season_stream(
             "handler_lookup_season_stream".to_string(),
         ))?;
     let name = pagination
-        .query()
+        .name()
         .unwrap_or_else(|| serie.item.name.clone());
     let ids: RsIds = serie.item.into();
     let query_episode = RsLookupEpisode {

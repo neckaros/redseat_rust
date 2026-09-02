@@ -70,14 +70,14 @@ impl<T> SearchQuery<T> {
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct LookupPagination {
-    pub q: Option<String>,
+    pub name: Option<String>,
     pub page_key: Option<String>,
     pub source: Option<String>,
 }
 
 impl LookupPagination {
-    pub fn query(&self) -> Option<String> {
-        self.q
+    pub fn name(&self) -> Option<String> {
+        self.name
             .as_deref()
             .map(str::trim)
             .filter(|query| !query.is_empty())
@@ -219,30 +219,30 @@ mod tests {
     use rs_plugin_common_interfaces::request::{RsGroupDownload, RsRequest};
 
     #[test]
-    fn lookup_pagination_normalizes_page_key_and_source() {
+    fn lookup_pagination_normalizes_name_page_key_and_source() {
         let pagination: LookupPagination = serde_json::from_value(serde_json::json!({
-            "q": "  alternate title  ",
+            "name": "  alternate title  ",
             "pageKey": "  cursor-2  ",
             "source": "  plugin-a  "
         }))
         .expect("deserialize lookup pagination");
 
         let (page_key, sources) = pagination.resolve().expect("resolve pagination");
-        assert_eq!(pagination.query().as_deref(), Some("alternate title"));
+        assert_eq!(pagination.name().as_deref(), Some("alternate title"));
         assert_eq!(page_key.as_deref(), Some("cursor-2"));
         assert_eq!(sources, Some(vec!["plugin-a".to_string()]));
     }
 
     #[test]
-    fn lookup_pagination_ignores_an_empty_page_key() {
+    fn lookup_pagination_ignores_an_empty_name_and_page_key() {
         let pagination = LookupPagination {
-            q: Some("   ".to_string()),
+            name: Some("   ".to_string()),
             page_key: Some("   ".to_string()),
             source: None,
         };
 
         let (page_key, sources) = pagination.resolve().expect("resolve pagination");
-        assert_eq!(pagination.query(), None);
+        assert_eq!(pagination.name(), None);
         assert_eq!(page_key, None);
         assert_eq!(sources, None);
     }
@@ -251,7 +251,7 @@ mod tests {
     fn lookup_pagination_rejects_a_page_key_without_exactly_one_source() {
         for source in [None, Some("   ".to_string()), Some("a,b".to_string())] {
             let pagination = LookupPagination {
-                q: None,
+                name: None,
                 page_key: Some("cursor-2".to_string()),
                 source,
             };
