@@ -59,13 +59,59 @@ pub struct SearchQuery<T> {
 
 impl<T> SearchQuery<T> {
     pub fn sources(&self) -> Option<Vec<String>> {
-        self.source.as_deref().map(|s| {
-            s.split(',')
-                .map(|p| p.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect()
-        })
+        parse_sources(self.source.as_deref())
     }
+}
+
+/// Provider-specific pagination options for media/download lookups.
+///
+/// Page keys are opaque values interpreted by lookup plugins. Clients should
+/// send the key back together with the source that produced it.
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct LookupPagination {
+    pub name: Option<String>,
+    pub page_key: Option<String>,
+    pub source: Option<String>,
+}
+
+impl LookupPagination {
+    pub fn name(&self) -> Option<String> {
+        self.name
+            .as_deref()
+            .map(str::trim)
+            .filter(|query| !query.is_empty())
+            .map(str::to_string)
+    }
+
+    pub fn resolve(&self) -> crate::Result<(Option<String>, Option<Vec<String>>)> {
+        let page_key = self
+            .page_key
+            .as_ref()
+            .filter(|key| !key.trim().is_empty())
+            .cloned();
+        let sources = parse_sources(self.source.as_deref());
+
+        if page_key.is_some() && sources.as_ref().map(Vec::len) != Some(1) {
+            return Err(crate::Error::InvalidParams(
+                "pageKey requires exactly one non-empty source".to_string(),
+            ));
+        }
+
+        Ok((page_key, sources))
+    }
+}
+
+fn parse_sources(source: Option<&str>) -> Option<Vec<String>> {
+    source.and_then(|source| {
+        let sources: Vec<_> = source
+            .split(',')
+            .map(str::trim)
+            .filter(|source| !source.is_empty())
+            .map(str::to_string)
+            .collect();
+        (!sources.is_empty()).then_some(sources)
+    })
 }
 
 #[derive(Serialize)]
@@ -78,6 +124,8 @@ pub struct SseLookupSearchEvent<'a> {
     pub results: &'a [SseLookupSearchResult<'a>],
     /// Complete download groups for clients that understand grouped results.
     pub downloads: &'a [RsGroupDownload],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_page_key: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -164,10 +212,55 @@ pub fn bind_downloads_to_series(
 #[cfg(test)]
 mod tests {
     use super::{
-        bind_downloads_to_movie, bind_downloads_to_series, SseLookupSearchEvent,
+        bind_downloads_to_movie, bind_downloads_to_series, LookupPagination, SseLookupSearchEvent,
         SseLookupSearchResult,
     };
     use rs_plugin_common_interfaces::request::{RsGroupDownload, RsRequest};
+
+    #[test]
+    fn lookup_pagination_normalizes_name_and_source_but_preserves_page_key() {
+        let pagination: LookupPagination = serde_json::from_value(serde_json::json!({
+            "name": "  alternate title  ",
+            "pageKey": "  cursor-2  ",
+            "source": "  plugin-a  "
+        }))
+        .expect("deserialize lookup pagination");
+
+        let (page_key, sources) = pagination.resolve().expect("resolve pagination");
+        assert_eq!(pagination.name().as_deref(), Some("alternate title"));
+        assert_eq!(page_key.as_deref(), Some("  cursor-2  "));
+        assert_eq!(sources, Some(vec!["plugin-a".to_string()]));
+    }
+
+    #[test]
+    fn lookup_pagination_ignores_an_empty_name_and_page_key() {
+        let pagination = LookupPagination {
+            name: Some("   ".to_string()),
+            page_key: Some("   ".to_string()),
+            source: None,
+        };
+
+        let (page_key, sources) = pagination.resolve().expect("resolve pagination");
+        assert_eq!(pagination.name(), None);
+        assert_eq!(page_key, None);
+        assert_eq!(sources, None);
+    }
+
+    #[test]
+    fn lookup_pagination_rejects_a_page_key_without_exactly_one_source() {
+        for source in [None, Some("   ".to_string()), Some("a,b".to_string())] {
+            let pagination = LookupPagination {
+                name: None,
+                page_key: Some("cursor-2".to_string()),
+                source,
+            };
+
+            assert!(matches!(
+                pagination.resolve(),
+                Err(crate::Error::InvalidParams(_))
+            ));
+        }
+    }
 
     #[test]
     fn lookup_stream_keeps_legacy_results_flattened() {
@@ -211,12 +304,14 @@ mod tests {
             source_name: "Plugin name",
             results: &results,
             downloads: std::slice::from_ref(&group),
+            next_page_key: Some("cursor-2"),
         };
         let value = serde_json::to_value(event).expect("serialize lookup event");
 
         assert_eq!(value["results"].as_array().map(Vec::len), Some(1));
         assert_eq!(value["downloads"][0]["group"], true);
         assert_eq!(value["downloads"][0]["groupFilename"], "Chapter 1");
+        assert_eq!(value["nextPageKey"], "cursor-2");
         assert_eq!(
             value["downloads"][0]["requests"].as_array().map(Vec::len),
             Some(1)

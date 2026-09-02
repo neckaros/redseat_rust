@@ -60,6 +60,58 @@ The following entity-scoped endpoints stream source lookup results as SSE:
 - `GET /libraries/{libraryId}/series/{serieId}/seasons/{season}/searchstream`
 - `GET /libraries/{libraryId}/series/{serieId}/seasons/{season}/episodes/{number}/searchstream`
 
+All entity lookup endpoints, including their non-streaming `/search` variants,
+accept these optional query parameters:
+
+- `name`: a non-empty title/name override to use for the plugin lookup instead of
+  the entity's stored title/name.
+- `source`: a plugin/source path or stored plugin ID (or a comma-separated list
+  when requesting the first page) to query.
+- `pageKey`: an opaque provider-specific page key passed through to the selected
+  plugin. A request with `pageKey` must identify exactly one non-empty `source`,
+  because page keys are not portable across providers. Non-blank page keys are
+  preserved verbatim, including leading or trailing whitespace.
+
+For example, the next page of movie results from one lookup plugin can be
+requested with:
+
+```text
+GET /libraries/{libraryId}/movies/{movieId}/searchstream?name={alternateTitle}&source={pluginId}&pageKey={pageKey}
+```
+
+The server does not impose the current 25-result page size. Each plugin decides
+its page size and how its page key is encoded; plugins that ignore `pageKey`
+remain single-page sources. A non-streaming `/search` response is grouped by
+source so every provider can return its own continuation cursor:
+
+```typescript
+interface LookupSourceResults {
+  sourceId: string;
+  sourceName: string;
+  results: RsGroupDownload[];
+  nextPageKey?: string;
+}
+
+type LookupResponse = LookupSourceResults[];
+```
+
+`sourceId` is the unique stored plugin ID, so it identifies one installation
+even when multiple installed plugins use the same WASM path.
+
+Lookup plugins can advertise another page by wrapping their existing result:
+
+```json
+{
+  "result": { "requests": [] },
+  "nextPageKey": "provider-defined-opaque-cursor"
+}
+```
+
+The `result` value uses the existing `RsLookupSourceResult` representation, so
+`groupRequest`, `notFound`, and `notApplicable` remain valid alternatives.
+Unwrapped legacy plugin responses are still accepted, but cannot advertise a
+continuation cursor.
+
 Each source emits a `results` event with both the legacy flattened requests and
 the complete grouped downloads:
 
@@ -74,6 +126,7 @@ interface LookupSearchEvent {
   }>;
   // Group-aware view: preserves provider grouping and group metadata.
   downloads: RsGroupDownload[];
+  nextPageKey?: string;
 }
 
 interface RsGroupDownload {
@@ -610,29 +663,38 @@ Search endpoints support SSE streaming so clients receive results progressively 
 
 | Endpoint | Query Parameters | Description |
 |----------|-----------------|-------------|
-| `GET /libraries/:libraryId/series/searchstream` | `name` (required), `ids` (optional) | Stream series search results |
-| `GET /libraries/:libraryId/movies/searchstream` | `name` (required), `ids` (optional) | Stream movie search results |
-| `GET /libraries/:libraryId/books/searchstream` | `name`, `author`, `isbn13` (at least one required) | Stream book search results; supplied fields are passed to plugins together |
-| `GET /libraries/:libraryId/people/searchstream` | `name` (required), `ids` (optional) | Stream people search results |
+| `GET /libraries/:libraryId/series/searchstream` | `name` (required), `ids`, `source`, `pageKey` (optional) | Stream series search results |
+| `GET /libraries/:libraryId/movies/searchstream` | `name` (required), `ids`, `source`, `pageKey` (optional) | Stream movie search results |
+| `GET /libraries/:libraryId/books/searchstream` | `name`, `author`, `isbn13` (at least one required); `source`, `pageKey` (optional) | Stream book search results; supplied fields are passed to plugins together |
+| `GET /libraries/:libraryId/people/searchstream` | `name` (required), `ids`, `source`, `pageKey` (optional) | Stream people search results |
 
 ### How It Works
 
-Each SSE event has event type `results`. The data is a JSON object with a single key: the provider name, and the value is an array of results from that provider.
-
-Results arrive one metadata plugin at a time.
+Each SSE event has event type `results` and contains one metadata plugin's
+result page. `sourceId` is the value to send as `source` when requesting that
+plugin's next page. If `nextPageKey` is present, send it back as `pageKey`.
 
 ### Event Format
 
 Each `results` event contains one provider's results:
 
 ```json
-{"TMDB": [{"metadata": {"serie": { ... }}, "images": []}]}
+{
+  "sourceId": "tmdb.wasm",
+  "sourceName": "TMDB",
+  "results": [{"metadata": {"serie": { ... }}}],
+  "nextPageKey": "2"
+}
 ```
 
 Then a second event for the next provider:
 
 ```json
-{"Anilist": [{"metadata": {"serie": { ... }}, "images": [{"url": "...", "kind": "poster"}]}]}
+{
+  "sourceId": "anilist.wasm",
+  "sourceName": "Anilist",
+  "results": [{"metadata": {"serie": { ... }}}]
+}
 ```
 
 The `metadata` field is a tagged enum with one of: `serie`, `movie`, `book`, `episode`, `person`, `media`.
@@ -645,16 +707,16 @@ const eventSource = new EventSource(
   `/libraries/${libraryId}/series/searchstream?${params}`
 );
 
-// Accumulate results by provider
+// Accumulate results and pagination cursors by provider.
 const resultsByProvider: Record<string, SearchResult[]> = {};
+const nextPageByProvider: Record<string, string> = {};
 
 eventSource.addEventListener('results', (event) => {
   const data = JSON.parse(event.data);
-  // data is e.g. { "TMDB": [...] } or { "Anilist": [...] }
-  for (const [provider, results] of Object.entries(data)) {
-    resultsByProvider[provider] = results;
+  resultsByProvider[data.sourceId] = data.results;
+  if (data.nextPageKey) {
+    nextPageByProvider[data.sourceId] = data.nextPageKey;
   }
-  // Update UI with new results
   renderResults(resultsByProvider);
 });
 
@@ -663,6 +725,22 @@ eventSource.onerror = () => {
   eventSource.close();
 };
 ```
+
+To load another page, open a new request for only that provider:
+
+```typescript
+const nextParams = new URLSearchParams({
+  name: 'one piece',
+  source: 'tmdb.wasm',
+  pageKey: nextPageByProvider['tmdb.wasm']
+});
+const nextPage = new EventSource(
+  `/libraries/${libraryId}/series/searchstream?${nextParams}`
+);
+```
+
+Page keys are opaque and provider-specific. A provider that omits
+`nextPageKey` has no advertised next page.
 
 ### Non-Streaming Alternative
 
@@ -675,13 +753,17 @@ The same search is available as a regular JSON endpoint that returns all provide
 | `GET /libraries/:libraryId/books/search` | Returns all results grouped by provider |
 | `GET /libraries/:libraryId/people/search` | Returns all results grouped by provider |
 
-Response format:
+Response format (an array with one entry per provider):
 
 ```json
-{
-  "TMDB": [{"metadata": {"movie": { ... }}, "images": []}],
-  "Anilist": [{"metadata": {"movie": { ... }}, "images": [...]}]
-}
+[
+  {
+    "sourceId": "tmdb.wasm",
+    "sourceName": "TMDB",
+    "results": [{"metadata": {"movie": { ... }}}],
+    "nextPageKey": "2"
+  }
+]
 ```
 
 ## Keepalive

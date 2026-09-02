@@ -18,6 +18,7 @@ use rs_plugin_common_interfaces::{
 };
 
 use rs_plugin_common_interfaces::CustomParamTypes;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     domain::{plugin::PluginWithCredential, progress::RsProgressCallback},
@@ -37,6 +38,138 @@ use super::{
     sources::{RsRequestHeader, SourceRead},
     PluginManager,
 };
+
+/// One provider's downloadable lookup results and its optional continuation
+/// cursor. `source_id` and request-level `plugin_id` both use the unique stored
+/// plugin identifier for lookup filtering and later request processing.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LookupSourceResults {
+    pub source_id: String,
+    pub source_name: String,
+    pub results: Vec<RsGroupDownload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_page_key: Option<String>,
+}
+
+/// New lookup plugins can return this envelope to advertise a next page.
+/// Legacy `RsLookupSourceResult` payloads continue to deserialize unchanged.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PaginatedLookupPluginResult {
+    result: RsLookupSourceResult,
+    #[serde(default)]
+    next_page_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum LookupPluginResult {
+    Paginated(PaginatedLookupPluginResult),
+    Legacy(RsLookupSourceResult),
+}
+
+impl LookupPluginResult {
+    fn into_parts(self) -> (RsLookupSourceResult, Option<String>) {
+        match self {
+            Self::Paginated(result) => (result.result, result.next_page_key),
+            Self::Legacy(result) => (result, None),
+        }
+    }
+}
+
+fn prepare_lookup_source_results(
+    plugin_id: String,
+    source_name: String,
+    result: LookupPluginResult,
+) -> Option<LookupSourceResults> {
+    let (result, next_page_key) = result.into_parts();
+    let mut results = match result {
+        RsLookupSourceResult::GroupRequest(groups) => groups,
+        RsLookupSourceResult::Requests(requests) => requests
+            .into_iter()
+            .map(|request| RsGroupDownload {
+                requests: vec![request],
+                group: false,
+                ..Default::default()
+            })
+            .collect(),
+        RsLookupSourceResult::NotFound | RsLookupSourceResult::NotApplicable => return None,
+    };
+
+    for group in &mut results {
+        for request in &mut group.requests {
+            request.plugin_id = Some(plugin_id.clone());
+            request.plugin_name = Some(source_name.clone());
+        }
+    }
+
+    Some(LookupSourceResults {
+        source_id: plugin_id,
+        source_name,
+        results,
+        next_page_key,
+    })
+}
+
+#[cfg(test)]
+mod lookup_pagination_tests {
+    use super::{prepare_lookup_source_results, LookupPluginResult};
+    use rs_plugin_common_interfaces::lookup::RsLookupSourceResult;
+
+    #[test]
+    fn lookup_result_accepts_legacy_payloads() {
+        let result: LookupPluginResult = serde_json::from_value(serde_json::json!({
+            "requests": []
+        }))
+        .expect("deserialize legacy lookup result");
+
+        let (result, next_page_key) = result.into_parts();
+        assert!(matches!(result, RsLookupSourceResult::Requests(requests) if requests.is_empty()));
+        assert_eq!(next_page_key, None);
+    }
+
+    #[test]
+    fn lookup_result_accepts_a_paginated_envelope() {
+        let result: LookupPluginResult = serde_json::from_value(serde_json::json!({
+            "result": { "requests": [] },
+            "nextPageKey": "cursor-2"
+        }))
+        .expect("deserialize paginated lookup result");
+
+        let (result, next_page_key) = result.into_parts();
+        assert!(matches!(result, RsLookupSourceResult::Requests(requests) if requests.is_empty()));
+        assert_eq!(next_page_key.as_deref(), Some("cursor-2"));
+    }
+
+    #[test]
+    fn lookup_batch_uses_the_unique_stored_plugin_id_as_its_source() {
+        let result: LookupPluginResult = serde_json::from_value(serde_json::json!({
+            "result": {
+                "requests": [{
+                    "url": "https://example.test/item",
+                    "jsonBody": null
+                }]
+            },
+            "nextPageKey": "cursor-2"
+        }))
+        .expect("deserialize lookup result");
+
+        let batch = prepare_lookup_source_results(
+            "stored-plugin-id".to_string(),
+            "Provider".to_string(),
+            result,
+        )
+        .expect("prepare lookup result");
+
+        assert_eq!(batch.source_id, "stored-plugin-id");
+        assert_eq!(batch.next_page_key.as_deref(), Some("cursor-2"));
+        assert_eq!(
+            batch.results[0].requests[0].plugin_id.as_deref(),
+            Some("stored-plugin-id")
+        );
+    }
+}
 
 /// Build params HashMap from plugin's stored CustomParam values
 fn build_plugin_params(
@@ -436,7 +569,7 @@ impl PluginManager {
         query: RsLookupQuery,
         plugins: Vec<PluginWithCredential>,
         target: Option<PluginTarget>,
-    ) -> RsResult<Vec<RsGroupDownload>> {
+    ) -> RsResult<Vec<LookupSourceResults>> {
         let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
 
         let tasks: Vec<_> = {
@@ -476,7 +609,7 @@ impl PluginManager {
                         plugin_name
                     );
                     let res = plugin_m
-                        .call_get_error_code::<Json<RsLookupWrapper>, Json<RsLookupSourceResult>>(
+                        .call_get_error_code::<Json<RsLookupWrapper>, Json<LookupPluginResult>>(
                             "lookup",
                             Json(wrapped_query),
                         );
@@ -485,43 +618,21 @@ impl PluginManager {
             })
             .collect();
 
-        let mut results: Vec<RsGroupDownload> = vec![];
+        let mut results: Vec<LookupSourceResults> = vec![];
 
         for handle in handles {
             match handle.await {
-                Ok((
-                    plugin_id,
-                    plugin_name,
-                    Ok(Json(RsLookupSourceResult::GroupRequest(mut groups))),
-                )) => {
+                Ok((plugin_id, plugin_name, Ok(Json(result)))) => {
                     log_info(
                         crate::tools::log::LogServiceType::Plugin,
                         format!("Lookup result from plugin {}", plugin_name),
                     );
-                    for group in &mut groups {
-                        for req in &mut group.requests {
-                            req.plugin_id = Some(plugin_id.clone());
-                            req.plugin_name = Some(plugin_name.clone());
-                        }
-                    }
-                    results.append(&mut groups);
-                }
-                Ok((plugin_id, plugin_name, Ok(Json(RsLookupSourceResult::Requests(request))))) => {
-                    log_info(
-                        crate::tools::log::LogServiceType::Plugin,
-                        format!("Lookup result from plugin {}", plugin_name),
-                    );
-                    for mut req in request {
-                        req.plugin_id = Some(plugin_id.clone());
-                        req.plugin_name = Some(plugin_name.clone());
-                        results.push(RsGroupDownload {
-                            requests: vec![req],
-                            group: false,
-                            ..Default::default()
-                        });
+                    if let Some(result) =
+                        prepare_lookup_source_results(plugin_id, plugin_name, result)
+                    {
+                        results.push(result);
                     }
                 }
-                Ok((_, _, Ok(_))) => {}
                 Ok((_, _, Err((error, code)))) => {
                     if code != 404 {
                         log_error(
@@ -546,7 +657,7 @@ impl PluginManager {
         query: RsLookupQuery,
         plugins: Vec<PluginWithCredential>,
         target: Option<PluginTarget>,
-    ) -> RsResult<tokio::sync::mpsc::Receiver<(String, String, Vec<RsGroupDownload>)>> {
+    ) -> RsResult<tokio::sync::mpsc::Receiver<LookupSourceResults>> {
         let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
         let (tx, rx) = tokio::sync::mpsc::channel(16);
 
@@ -561,7 +672,7 @@ impl PluginManager {
                         .filter(|p| p.infos.capabilities.contains(&PluginType::Lookup))
                         .map(|p| {
                             let plugin_arc = p.plugin.clone();
-                            let plugin_id = plugin_with_cred.plugin.path.clone();
+                            let plugin_id = plugin_with_cred.plugin.id.clone();
                             let plugin_name = plugin_with_cred.plugin.name.clone();
                             let wrapped_query = RsLookupWrapper {
                                 query: query.clone(),
@@ -578,62 +689,37 @@ impl PluginManager {
         };
 
         tokio::spawn(async move {
-            let mut pending: futures::stream::FuturesUnordered<_> = tasks.into_iter().map(|(plugin_arc, plugin_id, plugin_name, wrapped_query)| {
-                tokio::task::spawn_blocking(move || {
-                    let mut plugin_m = plugin_arc.lock().unwrap();
-                    println!("Executing lookup stream for plugin {} ...", plugin_name);
-                    let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<RsLookupSourceResult>>("lookup", Json(wrapped_query));
-                    (plugin_id, plugin_name, res)
+            let mut pending: futures::stream::FuturesUnordered<_> = tasks
+                .into_iter()
+                .map(|(plugin_arc, plugin_id, plugin_name, wrapped_query)| {
+                    tokio::task::spawn_blocking(move || {
+                        let mut plugin_m = plugin_arc.lock().unwrap();
+                        println!("Executing lookup stream for plugin {} ...", plugin_name);
+                        let res = plugin_m
+                            .call_get_error_code::<Json<RsLookupWrapper>, Json<LookupPluginResult>>(
+                                "lookup",
+                                Json(wrapped_query),
+                            );
+                        (plugin_id, plugin_name, res)
+                    })
                 })
-            }).collect();
+                .collect();
 
             while let Some(handle_result) = pending.next().await {
                 match handle_result {
-                    Ok((
-                        plugin_id,
-                        plugin_name,
-                        Ok(Json(RsLookupSourceResult::GroupRequest(mut groups))),
-                    )) => {
+                    Ok((plugin_id, plugin_name, Ok(Json(result)))) => {
                         log_info(
                             crate::tools::log::LogServiceType::Plugin,
                             format!("Lookup stream result from plugin {}", plugin_name),
                         );
-                        for group in &mut groups {
-                            for req in &mut group.requests {
-                                req.plugin_id = Some(plugin_id.clone());
-                                req.plugin_name = Some(plugin_name.clone());
+                        if let Some(result) =
+                            prepare_lookup_source_results(plugin_id, plugin_name, result)
+                        {
+                            if tx.send(result).await.is_err() {
+                                break;
                             }
                         }
-                        if tx.send((plugin_id, plugin_name, groups)).await.is_err() {
-                            break;
-                        }
                     }
-                    Ok((
-                        plugin_id,
-                        plugin_name,
-                        Ok(Json(RsLookupSourceResult::Requests(request))),
-                    )) => {
-                        log_info(
-                            crate::tools::log::LogServiceType::Plugin,
-                            format!("Lookup stream result from plugin {}", plugin_name),
-                        );
-                        let groups: Vec<RsGroupDownload> = request
-                            .into_iter()
-                            .map(|mut req| {
-                                req.plugin_id = Some(plugin_id.clone());
-                                req.plugin_name = Some(plugin_name.clone());
-                                RsGroupDownload {
-                                    requests: vec![req],
-                                    group: false,
-                                    ..Default::default()
-                                }
-                            })
-                            .collect();
-                        if tx.send((plugin_id, plugin_name, groups)).await.is_err() {
-                            break;
-                        }
-                    }
-                    Ok((_, _, Ok(_))) => {}
                     Ok((_, _, Err((error, code)))) => {
                         if code != 404 {
                             log_error(

@@ -35,8 +35,8 @@ use tokio::io::AsyncRead;
 use tokio_util::io::{ReaderStream, StreamReader};
 
 use super::{
-    ImageRequestOptions, ImageUploadOptions, RatingUpdateBody, SearchQuery, SearchResultGroup,
-    SseSearchEvent,
+    ImageRequestOptions, ImageUploadOptions, LookupPagination, RatingUpdateBody, SearchQuery,
+    SearchResultGroup, SseSearchEvent,
 };
 
 pub fn routes(mc: ModelController) -> Router {
@@ -370,7 +370,9 @@ async fn handler_lookup(
     Path((library_id, serie_id)): Path<(String, String)>,
     State(mc): State<ModelController>,
     user: ConnectedUser,
+    Query(pagination): Query<LookupPagination>,
 ) -> Result<Json<Value>> {
+    let (page_key, sources) = pagination.resolve()?;
     let serie = mc
         .get_serie(&library_id, serie_id.clone(), &user)
         .await?
@@ -379,14 +381,18 @@ async fn handler_lookup(
             serie_id,
             "handler_lookup".to_string(),
         ))?;
-    let name = serie.item.name.clone();
+    let name = pagination
+        .name()
+        .unwrap_or_else(|| serie.item.name.clone());
     let ids: RsIds = serie.item.into();
     let query = RsLookupQuery::Serie(RsLookupSerie {
         name: Some(name),
         ids: Some(ids),
-        page_key: None,
+        page_key,
     });
-    let results = mc.exec_lookup(query, Some(library_id), &user, None).await?;
+    let results = mc
+        .exec_lookup(query, Some(library_id), &user, None, sources.as_deref())
+        .await?;
     Ok(Json(json!(results)))
 }
 
