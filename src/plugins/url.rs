@@ -40,9 +40,8 @@ use super::{
 };
 
 /// One provider's downloadable lookup results and its optional continuation
-/// cursor. `source_id` is the stable plugin path used by lookup filtering;
-/// request-level `plugin_id` values remain the stored database identifier used
-/// by later request processing.
+/// cursor. `source_id` and request-level `plugin_id` both use the unique stored
+/// plugin identifier for lookup filtering and later request processing.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LookupSourceResults {
@@ -81,7 +80,6 @@ impl LookupPluginResult {
 
 fn prepare_lookup_source_results(
     plugin_id: String,
-    source_id: String,
     source_name: String,
     result: LookupPluginResult,
 ) -> Option<LookupSourceResults> {
@@ -107,7 +105,7 @@ fn prepare_lookup_source_results(
     }
 
     Some(LookupSourceResults {
-        source_id,
+        source_id: plugin_id,
         source_name,
         results,
         next_page_key,
@@ -145,7 +143,7 @@ mod lookup_pagination_tests {
     }
 
     #[test]
-    fn lookup_batch_keeps_source_path_and_stored_request_plugin_id_distinct() {
+    fn lookup_batch_uses_the_unique_stored_plugin_id_as_its_source() {
         let result: LookupPluginResult = serde_json::from_value(serde_json::json!({
             "result": {
                 "requests": [{
@@ -159,13 +157,12 @@ mod lookup_pagination_tests {
 
         let batch = prepare_lookup_source_results(
             "stored-plugin-id".to_string(),
-            "provider/plugin.wasm".to_string(),
             "Provider".to_string(),
             result,
         )
         .expect("prepare lookup result");
 
-        assert_eq!(batch.source_id, "provider/plugin.wasm");
+        assert_eq!(batch.source_id, "stored-plugin-id");
         assert_eq!(batch.next_page_key.as_deref(), Some("cursor-2"));
         assert_eq!(
             batch.results[0].requests[0].plugin_id.as_deref(),
@@ -587,7 +584,6 @@ impl PluginManager {
                         .map(|p| {
                             let plugin_arc = p.plugin.clone();
                             let plugin_id = plugin_with_cred.plugin.id.clone();
-                            let source_id = plugin_with_cred.plugin.path.clone();
                             let plugin_name = plugin_with_cred.plugin.name.clone();
                             let wrapped_query = RsLookupWrapper {
                                 query: query.clone(),
@@ -597,7 +593,7 @@ impl PluginManager {
                                     .map(PluginCredential::from),
                                 params: build_plugin_params(&plugin_with_cred),
                             };
-                            (plugin_arc, plugin_id, source_id, plugin_name, wrapped_query)
+                            (plugin_arc, plugin_id, plugin_name, wrapped_query)
                         })
                 })
                 .collect()
@@ -605,41 +601,39 @@ impl PluginManager {
 
         let handles: Vec<_> = tasks
             .into_iter()
-            .map(
-                |(plugin_arc, plugin_id, source_id, plugin_name, wrapped_query)| {
-                    tokio::task::spawn_blocking(move || {
-                        let mut plugin_m = plugin_arc.lock().unwrap();
-                        println!(
-                            "Executing lookup for plugin {} lookup results... ",
-                            plugin_name
+            .map(|(plugin_arc, plugin_id, plugin_name, wrapped_query)| {
+                tokio::task::spawn_blocking(move || {
+                    let mut plugin_m = plugin_arc.lock().unwrap();
+                    println!(
+                        "Executing lookup for plugin {} lookup results... ",
+                        plugin_name
+                    );
+                    let res = plugin_m
+                        .call_get_error_code::<Json<RsLookupWrapper>, Json<LookupPluginResult>>(
+                            "lookup",
+                            Json(wrapped_query),
                         );
-                        let res = plugin_m
-                            .call_get_error_code::<Json<RsLookupWrapper>, Json<LookupPluginResult>>(
-                                "lookup",
-                                Json(wrapped_query),
-                            );
-                        (plugin_id, source_id, plugin_name, res)
-                    })
-                },
-            )
+                    (plugin_id, plugin_name, res)
+                })
+            })
             .collect();
 
         let mut results: Vec<LookupSourceResults> = vec![];
 
         for handle in handles {
             match handle.await {
-                Ok((plugin_id, source_id, plugin_name, Ok(Json(result)))) => {
+                Ok((plugin_id, plugin_name, Ok(Json(result)))) => {
                     log_info(
                         crate::tools::log::LogServiceType::Plugin,
                         format!("Lookup result from plugin {}", plugin_name),
                     );
                     if let Some(result) =
-                        prepare_lookup_source_results(plugin_id, source_id, plugin_name, result)
+                        prepare_lookup_source_results(plugin_id, plugin_name, result)
                     {
                         results.push(result);
                     }
                 }
-                Ok((_, _, _, Err((error, code)))) => {
+                Ok((_, _, Err((error, code)))) => {
                     if code != 404 {
                         log_error(
                             crate::tools::log::LogServiceType::Plugin,
@@ -679,7 +673,6 @@ impl PluginManager {
                         .map(|p| {
                             let plugin_arc = p.plugin.clone();
                             let plugin_id = plugin_with_cred.plugin.id.clone();
-                            let source_id = plugin_with_cred.plugin.path.clone();
                             let plugin_name = plugin_with_cred.plugin.name.clone();
                             let wrapped_query = RsLookupWrapper {
                                 query: query.clone(),
@@ -689,38 +682,45 @@ impl PluginManager {
                                     .map(PluginCredential::from),
                                 params: build_plugin_params(&plugin_with_cred),
                             };
-                            (plugin_arc, plugin_id, source_id, plugin_name, wrapped_query)
+                            (plugin_arc, plugin_id, plugin_name, wrapped_query)
                         })
                 })
                 .collect()
         };
 
         tokio::spawn(async move {
-            let mut pending: futures::stream::FuturesUnordered<_> = tasks.into_iter().map(|(plugin_arc, plugin_id, source_id, plugin_name, wrapped_query)| {
-                tokio::task::spawn_blocking(move || {
-                    let mut plugin_m = plugin_arc.lock().unwrap();
-                    println!("Executing lookup stream for plugin {} ...", plugin_name);
-                    let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<LookupPluginResult>>("lookup", Json(wrapped_query));
-                    (plugin_id, source_id, plugin_name, res)
+            let mut pending: futures::stream::FuturesUnordered<_> = tasks
+                .into_iter()
+                .map(|(plugin_arc, plugin_id, plugin_name, wrapped_query)| {
+                    tokio::task::spawn_blocking(move || {
+                        let mut plugin_m = plugin_arc.lock().unwrap();
+                        println!("Executing lookup stream for plugin {} ...", plugin_name);
+                        let res = plugin_m
+                            .call_get_error_code::<Json<RsLookupWrapper>, Json<LookupPluginResult>>(
+                                "lookup",
+                                Json(wrapped_query),
+                            );
+                        (plugin_id, plugin_name, res)
+                    })
                 })
-            }).collect();
+                .collect();
 
             while let Some(handle_result) = pending.next().await {
                 match handle_result {
-                    Ok((plugin_id, source_id, plugin_name, Ok(Json(result)))) => {
+                    Ok((plugin_id, plugin_name, Ok(Json(result)))) => {
                         log_info(
                             crate::tools::log::LogServiceType::Plugin,
                             format!("Lookup stream result from plugin {}", plugin_name),
                         );
                         if let Some(result) =
-                            prepare_lookup_source_results(plugin_id, source_id, plugin_name, result)
+                            prepare_lookup_source_results(plugin_id, plugin_name, result)
                         {
                             if tx.send(result).await.is_err() {
                                 break;
                             }
                         }
                     }
-                    Ok((_, _, _, Err((error, code)))) => {
+                    Ok((_, _, Err((error, code)))) => {
                         if code != 404 {
                             log_error(
                                 crate::tools::log::LogServiceType::Plugin,

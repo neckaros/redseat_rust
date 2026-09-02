@@ -75,9 +75,17 @@ mod source_filter_tests {
         plugin.plugin.id = "stored-plugin-id".to_string();
         plugin.plugin.path = "provider/plugin.wasm".to_string();
 
+        let mut duplicate_install = PluginWithCredential::default();
+        duplicate_install.plugin.id = "other-stored-plugin-id".to_string();
+        duplicate_install.plugin.path = plugin.plugin.path.clone();
+
         assert!(plugin_matches_sources(&plugin, None));
         assert!(plugin_matches_sources(
             &plugin,
+            Some(&["stored-plugin-id".to_string()])
+        ));
+        assert!(!plugin_matches_sources(
+            &duplicate_install,
             Some(&["stored-plugin-id".to_string()])
         ));
         assert!(plugin_matches_sources(

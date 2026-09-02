@@ -87,10 +87,9 @@ impl LookupPagination {
     pub fn resolve(&self) -> crate::Result<(Option<String>, Option<Vec<String>>)> {
         let page_key = self
             .page_key
-            .as_deref()
-            .map(str::trim)
-            .filter(|key| !key.is_empty())
-            .map(str::to_string);
+            .as_ref()
+            .filter(|key| !key.trim().is_empty())
+            .cloned();
         let sources = parse_sources(self.source.as_deref());
 
         if page_key.is_some() && sources.as_ref().map(Vec::len) != Some(1) {
@@ -219,7 +218,7 @@ mod tests {
     use rs_plugin_common_interfaces::request::{RsGroupDownload, RsRequest};
 
     #[test]
-    fn lookup_pagination_normalizes_name_page_key_and_source() {
+    fn lookup_pagination_normalizes_name_and_source_but_preserves_page_key() {
         let pagination: LookupPagination = serde_json::from_value(serde_json::json!({
             "name": "  alternate title  ",
             "pageKey": "  cursor-2  ",
@@ -229,7 +228,7 @@ mod tests {
 
         let (page_key, sources) = pagination.resolve().expect("resolve pagination");
         assert_eq!(pagination.name().as_deref(), Some("alternate title"));
-        assert_eq!(page_key.as_deref(), Some("cursor-2"));
+        assert_eq!(page_key.as_deref(), Some("  cursor-2  "));
         assert_eq!(sources, Some(vec!["plugin-a".to_string()]));
     }
 

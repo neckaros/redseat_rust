@@ -69,13 +69,14 @@ accept these optional query parameters:
   when requesting the first page) to query.
 - `pageKey`: an opaque provider-specific page key passed through to the selected
   plugin. A request with `pageKey` must identify exactly one non-empty `source`,
-  because page keys are not portable across providers.
+  because page keys are not portable across providers. Non-blank page keys are
+  preserved verbatim, including leading or trailing whitespace.
 
 For example, the next page of movie results from one lookup plugin can be
 requested with:
 
 ```text
-GET /libraries/{libraryId}/movies/{movieId}/searchstream?name={alternateTitle}&source={pluginPath}&pageKey={pageKey}
+GET /libraries/{libraryId}/movies/{movieId}/searchstream?name={alternateTitle}&source={pluginId}&pageKey={pageKey}
 ```
 
 The server does not impose the current 25-result page size. Each plugin decides
@@ -93,6 +94,9 @@ interface LookupSourceResults {
 
 type LookupResponse = LookupSourceResults[];
 ```
+
+`sourceId` is the unique stored plugin ID, so it identifies one installation
+even when multiple installed plugins use the same WASM path.
 
 Lookup plugins can advertise another page by wrapping their existing result:
 
