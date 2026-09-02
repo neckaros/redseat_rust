@@ -75,27 +75,34 @@ pub struct LookupPagination {
 }
 
 impl LookupPagination {
-    pub fn page_key(&self) -> Option<String> {
-        self.page_key
+    pub fn resolve(&self) -> crate::Result<(Option<String>, Option<Vec<String>>)> {
+        let page_key = self
+            .page_key
             .as_deref()
             .map(str::trim)
             .filter(|key| !key.is_empty())
-            .map(str::to_string)
-    }
+            .map(str::to_string);
+        let sources = parse_sources(self.source.as_deref());
 
-    pub fn sources(&self) -> Option<Vec<String>> {
-        parse_sources(self.source.as_deref())
+        if page_key.is_some() && sources.as_ref().map(Vec::len) != Some(1) {
+            return Err(crate::Error::InvalidParams(
+                "pageKey requires exactly one non-empty source".to_string(),
+            ));
+        }
+
+        Ok((page_key, sources))
     }
 }
 
 fn parse_sources(source: Option<&str>) -> Option<Vec<String>> {
-    source.map(|source| {
-        source
+    source.and_then(|source| {
+        let sources: Vec<_> = source
             .split(',')
             .map(str::trim)
             .filter(|source| !source.is_empty())
             .map(str::to_string)
-            .collect()
+            .collect();
+        (!sources.is_empty()).then_some(sources)
     })
 }
 
@@ -109,6 +116,8 @@ pub struct SseLookupSearchEvent<'a> {
     pub results: &'a [SseLookupSearchResult<'a>],
     /// Complete download groups for clients that understand grouped results.
     pub downloads: &'a [RsGroupDownload],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_page_key: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -201,18 +210,16 @@ mod tests {
     use rs_plugin_common_interfaces::request::{RsGroupDownload, RsRequest};
 
     #[test]
-    fn lookup_pagination_normalizes_page_key_and_sources() {
+    fn lookup_pagination_normalizes_page_key_and_source() {
         let pagination: LookupPagination = serde_json::from_value(serde_json::json!({
             "pageKey": "  cursor-2  ",
-            "source": "plugin-a, plugin-b"
+            "source": "  plugin-a  "
         }))
         .expect("deserialize lookup pagination");
 
-        assert_eq!(pagination.page_key().as_deref(), Some("cursor-2"));
-        assert_eq!(
-            pagination.sources(),
-            Some(vec!["plugin-a".to_string(), "plugin-b".to_string()])
-        );
+        let (page_key, sources) = pagination.resolve().expect("resolve pagination");
+        assert_eq!(page_key.as_deref(), Some("cursor-2"));
+        assert_eq!(sources, Some(vec!["plugin-a".to_string()]));
     }
 
     #[test]
@@ -222,8 +229,24 @@ mod tests {
             source: None,
         };
 
-        assert_eq!(pagination.page_key(), None);
-        assert_eq!(pagination.sources(), None);
+        let (page_key, sources) = pagination.resolve().expect("resolve pagination");
+        assert_eq!(page_key, None);
+        assert_eq!(sources, None);
+    }
+
+    #[test]
+    fn lookup_pagination_rejects_a_page_key_without_exactly_one_source() {
+        for source in [None, Some("   ".to_string()), Some("a,b".to_string())] {
+            let pagination = LookupPagination {
+                page_key: Some("cursor-2".to_string()),
+                source,
+            };
+
+            assert!(matches!(
+                pagination.resolve(),
+                Err(crate::Error::InvalidParams(_))
+            ));
+        }
     }
 
     #[test]
@@ -268,12 +291,14 @@ mod tests {
             source_name: "Plugin name",
             results: &results,
             downloads: std::slice::from_ref(&group),
+            next_page_key: Some("cursor-2"),
         };
         let value = serde_json::to_value(event).expect("serialize lookup event");
 
         assert_eq!(value["results"].as_array().map(Vec::len), Some(1));
         assert_eq!(value["downloads"][0]["group"], true);
         assert_eq!(value["downloads"][0]["groupFilename"], "Chapter 1");
+        assert_eq!(value["nextPageKey"], "cursor-2");
         assert_eq!(
             value["downloads"][0]["requests"].as_array().map(Vec::len),
             Some(1)

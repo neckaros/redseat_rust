@@ -359,6 +359,7 @@ async fn handler_lookup(
     user: ConnectedUser,
     Query(pagination): Query<LookupPagination>,
 ) -> Result<Json<Value>> {
+    let (page_key, sources) = pagination.resolve()?;
     let book = mc.get_book(&library_id, book_id, &user).await?;
     let name = book.item.name.clone();
     let author = first_person_name(&mc, &library_id, &book.relations, &user).await;
@@ -367,13 +368,12 @@ async fn handler_lookup(
         name: Some(name),
         author,
         ids: Some(ids),
-        page_key: pagination.page_key(),
+        page_key,
     });
     log_info(
         LogServiceType::Source,
         format!("Executing lookup with query: {:?}", query),
     );
-    let sources = pagination.sources();
     let results = mc
         .exec_lookup(query, Some(library_id), &user, None, sources.as_deref())
         .await?;
@@ -386,6 +386,7 @@ async fn handler_lookup_stream(
     user: ConnectedUser,
     Query(pagination): Query<LookupPagination>,
 ) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>> {
+    let (page_key, sources) = pagination.resolve()?;
     let book = mc.get_book(&library_id, book_id.clone(), &user).await?;
     let name = book.item.name.clone();
     let author = first_person_name(&mc, &library_id, &book.relations, &user).await;
@@ -394,22 +395,22 @@ async fn handler_lookup_stream(
         name: Some(name),
         author,
         ids: Some(ids),
-        page_key: pagination.page_key(),
+        page_key,
     });
-    let sources = pagination.sources();
     let mut rx = mc
         .exec_lookup_stream_grouped(query, Some(library_id), &user, None, sources.as_deref())
         .await?;
 
     let stream = async_stream::stream! {
-        while let Some((source_id, source_name, mut groups)) = rx.recv().await {
-            bind_downloads_to_book(&mut groups, &book_id);
-            let results = SseLookupSearchResult::from_groups(&groups);
+        while let Some(mut batch) = rx.recv().await {
+            bind_downloads_to_book(&mut batch.results, &book_id);
+            let results = SseLookupSearchResult::from_groups(&batch.results);
             if let Ok(data) = serde_json::to_string(&SseLookupSearchEvent {
-                source_id: &source_id,
-                source_name: &source_name,
+                source_id: &batch.source_id,
+                source_name: &batch.source_name,
                 results: &results,
-                downloads: &groups,
+                downloads: &batch.results,
+                next_page_key: batch.next_page_key.as_deref(),
             }) {
                 yield Ok(Event::default().event("results").data(data));
             }

@@ -63,10 +63,11 @@ The following entity-scoped endpoints stream source lookup results as SSE:
 All entity lookup endpoints, including their non-streaming `/search` variants,
 accept these optional query parameters:
 
-- `source`: a plugin/source path (or comma-separated paths) to query.
+- `source`: a plugin/source path or stored plugin ID (or a comma-separated list
+  when requesting the first page) to query.
 - `pageKey`: an opaque provider-specific page key passed through to the selected
-  plugin. Send `source` with `pageKey`, because page keys are not portable across
-  providers.
+  plugin. A request with `pageKey` must identify exactly one non-empty `source`,
+  because page keys are not portable across providers.
 
 For example, the next page of movie results from one lookup plugin can be
 requested with:
@@ -77,7 +78,33 @@ GET /libraries/{libraryId}/movies/{movieId}/searchstream?source={pluginPath}&pag
 
 The server does not impose the current 25-result page size. Each plugin decides
 its page size and how its page key is encoded; plugins that ignore `pageKey`
-remain single-page sources.
+remain single-page sources. A non-streaming `/search` response is grouped by
+source so every provider can return its own continuation cursor:
+
+```typescript
+interface LookupSourceResults {
+  sourceId: string;
+  sourceName: string;
+  results: RsGroupDownload[];
+  nextPageKey?: string;
+}
+
+type LookupResponse = LookupSourceResults[];
+```
+
+Lookup plugins can advertise another page by wrapping their existing result:
+
+```json
+{
+  "result": { "requests": [] },
+  "nextPageKey": "provider-defined-opaque-cursor"
+}
+```
+
+The `result` value uses the existing `RsLookupSourceResult` representation, so
+`groupRequest`, `notFound`, and `notApplicable` remain valid alternatives.
+Unwrapped legacy plugin responses are still accepted, but cannot advertise a
+continuation cursor.
 
 Each source emits a `results` event with both the legacy flattened requests and
 the complete grouped downloads:
@@ -93,6 +120,7 @@ interface LookupSearchEvent {
   }>;
   // Group-aware view: preserves provider grouping and group metadata.
   downloads: RsGroupDownload[];
+  nextPageKey?: string;
 }
 
 interface RsGroupDownload {

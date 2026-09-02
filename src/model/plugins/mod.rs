@@ -2,9 +2,7 @@ use std::collections::HashMap;
 
 use nanoid::nanoid;
 use rs_plugin_common_interfaces::{
-    lookup::{
-        RsLookupMetadataResultWrapper, RsLookupMetadataResults, RsLookupQuery, RsLookupSourceResult,
-    },
+    lookup::{RsLookupMetadataResultWrapper, RsLookupMetadataResults, RsLookupQuery},
     request::{RsGroupDownload, RsProcessingStatus, RsRequest},
     url::{RsLink, RsLinkType},
     CustomParam, ExternalImage, PluginCredential, PluginInformation, PluginType, RsPluginRequest,
@@ -37,7 +35,7 @@ use crate::{
     plugins::{
         get_plugin_fodler,
         sources::{error::SourcesError, AsyncReadPinBox, SourceRead},
-        url::{self, PluginTarget},
+        url::{self, LookupSourceResults, PluginTarget},
     },
     tools::{
         file_tools::extract_zip, http_tools::download_latest_wasm, video_tools::ytdl::YydlContext,
@@ -57,6 +55,40 @@ pub struct PluginQuery {
     pub kind: Option<PluginType>,
     pub name: Option<String>,
     pub library: Option<String>,
+}
+
+fn plugin_matches_sources(plugin: &PluginWithCredential, sources: Option<&[String]>) -> bool {
+    sources.map_or(true, |sources| {
+        sources
+            .iter()
+            .any(|source| source == &plugin.plugin.path || source == &plugin.plugin.id)
+    })
+}
+
+#[cfg(test)]
+mod source_filter_tests {
+    use super::{plugin_matches_sources, PluginWithCredential};
+
+    #[test]
+    fn lookup_source_filter_accepts_stored_id_and_plugin_path() {
+        let mut plugin = PluginWithCredential::default();
+        plugin.plugin.id = "stored-plugin-id".to_string();
+        plugin.plugin.path = "provider/plugin.wasm".to_string();
+
+        assert!(plugin_matches_sources(&plugin, None));
+        assert!(plugin_matches_sources(
+            &plugin,
+            Some(&["stored-plugin-id".to_string()])
+        ));
+        assert!(plugin_matches_sources(
+            &plugin,
+            Some(&["provider/plugin.wasm".to_string()])
+        ));
+        assert!(!plugin_matches_sources(
+            &plugin,
+            Some(&["unknown".to_string()])
+        ));
+    }
 }
 
 /// Merge WASM-defined params with DB-stored params.
@@ -455,7 +487,7 @@ impl ModelController {
         requesting_user: &ConnectedUser,
         target: Option<PluginTarget>,
         sources: Option<&[String]>,
-    ) -> RsResult<Vec<RsGroupDownload>> {
+    ) -> RsResult<Vec<LookupSourceResults>> {
         if let Some(library_id) = &library_id {
             requesting_user
                 .check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
@@ -469,7 +501,7 @@ impl ModelController {
                 ..Default::default()
             })
             .await?
-            .filter(|p| sources.map_or(true, |s| s.iter().any(|id| id == &p.plugin.path)))
+            .filter(|plugin| plugin_matches_sources(plugin, sources))
             .collect();
 
         self.plugin_manager.lookup(query, plugins, target).await
@@ -482,7 +514,7 @@ impl ModelController {
         requesting_user: &ConnectedUser,
         target: Option<PluginTarget>,
         sources: Option<&[String]>,
-    ) -> RsResult<tokio::sync::mpsc::Receiver<(String, String, Vec<RsGroupDownload>)>> {
+    ) -> RsResult<tokio::sync::mpsc::Receiver<LookupSourceResults>> {
         if let Some(library_id) = &library_id {
             requesting_user
                 .check_library_role(library_id, crate::domain::library::LibraryRole::Read)?;
@@ -496,7 +528,7 @@ impl ModelController {
                 ..Default::default()
             })
             .await?
-            .filter(|p| sources.map_or(true, |s| s.iter().any(|id| id == &p.plugin.path)))
+            .filter(|plugin| plugin_matches_sources(plugin, sources))
             .collect();
 
         self.plugin_manager
@@ -579,7 +611,7 @@ impl ModelController {
                 ..Default::default()
             })
             .await?
-            .filter(|p| sources.map_or(true, |s| s.iter().any(|id| id == &p.plugin.path)))
+            .filter(|plugin| plugin_matches_sources(plugin, sources))
             .collect();
 
         let mut results = self
@@ -692,7 +724,7 @@ impl ModelController {
                 ..Default::default()
             })
             .await?
-            .filter(|p| sources.map_or(true, |s| s.iter().any(|id| id == &p.plugin.path)))
+            .filter(|plugin| plugin_matches_sources(plugin, sources))
             .collect();
 
         self.plugin_manager

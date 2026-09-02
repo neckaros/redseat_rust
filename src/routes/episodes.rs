@@ -150,6 +150,7 @@ async fn handler_lookup_season(
     user: ConnectedUser,
     Query(pagination): Query<LookupPagination>,
 ) -> Result<Json<Value>> {
+    let (page_key, sources) = pagination.resolve()?;
     let serie = mc
         .get_serie(&library_id.clone(), serie_id.clone(), &user)
         .await?
@@ -165,10 +166,9 @@ async fn handler_lookup_season(
         ids: Some(ids),
         season,
         number: None,
-        page_key: pagination.page_key(),
+        page_key,
     };
     let query = RsLookupQuery::Episode(query_episode);
-    let sources = pagination.sources();
     let library = mc
         .exec_lookup(query, Some(library_id), &user, None, sources.as_deref())
         .await?;
@@ -244,6 +244,7 @@ async fn handler_lookup(
     user: ConnectedUser,
     Query(pagination): Query<LookupPagination>,
 ) -> Result<Json<Value>> {
+    let (page_key, sources) = pagination.resolve()?;
     let episode = mc
         .get_episode(&library_id, serie_id.clone(), season, number, &user)
         .await?;
@@ -262,10 +263,9 @@ async fn handler_lookup(
         ids: Some(ids),
         season: episode.season,
         number: Some(episode.number),
-        page_key: pagination.page_key(),
+        page_key,
     };
     let query = RsLookupQuery::Episode(query_episode);
-    let sources = pagination.sources();
     let library = mc
         .exec_lookup(query, Some(library_id), &user, None, sources.as_deref())
         .await?;
@@ -279,6 +279,7 @@ async fn handler_lookup_stream(
     user: ConnectedUser,
     Query(pagination): Query<LookupPagination>,
 ) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>> {
+    let (page_key, sources) = pagination.resolve()?;
     let episode = mc
         .get_episode(&library_id, serie_id.clone(), season, number, &user)
         .await?;
@@ -297,23 +298,23 @@ async fn handler_lookup_stream(
         ids: Some(ids),
         season: episode.season,
         number: Some(episode.number),
-        page_key: pagination.page_key(),
+        page_key,
     };
     let query = RsLookupQuery::Episode(query_episode);
-    let sources = pagination.sources();
     let mut rx = mc
         .exec_lookup_stream_grouped(query, Some(library_id), &user, None, sources.as_deref())
         .await?;
 
     let stream = async_stream::stream! {
-        while let Some((source_id, source_name, mut groups)) = rx.recv().await {
-            bind_downloads_to_series(&mut groups, &serie_id, season, Some(number));
-            let results = SseLookupSearchResult::from_groups(&groups);
+        while let Some(mut batch) = rx.recv().await {
+            bind_downloads_to_series(&mut batch.results, &serie_id, season, Some(number));
+            let results = SseLookupSearchResult::from_groups(&batch.results);
             if let Ok(data) = serde_json::to_string(&SseLookupSearchEvent {
-                source_id: &source_id,
-                source_name: &source_name,
+                source_id: &batch.source_id,
+                source_name: &batch.source_name,
                 results: &results,
-                downloads: &groups,
+                downloads: &batch.results,
+                next_page_key: batch.next_page_key.as_deref(),
             }) {
                 yield Ok(Event::default().event("results").data(data));
             }
@@ -333,6 +334,7 @@ async fn handler_lookup_season_stream(
     user: ConnectedUser,
     Query(pagination): Query<LookupPagination>,
 ) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>> {
+    let (page_key, sources) = pagination.resolve()?;
     let serie = mc
         .get_serie(&library_id.clone(), serie_id.clone(), &user)
         .await?
@@ -348,23 +350,23 @@ async fn handler_lookup_season_stream(
         ids: Some(ids),
         season,
         number: None,
-        page_key: pagination.page_key(),
+        page_key,
     };
     let query = RsLookupQuery::Episode(query_episode);
-    let sources = pagination.sources();
     let mut rx = mc
         .exec_lookup_stream_grouped(query, Some(library_id), &user, None, sources.as_deref())
         .await?;
 
     let stream = async_stream::stream! {
-        while let Some((source_id, source_name, mut groups)) = rx.recv().await {
-            bind_downloads_to_series(&mut groups, &serie_id, season, None);
-            let results = SseLookupSearchResult::from_groups(&groups);
+        while let Some(mut batch) = rx.recv().await {
+            bind_downloads_to_series(&mut batch.results, &serie_id, season, None);
+            let results = SseLookupSearchResult::from_groups(&batch.results);
             if let Ok(data) = serde_json::to_string(&SseLookupSearchEvent {
-                source_id: &source_id,
-                source_name: &source_name,
+                source_id: &batch.source_id,
+                source_name: &batch.source_name,
                 results: &results,
-                downloads: &groups,
+                downloads: &batch.results,
+                next_page_key: batch.next_page_key.as_deref(),
             }) {
                 yield Ok(Event::default().event("results").data(data));
             }
