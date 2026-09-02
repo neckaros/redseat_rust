@@ -1,13 +1,12 @@
-use async_zip::tokio::read::fs::ZipFileReader;
+use async_zip::base::read1::{seek::ZipArchiveReader, ZipOptions};
 use flate2::read::GzDecoder;
-use futures::AsyncReadExt;
 use std::{
     fs::File,
     io::BufReader,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 use tar::Archive;
-use tokio::io::AsyncWriteExt;
+use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use xz2::read::XzDecoder;
 
 use crate::error::{RsError, RsResult};
@@ -43,18 +42,34 @@ pub async fn unpack_7z(path: PathBuf, dest: PathBuf) -> RsResult<()> {
 }
 
 pub async fn unpack_zip(path: PathBuf, dest: PathBuf) -> RsResult<()> {
-    let mut reader = ZipFileReader::new(&path)
+    let file = tokio::fs::File::open(&path).await?;
+    let reader = tokio::io::BufReader::with_capacity(64 * 1024, file).compat();
+    let mut archive = ZipArchiveReader::open_with_options(reader, ZipOptions::untrusted())
         .await
         .map_err(|e| RsError::Error(format!("unable to open zip file ({:?}): {:?}", path, e)))?;
 
-    for index in 0..reader.file().entries().len() {
-        let entry = reader.file().entries().get(index).unwrap();
-        let entry_name = entry
-            .filename()
-            .as_str()
-            .map_err(|_| RsError::Error("invalid filename encoding".to_string()))?;
-
-        let entry_path = dest.join(entry_name);
+    for index in 0..archive.cdrs().len() {
+        let entry_name =
+            String::from_utf8_lossy(archive.cdrs()[index].insecure_file_name.as_bytes())
+                .into_owned();
+        let is_directory = entry_name.ends_with('/') || entry_name.ends_with('\\');
+        let normalized = entry_name.replace('\\', "/");
+        let mut relative_path = PathBuf::new();
+        for component in Path::new(&normalized).components() {
+            match component {
+                Component::Normal(component) => relative_path.push(component),
+                Component::CurDir => {}
+                Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                    return Err(RsError::Error(format!(
+                        "unsafe path in ZIP archive: {entry_name}"
+                    )))
+                }
+            }
+        }
+        if relative_path.as_os_str().is_empty() {
+            continue;
+        }
+        let entry_path = dest.join(relative_path);
 
         // Create parent directories if needed
         if let Some(parent) = entry_path.parent() {
@@ -63,36 +78,30 @@ pub async fn unpack_zip(path: PathBuf, dest: PathBuf) -> RsResult<()> {
                 .map_err(|_| RsError::Error("unable to create directories".to_string()))?;
         }
 
-        // Skip directories
-        if entry_name.ends_with('/') {
+        // Materialize directory entries.
+        if is_directory {
+            tokio::fs::create_dir_all(&entry_path)
+                .await
+                .map_err(|_| RsError::Error("unable to create directory".to_string()))?;
             continue;
         }
 
         // Extract file
-        let mut entry_reader = reader
-            .reader_with_entry(index)
+        let mut entry_reader = archive
+            .file(index)
             .await
             .map_err(|_| RsError::Error("unable to read zip entry".to_string()))?;
 
-        let mut output_file = tokio::fs::File::create(&entry_path)
+        let output_file = tokio::fs::File::create(&entry_path)
             .await
             .map_err(|_| RsError::Error("unable to create output file".to_string()))?;
-
-        // Manually copy data since entry_reader does not implement AsyncRead
-        let mut buffer = [0u8; 8192];
-        loop {
-            let read_bytes = entry_reader
-                .read(&mut buffer)
-                .await
-                .map_err(|_| RsError::Error("unable to read from zip entry".to_string()))?;
-            if read_bytes == 0 {
-                break;
-            }
-            output_file
-                .write_all(&buffer[..read_bytes])
-                .await
-                .map_err(|_| RsError::Error("unable to write to output file".to_string()))?;
-        }
+        let mut output_file = output_file.compat_write();
+        futures::io::copy(&mut entry_reader, &mut output_file)
+            .await
+            .map_err(|error| RsError::Error(format!("unable to extract zip entry: {error}")))?;
+        futures::AsyncWriteExt::close(&mut output_file)
+            .await
+            .map_err(|error| RsError::Error(format!("unable to close extracted file: {error}")))?;
     }
 
     Ok(())

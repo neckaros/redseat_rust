@@ -24,6 +24,7 @@ pub mod download_external_libs;
 pub mod hls_session;
 pub mod m3u_parser;
 pub mod media_hls_session;
+pub mod rar;
 pub mod test_sample;
 pub mod zip_range;
 
