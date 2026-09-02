@@ -11,6 +11,7 @@ use crate::{
     error::RsError,
     model::{
         episodes::EpisodeQuery,
+        history::{movie_history_id, movie_history_ids},
         medias::MediaQuery,
         movies::{MovieQuery, RsMovieSort},
         store::sql::SqlOrder,
@@ -43,8 +44,8 @@ use tokio::io::AsyncRead;
 use tokio_util::io::{ReaderStream, StreamReader};
 
 use super::{
-    ImageRequestOptions, ImageUploadOptions, RatingUpdateBody, SearchQuery, SearchResultGroup,
-    SseLookupSearchEvent, SseLookupSearchResult, SseSearchEvent,
+    bind_downloads_to_movie, ImageRequestOptions, ImageUploadOptions, RatingUpdateBody,
+    SearchQuery, SearchResultGroup, SseLookupSearchEvent, SseLookupSearchResult, SseSearchEvent,
 };
 
 pub fn routes(mc: ModelController) -> Router {
@@ -242,7 +243,9 @@ async fn handler_lookup_stream(
     State(mc): State<ModelController>,
     user: ConnectedUser,
 ) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>> {
-    let movie = mc.get_movie(&library_id, movie_id, &user).await?;
+    let movie = mc
+        .get_movie(&library_id, movie_id.clone(), &user)
+        .await?;
     let name = movie.name.clone();
     let ids: RsIds = movie.into();
     let query = RsLookupQuery::Movie(RsLookupMovie {
@@ -255,9 +258,15 @@ async fn handler_lookup_stream(
         .await?;
 
     let stream = async_stream::stream! {
-        while let Some((source_id, source_name, groups)) = rx.recv().await {
-            let results = SseLookupSearchResult::from_groups(groups);
-            if let Ok(data) = serde_json::to_string(&SseLookupSearchEvent { source_id: &source_id, source_name: &source_name, results: &results }) {
+        while let Some((source_id, source_name, mut groups)) = rx.recv().await {
+            bind_downloads_to_movie(&mut groups, &movie_id);
+            let results = SseLookupSearchResult::from_groups(&groups);
+            if let Ok(data) = serde_json::to_string(&SseLookupSearchEvent {
+                source_id: &source_id,
+                source_name: &source_name,
+                results: &results,
+                downloads: &groups,
+            }) {
                 yield Ok(Event::default().event("results").data(data));
             }
         }
@@ -341,7 +350,11 @@ async fn handler_progress_get(
 ) -> Result<Json<Value>> {
     let movie = mc.get_movie(&library_id, movie_id, &user).await?;
     let progress = mc
-        .get_view_progress(movie.into(), &user, Some(library_id.to_string()))
+        .get_view_progress(
+            movie_history_ids(&movie),
+            &user,
+            Some(library_id.to_string()),
+        )
         .await?
         .ok_or(Error::NotFound("unable to get movie progress".to_string()))?;
     Ok(Json(json!(progress)))
@@ -354,14 +367,9 @@ async fn handler_progress_set(
     Json(progress): Json<ViewProgressLigh>,
 ) -> Result<()> {
     let movie = mc.get_movie(&library_id, movie_id, &user).await?;
-    let id = RsIds::from(movie)
-        .into_best_external()
-        .ok_or(Error::NotFound(
-            "unable to get best external id for movie progress".to_string(),
-        ))?;
     let progress = ViewProgressForAdd {
         kind: MediaType::Movie,
-        id,
+        id: movie_history_id(&movie),
         progress: progress.progress,
         parent: None,
     };
@@ -407,7 +415,7 @@ async fn handler_watched_get(
 ) -> Result<Json<Value>> {
     let movie = mc.get_movie(&library_id, movie_id, &user).await?;
     let query = HistoryQuery {
-        id: Some(movie.into()),
+        id: Some(movie_history_ids(&movie)),
         ..Default::default()
     };
     let progress = mc
@@ -426,14 +434,9 @@ async fn handler_watched_set(
     Json(watched): Json<WatchedLight>,
 ) -> Result<()> {
     let movie = mc.get_movie(&library_id, movie_id, &user).await?;
-    let id = RsIds::from(movie)
-        .into_best_external()
-        .ok_or(Error::NotFound(
-            "Unable to get best external id for movie".to_string(),
-        ))?;
     let watched = WatchedForAdd {
         kind: MediaType::Movie,
-        id,
+        id: movie_history_id(&movie),
         date: watched.date,
     };
     mc.add_watched(watched, &user, Some(library_id)).await?;
@@ -447,11 +450,9 @@ async fn handler_watched_delete(
     user: ConnectedUser,
 ) -> Result<()> {
     let movie = mc.get_movie(&library_id, movie_id, &user).await?;
-    let rs_ids = RsIds::from(movie);
-    let ids = rs_ids.into_all_external();
     let watched = WatchedForDelete {
         kind: MediaType::Movie,
-        ids,
+        ids: vec![movie_history_id(&movie)],
     };
     mc.remove_watched(watched, &user, Some(library_id)).await?;
 

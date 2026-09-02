@@ -12,6 +12,7 @@ use rs_plugin_common_interfaces::{
     lookup::{RsLookupMatchType, RsLookupMovie},
 };
 use serde::de::DeserializeOwned;
+use std::env;
 use tower::Service;
 use trakt_people::{TraktActorsResult, TraktPeopleSearchElement, TraktPerson};
 
@@ -25,6 +26,8 @@ use self::{
 };
 // Context required for all requests
 use unidecode::unidecode;
+
+pub const ENV_TRAKT_CLIENT_ID: &str = "REDSEAT_TRAKT_CLIENT_ID";
 
 /// Deserialize JSON response with detailed error path information
 async fn json_with_path<T: DeserializeOwned>(
@@ -73,6 +76,13 @@ fn as_id_for_trakt(ids: &RsIds) -> Option<String> {
 }
 
 impl TraktContext {
+    pub fn from_env() -> Self {
+        let client_id = env::var(ENV_TRAKT_CLIENT_ID)
+            .map(|value| value.trim().to_string())
+            .unwrap_or_default();
+        Self::new(client_id)
+    }
+
     pub fn new(client_id: String) -> Self {
         let base_url = reqwest::Url::parse("https://api.trakt.tv").unwrap();
         let mut headers = HeaderMap::new();
@@ -86,6 +96,17 @@ impl TraktContext {
             base_url, //"https://api.trakt.tv".to_string(),
             client_id,
             client,
+        }
+    }
+
+    fn ensure_configured(&self) -> crate::Result<()> {
+        if self.client_id.is_empty() {
+            Err(Error::Error(format!(
+                "Trakt API client ID is not configured; set {}",
+                ENV_TRAKT_CLIENT_ID
+            )))
+        } else {
+            Ok(())
         }
     }
 }
@@ -153,6 +174,7 @@ impl TraktContext {
         &self,
         search: &RsLookupMovie,
     ) -> crate::Result<Vec<(Serie, Option<RsLookupMatchType>)>> {
+        self.ensure_configured()?;
         let query = search.name.as_deref().unwrap_or_default();
         let url = self
             .base_url
@@ -167,7 +189,8 @@ impl TraktContext {
             .get(url)
             .header("trakt-api-key", &self.client_id)
             .send()
-            .await?;
+            .await?
+            .error_for_status()?;
 
         let shows = r
             .json::<Vec<TraktShowSearchElement>>()
@@ -371,6 +394,7 @@ impl TraktContext {
         &self,
         search: &RsLookupMovie,
     ) -> crate::Result<Vec<(Movie, Option<RsLookupMatchType>)>> {
+        self.ensure_configured()?;
         let query = search.name.as_deref().unwrap_or_default();
         let url = self
             .base_url
@@ -385,7 +409,8 @@ impl TraktContext {
             .get(url)
             .header("trakt-api-key", &self.client_id)
             .send()
-            .await?;
+            .await?
+            .error_for_status()?;
         let movies = r
             .json::<Vec<TraktMovieSearchElement>>()
             .await?
@@ -489,6 +514,7 @@ impl TraktContext {
         &self,
         search: &RsLookupMovie,
     ) -> crate::Result<Vec<(Person, Option<RsLookupMatchType>)>> {
+        self.ensure_configured()?;
         let query = search.name.as_deref().unwrap_or_default();
         let url = self
             .base_url
@@ -503,7 +529,8 @@ impl TraktContext {
             .get(url)
             .header("trakt-api-key", &self.client_id)
             .send()
-            .await?;
+            .await?
+            .error_for_status()?;
         let people = r
             .json::<Vec<TraktPeopleSearchElement>>()
             .await?
@@ -540,9 +567,7 @@ mod tests {
     #[tokio::test]
     #[ignore] // requires network + valid Trakt API key
     async fn trakt_releases() -> RsResult<()> {
-        let trakt = TraktContext::new(
-            "455f81b3409a8dd140a941e9250ff22b2ed92d68003491c3976363fe752a9024".to_owned(),
-        );
+        let trakt = TraktContext::from_env();
 
         let releases = trakt.get_movie_releases(&exemple_movie()).await?;
 
@@ -559,9 +584,7 @@ mod tests {
     #[tokio::test]
     #[ignore] // requires network + valid Trakt API key
     async fn trakt_search_person() -> RsResult<()> {
-        let trakt = TraktContext::new(
-            "455f81b3409a8dd140a941e9250ff22b2ed92d68003491c3976363fe752a9024".to_owned(),
-        );
+        let trakt = TraktContext::from_env();
 
         let search_result = trakt
             .search_person(&RsLookupMovie {

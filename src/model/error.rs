@@ -48,6 +48,10 @@ pub enum Error {
     MediaNotFound(String),
     PersonNotFound(String),
     LibraryDeletionInProgress(String),
+    InvalidPaginationLimit {
+        requested: u32,
+        maximum: u32,
+    },
 
     HeaderParseFail,
     UnableToGetFileStream,
@@ -142,6 +146,15 @@ impl Error {
                 StatusCode::CONFLICT,
                 ClientError::Custom {
                     message: "Library deletion already in progress".to_string(),
+                },
+            ),
+            Error::InvalidPaginationLimit { requested, maximum } => (
+                StatusCode::BAD_REQUEST,
+                ClientError::Custom {
+                    message: format!(
+                        "Pagination limit {} exceeds the maximum of {}",
+                        requested, maximum
+                    ),
                 },
             ),
 

@@ -24,6 +24,7 @@ use crate::{
 
 use super::{
     error::{Error, Result},
+    history::{direct_history_ids, normalize_history_id},
     libraries::ServerLibraryForRead,
     medias::RsSort,
     store::sql::{users::WatchedQuery, SqlOrder},
@@ -448,11 +449,6 @@ pub struct HistoryQuery {
 
     pub page_key: Option<u64>,
 
-    /// Include items with date=0 (unwatched/deleted).
-    /// When true, returns all items including soft-deleted ones for sync purposes.
-    /// Clients can use this with `after` parameter to sync deletions that occurred while offline.
-    #[serde(default)]
-    pub include_deleted: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -527,11 +523,24 @@ impl ModelController {
 
     pub async fn add_watched(
         &self,
-        watched: WatchedForAdd,
+        mut watched: WatchedForAdd,
         user: &ConnectedUser,
         library_id: Option<String>,
     ) -> RsResult<()> {
         user.check_role(&UserRole::Read)?;
+        watched.id = normalize_history_id(&watched.kind, watched.id);
+        if watched.date <= 0 {
+            return self
+                .remove_watched(
+                    WatchedForDelete {
+                        kind: watched.kind,
+                        ids: vec![watched.id],
+                    },
+                    user,
+                    library_id,
+                )
+                .await;
+        }
 
         let user_id = user.user_id()?;
         let modified = now().timestamp_millis() as u64;
@@ -572,11 +581,16 @@ impl ModelController {
     /// Removes watched entries. Tries all provided IDs and emits a single SSE event with all IDs.
     pub async fn remove_watched(
         &self,
-        watched: WatchedForDelete,
+        mut watched: WatchedForDelete,
         user: &ConnectedUser,
         library_id: Option<String>,
     ) -> RsResult<()> {
         user.check_role(&UserRole::Read)?;
+        watched.ids = watched
+            .ids
+            .into_iter()
+            .map(|id| normalize_history_id(&watched.kind, id))
+            .collect();
         let user_id = user.user_id()?;
         let modified = now().timestamp_millis() as u64;
 
@@ -613,11 +627,12 @@ impl ModelController {
 
     pub async fn add_view_progress(
         &self,
-        progress: ViewProgressForAdd,
+        mut progress: ViewProgressForAdd,
         user: &ConnectedUser,
         library_id: Option<String>,
     ) -> RsResult<()> {
         user.check_role(&UserRole::Read)?;
+        progress.id = normalize_history_id(&progress.kind, progress.id);
 
         let user_id = user.user_id()?;
         if let Some(library_id) = library_id {
@@ -661,7 +676,7 @@ impl ModelController {
         id: String,
         user: &ConnectedUser,
     ) -> RsResult<Option<ViewProgress>> {
-        let media_id = RsIds::try_from(id)?;
+        let media_id = direct_history_ids(id)?;
         self.get_view_progress(media_id, user, None).await
     }
 

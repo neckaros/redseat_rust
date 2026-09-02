@@ -133,7 +133,6 @@ impl ModelController {
                     "Unable to get {} image url: {} kind {:?}",
                     config.cache_prefix, external_id, kind,
                 )))?;
-            let (_, mut writer) = local_provider.get_file_write_stream(&image_path).await?;
             let image_reader = SourceRead::Request(image_request)
                 .into_reader(
                     Some(library_id),
@@ -151,7 +150,18 @@ impl ModelController {
                 false,
             )
             .await?;
-            writer.write_all(&resized).await?;
+            let (_, mut writer) = local_provider.get_file_write_stream(&image_path).await?;
+            let write_result = async {
+                writer.write_all(&resized).await?;
+                writer.shutdown().await
+            }
+            .await;
+            if let Err(error) = write_result {
+                // A failed write may leave a partial cache entry that would otherwise be
+                // treated as valid by the next request.
+                let _ = local_provider.remove(&image_path).await;
+                return Err(error.into());
+            }
         }
 
         let source = local_provider.get_file(&image_path, None).await?;

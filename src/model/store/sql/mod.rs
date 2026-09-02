@@ -20,7 +20,25 @@ use strum::additional_attributes;
 use strum_macros::EnumString;
 use tokio_rusqlite::Connection;
 
-use super::Result;
+use super::{Error, Result};
+
+pub const MAX_PAGINATION_LIMIT: u32 = 5000;
+
+pub fn pagination_clause(limit: Option<u32>, offset: Option<u32>) -> Result<String> {
+    match (limit, offset) {
+        (Some(limit), _) if limit > MAX_PAGINATION_LIMIT => Err(Error::InvalidPaginationLimit {
+            requested: limit,
+            maximum: MAX_PAGINATION_LIMIT,
+        }),
+        (Some(limit), offset) => Ok(format!(
+            " LIMIT {} OFFSET {}",
+            limit,
+            offset.unwrap_or_default()
+        )),
+        (None, Some(offset)) => Ok(format!(" LIMIT -1 OFFSET {}", offset)),
+        (None, None) => Ok(String::new()),
+    }
+}
 
 pub async fn migrate_database(connection: &Connection) -> Result<usize> {
     let version = connection
@@ -686,4 +704,39 @@ pub fn deserialize_from_row<T: DeserializeOwned>(
 
     let u = serde_json::from_value::<T>(value).map_err(|e| FromSqlError::Other(Box::new(e)))?;
     Ok(u)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{pagination_clause, MAX_PAGINATION_LIMIT};
+    use crate::model::error::Error;
+
+    #[test]
+    fn pagination_clause_preserves_requested_pages() {
+        assert_eq!(
+            pagination_clause(Some(250), Some(500)).unwrap(),
+            " LIMIT 250 OFFSET 500"
+        );
+        assert_eq!(
+            pagination_clause(None, Some(500)).unwrap(),
+            " LIMIT -1 OFFSET 500"
+        );
+        assert_eq!(pagination_clause(None, None).unwrap(), "");
+    }
+
+    #[test]
+    fn pagination_clause_rejects_oversized_limits() {
+        let error = pagination_clause(Some(MAX_PAGINATION_LIMIT + 1), None).unwrap_err();
+        assert_eq!(
+            error.client_status_and_error().0,
+            hyper::StatusCode::BAD_REQUEST
+        );
+        assert!(matches!(
+            error,
+            Error::InvalidPaginationLimit {
+                requested: 5001,
+                maximum: 5000
+            }
+        ));
+    }
 }

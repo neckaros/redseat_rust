@@ -78,7 +78,10 @@ fn merge_params(wasm_params: &[CustomParam], db_params: &[CustomParam]) -> Vec<C
 }
 
 impl ModelController {
-    pub(super) async fn clear_plugin_convert_concurrency_limit_cache(&self, plugin_id: Option<&str>) {
+    pub(super) async fn clear_plugin_convert_concurrency_limit_cache(
+        &self,
+        plugin_id: Option<&str>,
+    ) {
         let mut limits = self.plugin_convert_concurrency_limits.write().await;
         if let Some(plugin_id) = plugin_id {
             limits.remove(plugin_id);
@@ -198,7 +201,8 @@ impl ModelController {
     pub async fn reload_plugins(&self, requesting_user: &ConnectedUser) -> RsResult<()> {
         requesting_user.check_role(&UserRole::Admin)?;
         self.plugin_manager.reload().await?;
-        self.clear_plugin_convert_concurrency_limit_cache(None).await;
+        self.clear_plugin_convert_concurrency_limit_cache(None)
+            .await;
         Ok(())
     }
 
@@ -258,7 +262,8 @@ impl ModelController {
             plugin: plugin_for_add,
         };
         self.store.add_plugin(plugin.clone()).await?;
-        self.clear_plugin_convert_concurrency_limit_cache(None).await;
+        self.clear_plugin_convert_concurrency_limit_cache(None)
+            .await;
         let plugin = self.get_plugin(plugin.id, &requesting_user).await?;
         Ok(plugin)
     }
@@ -274,7 +279,8 @@ impl ModelController {
             plugin,
         };
         self.store.add_plugin(plugin.clone()).await?;
-        self.clear_plugin_convert_concurrency_limit_cache(None).await;
+        self.clear_plugin_convert_concurrency_limit_cache(None)
+            .await;
         let plugin = self.get_plugin(plugin.id, &requesting_user).await?;
         Ok(plugin)
     }

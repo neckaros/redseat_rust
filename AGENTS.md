@@ -131,6 +131,22 @@ docker pull neckaros/redseat-rust
 docker run -v redseat_config:/root/.config/redseat -p 8080:8080 neckaros/redseat-rust
 ```
 
+### Build and Test Timing
+
+- Native dependencies make cold Windows builds slow. Allow at least 5 minutes for
+  `cargo check --bin redseat-rust` and 6 minutes for the first filtered
+  `cargo test ... --bin redseat-rust` instead of starting with a 2-minute timeout.
+- The `dev` and `test` profiles compile separately. A successful `cargo check`
+  does not make the first `cargo test` fast; expect another native dependency build.
+- After the caches are warm, `cargo check` is typically about 10 seconds and a
+  focused test filter about 2 seconds (machine-dependent).
+- If a Cargo command times out, its compiler subprocess may still be running and
+  holding the target-directory lock. Inspect or wait for that process before
+  retrying; an immediate retry can spend most of its time at
+  `Blocking waiting for file lock on build directory`.
+- For review fixes, validate with `cargo check --bin redseat-rust` first, then run
+  the narrowest relevant test filter to avoid unnecessary test execution.
+
 ## ENV VARIABLES
 
 | Variable | Purpose |

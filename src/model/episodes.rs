@@ -1,12 +1,12 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use async_recursion::async_recursion;
 use nanoid::nanoid;
 use query_external_ip::SourceError;
 use rs_plugin_common_interfaces::{
-    domain::rs_ids::RsIds,
-    lookup::{RsLookupEpisode, RsLookupQuery},
-    ImageType, MediaType,
+    domain::rs_ids::{ApplyRsIds, RsIds},
+    lookup::{RsLookupEpisode, RsLookupMetadataResult, RsLookupQuery},
+    ImageType, MediaType, PluginType,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -22,16 +22,20 @@ use crate::{
         ElementAction,
     },
     error::RsResult,
-    plugins::{
-        medias::imdb::ImdbContext,
-        sources::{error::SourcesError, AsyncReadPinBox, FileStreamResult},
+    plugins::sources::{error::SourcesError, AsyncReadPinBox, FileStreamResult},
+    tools::{
+        array_tools::Dedup,
+        clock::now,
+        image_tools::ImageSize,
+        log::{log_error, LogServiceType},
     },
-    tools::{array_tools::Dedup, clock::now, image_tools::ImageSize},
 };
 
 use super::{
     error::{Error, Result},
+    history::{episode_history_id, episode_history_ids},
     medias::{RsSort, RsSortOrder},
+    plugins::PluginQuery,
     store::sql::SqlOrder,
     users::{ConnectedUser, HistoryQuery},
     ModelController,
@@ -56,6 +60,12 @@ pub struct EpisodeQuery {
     pub sorts: Vec<RsSortOrder>,
 
     pub limit: Option<u32>,
+    pub offset: Option<u32>,
+}
+
+pub struct EpisodeSyncResult {
+    pub episodes: Vec<Episode>,
+    pub changes: Vec<EpisodeWithAction>,
 }
 
 impl EpisodeQuery {
@@ -104,7 +114,192 @@ pub struct EpisodeForUpdate {
     pub trakt_votes: Option<u64>,
 }
 
+fn should_retry_episode_lookup_with_enriched_ids(
+    original_ids: &RsIds,
+    enriched_ids: &RsIds,
+) -> bool {
+    enriched_ids.as_all_external_ids() != original_ids.as_all_external_ids()
+}
+
+fn take_episode_source(
+    groups: Vec<(String, String, rs_plugin_common_interfaces::lookup::RsLookupMetadataResults)>,
+    serie_id: &str,
+    excluded_source: Option<&str>,
+) -> Option<(String, Vec<Episode>)> {
+    groups.into_iter().find_map(|(source_id, _, results)| {
+        if excluded_source == Some(source_id.as_str()) {
+            return None;
+        }
+        let episodes: Vec<Episode> = results
+            .results
+            .into_iter()
+            .filter_map(|result| match result.metadata {
+                RsLookupMetadataResult::Episode(mut episode) => {
+                    episode.serie = serie_id.to_string();
+                    Some(episode)
+                }
+                _ => None,
+            })
+            .collect();
+        (!episodes.is_empty()).then_some((source_id, episodes))
+    })
+}
+
 impl ModelController {
+    async fn episode_series_by_ref(
+        &self,
+        library_id: &str,
+        episodes: &[Episode],
+    ) -> RsResult<HashMap<String, Serie>> {
+        let store = self.store.get_library_store(library_id)?;
+        let serie_refs: HashSet<String> = episodes.iter().map(|episode| episode.serie.clone()).collect();
+        let mut series = HashMap::new();
+        for serie_ref in serie_refs {
+            if let Some(serie) = store.get_serie(&serie_ref).await? {
+                series.insert(serie_ref, serie.item);
+            }
+        }
+        Ok(series)
+    }
+
+    async fn lookup_episodes_metadata(
+        &self,
+        library_id: &str,
+        serie_id: &str,
+        ids: &RsIds,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Vec<Episode>> {
+        let mut episodes = Vec::new();
+        let mut empty_streak = 0;
+        let mut selected_source: Option<String> = None;
+        let available_sources: Vec<String> = self
+            .get_plugins_with_credential(PluginQuery {
+                kind: Some(PluginType::LookupMetadata),
+                library: Some(library_id.to_string()),
+                ..Default::default()
+            })
+            .await?
+            .map(|plugin| plugin.plugin.path)
+            .collect();
+
+        for season in 1..=100 {
+            let source_filter = selected_source.as_ref().map(std::slice::from_ref);
+            let groups = self
+                .exec_lookup_metadata_grouped(
+                    RsLookupQuery::Episode(RsLookupEpisode {
+                        ids: Some(ids.clone()),
+                        season,
+                        number: None,
+                        ..Default::default()
+                    }),
+                    Some(library_id.to_string()),
+                    requesting_user,
+                    None,
+                    source_filter,
+                )
+                .await?;
+            let season_episodes = if let Some((source_id, season_episodes)) =
+                take_episode_source(groups, serie_id, None)
+            {
+                selected_source.get_or_insert(source_id);
+                season_episodes
+            } else {
+                Vec::new()
+            };
+
+            let season_episodes = if season_episodes.is_empty() {
+                if let Some(selected) = selected_source.clone() {
+                    let fallback_sources: Vec<String> = available_sources
+                        .iter()
+                        .filter(|source| source.as_str() != selected.as_str())
+                        .cloned()
+                        .collect();
+                    if fallback_sources.is_empty() {
+                        season_episodes
+                    } else {
+                        let fallback_groups = self
+                            .exec_lookup_metadata_grouped(
+                                RsLookupQuery::Episode(RsLookupEpisode {
+                                    ids: Some(ids.clone()),
+                                    season,
+                                    number: None,
+                                    ..Default::default()
+                                }),
+                                Some(library_id.to_string()),
+                                requesting_user,
+                                None,
+                                Some(&fallback_sources),
+                            )
+                            .await?;
+                        if let Some((source_id, fallback_episodes)) =
+                            take_episode_source(
+                                fallback_groups,
+                                serie_id,
+                                Some(selected.as_str()),
+                            )
+                        {
+                            selected_source = Some(source_id);
+                            fallback_episodes
+                        } else {
+                            season_episodes
+                        }
+                    }
+                } else {
+                    season_episodes
+                }
+            } else {
+                season_episodes
+            };
+
+            if season_episodes.is_empty() {
+                empty_streak += 1;
+                if empty_streak >= 2 {
+                    break;
+                }
+            } else {
+                empty_streak = 0;
+                episodes.extend(season_episodes);
+            }
+        }
+
+        episodes.sort_by_key(|episode| (episode.season, episode.number));
+        episodes.dedup_by(|a, b| a.season == b.season && a.number == b.number);
+        Ok(episodes)
+    }
+
+    async fn enrich_episode_imdb_metadata(
+        &self,
+        episodes: &mut [Episode],
+        parent_imdb: Option<&str>,
+    ) {
+        if let Some(parent_imdb) = parent_imdb {
+            match self.imdb.episode_ids(parent_imdb).await {
+                Ok(imdb_episode_ids) => {
+                    for episode in episodes.iter_mut() {
+                        if episode.imdb.is_none() {
+                            episode.imdb = imdb_episode_ids
+                                .get(&(episode.season, episode.number))
+                                .cloned();
+                        }
+                    }
+                }
+                Err(error) => {
+                    log_error(
+                        LogServiceType::Other,
+                        format!(
+                            "Unable to enrich episodes for {} from IMDB: {:#}",
+                            parent_imdb, error
+                        ),
+                    );
+                }
+            }
+        }
+
+        for episode in episodes {
+            episode.fill_imdb_ratings(&self.imdb).await;
+        }
+    }
+
     pub async fn get_episodes(
         &self,
         library_id: &str,
@@ -122,7 +317,7 @@ impl ModelController {
         )?;
         let mut episodes = store.get_episodes(query).await?;
 
-        self.fill_episodes_watched_imdb(
+        self.fill_episodes_watched(
             &mut episodes,
             requesting_user,
             Some(library_id.to_string()),
@@ -158,18 +353,64 @@ impl ModelController {
                 query.serie_ref = Some(serie.item.id);
                 store.get_episodes(query).await?
             } else {
-                self.trakt.all_episodes(&id).await.map_err(|_| {
-                    SourcesError::NotFound(Some(format!(
-                        "get_episodes_by_id - Unable to find episodes on trakt for {:?}",
+                let mut enriched_ids = id.clone();
+                let mut episodes = self
+                    .lookup_episodes_metadata(library_id, &serie_id, &id, requesting_user)
+                    .await?;
+                if episodes.is_empty() || enriched_ids.imdb().is_none() {
+                    match self
+                        .get_serie(library_id, serie_id.clone(), requesting_user)
+                        .await
+                    {
+                        Ok(Some(serie)) => {
+                            let looked_up_ids: RsIds = serie.item.into();
+                            if episodes.is_empty()
+                                && should_retry_episode_lookup_with_enriched_ids(
+                                    &id,
+                                    &looked_up_ids,
+                                )
+                            {
+                                episodes = self
+                                    .lookup_episodes_metadata(
+                                        library_id,
+                                        &serie_id,
+                                        &looked_up_ids,
+                                        requesting_user,
+                                    )
+                                    .await?;
+                            }
+                            enriched_ids.merge(&looked_up_ids);
+                        }
+                        Err(error) if episodes.is_empty() => return Err(error),
+                        Err(error) => {
+                            log_error(
+                                LogServiceType::Other,
+                                format!(
+                                    "Unable to enrich external serie {}: {:#}",
+                                    serie_id, error
+                                ),
+                            );
+                        }
+                        Ok(None) => {}
+                    }
+                }
+                if episodes.is_empty() {
+                    return Err(SourcesError::NotFound(Some(format!(
+                        "get_episodes_by_id - Unable to find episodes for {:?}",
                         id
                     )))
-                })?
+                    .into());
+                }
+                // External lookup results have no stored IMDb metadata yet.
+                self.enrich_episode_imdb_metadata(&mut episodes, enriched_ids.imdb())
+                    .await;
+                episodes
             }
         } else {
             store.get_episodes(query).await?
         };
 
-        self.fill_episodes_watched_imdb(
+        self.fill_episodes_watched(
             &mut episodes,
             requesting_user,
             Some(library_id.to_string()),
@@ -178,43 +419,55 @@ impl ModelController {
         Ok(episodes)
     }
 
-    pub async fn fill_episode_watched_imdb(
+    pub async fn fill_episode_watched(
         &self,
         episode: &mut Episode,
         requesting_user: &ConnectedUser,
         library_id: Option<String>,
     ) -> RsResult<()> {
-        let ids: RsIds = episode.clone().into();
-        let watched = self
-            .get_watched(
-                HistoryQuery {
-                    types: vec![MediaType::Episode],
-                    id: Some(ids.clone()),
-                    ..Default::default()
-                },
-                requesting_user,
-                library_id.clone(),
-            )
-            .await?;
-        let progress = self
-            .get_view_progress(ids, requesting_user, library_id)
-            .await?;
-        if let Some(progress) = progress {
-            episode.progress = Some(progress.progress);
+        if let Some(library_id) = library_id {
+            let store = self.store.get_library_store(&library_id)?;
+            if let Some(serie) = store.get_serie(&episode.serie).await? {
+                let history_ids = episode_history_ids(&serie.item, episode);
+                let watched = self
+                    .get_watched(
+                        HistoryQuery {
+                            types: vec![MediaType::Episode],
+                            id: Some(history_ids.clone()),
+                            ..Default::default()
+                        },
+                        requesting_user,
+                        Some(library_id.clone()),
+                    )
+                    .await?;
+                let progress = self
+                    .get_view_progress(
+                        history_ids,
+                        requesting_user,
+                        Some(library_id),
+                    )
+                    .await?;
+                if let Some(progress) = progress {
+                    episode.progress = Some(progress.progress);
+                }
+                if let Some(watched) = watched.first() {
+                    episode.watched = Some(watched.date);
+                }
+            }
         }
-        let watched = watched.first();
-        if let Some(watched) = watched {
-            episode.watched = Some(watched.date);
-        }
-        episode.fill_imdb_ratings(&self.imdb).await;
         Ok(())
     }
-    pub async fn fill_episodes_watched_imdb(
+    pub async fn fill_episodes_watched(
         &self,
         episodes: &mut Vec<Episode>,
         requesting_user: &ConnectedUser,
         library_id: Option<String>,
     ) -> RsResult<()> {
+        let series_by_ref = if let Some(library_id) = library_id.as_deref() {
+            self.episode_series_by_ref(library_id, episodes).await?
+        } else {
+            HashMap::new()
+        };
         let watched = self
             .get_watched(
                 HistoryQuery {
@@ -243,19 +496,15 @@ impl ModelController {
             .collect::<HashMap<_, _>>();
 
         for episode in episodes {
-            let ids = RsIds::from(episode.clone());
-            let ids_string: Vec<String> = ids.into();
-            for id in ids_string {
-                let watch = watched.get(&id);
-                if let Some(watch) = watch {
+            if let Some(serie) = series_by_ref.get(&episode.serie) {
+                let history_ids = episode_history_ids(serie, episode).as_all_ids();
+                if let Some(watch) = history_ids.iter().find_map(|id| watched.get(id)) {
                     episode.watched = Some(*watch);
                 }
-                let progress = progresses.get(&id);
-                if let Some(progress) = progress {
+                if let Some(progress) = history_ids.iter().find_map(|id| progresses.get(id)) {
                     episode.progress = Some(*progress);
                 }
             }
-            episode.fill_imdb_ratings(&self.imdb).await;
         }
         Ok(())
     }
@@ -274,7 +523,7 @@ impl ModelController {
             ),
         )?;
         let mut episodes = store.get_episodes_upcoming(query).await?;
-        self.fill_episodes_watched_imdb(
+        self.fill_episodes_watched(
             &mut episodes,
             requesting_user,
             Some(library_id.to_string()),
@@ -297,7 +546,7 @@ impl ModelController {
             ),
         )?;
         let mut episodes = store.get_episodes_aired(query).await?;
-        self.fill_episodes_watched_imdb(
+        self.fill_episodes_watched(
             &mut episodes,
             requesting_user,
             Some(library_id.to_string()),
@@ -324,13 +573,23 @@ impl ModelController {
         let store = self.store.get_library_store_optional(library_id).ok_or(
             Error::LibraryStoreNotFoundFor(serie_id.clone().to_string(), "get_episode".to_string()),
         )?;
-        let mut episode = store.get_episode(&serie_id, season, number).await?.ok_or(
-            SourcesError::UnableToFindEpisodes(
-                format!("{} {} {}", serie_id, season, number),
-                "get_episode".to_string(),
-            ),
-        )?;
-        self.fill_episode_watched_imdb(&mut episode, requesting_user, Some(library_id.to_string()))
+        let mut episode = match store.get_episode(&serie_id, season, number).await? {
+            Some(episode) => episode,
+            None => store
+                .get_episodes(EpisodeQuery {
+                    serie_ref: Some(serie_id.clone()),
+                    season: Some(season),
+                    ..Default::default()
+                })
+                .await?
+                .into_iter()
+                .find(|episode| episode.number == number)
+                .ok_or(SourcesError::UnableToFindEpisodes(
+                    format!("{} {} {}", serie_id, season, number),
+                    "get_episode".to_string(),
+                ))?,
+        };
+        self.fill_episode_watched(&mut episode, requesting_user, Some(library_id.to_string()))
             .await?;
         Ok(episode)
     }
@@ -456,36 +715,79 @@ impl ModelController {
         serie_id: &str,
         requesting_user: &ConnectedUser,
     ) -> RsResult<Vec<Episode>> {
+        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         let ids = self
             .get_serie_ids(library_id, serie_id, requesting_user)
             .await?;
-        let all_episodes: Vec<Episode> = self
-            .trakt
-            .all_episodes(&ids)
-            .await?
-            .into_iter()
-            .map(|mut e| {
-                e.serie = serie_id.to_owned();
-                e
-            })
-            .collect();
         let store = self.store.get_library_store_optional(library_id).ok_or(
             Error::LibraryStoreNotFoundFor(
-                library_id.clone().to_string(),
+                library_id.to_string(),
                 "refresh_episodes".to_string(),
             ),
         )?;
-        store
-            .remove_all_serie_episodes(serie_id.to_string())
+        let existing_episodes = store
+            .get_episodes(EpisodeQuery {
+                serie_ref: Some(serie_id.to_string()),
+                ..Default::default()
+            })
             .await?;
-        let mut new_episodes: Vec<Episode> = vec![];
-        for episode in all_episodes {
-            let episode = self
-                .add_episode(library_id, episode, requesting_user)
-                .await?;
-            new_episodes.push(episode)
+        let existing_ids_by_episode: HashMap<(u32, u32), RsIds> = existing_episodes
+            .into_iter()
+            .map(|episode| ((episode.season, episode.number), RsIds::from(episode)))
+            .collect();
+        let mut all_episodes = self
+            .lookup_episodes_metadata(library_id, serie_id, &ids, requesting_user)
+            .await?;
+        if all_episodes.is_empty() {
+            return Err(SourcesError::NotFound(Some(format!(
+                "refresh_episodes - Unable to find episodes for {:?}",
+                ids
+            )))
+            .into());
         }
-        Ok(new_episodes)
+        for episode in &mut all_episodes {
+            if let Some(existing_ids) =
+                existing_ids_by_episode.get(&(episode.season, episode.number))
+            {
+                let mut merged_ids = RsIds::from(episode.clone());
+                merged_ids.merge(existing_ids);
+                episode.apply_rs_ids(&merged_ids);
+            }
+        }
+
+        self.enrich_episode_imdb_metadata(&mut all_episodes, ids.imdb())
+            .await;
+
+        let mut sync = store.sync_serie_episodes(serie_id, all_episodes).await?;
+        self.fill_episodes_watched(
+            &mut sync.episodes,
+            requesting_user,
+            Some(library_id.to_string()),
+        )
+        .await?;
+
+        let returned_by_key: HashMap<(u32, u32), Episode> = sync
+            .episodes
+            .iter()
+            .cloned()
+            .map(|episode| ((episode.season, episode.number), episode))
+            .collect();
+        for change in &mut sync.changes {
+            if !matches!(change.action, ElementAction::Deleted) {
+                if let Some(episode) =
+                    returned_by_key.get(&(change.episode.season, change.episode.number))
+                {
+                    change.episode = episode.clone();
+                }
+            }
+        }
+        if !sync.changes.is_empty() {
+            self.send_episode(EpisodesMessage {
+                library: library_id.to_string(),
+                episodes: sync.changes,
+            });
+        }
+        Ok(sync.episodes)
     }
 
     #[async_recursion]
@@ -501,7 +803,7 @@ impl ModelController {
         use super::entity_images::EntityImageConfig;
 
         if RsIds::is_id(serie_id) {
-            let mut serie_ids: RsIds = serie_id.to_string().try_into()?;
+            let serie_ids: RsIds = serie_id.to_string().try_into()?;
             let store = self.store.get_library_store_optional(library_id).ok_or(
                 Error::LibraryStoreNotFoundFor(
                     library_id.clone().to_string(),
@@ -520,11 +822,6 @@ impl ModelController {
                         requesting_user,
                     )
                     .await;
-            }
-            // Enrich IDs via Trakt if needed
-            if serie_ids.tmdb().is_none() {
-                let serie = self.trakt.get_serie(&serie_ids).await?;
-                serie_ids = serie.into();
             }
             let composite_id = format!("{}-episode-{}x{}", serie_id, season, episode);
             let query = RsLookupQuery::Episode(RsLookupEpisode {
@@ -644,5 +941,92 @@ impl ModelController {
             requesting_user,
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{should_retry_episode_lookup_with_enriched_ids, take_episode_source};
+    use crate::domain::episode::Episode;
+    use rs_plugin_common_interfaces::{
+        domain::rs_ids::RsIds,
+        lookup::{
+            RsLookupMetadataResult, RsLookupMetadataResultWrapper, RsLookupMetadataResults,
+        },
+    };
+
+    #[test]
+    fn enriched_episode_lookup_retries_when_new_external_ids_are_added() {
+        let original = RsIds::from_tmdb(203744);
+        let mut enriched = RsIds::from_tmdb(203744);
+        enriched.set("tvdb", 421070u64);
+
+        assert!(should_retry_episode_lookup_with_enriched_ids(
+            &original,
+            &enriched
+        ));
+    }
+
+    #[test]
+    fn enriched_episode_lookup_does_not_retry_when_external_ids_are_unchanged() {
+        let original = RsIds::from_tmdb(203744);
+        let enriched = RsIds::from_tmdb(203744);
+
+        assert!(!should_retry_episode_lookup_with_enriched_ids(
+            &original,
+            &enriched
+        ));
+    }
+
+    #[test]
+    fn episode_lookup_selects_only_the_first_source_with_results() {
+        let groups = vec![
+            (
+                "empty".to_string(),
+                "Empty".to_string(),
+                RsLookupMetadataResults::default(),
+            ),
+            (
+                "primary".to_string(),
+                "Primary".to_string(),
+                RsLookupMetadataResults {
+                    results: vec![RsLookupMetadataResultWrapper {
+                        metadata: RsLookupMetadataResult::Episode(Episode {
+                            season: 1,
+                            number: 1,
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ),
+            (
+                "secondary".to_string(),
+                "Secondary".to_string(),
+                RsLookupMetadataResults {
+                    results: vec![RsLookupMetadataResultWrapper {
+                        metadata: RsLookupMetadataResult::Episode(Episode {
+                            season: 1,
+                            number: 2,
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ),
+        ];
+
+        let (source, episodes) = take_episode_source(groups.clone(), "serie-1", None).unwrap();
+        assert_eq!(source, "primary");
+        assert_eq!(episodes.len(), 1);
+        assert_eq!(episodes[0].serie, "serie-1");
+        assert_eq!(episodes[0].number, 1);
+
+        let (source, episodes) =
+            take_episode_source(groups, "serie-1", Some("primary")).unwrap();
+        assert_eq!(source, "secondary");
+        assert_eq!(episodes[0].number, 2);
     }
 }

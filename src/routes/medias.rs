@@ -19,7 +19,7 @@ use crate::{
     },
     plugins::sources::{error::SourcesError, SourceRead},
     tools::{
-        log::{log_error, log_info},
+        log::{log_error, log_info, LogServiceType},
         prediction::predict_net,
     },
     Error, Result,
@@ -620,10 +620,12 @@ async fn handler_download(
 ) -> Result<Json<Value>> {
     if query.spawn {
         tokio::spawn(async move {
-            let _ = mc
-                .download_library_url(&library_id, download, &user)
-                .await
-                .expect("Unable to download");
+            if let Err(error) = mc.download_library_url(&library_id, download, &user).await {
+                log_error(
+                    LogServiceType::Source,
+                    format!("Unable to download media request: {:#}", error),
+                );
+            }
         });
 
         Ok(Json(json!({"downloading": true})))

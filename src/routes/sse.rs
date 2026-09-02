@@ -2,7 +2,11 @@ use std::{convert::Infallible, time::Duration};
 
 use axum::{
     extract::{Query, State},
-    response::sse::{Event, KeepAlive, Sse},
+    http::{header::CACHE_CONTROL, HeaderName, HeaderValue},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Response,
+    },
     routing::get,
     Router,
 };
@@ -180,7 +184,7 @@ async fn handler_sse(
     State(mc): State<ModelController>,
     user: ConnectedUser,
     Query(params): Query<SseQueryParams>,
-) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
+) -> Response {
     // Parse library filter if provided
     let library_filter: Option<Vec<String>> = params
         .libraries
@@ -210,7 +214,7 @@ async fn handler_sse(
 
                     // Serialize and send event
                     if let Ok(data) = serde_json::to_string(&event) {
-                        yield Ok(Event::default()
+                        yield Ok::<Event, Infallible>(Event::default()
                             .event(event.event_name())
                             .data(data));
                     }
@@ -227,11 +231,25 @@ async fn handler_sse(
         }
     };
 
-    Sse::new(stream).keep_alive(
-        KeepAlive::new()
-            .interval(Duration::from_secs(30))
-            .text("ping"),
-    )
+    // Use a real SSE event rather than a comment. Some mobile/proxy stacks
+    // buffer or discard comment-only chunks, which makes the client activity
+    // watchdog tear down a healthy connection every 90 seconds.
+    let mut response = Sse::new(stream)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(30))
+                .event(Event::default().event("heartbeat").data("{}")),
+        )
+        .into_response();
+    response.headers_mut().insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static("no-cache, no-transform"),
+    );
+    response.headers_mut().insert(
+        HeaderName::from_static("x-accel-buffering"),
+        HeaderValue::from_static("no"),
+    );
+    response
 }
 
 #[cfg(test)]
@@ -239,8 +257,20 @@ mod tests {
     use super::SseEvent;
     use crate::domain::{
         book::{Book, BookWithAction, BooksMessage},
+        watched::{Unwatched, Watched},
         ElementAction,
     };
+    use crate::model::users::{ConnectedUser, ServerUser, UserRole};
+    use rs_plugin_common_interfaces::MediaType;
+
+    fn connected_user(id: &str) -> ConnectedUser {
+        ConnectedUser::Server(ServerUser {
+            id: id.to_string(),
+            name: id.to_string(),
+            role: UserRole::Read,
+            ..Default::default()
+        })
+    }
 
     #[test]
     fn books_sse_event_name_library_and_serialization() {
@@ -260,5 +290,47 @@ mod tests {
         let serialized = serde_json::to_string(&event).unwrap();
         assert!(serialized.contains("\"books\""));
         assert!(serialized.contains("\"library\":\"lib-books\""));
+    }
+
+    #[test]
+    fn book_watched_events_are_serialized_and_user_scoped() {
+        let owner = connected_user("user-a");
+        let other = connected_user("user-b");
+        let event = SseEvent::Watched(Watched {
+            kind: MediaType::Book,
+            id: "book:isbn13/9783161484100".to_string(),
+            user_ref: Some("user-a".to_string()),
+            date: 1_725_000_000_123,
+            modified: 1_725_000_000_456,
+        });
+
+        assert_eq!(event.event_name(), "watched");
+        assert!(event.should_send_to(&owner));
+        assert!(!event.should_send_to(&other));
+        let serialized = serde_json::to_value(&event).unwrap();
+        assert_eq!(serialized["watched"]["type"], "book");
+        assert_eq!(serialized["watched"]["id"], "book:isbn13/9783161484100");
+    }
+
+    #[test]
+    fn book_unwatched_events_include_aliases_and_remain_user_scoped() {
+        let owner = connected_user("user-a");
+        let other = connected_user("user-b");
+        let event = SseEvent::Unwatched(Unwatched {
+            kind: MediaType::Book,
+            ids: vec![
+                "book:isbn13/9783161484100".to_string(),
+                "oleid:OL123M".to_string(),
+            ],
+            user_ref: Some("user-a".to_string()),
+            modified: 1_725_000_000_456,
+        });
+
+        assert_eq!(event.event_name(), "unwatched");
+        assert!(event.should_send_to(&owner));
+        assert!(!event.should_send_to(&other));
+        let serialized = serde_json::to_value(&event).unwrap();
+        assert_eq!(serialized["unwatched"]["type"], "book");
+        assert_eq!(serialized["unwatched"]["ids"][1], "oleid:OL123M");
     }
 }

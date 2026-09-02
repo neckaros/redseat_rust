@@ -44,48 +44,53 @@ impl RsSchedulerTask for RefreshTask {
             libraries
         };
 
+        let mut libraries_with_series = Vec::with_capacity(libraries.len());
         for library in libraries {
+            let series = match mc
+                .get_series(&library.id, SerieQuery::new_empty(), &connected_user)
+                .await
+            {
+                Ok(series) => series
+                    .into_iter()
+                    .map(|iwr| iwr.item)
+                    .collect::<Vec<Serie>>(),
+                Err(error) => {
+                    log_error(
+                        crate::tools::log::LogServiceType::Scheduler,
+                        format!(
+                            "Unable to load series for library {}: {:#}",
+                            library.name, error
+                        ),
+                    );
+                    continue;
+                }
+            };
+            libraries_with_series.push((library, series));
+        }
+        if let Err(error) = mc.imdb.prime_episode_ids(
+            libraries_with_series
+                .iter()
+                .flat_map(|(_, series)| series)
+                .filter(|serie| {
+                    serie.status != Some(SerieStatus::Ended)
+                        && serie.status != Some(SerieStatus::Canceled)
+                })
+                .filter_map(|serie| serie.imdb.as_deref()),
+        )
+        .await
+        {
+            log_error(
+                crate::tools::log::LogServiceType::Scheduler,
+                format!("Unable to prime IMDB episode identifiers: {:#}", error),
+            );
+        }
+
+        for (library, series) in libraries_with_series {
             log_info(
                 crate::tools::log::LogServiceType::Scheduler,
                 format!("Refreshing library {:?}", library.name),
             );
-            let refresh_path = "settings/trakt_serie_refresh.txt";
             let source = mc.library_source_for_library(&library.id).await?;
-            let last_update = if let Ok(mut data) = source.get_file_library(refresh_path).await {
-                let mut buffer = String::new();
-                data.read_to_string(&mut buffer).await?;
-                DateTime::parse_from_rfc3339(&buffer).ok()
-            } else {
-                None
-            };
-            let nowd = now()
-                .floor_to_hour()
-                .ok_or(crate::error::Error::TimeCreationError)?;
-
-            let series: Vec<Serie> = mc
-                .get_series(&library.id, SerieQuery::new_empty(), &connected_user)
-                .await?
-                .into_iter()
-                .map(|iwr| iwr.item)
-                .filter(|s| s.trakt.is_some())
-                .collect();
-            let series: Vec<Serie> = if let Some(last_update) = last_update {
-                let to_refresh = mc.trakt.episodes_refreshed(last_update).await;
-                if let Ok(to_refresh) = to_refresh {
-                    series
-                        .into_iter()
-                        .filter(|s| to_refresh.contains(&s.trakt.unwrap_or(0)))
-                        .collect()
-                } else {
-                    log_info(
-                        crate::tools::log::LogServiceType::Scheduler,
-                        "Too many page will refresh all shows".to_owned(),
-                    );
-                    series
-                }
-            } else {
-                series
-            };
 
             for serie in series {
                 let refreshed = mc
@@ -128,47 +133,13 @@ impl RsSchedulerTask for RefreshTask {
                     }
                 }
             }
-            let mut stream = source
-                .get_file_write_library_overwrite(&refresh_path)
-                .await?;
-
             // Movies
-            let refresh_path = "settings/trakt_movie_refresh.txt";
-            let source = mc.library_source_for_library(&library.id).await?;
-            let last_update = if let Ok(mut data) = source.get_file_library(refresh_path).await {
-                let mut buffer = String::new();
-                data.read_to_string(&mut buffer).await?;
-                DateTime::parse_from_rfc3339(&buffer).ok()
-            } else {
-                None
-            };
-            let nowd = now()
-                .floor_to_hour()
-                .ok_or(crate::error::Error::TimeCreationError)?;
 
             let movies: Vec<Movie> = mc
                 .get_movies(&library.id, MovieQuery::new_empty(), &connected_user)
                 .await?
                 .into_iter()
-                .filter(|s| s.trakt.is_some())
                 .collect();
-            let movies: Vec<Movie> = if let Some(last_update) = last_update {
-                let to_refresh = mc.trakt.movies_refreshed(last_update).await;
-                if let Ok(to_refresh) = to_refresh {
-                    movies
-                        .into_iter()
-                        .filter(|s| to_refresh.contains(&s.trakt.unwrap_or(0)))
-                        .collect()
-                } else {
-                    log_info(
-                        crate::tools::log::LogServiceType::Scheduler,
-                        "Too many page will refresh all movies".to_owned(),
-                    );
-                    movies
-                }
-            } else {
-                movies
-            };
 
             for movie in movies {
                 let refreshed = mc
@@ -244,6 +215,8 @@ impl RsSchedulerTask for RefreshTask {
 
             //Imdb rating
             mc.refresh_movies_imdb(&library.id, &ConnectedUser::ServerAdmin)
+                .await?;
+            mc.refresh_series_imdb(&library.id, &ConnectedUser::ServerAdmin)
                 .await?;
 
             let mut stream = source

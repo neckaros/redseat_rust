@@ -27,6 +27,7 @@ Example: `/sse?libraries=lib1,lib2` will only receive events for those libraries
 
 | Event Name | Description | Required Permission |
 |------------|-------------|---------------------|
+| `heartbeat` | Transport keepalive emitted every 30 seconds; clients should ignore its `{}` payload | None beyond SSE authentication |
 | `library` | Library created/updated/deleted | Library read access |
 | `library-status` | Library status changes | Library admin |
 | `medias` | Media items created/updated/deleted | Library read access |
@@ -45,6 +46,54 @@ Example: `/sse?libraries=lib1,lib2` will only receive events for those libraries
 | `watched` | Content marked as watched | User-specific (only watched owner) |
 | `unwatched` | Content unmarked as watched | User-specific (only watched owner) |
 | `request_processing` | Request processing status updates | Library read access |
+
+The endpoint sends `Cache-Control: no-cache, no-transform` and
+`X-Accel-Buffering: no` so reverse proxies flush heartbeat and data events
+immediately instead of buffering an otherwise idle stream.
+
+## Entity search streams
+
+The following entity-scoped endpoints stream source lookup results as SSE:
+
+- `GET /libraries/{libraryId}/books/{bookId}/searchstream`
+- `GET /libraries/{libraryId}/movies/{movieId}/searchstream`
+- `GET /libraries/{libraryId}/series/{serieId}/seasons/{season}/searchstream`
+- `GET /libraries/{libraryId}/series/{serieId}/seasons/{season}/episodes/{number}/searchstream`
+
+Each source emits a `results` event with both the legacy flattened requests and
+the complete grouped downloads:
+
+```typescript
+interface LookupSearchEvent {
+  sourceId: string;
+  sourceName: string;
+  // Backward-compatible flattened view: one entry per request.
+  results: Array<{
+    request: RsRequest;
+    matchType?: RsLookupMatchType;
+  }>;
+  // Group-aware view: preserves provider grouping and group metadata.
+  downloads: RsGroupDownload[];
+}
+
+interface RsGroupDownload {
+  group: boolean;
+  groupThumbnailUrl?: string;
+  groupFilename?: string;
+  groupMime?: string;
+  requests: RsRequest[];
+  infos?: MediaForUpdate;
+  matchType?: RsLookupMatchType;
+}
+```
+
+Existing clients can continue consuming `results` unchanged. Group-aware
+clients should consume `downloads` instead and must not render both views. A
+provider result that is not grouped is still represented in `downloads` with
+`group: false`. The server adds the searched book, movie, series, season, and
+episode association to each download before emitting it, so a grouped download
+can be posted to `POST /libraries/{libraryId}/medias/download` without losing
+its entity relationship.
 
 `library-status` is also used for async library deletion lifecycle updates. Current messages include:
 - `delete-started`
@@ -127,7 +176,8 @@ type RsProgressType =
   | 'transfert'
   | 'analysing'
   | 'finished'
-  | { duplicate: string };
+  | { duplicate: string }
+  | { failed: string };
 
 interface RsProgress {
   id: string;
@@ -231,24 +281,20 @@ interface MediasRatingMessage {
   rating: Rating;
 }
 
-// Watched events (user-specific)
-// IMPORTANT: The `id` field uses external IDs, NOT local database IDs.
-// Format: "provider:id" (e.g., "imdb:tt1234567", "trakt:123456", "tmdb:550")
-// For movies: Uses the best available external ID (priority: imdb > trakt > tmdb > tvdb > slug)
-// For episodes: Uses external IDs or falls back to local "redseat:{id}" if no external IDs exist
+// Watched events (user-specific). IDs include the media type and identity scheme.
 interface Watched {
   type: string;  // MediaType: "movie", "episode", etc.
-  id: string;    // External ID in format "provider:value" (e.g., "imdb:tt1234567")
+  id: string;    // e.g. "movie:imdb/tt1234567" or "episode:imdb/tt0108778/1/2"
   userRef?: string;
   date: number;  // Timestamp when content was watched
   modified: number;
 }
 
 // Unwatched events (user-specific)
-// NOTE: Different structure from Watched - contains ALL possible IDs for client matching
+// NOTE: Different structure from Watched because the delete API accepts multiple IDs.
 interface Unwatched {
   type: string;     // MediaType: "movie", "episode", etc.
-  ids: string[];    // All possible IDs in format "provider:value" (e.g., ["imdb:tt1234567", "trakt:12345", "tmdb:550"])
+  ids: string[];    // History IDs marked as deleted
   userRef?: string;
   modified: number;
 }
@@ -363,7 +409,7 @@ eventSource.addEventListener('unwatched', (event) => {
   const data: SseEvent = JSON.parse(event.data);
   if ('Unwatched' in data) {
     const unwatched = data.Unwatched;
-    // Unwatched events contain ALL possible IDs for the content
+    // Unwatched events contain the history IDs marked as deleted
     console.log(`Unmarked as watched: ${unwatched.type} with IDs: ${unwatched.ids.join(', ')}`);
   }
 });
@@ -566,21 +612,21 @@ Search endpoints support SSE streaming so clients receive results progressively 
 |----------|-----------------|-------------|
 | `GET /libraries/:libraryId/series/searchstream` | `name` (required), `ids` (optional) | Stream series search results |
 | `GET /libraries/:libraryId/movies/searchstream` | `name` (required), `ids` (optional) | Stream movie search results |
-| `GET /libraries/:libraryId/books/searchstream` | `name` (required), `ids` (optional) | Stream book search results |
+| `GET /libraries/:libraryId/books/searchstream` | `name`, `author`, `isbn13` (at least one required) | Stream book search results; supplied fields are passed to plugins together |
 | `GET /libraries/:libraryId/people/searchstream` | `name` (required), `ids` (optional) | Stream people search results |
 
 ### How It Works
 
 Each SSE event has event type `results`. The data is a JSON object with a single key: the provider name, and the value is an array of results from that provider.
 
-Results arrive one provider at a time. For series and movies, Trakt results are sent first, followed by each plugin (e.g., Anilist). For books, only plugin results are sent (no Trakt).
+Results arrive one metadata plugin at a time.
 
 ### Event Format
 
 Each `results` event contains one provider's results:
 
 ```json
-{"trakt": [{"metadata": {"serie": { ... }}, "images": []}]}
+{"TMDB": [{"metadata": {"serie": { ... }}, "images": []}]}
 ```
 
 Then a second event for the next provider:
@@ -604,7 +650,7 @@ const resultsByProvider: Record<string, SearchResult[]> = {};
 
 eventSource.addEventListener('results', (event) => {
   const data = JSON.parse(event.data);
-  // data is e.g. { "trakt": [...] } or { "Anilist": [...] }
+  // data is e.g. { "TMDB": [...] } or { "Anilist": [...] }
   for (const [provider, results] of Object.entries(data)) {
     resultsByProvider[provider] = results;
   }
@@ -633,7 +679,7 @@ Response format:
 
 ```json
 {
-  "trakt": [{"metadata": {"movie": { ... }}, "images": []}],
+  "TMDB": [{"metadata": {"movie": { ... }}, "images": []}],
   "Anilist": [{"metadata": {"movie": { ... }}, "images": [...]}]
 }
 ```
@@ -650,22 +696,23 @@ When a client falls behind and misses events (lag), the server will skip the mis
 
 ### Understanding the ID Format
 
-The `watched` and `unwatched` events use **external IDs** (from providers like IMDb, Trakt, TMDb) rather than local database IDs. This allows watch history to be portable across different servers and sync with external services.
+History IDs include the media type so IDs from different domains cannot collide.
 
-**ID Format**: `provider:value`
+| Content | Format | Example |
+|---------|--------|---------|
+| Movie with IMDb ID | `movie:imdb/<imdbId>` | `movie:imdb/tt1234567` |
+| Movie without IMDb ID | `movie:redseat/<movieId>` | `movie:redseat/abc123` |
+| Series progress parent | `series:imdb/<seriesImdbId>` | `series:imdb/tt0108778` |
+| Episode | `episode:imdb/<seriesImdbId>/<season>/<episode>` | `episode:imdb/tt0108778/1/2` |
+| Episode fallback | `episode:redseat/<seriesId>/<season>/<episode>` | `episode:redseat/series123/1/2` |
+| Book with ISBN-13 | `book:isbn13/<isbn13>` | `book:isbn13/9783161484100` |
+| Book provider fallback | `book:<provider>/<providerId>` | `book:oleid/OL123M` |
+| Series-backed installment | `book:<provider>/<providerId>\|volume:<volume>\|chapter:<chapter>` | `book:olwid/OL123W\|volume:2\|chapter:2.5` |
+| Book local fallback | `book:redseat/<bookId>` | `book:redseat/book123` |
 
-| Provider | Example | Content Types |
-|----------|---------|---------------|
-| `imdb` | `imdb:tt1234567` | Movies, Episodes |
-| `trakt` | `trakt:123456` | Movies, Episodes, Series |
-| `tmdb` | `tmdb:550` | Movies, Episodes, Series |
-| `tvdb` | `tvdb:78901` | Episodes, Series |
-| `slug` | `slug:the-matrix` | Movies, Series |
-| `redseat` | `redseat:abc123` | Local fallback (episodes only) |
+Episode IDs use the series IMDb ID and numeric season/episode tuple so watched state follows the same show across libraries. Series without an IMDb ID temporarily use the RedSeat fallback; if IMDb metadata is added later, the server migrates watched state and progress immediately.
 
-**ID Selection Priority**:
-- **Movies**: Uses the best external ID (priority: imdb > trakt > tmdb > slug)
-- **Episodes**: Uses external IDs, or falls back to local `redseat:` ID if no external IDs exist
+Book IDs prefer ISBN-13, Open Library edition, Google Books volume, ASIN, Open Library work, another stable provider ID, and finally the RedSeat-local ID. Series-level providers include the volume/chapter tuple as ID details so separate installments do not share watched state. The watched row remains in per-user global history; library book rows do not store it. Book list and detail responses expose `watched` only as a request-user-specific projection hydrated from matching history aliases. When metadata enrichment changes the preferred ID, the server rewrites existing watched rows to the new ID without changing their per-user timestamps.
 
 ### REST API Endpoints
 
@@ -681,14 +728,21 @@ The `watched` and `unwatched` events use **external IDs** (from providers like I
 { "date": 1705766400000 }
 ```
 
-**Direct History** (requires knowing the external ID): `POST /users/me/history`
+**Books**: `POST /libraries/:libraryId/books/:id/watched`
+```json
+{ "date": 1705766400000 }
+```
+
+**Direct History**: `POST /users/me/history`
 ```json
 {
   "type": "movie",
-  "id": "imdb:tt1234567",
+  "id": "movie:imdb/tt1234567",
   "date": 1705766400000
 }
 ```
+
+For compatibility, raw movie and book provider IDs such as `imdb:tt1234567` and `isbn13:9783161484100` are normalized to their typed forms. Other media should send the typed history ID returned by the history API or SSE event.
 
 #### Unmark as Watched (Remove from History)
 
@@ -696,15 +750,17 @@ The `watched` and `unwatched` events use **external IDs** (from providers like I
 
 **Episodes**: `DELETE /libraries/:libraryId/series/:serieId/seasons/:season/episodes/:number/watched`
 
-**Direct History** (with multiple possible IDs): `DELETE /users/me/history`
+**Books**: `DELETE /libraries/:libraryId/books/:id/watched`
+
+**Direct History**: `DELETE /users/me/history`
 ```json
 {
   "type": "movie",
-  "ids": ["imdb:tt1234567", "trakt:12345", "tmdb:550"]
+  "ids": ["movie:imdb/tt1234567"]
 }
 ```
 
-The delete endpoints accept multiple IDs because the watched entry could have been created with any of the available external IDs. The server will try to delete entries matching any of the provided IDs.
+The delete endpoint accepts an array so clients can delete more than one known history ID in one request.
 
 ### Example: Handling Watch State Changes
 
@@ -736,25 +792,19 @@ eventSource.addEventListener('unwatched', (event) => {
 
 ### Matching SSE Events to Local Content
 
-Since SSE events use external IDs, you need to match them against your local content's external IDs:
+Match SSE events against the same typed history ID used by the REST API:
 
 ```typescript
 interface LocalMovie {
   id: string;        // Local database ID
   imdb?: string;     // "tt1234567"
-  trakt?: number;    // 12345
-  tmdb?: number;     // 550
 }
 
-// For Watched events (single ID)
 function isMatchingWatchedEvent(movie: LocalMovie, eventId: string): boolean {
-  const [provider, value] = eventId.split(':');
-  switch (provider) {
-    case 'imdb': return movie.imdb === value;
-    case 'trakt': return movie.trakt?.toString() === value;
-    case 'tmdb': return movie.tmdb?.toString() === value;
-    default: return false;
-  }
+  const historyId = movie.imdb
+    ? `movie:imdb/${movie.imdb}`
+    : `movie:redseat/${movie.id}`;
+  return eventId === historyId;
 }
 
 // For Unwatched events (array of IDs)
@@ -765,79 +815,24 @@ function isMatchingUnwatchedEvent(movie: LocalMovie, eventIds: string[]): boolea
 
 ## Offline Sync for Watch History
 
-When clients are offline or disconnected from SSE, they can miss `unwatched` events. The REST API provides a mechanism to sync these missed deletions.
-
-### How It Works
-
-- **`date > 0`**: Item is actively watched (timestamp indicates when it was watched)
-- **`date = 0`**: Item was unwatched/deleted (soft-deleted, kept for sync purposes)
-
-When content is marked as unwatched, instead of being deleted from the database, the `date` field is set to `0` and the `modified` timestamp is updated. This allows clients to fetch all changes (including deletions) via the history API.
+Unwatching content permanently deletes its history row. The server does not retain deletion tombstones.
 
 ### Client Sync Flow
 
 ```typescript
-// 1. Store last sync timestamp locally
-let lastSyncTimestamp = localStorage.getItem('lastHistorySync') || '0';
-
-// 2. Fetch all history changes since last sync, including deleted items
+// Replace local watched state with a complete server snapshot.
 async function syncHistory() {
-  const response = await fetch(
-    `/users/me/history?after=${lastSyncTimestamp}&includeDeleted=true`
-  );
+  const response = await fetch('/users/me/history');
   const items: Watched[] = await response.json();
-
-  for (const item of items) {
-    if (item.date > 0) {
-      // Active watched item - add or update in local state
-      addToLocalWatched(item);
-    } else {
-      // Deleted item (date = 0) - remove from local state
-      removeFromLocalWatched(item.type, item.id);
-    }
-
-    // Track highest modified timestamp for next sync
-    if (item.modified > parseInt(lastSyncTimestamp)) {
-      lastSyncTimestamp = item.modified.toString();
-    }
-  }
-
-  localStorage.setItem('lastHistorySync', lastSyncTimestamp);
+  replaceLocalWatched(items);
 }
-
-// 3. Call on app startup and periodically while online
-syncHistory();
 ```
+
+Connected clients can apply live `watched` and `unwatched` SSE events. After being offline, clients must perform this full reload because incremental history queries cannot report deletions.
 
 ### API Query Parameters
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `after` | number | Only return items modified after this timestamp (milliseconds) |
-| `includeDeleted` | boolean | Include items with `date=0` (unwatched). Default: `false` |
+| `after` | number | Only return watched items modified after this timestamp (milliseconds). This does not report deletions. |
 | `types` | string[] | Filter by content types (e.g., `movie`, `episode`) |
-
-### Example Response with Deleted Items
-
-```json
-[
-  {
-    "type": "movie",
-    "id": "imdb:tt1234567",
-    "userRef": "user123",
-    "date": 1705766400000,
-    "modified": 1705852800000
-  },
-  {
-    "type": "movie",
-    "id": "trakt:98765",
-    "userRef": "user123",
-    "date": 0,
-    "modified": 1705939200000
-  }
-]
-```
-
-In this response:
-- First item: Movie was watched at timestamp `1705766400000`
-- Second item: Movie was unwatched (`date=0`), client should remove it from local state

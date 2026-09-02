@@ -13,6 +13,7 @@ pub mod deleted;
 pub mod entity_images;
 pub mod entity_search;
 pub mod episodes;
+pub mod history;
 pub mod media_progresses;
 pub mod media_ratings;
 pub mod medias;
@@ -162,9 +163,7 @@ impl ModelController {
         let mc = Self {
             store: Arc::new(store),
             plugin_manager: Arc::new(plugin_manager),
-            // Trakt requires a valid application key. Do not ship a shared credential in the
-            // binary; metadata refresh should use a configured provider instead.
-            trakt: Arc::new(TraktContext::new(String::new())),
+            trakt: Arc::new(TraktContext::from_env()),
             imdb: Arc::new(ImdbContext::new()),
             scheduler: Arc::new(scheduler),
             chache_libraries: Arc::new(RwLock::new(HashMap::new())),
@@ -190,6 +189,7 @@ impl ModelController {
         });
 
         mc.cache_update_all_libraries().await?;
+        mc.migrate_history_ids().await?;
 
         let scheduler = &mc.scheduler;
         scheduler.start(mc.clone()).await?;

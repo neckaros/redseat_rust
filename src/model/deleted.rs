@@ -18,6 +18,8 @@ pub struct DeletedQuery {
 
     #[serde(default)]
     pub order: SqlOrder,
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
 }
 
 impl ModelController {

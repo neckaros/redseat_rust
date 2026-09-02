@@ -14,6 +14,7 @@ use crate::{
     error::RsError,
     model::{
         episodes::{EpisodeForUpdate, EpisodeQuery},
+        history::{episode_history_id, episode_history_ids, series_history_id},
         medias::MediaQuery,
         users::{ConnectedUser, HistoryQuery},
         ModelController,
@@ -44,8 +45,8 @@ use tokio::io::AsyncRead;
 use tokio_util::io::{ReaderStream, StreamReader};
 
 use super::{
-    ImageRequestOptions, ImageUploadOptions, RatingUpdateBody, SseLookupSearchEvent,
-    SseLookupSearchResult,
+    bind_downloads_to_series, ImageRequestOptions, ImageUploadOptions, RatingUpdateBody,
+    SseLookupSearchEvent, SseLookupSearchResult,
 };
 
 pub fn routes(mc: ModelController) -> Router {
@@ -295,9 +296,15 @@ async fn handler_lookup_stream(
         .await?;
 
     let stream = async_stream::stream! {
-        while let Some((source_id, source_name, groups)) = rx.recv().await {
-            let results = SseLookupSearchResult::from_groups(groups);
-            if let Ok(data) = serde_json::to_string(&SseLookupSearchEvent { source_id: &source_id, source_name: &source_name, results: &results }) {
+        while let Some((source_id, source_name, mut groups)) = rx.recv().await {
+            bind_downloads_to_series(&mut groups, &serie_id, season, Some(number));
+            let results = SseLookupSearchResult::from_groups(&groups);
+            if let Ok(data) = serde_json::to_string(&SseLookupSearchEvent {
+                source_id: &source_id,
+                source_name: &source_name,
+                results: &results,
+                downloads: &groups,
+            }) {
                 yield Ok(Event::default().event("results").data(data));
             }
         }
@@ -338,9 +345,15 @@ async fn handler_lookup_season_stream(
         .await?;
 
     let stream = async_stream::stream! {
-        while let Some((source_id, source_name, groups)) = rx.recv().await {
-            let results = SseLookupSearchResult::from_groups(groups);
-            if let Ok(data) = serde_json::to_string(&SseLookupSearchEvent { source_id: &source_id, source_name: &source_name, results: &results }) {
+        while let Some((source_id, source_name, mut groups)) = rx.recv().await {
+            bind_downloads_to_series(&mut groups, &serie_id, season, None);
+            let results = SseLookupSearchResult::from_groups(&groups);
+            if let Ok(data) = serde_json::to_string(&SseLookupSearchEvent {
+                source_id: &source_id,
+                source_name: &source_name,
+                results: &results,
+                downloads: &groups,
+            }) {
                 yield Ok(Event::default().event("results").data(data));
             }
         }
@@ -418,7 +431,19 @@ async fn handler_progress_get(
         .get_episode(&library_id, serie_id, season, number, &user)
         .await?;
     let progress = mc
-        .get_view_progress(episode.into(), &user, Some(library_id.to_string()))
+        .get_view_progress(
+            episode_history_ids(
+                &mc.get_serie(&library_id, episode.serie.clone(), &user)
+                    .await?
+                    .ok_or(Error::NotFound(format!(
+                        "Unable to find serie for handler_progress_get"
+                    )))?
+                    .item,
+                &episode,
+            ),
+            &user,
+            Some(library_id.to_string()),
+        )
         .await?
         .ok_or(Error::NotFound(format!(
             "Unable to get best view progress for handler_progress_get"
@@ -443,21 +468,11 @@ async fn handler_progress_set(
             serie_id.to_string(),
             "handler_lookup_season".to_string(),
         ))?;
-    let id = RsIds::from(episode)
-        .into_best_external()
-        .ok_or(Error::NotFound(format!(
-            "Unable to get best external for handler_progress_set"
-        )))?;
-    let serie_id = RsIds::from(serie.item)
-        .into_best_external()
-        .ok_or(Error::NotFound(format!(
-            "Unable to get best external for handler_progress_set serie"
-        )))?;
     let progress = ViewProgressForAdd {
         kind: MediaType::Episode,
-        id,
+        id: episode_history_id(&serie.item, &episode),
         progress: progress.progress,
-        parent: Some(serie_id),
+        parent: Some(series_history_id(&serie.item)),
     };
     mc.add_view_progress(progress, &user, Some(library_id))
         .await?;
@@ -504,8 +519,12 @@ async fn handler_watched_get(
     let episode = mc
         .get_episode(&library_id, serie_id, season, number, &user)
         .await?;
+    let serie = mc
+        .get_serie(&library_id, episode.serie.clone(), &user)
+        .await?
+        .ok_or(Error::NotFound(format!("Unable to find serie for watched get")))?;
     let query = HistoryQuery {
-        id: Some(episode.into()),
+        id: Some(episode_history_ids(&serie.item, &episode)),
         ..Default::default()
     };
     let progress = mc
@@ -526,14 +545,15 @@ async fn handler_watched_set(
     let episode = mc
         .get_episode(&library_id, serie_id.clone(), season, number, &user)
         .await?;
-    let id = RsIds::from(episode)
-        .into_best_external_or_local()
+    let serie = mc
+        .get_serie(&library_id, episode.serie.clone(), &user)
+        .await?
         .ok_or(Error::NotFound(format!(
-            "Unable to get best external for handler_watched_set"
+            "Unable to find serie for handler_watched_set"
         )))?;
     let watched = WatchedForAdd {
         kind: MediaType::Episode,
-        id,
+        id: episode_history_id(&serie.item, &episode),
         date: watched.date,
     };
     mc.add_watched(watched, &user, Some(library_id)).await?;
@@ -549,11 +569,15 @@ async fn handler_watched_delete(
     let episode = mc
         .get_episode(&library_id, serie_id.clone(), season, number, &user)
         .await?;
-    let rs_ids = RsIds::from(episode);
-    let ids = rs_ids.into_all_external_or_local();
+    let serie = mc
+        .get_serie(&library_id, episode.serie.clone(), &user)
+        .await?
+        .ok_or(Error::NotFound(format!(
+            "Unable to find serie for handler_watched_delete"
+        )))?;
     let watched = WatchedForDelete {
         kind: MediaType::Episode,
-        ids,
+        ids: vec![episode_history_id(&serie.item, &episode)],
     };
     mc.remove_watched(watched, &user, Some(library_id)).await?;
 

@@ -1,4 +1,4 @@
-use std::io::Cursor;
+use std::{collections::HashMap, io::Cursor};
 
 use async_recursion::async_recursion;
 use nanoid::nanoid;
@@ -9,7 +9,7 @@ use rs_plugin_common_interfaces::{
         ItemWithRelations,
     },
     lookup::{RsLookupBook, RsLookupMetadataResult, RsLookupQuery},
-    ExternalImage, ImageType,
+    ExternalImage, ImageType, MediaType,
 };
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
@@ -32,8 +32,9 @@ use super::{
     entity_images::EntityImageConfig,
     entity_search::merge_result_ids,
     error::{Error, Result},
+    history::{book_history_id, book_history_ids},
     store::sql::SqlOrder,
-    users::ConnectedUser,
+    users::{ConnectedUser, HistoryQuery},
     ModelController,
 };
 
@@ -67,6 +68,8 @@ pub struct BookQuery {
     pub sort: RsBookSort,
     #[serde(default)]
     pub order: SqlOrder,
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
 }
 
 impl ModelController {
@@ -78,7 +81,10 @@ impl ModelController {
     ) -> RsResult<Vec<ItemWithRelations<Book>>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id)?;
-        Ok(store.get_books(query).await?)
+        let mut books = store.get_books(query).await?;
+        self.fill_books_watched(&mut books, requesting_user, Some(library_id.to_string()))
+            .await?;
+        Ok(books)
     }
 
     pub async fn get_book(
@@ -97,7 +103,13 @@ impl ModelController {
                     "get_book".to_string(),
                 )
             })?;
-            if let Some(book) = store.get_book_by_external_id(ids.clone()).await? {
+            if let Some(mut book) = store.get_book_by_external_id(ids.clone()).await? {
+                self.fill_book_watched(
+                    &mut book.item,
+                    requesting_user,
+                    Some(library_id.to_string()),
+                )
+                .await?;
                 Ok(book)
             } else {
                 // Try plugin lookup first
@@ -129,25 +141,91 @@ impl ModelController {
                             _ => None,
                         }
                     });
-                plugin_book.ok_or(
-                    SourcesError::UnableToFindMovie(
-                        library_id.to_string(),
-                        format!("{:?}", ids),
-                        "get_book".to_string(),
-                    )
-                    .into(),
+                let mut book = plugin_book.ok_or(SourcesError::UnableToFindMovie(
+                    library_id.to_string(),
+                    format!("{:?}", ids),
+                    "get_book".to_string(),
+                ))?;
+                self.fill_book_watched(
+                    &mut book.item,
+                    requesting_user,
+                    Some(library_id.to_string()),
                 )
+                .await?;
+                Ok(book)
             }
         } else {
-            store.get_book(&book_id).await?.ok_or(
-                SourcesError::UnableToFindMovie(
-                    library_id.to_string(),
-                    book_id,
-                    "get_book".to_string(),
-                )
-                .into(),
+            let mut book =
+                store
+                    .get_book(&book_id)
+                    .await?
+                    .ok_or(SourcesError::UnableToFindMovie(
+                        library_id.to_string(),
+                        book_id,
+                        "get_book".to_string(),
+                    ))?;
+            self.fill_book_watched(
+                &mut book.item,
+                requesting_user,
+                Some(library_id.to_string()),
             )
+            .await?;
+            Ok(book)
         }
+    }
+
+    pub async fn fill_book_watched(
+        &self,
+        book: &mut Book,
+        requesting_user: &ConnectedUser,
+        library_id: Option<String>,
+    ) -> RsResult<()> {
+        book.watched = self
+            .get_watched(
+                HistoryQuery {
+                    types: vec![MediaType::Book],
+                    id: Some(book_history_ids(book)),
+                    ..Default::default()
+                },
+                requesting_user,
+                library_id,
+            )
+            .await?
+            .into_iter()
+            .map(|watched| watched.date)
+            .max();
+        Ok(())
+    }
+
+    pub async fn fill_books_watched(
+        &self,
+        books: &mut [ItemWithRelations<Book>],
+        requesting_user: &ConnectedUser,
+        library_id: Option<String>,
+    ) -> RsResult<()> {
+        let watched = self
+            .get_watched(
+                HistoryQuery {
+                    types: vec![MediaType::Book],
+                    ..Default::default()
+                },
+                requesting_user,
+                library_id,
+            )
+            .await?
+            .into_iter()
+            .map(|entry| (entry.id, entry.date))
+            .collect::<HashMap<_, _>>();
+
+        for book in books {
+            book.item.watched = book_history_ids(&book.item)
+                .as_all_ids()
+                .iter()
+                .filter_map(|id| watched.get(id))
+                .copied()
+                .max();
+        }
+        Ok(())
     }
 
     pub async fn get_book_by_external_id(
@@ -489,6 +567,7 @@ impl ModelController {
                 "update_book".to_string(),
             ))?
             .item;
+        let old_history_id = book_history_id(&existing);
         if update.chapter.is_some() && update.serie_ref.is_none() && existing.serie_ref.is_none() {
             return Err(Error::ServiceError(
                 "invalid book".to_string(),
@@ -506,6 +585,8 @@ impl ModelController {
                 "update_book".to_string(),
             ))?
             .item;
+        self.migrate_book_history_id(old_history_id, book_history_id(&updated))
+            .await?;
         self.send_book(BooksMessage {
             library: library_id.to_string(),
             books: vec![BookWithAction {
@@ -588,10 +669,49 @@ impl ModelController {
                     )
                     .await;
             }
-            let lookup_query = RsLookupQuery::Book(RsLookupBook {
+            let raw_lookup_query = RsLookupQuery::Book(RsLookupBook {
                 name: None,
                 author: None,
-                ids: Some(book_ids),
+                ids: Some(book_ids.clone()),
+                page_key: None,
+            });
+            let raw_result = self
+                .serve_cached_entity_image(
+                    library_id,
+                    book_id,
+                    raw_lookup_query,
+                    &target_kind,
+                    &config,
+                    requesting_user,
+                )
+                .await;
+            if raw_result.is_ok() {
+                return raw_result;
+            }
+
+            let resolved_book = self
+                .get_book(library_id, book_id.to_string(), requesting_user)
+                .await;
+            let Ok(book) = resolved_book else {
+                return raw_result;
+            };
+
+            if book.item.id != book_id && !RsIds::is_id(&book.item.id) {
+                return self
+                    .book_image(
+                        library_id,
+                        &book.item.id,
+                        Some(target_kind),
+                        size,
+                        requesting_user,
+                    )
+                    .await;
+            }
+
+            let lookup_query = RsLookupQuery::Book(RsLookupBook {
+                name: Some(book.item.name.clone()),
+                author: None,
+                ids: Some(book.item.into()),
                 page_key: None,
             });
             self.serve_cached_entity_image(

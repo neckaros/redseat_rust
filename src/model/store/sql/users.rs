@@ -31,6 +31,23 @@ use super::{
     SqlOrder, SqlWhereType,
 };
 
+#[derive(Debug, Clone)]
+pub struct HistoryIdRewrite {
+    pub kind: MediaType,
+    pub old_id: String,
+    pub new_id: String,
+    pub user_ref: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProgressIdRewrite {
+    pub kind: MediaType,
+    pub old_id: String,
+    pub new_id: String,
+    pub new_parent: Option<String>,
+    pub user_ref: String,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct WatchedQuery {
     #[serde(rename = "type")]
@@ -232,6 +249,112 @@ impl SqliteStore {
     // endregion:    --- Users
 }
 
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, sync::RwLock};
+
+    use rs_plugin_common_interfaces::{domain::rs_ids::RsIds, MediaType};
+    use tokio_rusqlite::Connection;
+
+    use super::SqliteStore;
+    use crate::{
+        domain::watched::WatchedForAdd,
+        model::{
+            store::sql::{migrate_database, users::HistoryIdRewrite},
+            users::HistoryQuery,
+        },
+    };
+
+    #[tokio::test]
+    async fn book_watched_rows_are_scoped_to_the_user() {
+        let connection = Connection::open_in_memory().await.unwrap();
+        migrate_database(&connection).await.unwrap();
+        let store = SqliteStore {
+            server_store: connection,
+            libraries_stores: RwLock::new(HashMap::new()),
+        };
+        store
+            .add_watched(
+                WatchedForAdd {
+                    kind: MediaType::Book,
+                    id: "book:isbn13/9783161484100".to_string(),
+                    date: 1_725_000_000_123,
+                },
+                "user-a".to_string(),
+            )
+            .await
+            .unwrap();
+
+        let query = HistoryQuery {
+            types: vec![MediaType::Book],
+            id: Some(RsIds::try_from("book:isbn13/9783161484100".to_string()).unwrap()),
+            ..Default::default()
+        };
+        let user_a = store
+            .get_watched(query.clone(), "user-a".to_string(), vec![])
+            .await
+            .unwrap();
+        let user_b = store
+            .get_watched(query, "user-b".to_string(), vec![])
+            .await
+            .unwrap();
+
+        assert_eq!(user_a.len(), 1);
+        assert!(user_b.is_empty());
+    }
+
+    #[tokio::test]
+    async fn book_watched_rewrite_preserves_the_user_timestamp() {
+        let connection = Connection::open_in_memory().await.unwrap();
+        migrate_database(&connection).await.unwrap();
+        let store = SqliteStore {
+            server_store: connection,
+            libraries_stores: RwLock::new(HashMap::new()),
+        };
+        store
+            .add_watched(
+                WatchedForAdd {
+                    kind: MediaType::Book,
+                    id: "book:redseat/book-local".to_string(),
+                    date: 1_725_000_000_123,
+                },
+                "user-a".to_string(),
+            )
+            .await
+            .unwrap();
+
+        let (watched_count, progress_count) = store
+            .apply_history_rewrites(
+                vec![HistoryIdRewrite {
+                    kind: MediaType::Book,
+                    old_id: "book:redseat/book-local".to_string(),
+                    new_id: "book:isbn13/9783161484100".to_string(),
+                    user_ref: "user-a".to_string(),
+                }],
+                vec![],
+            )
+            .await
+            .unwrap();
+
+        let watched = store
+            .get_watched(
+                HistoryQuery {
+                    types: vec![MediaType::Book],
+                    id: Some(RsIds::try_from("book:isbn13/9783161484100".to_string()).unwrap()),
+                    ..Default::default()
+                },
+                "user-a".to_string(),
+                vec![],
+            )
+            .await
+            .unwrap();
+
+        assert_eq!((watched_count, progress_count), (1, 0));
+        assert_eq!(watched.len(), 1);
+        assert_eq!(watched[0].date, 1_725_000_000_123);
+    }
+}
+
 ///Upload key store
 impl SqliteStore {
     pub async fn get_upload_key(&self, key: String) -> Result<UploadKey> {
@@ -344,11 +467,6 @@ impl SqliteStore {
             .call(move |conn| {
                 let mut where_query = RsQueryBuilder::new();
 
-                // Filter out deleted (date = 0) items unless include_deleted is true
-                if !query.include_deleted {
-                    where_query.add_where(SqlWhereType::After("date".to_owned(), Box::new(0i64)));
-                }
-
                 if let Some(q) = query.after {
                     where_query.add_where(SqlWhereType::After("modified".to_owned(), Box::new(q)));
                 }
@@ -426,33 +544,29 @@ impl SqliteStore {
         Ok(())
     }
 
-    /// Marks watched entries as deleted by setting date=0
-    /// This allows clients to sync deletions via the history API with ?includeDeleted=true
-    /// Returns the list of IDs that were actually marked as deleted
+    /// Deletes watched entries and returns the IDs that existed.
     pub async fn delete_watched(
         &self,
         kind: MediaType,
         ids: Vec<String>,
         user_ref: String,
     ) -> Result<Vec<String>> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as i64;
-
-        let deleted_ids = self.server_store.call(move |conn| {
-            let mut deleted_ids = Vec::new();
-            for id in ids {
-                let rows_affected = conn.execute(
-                    "UPDATE Watched SET date = 0, modified = ? WHERE type = ? AND id = ? AND user_ref = ? AND date != 0",
-                    params![now, kind, &id, &user_ref]
-                )?;
-                if rows_affected > 0 {
-                    deleted_ids.push(id);
+        let deleted_ids = self
+            .server_store
+            .call(move |conn| {
+                let mut deleted_ids = Vec::new();
+                for id in ids {
+                    let rows_affected = conn.execute(
+                        "DELETE FROM Watched WHERE type = ? AND id = ? AND user_ref = ?",
+                        params![kind, &id, &user_ref],
+                    )?;
+                    if rows_affected > 0 {
+                        deleted_ids.push(id);
+                    }
                 }
-            }
-            Ok(deleted_ids)
-        }).await?;
+                Ok(deleted_ids)
+            })
+            .await?;
         Ok(deleted_ids)
     }
 }
@@ -527,6 +641,22 @@ impl SqliteStore {
         Ok(row)
     }
 
+    pub async fn get_all_view_progress_rows(&self) -> Result<Vec<ViewProgress>> {
+        let row = self
+            .server_store
+            .call(move |conn| {
+                let mut query = conn.prepare(
+                    "SELECT type, id, user_ref, progress, parent, modified FROM progress",
+                )?;
+                let rows = query.query_map(params![], Self::row_to_view_progress)?;
+                let progresses: Vec<ViewProgress> =
+                    rows.collect::<std::result::Result<Vec<ViewProgress>, rusqlite::Error>>()?;
+                Ok(progresses)
+            })
+            .await?;
+        Ok(row)
+    }
+
     pub async fn get_view_progess(
         &self,
         ids: RsIds,
@@ -582,6 +712,199 @@ impl SqliteStore {
                     ],
                 )?;
 
+                Ok(())
+            })
+            .await?;
+        Ok(())
+    }
+
+    pub async fn apply_history_rewrites(
+        &self,
+        watched_rewrites: Vec<HistoryIdRewrite>,
+        progress_rewrites: Vec<ProgressIdRewrite>,
+    ) -> Result<(usize, usize)> {
+        let row = self
+            .server_store
+            .call(move |conn| {
+                let tx = conn.transaction()?;
+                let mut watched_count = 0usize;
+                let mut progress_count = 0usize;
+
+                for rewrite in watched_rewrites {
+                    if rewrite.old_id == rewrite.new_id {
+                        continue;
+                    }
+
+                    let source = tx
+                        .query_row(
+                            "SELECT date, modified FROM Watched WHERE type = ? AND id = ? AND user_ref = ?",
+                            params![rewrite.kind, rewrite.old_id, rewrite.user_ref],
+                            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, u64>(1)?)),
+                        )
+                        .optional()?;
+
+                    let Some((source_date, source_modified)) = source else {
+                        continue;
+                    };
+
+                    let existing = tx
+                        .query_row(
+                            "SELECT date, modified FROM Watched WHERE type = ? AND id = ? AND user_ref = ?",
+                            params![rewrite.kind, rewrite.new_id, rewrite.user_ref],
+                            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, u64>(1)?)),
+                        )
+                        .optional()?;
+
+                    if let Some((existing_date, existing_modified)) = existing {
+                        let merged_date = if source_modified >= existing_modified {
+                            source_date
+                        } else {
+                            existing_date
+                        };
+                        tx.execute(
+                            "UPDATE Watched SET date = ? WHERE type = ? AND id = ? AND user_ref = ?",
+                            params![
+                                merged_date,
+                                rewrite.kind,
+                                rewrite.new_id,
+                                rewrite.user_ref
+                            ],
+                        )?;
+                    } else {
+                        tx.execute(
+                            "INSERT INTO Watched (type, id, user_ref, date) VALUES (?, ?, ?, ?)",
+                            params![rewrite.kind, rewrite.new_id, rewrite.user_ref, source_date],
+                        )?;
+                    }
+                    tx.execute(
+                        "DELETE FROM Watched WHERE type = ? AND id = ? AND user_ref = ?",
+                        params![rewrite.kind, rewrite.old_id, rewrite.user_ref],
+                    )?;
+                    watched_count += 1;
+                }
+
+                for rewrite in progress_rewrites {
+                    if rewrite.old_id == rewrite.new_id {
+                        continue;
+                    }
+
+                    let source = tx
+                        .query_row(
+                            "SELECT progress, parent, modified FROM progress WHERE type = ? AND id = ? AND user_ref = ?",
+                            params![rewrite.kind, rewrite.old_id, rewrite.user_ref],
+                            |row| {
+                                Ok((
+                                    row.get::<_, u64>(0)?,
+                                    row.get::<_, Option<String>>(1)?,
+                                    row.get::<_, u64>(2)?,
+                                ))
+                            },
+                        )
+                        .optional()?;
+
+                    let Some((source_progress, source_parent, source_modified)) = source else {
+                        continue;
+                    };
+
+                    let existing = tx
+                        .query_row(
+                            "SELECT progress, parent, modified FROM progress WHERE type = ? AND id = ? AND user_ref = ?",
+                            params![rewrite.kind, rewrite.new_id, rewrite.user_ref],
+                            |row| {
+                                Ok((
+                                    row.get::<_, u64>(0)?,
+                                    row.get::<_, Option<String>>(1)?,
+                                    row.get::<_, u64>(2)?,
+                                ))
+                            },
+                        )
+                        .optional()?;
+
+                    if let Some((existing_progress, existing_parent, existing_modified)) = existing {
+                        let (merged_progress, merged_parent) =
+                            if source_modified >= existing_modified {
+                                (
+                                    source_progress,
+                                    rewrite
+                                        .new_parent
+                                        .clone()
+                                        .or(source_parent.clone())
+                                        .or(existing_parent.clone()),
+                                )
+                            } else {
+                                (
+                                    existing_progress,
+                                    rewrite.new_parent.clone().or(existing_parent.clone()),
+                                )
+                            };
+                        tx.execute(
+                            "UPDATE progress SET progress = ?, parent = ? WHERE type = ? AND id = ? AND user_ref = ?",
+                            params![
+                                merged_progress,
+                                merged_parent,
+                                rewrite.kind,
+                                rewrite.new_id,
+                                rewrite.user_ref
+                            ],
+                        )?;
+                        tx.execute(
+                            "DELETE FROM progress WHERE type = ? AND id = ? AND user_ref = ?",
+                            params![rewrite.kind, rewrite.old_id, rewrite.user_ref],
+                        )?;
+                    } else {
+                        tx.execute(
+                            "UPDATE progress SET id = ?, parent = ? WHERE type = ? AND id = ? AND user_ref = ?",
+                            params![
+                                rewrite.new_id,
+                                rewrite.new_parent,
+                                rewrite.kind,
+                                rewrite.old_id,
+                                rewrite.user_ref
+                            ],
+                        )?;
+                    }
+                    progress_count += 1;
+                }
+
+                tx.commit()?;
+                Ok((watched_count, progress_count))
+            })
+            .await?;
+        Ok(row)
+    }
+
+    pub async fn purge_watched_tombstones(&self) -> Result<usize> {
+        let removed = self
+            .server_store
+            .call(|conn| Ok(conn.execute("DELETE FROM Watched WHERE date <= 0", [])?))
+            .await?;
+        Ok(removed)
+    }
+
+    pub async fn is_data_migration_complete(&self, name: &str) -> Result<bool> {
+        let name = name.to_string();
+        let complete = self
+            .server_store
+            .call(move |conn| {
+                let complete = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM migrations WHERE name = ?)",
+                    params![name],
+                    |row| row.get(0),
+                )?;
+                Ok(complete)
+            })
+            .await?;
+        Ok(complete)
+    }
+
+    pub async fn complete_data_migration(&self, name: &str) -> Result<()> {
+        let name = name.to_string();
+        self.server_store
+            .call(move |conn| {
+                conn.execute(
+                    "INSERT INTO migrations (name, up, down) SELECT ?, '', '' WHERE NOT EXISTS (SELECT 1 FROM migrations WHERE name = ?)",
+                    params![name, name],
+                )?;
                 Ok(())
             })
             .await?;

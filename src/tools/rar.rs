@@ -7,6 +7,7 @@ use crate::error::{RsError, RsResult};
 /// Album pages are expected to be images. This also limits a malformed archive from
 /// making a single request allocate an unreasonable amount of memory.
 pub const MAX_RAR_PAGE_SIZE: u64 = 512 * 1024 * 1024;
+const MAX_RAR_SOLID_PREFIX_SIZE: u64 = 512 * 1024 * 1024;
 const MAX_RAR_ENTRIES: usize = 65_536;
 
 #[derive(Debug)]
@@ -24,6 +25,18 @@ pub struct RarPage {
 
 fn rar_error(context: &str, error: impl std::fmt::Display) -> RsError {
     RsError::Error(format!("{context}: {error}"))
+}
+
+fn add_to_solid_prefix_size(total: &mut u64, entry_size: u64) -> RsResult<()> {
+    *total = total.checked_add(entry_size).ok_or_else(|| {
+        RsError::Error("RAR solid prefix uncompressed size overflowed".to_string())
+    })?;
+    if *total > MAX_RAR_SOLID_PREFIX_SIZE {
+        return Err(RsError::Error(format!(
+            "RAR solid prefix is too large ({total} bytes; limit is {MAX_RAR_SOLID_PREFIX_SIZE} bytes)"
+        )));
+    }
+    Ok(())
 }
 
 pub fn is_image_name(path: &Path) -> bool {
@@ -116,6 +129,7 @@ pub fn read_rar_page(path: &Path, page: usize) -> RsResult<RarPage> {
     let is_solid = archive.is_solid();
 
     let mut archive_index = 0usize;
+    let mut solid_prefix_size = 0u64;
     while let Some(entry) = archive
         .read_header()
         .map_err(|error| rar_error("Unable to read RAR header", error))?
@@ -133,6 +147,7 @@ pub fn read_rar_page(path: &Path, page: usize) -> RsResult<RarPage> {
             return Ok(RarPage { data, name });
         }
         archive = if is_solid {
+            add_to_solid_prefix_size(&mut solid_prefix_size, entry.entry().unpacked_size)?;
             entry
                 .test()
                 .map_err(|error| rar_error("Unable to process preceding solid RAR entry", error))?
@@ -151,7 +166,7 @@ pub fn read_rar_page(path: &Path, page: usize) -> RsResult<RarPage> {
 
 #[cfg(test)]
 mod tests {
-    use super::is_image_name;
+    use super::{add_to_solid_prefix_size, is_image_name, MAX_RAR_SOLID_PREFIX_SIZE};
     use std::path::Path;
 
     #[test]
@@ -160,5 +175,21 @@ mod tests {
         assert!(is_image_name(Path::new("002.avif")));
         assert!(!is_image_name(Path::new("ComicInfo.xml")));
         assert!(!is_image_name(Path::new("pages/")));
+    }
+
+    #[test]
+    fn bounds_cumulative_solid_prefix_decompression() {
+        let mut total = MAX_RAR_SOLID_PREFIX_SIZE - 1;
+        add_to_solid_prefix_size(&mut total, 1).unwrap();
+
+        let error = add_to_solid_prefix_size(&mut total, 1).unwrap_err();
+        assert!(error.to_string().contains("RAR solid prefix is too large"));
+    }
+
+    #[test]
+    fn rejects_solid_prefix_size_overflow() {
+        let mut total = u64::MAX;
+        let error = add_to_solid_prefix_size(&mut total, 1).unwrap_err();
+        assert!(error.to_string().contains("overflowed"));
     }
 }

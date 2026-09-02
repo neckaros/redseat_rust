@@ -20,16 +20,13 @@ use serde_json::Value;
 use crate::{
     domain::{
         deleted::RsDeleted,
-        episode::EpisodeExt,
+        episode::{Episode, EpisodeExt},
         library::{LibraryRole, LibraryType},
         serie::{Serie, SerieExt, SerieWithAction, SeriesMessage},
         ElementAction, MediaElement,
     },
     error::RsResult,
-    plugins::{
-        medias::imdb::ImdbContext,
-        sources::{error::SourcesError, AsyncReadPinBox, FileStreamResult},
-    },
+    plugins::sources::{error::SourcesError, AsyncReadPinBox, FileStreamResult},
     tools::image_tools::{convert_image_reader, ImageSize},
 };
 
@@ -55,6 +52,8 @@ pub struct SerieQuery {
     pub sort: RsSort,
     #[serde(default)]
     pub order: SqlOrder,
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
 }
 
 impl SerieQuery {
@@ -106,6 +105,41 @@ pub struct SerieForUpdate {
     pub max_created: Option<i64>,
 }
 
+enum ExternalSerieImageFallback {
+    ReturnRawError,
+    RetryWithResolvedLocalId(String),
+    RetryWithEnrichedLookup { name: String, ids: RsIds },
+}
+
+fn episode_imdb_update(episode: &Episode) -> EpisodeForUpdate {
+    EpisodeForUpdate {
+        imdb_rating: episode.imdb_rating,
+        imdb_votes: episode.imdb_votes,
+        ..Default::default()
+    }
+}
+
+fn external_serie_image_fallback(
+    requested_id: &str,
+    requested_ids: RsIds,
+    resolved_serie: Option<ItemWithRelations<Serie>>,
+) -> ExternalSerieImageFallback {
+    let Some(serie) = resolved_serie else {
+        return ExternalSerieImageFallback::ReturnRawError;
+    };
+
+    if serie.item.id != requested_id && !RsIds::is_id(&serie.item.id) {
+        return ExternalSerieImageFallback::RetryWithResolvedLocalId(serie.item.id);
+    }
+
+    let name = serie.item.name.clone();
+
+    ExternalSerieImageFallback::RetryWithEnrichedLookup {
+        name,
+        ids: RsIds::from(serie.item),
+    }
+}
+
 impl SerieForUpdate {
     pub fn has_update(&self) -> bool {
         self != &SerieForUpdate::default()
@@ -113,6 +147,41 @@ impl SerieForUpdate {
 }
 
 impl ModelController {
+    async fn lookup_serie_metadata(
+        &self,
+        library_id: &str,
+        query: RsLookupSerie,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Option<Serie>> {
+        let lookup_ids = query.ids.clone().unwrap_or_default();
+        let mut groups = self
+            .exec_lookup_metadata_grouped(
+                RsLookupQuery::Serie(query),
+                Some(library_id.to_string()),
+                requesting_user,
+                None,
+                None,
+            )
+            .await?;
+        merge_result_ids(&mut groups);
+
+        Ok(groups.into_iter().flat_map(|(_, _, r)| r.results).find_map(
+            |result| match result.metadata {
+                RsLookupMetadataResult::Serie(serie) => {
+                    let result_ids: RsIds = serie.clone().into();
+                    if lookup_ids.as_all_external_ids().is_empty()
+                        || result_ids.has_common_id(&lookup_ids)
+                    {
+                        Some(serie)
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            },
+        ))
+    }
+
     pub async fn get_series(
         &self,
         library_id: &str,
@@ -146,48 +215,28 @@ impl ModelController {
             if let Some(serie) = serie {
                 Ok(Some(serie))
             } else {
-                // Try plugin lookup first
-                let lookup_query = RsLookupQuery::Serie(RsLookupSerie {
-                    name: Some(String::new()),
+                let lookup_query = RsLookupSerie {
+                    name: None,
                     ids: Some(id.clone()),
                     page_key: None,
-                });
-                let plugin_results = self
-                    .exec_lookup_metadata_grouped(
-                        lookup_query,
-                        Some(library_id.to_string()),
-                        requesting_user,
-                        None,
-                        None,
-                    )
-                    .await?;
-                let plugin_serie = plugin_results
-                    .into_iter()
-                    .flat_map(|(_, _, r)| r.results)
-                    .find_map(|result| match result.metadata {
-                        RsLookupMetadataResult::Serie(serie) => Some(serie),
-                        _ => None,
-                    });
-                if let Some(serie) = plugin_serie {
+                };
+                if let Some(mut serie) = self
+                    .lookup_serie_metadata(library_id, lookup_query, requesting_user)
+                    .await?
+                {
+                    // External lookup results have no stored rating yet.
+                    serie.fill_imdb_ratings(&self.imdb).await;
                     return Ok(Some(ItemWithRelations {
                         item: serie,
                         relations: None,
                     }));
                 }
-
-                // Fallback to Trakt
-                let mut trakt_show = self.trakt.get_serie(&id).await.map_err(|_| {
-                    SourcesError::UnableToFindSerie(
-                        library_id.to_string(),
-                        format!("{:?}", id),
-                        "get_serie".to_string(),
-                    )
-                })?;
-                trakt_show.fill_imdb_ratings(&self.imdb).await;
-                Ok(Some(ItemWithRelations {
-                    item: trakt_show,
-                    relations: None,
-                }))
+                Err(SourcesError::UnableToFindSerie(
+                    library_id.to_string(),
+                    format!("{:?}", id),
+                    "get_serie".to_string(),
+                )
+                .into())
             }
         } else {
             let serie = store.get_serie(&serie_id).await?;
@@ -268,7 +317,9 @@ impl ModelController {
     }
 
     pub async fn trending_shows(&self) -> RsResult<Vec<Serie>> {
-        self.trakt.trending_shows().await
+        Err(crate::Error::NotImplemented(
+            "series trending must come from a metadata plugin".to_string(),
+        ))
     }
 
     pub async fn search_serie(
@@ -278,27 +329,6 @@ impl ModelController {
         sources: Option<Vec<String>>,
         requesting_user: &ConnectedUser,
     ) -> RsResult<Vec<(String, String, RsLookupMetadataResults)>> {
-        let is_books_library = self.is_books_library(library_id).await;
-        let include_trakt = !is_books_library
-            && sources
-                .as_deref()
-                .map_or(true, |s| s.iter().any(|id| id == "trakt"));
-        let trakt_entries = if include_trakt {
-            let trakt_results = self.trakt.search_show(&query).await?;
-            Some(
-                trakt_results
-                    .into_iter()
-                    .map(|(serie, match_type)| RsLookupMetadataResultWrapper {
-                        metadata: RsLookupMetadataResult::Serie(serie),
-                        match_type,
-                        ..Default::default()
-                    })
-                    .collect(),
-            )
-        } else {
-            None
-        };
-
         let lookup_query = RsLookupQuery::Serie(RsLookupSerie {
             name: query.name,
             ids: query.ids,
@@ -308,7 +338,7 @@ impl ModelController {
             library_id,
             lookup_query,
             |r| matches!(r.metadata, RsLookupMetadataResult::Serie(_)),
-            trakt_entries,
+            None,
             sources,
             requesting_user,
         )
@@ -322,27 +352,6 @@ impl ModelController {
         sources: Option<Vec<String>>,
         requesting_user: &ConnectedUser,
     ) -> RsResult<tokio::sync::mpsc::Receiver<(String, String, RsLookupMetadataResults)>> {
-        let is_books_library = self.is_books_library(library_id).await;
-        let include_trakt = !is_books_library
-            && sources
-                .as_deref()
-                .map_or(true, |s| s.iter().any(|id| id == "trakt"));
-        let trakt_entries = if include_trakt {
-            let trakt_results = self.trakt.search_show(&query).await?;
-            Some(
-                trakt_results
-                    .into_iter()
-                    .map(|(serie, match_type)| RsLookupMetadataResultWrapper {
-                        metadata: RsLookupMetadataResult::Serie(serie),
-                        match_type,
-                        ..Default::default()
-                    })
-                    .collect(),
-            )
-        } else {
-            None
-        };
-
         let lookup_query = RsLookupQuery::Serie(RsLookupSerie {
             name: query.name,
             ids: query.ids,
@@ -352,24 +361,11 @@ impl ModelController {
             library_id,
             lookup_query,
             |r| matches!(r.metadata, RsLookupMetadataResult::Serie(_)),
-            trakt_entries,
+            None,
             sources,
             requesting_user,
         )
         .await
-    }
-
-    async fn is_books_library(&self, library_id: &str) -> bool {
-        if let Some(library) = self.cache_get_library(library_id).await {
-            library.kind == LibraryType::Books
-        } else {
-            self.get_internal_library(library_id)
-                .await
-                .ok()
-                .flatten()
-                .map(|library| library.kind == LibraryType::Books)
-                .unwrap_or(false)
-        }
     }
 
     pub async fn update_serie(
@@ -385,6 +381,21 @@ impl ModelController {
         }
         if update.has_update() {
             let store = self.store.get_library_store(library_id)?;
+            let old_serie = store
+                .get_serie(&serie_id)
+                .await?
+                .ok_or(SourcesError::UnableToFindSerie(
+                    library_id.to_string(),
+                    serie_id.clone(),
+                    "get_serie".to_string(),
+                ))?
+                .item;
+            let mut updated_serie = old_serie.clone();
+            if let Some(imdb) = &update.imdb {
+                updated_serie.imdb = Some(imdb.clone());
+            }
+            self.migrate_series_history_ids(&old_serie, &updated_serie)
+                .await?;
             store.update_serie(&serie_id, update).await?;
             let serie = store
                 .get_serie(&serie_id)
@@ -655,7 +666,24 @@ impl ModelController {
                 "remove_serie".to_string(),
             ))?
             .item;
-        let new_serie = self.trakt.get_serie(&ids).await?;
+        let lookup_query = RsLookupSerie {
+            name: Some(serie.name.clone()),
+            ids: Some(ids.clone()),
+            page_key: None,
+        };
+        let new_serie = if let Some(serie) = self
+            .lookup_serie_metadata(library_id, lookup_query, requesting_user)
+            .await?
+        {
+            serie
+        } else {
+            return Err(SourcesError::UnableToFindSerie(
+                library_id.to_string(),
+                serie_id.to_string(),
+                "refresh_serie".to_string(),
+            )
+            .into());
+        };
         let mut updates = SerieForUpdate {
             ..Default::default()
         };
@@ -690,6 +718,7 @@ impl ModelController {
         library_id: &str,
         requesting_user: &ConnectedUser,
     ) -> RsResult<()> {
+        let store = self.store.get_library_store(library_id)?;
         let all_series: Vec<Serie> = self
             .get_series(&library_id, SerieQuery::default(), &requesting_user)
             .await?
@@ -714,15 +743,12 @@ impl ModelController {
                 )
                 .await?;
             }
-            let episodes = self
-                .get_episodes(
-                    library_id,
-                    EpisodeQuery {
-                        serie_ref: Some(serieid.clone()),
-                        ..Default::default()
-                    },
-                    &ConnectedUser::ServerAdmin,
-                )
+            // Compare the stored values with the latest IMDb dataset values.
+            let episodes = store
+                .get_episodes(EpisodeQuery {
+                    serie_ref: Some(serieid.clone()),
+                    ..Default::default()
+                })
                 .await?;
             for mut episode in episodes {
                 let existing_votes = episode.imdb_votes.unwrap_or(0);
@@ -733,11 +759,7 @@ impl ModelController {
                         serieid.clone(),
                         episode.season,
                         episode.number,
-                        EpisodeForUpdate {
-                            imdb_rating: serie.imdb_rating,
-                            imdb_votes: serie.imdb_votes,
-                            ..Default::default()
-                        },
+                        episode_imdb_update(&episode),
                         &ConnectedUser::ServerAdmin,
                     )
                     .await?;
@@ -765,7 +787,24 @@ impl ModelController {
                 )
                 .into())
             } else {
-                let mut new_serie = self.trakt.get_serie(&ids).await?;
+                let lookup_query = RsLookupSerie {
+                    name: None,
+                    ids: Some(ids.clone()),
+                    page_key: None,
+                };
+                let mut new_serie = if let Some(serie) = self
+                    .lookup_serie_metadata(library_id, lookup_query, requesting_user)
+                    .await?
+                {
+                    serie
+                } else {
+                    return Err(SourcesError::UnableToFindSerie(
+                        library_id.to_string(),
+                        serie_id.to_string(),
+                        "import_serie".to_string(),
+                    )
+                    .into());
+                };
                 new_serie.fill_imdb_ratings(&self.imdb).await;
                 let imported_serie = self
                     .add_serie(library_id, new_serie, requesting_user)
@@ -792,7 +831,7 @@ impl ModelController {
             cache_prefix: "serie",
         };
         if RsIds::is_id(serie_id) {
-            let mut serie_ids: RsIds = serie_id.to_string().try_into()?;
+            let serie_ids: RsIds = serie_id.to_string().try_into()?;
             let store = self.store.get_library_store(library_id)?;
             let existing_serie = store.get_serie_by_external_id(serie_ids.clone()).await?;
             if let Some(existing_serie) = existing_serie {
@@ -806,32 +845,57 @@ impl ModelController {
                     )
                     .await;
             }
-            // Enrich IDs via Trakt if needed
-            let mut lookup_name = String::new();
-            if serie_ids.tmdb().is_none() {
-                if let Ok(serie) = self.trakt.get_serie(&serie_ids).await {
-                    lookup_name = serie.name.clone();
-                    serie_ids = serie.into();
-                }
-            }
-            let lookup_query = RsLookupQuery::Serie(RsLookupSerie {
-                name: if lookup_name.is_empty() {
-                    None
-                } else {
-                    Some(lookup_name)
-                },
-                ids: Some(serie_ids),
+            let raw_lookup_query = RsLookupQuery::Serie(RsLookupSerie {
+                name: None,
+                ids: Some(serie_ids.clone()),
                 page_key: None,
             });
-            self.serve_cached_entity_image(
-                library_id,
-                serie_id,
-                lookup_query,
-                &kind,
-                &config,
-                requesting_user,
-            )
-            .await
+            let raw_result = self
+                .serve_cached_entity_image(
+                    library_id,
+                    serie_id,
+                    raw_lookup_query,
+                    &kind,
+                    &config,
+                    requesting_user,
+                )
+                .await;
+            if raw_result.is_ok() {
+                return raw_result;
+            }
+
+            let resolved_serie = self
+                .get_serie(library_id, serie_id.to_string(), requesting_user)
+                .await?;
+            match external_serie_image_fallback(serie_id, serie_ids, resolved_serie) {
+                ExternalSerieImageFallback::ReturnRawError => raw_result,
+                ExternalSerieImageFallback::RetryWithResolvedLocalId(local_id) => {
+                    self.serie_image(
+                        library_id,
+                        &local_id,
+                        Some(kind),
+                        size,
+                        requesting_user,
+                    )
+                    .await
+                }
+                ExternalSerieImageFallback::RetryWithEnrichedLookup { name, ids } => {
+                    let lookup_query = RsLookupQuery::Serie(RsLookupSerie {
+                        name: Some(name),
+                        ids: Some(ids),
+                        page_key: None,
+                    });
+                    self.serve_cached_entity_image(
+                        library_id,
+                        serie_id,
+                        lookup_query,
+                        &kind,
+                        &config,
+                        requesting_user,
+                    )
+                    .await
+                }
+            }
         } else {
             self.serve_local_entity_image(
                 library_id,
@@ -985,5 +1049,93 @@ impl ModelController {
             }],
         });
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{episode_imdb_update, external_serie_image_fallback, ExternalSerieImageFallback};
+    use crate::domain::{episode::Episode, serie::Serie};
+    use rs_plugin_common_interfaces::domain::{rs_ids::RsIds, ItemWithRelations};
+
+    #[test]
+    fn external_serie_image_fallback_returns_raw_error_when_resolution_fails() {
+        let fallback =
+            external_serie_image_fallback("tmdb:203744", RsIds::from_tmdb(203744), None);
+
+        assert!(matches!(
+            fallback,
+            ExternalSerieImageFallback::ReturnRawError
+        ));
+    }
+
+    #[test]
+    fn external_serie_image_fallback_retries_with_local_id_when_entity_exists_locally() {
+        let resolved = ItemWithRelations {
+            item: Serie {
+                id: "local-serie-id".to_string(),
+                name: "Sugar".to_string(),
+                tmdb: Some(203744),
+                tvdb: Some(421070),
+                ..Default::default()
+            },
+            relations: None,
+        };
+
+        let fallback = external_serie_image_fallback(
+            "tmdb:203744",
+            RsIds::from_tmdb(203744),
+            Some(resolved),
+        );
+
+        match fallback {
+            ExternalSerieImageFallback::RetryWithResolvedLocalId(local_id) => {
+                assert_eq!(local_id, "local-serie-id");
+            }
+            _ => panic!("expected local-id retry"),
+        }
+    }
+
+    #[test]
+    fn external_serie_image_fallback_retries_with_enriched_ids_for_external_results() {
+        let resolved = ItemWithRelations {
+            item: Serie {
+                id: "tmdb:203744".to_string(),
+                name: "Sugar".to_string(),
+                tmdb: Some(203744),
+                tvdb: Some(421070),
+                ..Default::default()
+            },
+            relations: None,
+        };
+
+        let fallback = external_serie_image_fallback(
+            "tmdb:203744",
+            RsIds::from_tmdb(203744),
+            Some(resolved),
+        );
+
+        match fallback {
+            ExternalSerieImageFallback::RetryWithEnrichedLookup { name, ids } => {
+                assert_eq!(name, "Sugar");
+                assert_eq!(ids.tmdb(), Some(203744));
+                assert_eq!(ids.tvdb(), Some(421070));
+            }
+            _ => panic!("expected enriched lookup retry"),
+        }
+    }
+
+    #[test]
+    fn episode_imdb_update_uses_the_episode_rating() {
+        let episode = Episode {
+            imdb_rating: Some(7.8),
+            imdb_votes: Some(1_234),
+            ..Default::default()
+        };
+
+        let update = episode_imdb_update(&episode);
+
+        assert_eq!(update.imdb_rating, episode.imdb_rating);
+        assert_eq!(update.imdb_votes, episode.imdb_votes);
     }
 }

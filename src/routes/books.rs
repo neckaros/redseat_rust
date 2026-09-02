@@ -13,7 +13,7 @@ use axum::{
 use futures::{Stream, TryStreamExt};
 use rs_plugin_common_interfaces::domain::{rs_ids::RsIds, ItemWithRelations, Relations};
 use rs_plugin_common_interfaces::lookup::{RsLookupBook, RsLookupQuery};
-use rs_plugin_common_interfaces::{ElementType, ExternalImage, ImageType};
+use rs_plugin_common_interfaces::{ElementType, ExternalImage, ImageType, MediaType};
 
 use crate::tools::log::{log_info, LogServiceType};
 use serde_json::{json, Value};
@@ -22,11 +22,20 @@ use tokio_util::io::{ReaderStream, StreamReader};
 use serde::Deserialize;
 
 use crate::{
-    domain::book::{Book, BookForUpdate},
-    model::{books::BookQuery, medias::MediaQuery, users::ConnectedUser, ModelController},
+    domain::{
+        book::{Book, BookForUpdate},
+        watched::{WatchedForAdd, WatchedForDelete, WatchedLight},
+    },
+    model::{
+        books::BookQuery,
+        history::{book_history_id, book_history_ids},
+        medias::MediaQuery,
+        users::{ConnectedUser, HistoryQuery},
+        ModelController,
+    },
     routes::{
-        ImageRequestOptions, ImageUploadOptions, RatingUpdateBody, SearchQuery, SearchResultGroup,
-        SseLookupSearchEvent, SseLookupSearchResult, SseSearchEvent,
+        bind_downloads_to_book, ImageRequestOptions, ImageUploadOptions, RatingUpdateBody,
+        SearchResultGroup, SseLookupSearchEvent, SseLookupSearchResult, SseSearchEvent,
     },
     Error, Result,
 };
@@ -58,6 +67,9 @@ pub fn routes(mc: ModelController) -> Router {
         .route("/:id", get(handler_get))
         .route("/:id", patch(handler_patch))
         .route("/:id", delete(handler_delete))
+        .route("/:id/watched", get(handler_watched_get))
+        .route("/:id/watched", post(handler_watched_set))
+        .route("/:id/watched", delete(handler_watched_delete))
         .route("/:id/medias", get(handler_medias))
         .route("/:id/image", get(handler_image))
         .route("/:id/image/search", get(handler_image_search))
@@ -90,6 +102,61 @@ struct AddBookOptions {
     upsert_people: bool,
     #[serde(default)]
     upsert_serie: bool,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct BookMetadataSearchQuery {
+    name: Option<String>,
+    author: Option<String>,
+    isbn13: Option<String>,
+    page_key: Option<String>,
+    source: Option<String>,
+}
+
+impl BookMetadataSearchQuery {
+    fn sources(&self) -> Option<Vec<String>> {
+        self.source.as_deref().map(|source| {
+            source
+                .split(',')
+                .map(str::trim)
+                .filter(|source| !source.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+    }
+
+    fn into_lookup(self) -> Result<RsLookupBook> {
+        let name = self.name.and_then(non_empty_value);
+        let author = self.author.and_then(non_empty_value);
+        let ids = self.isbn13.and_then(|isbn13| {
+            let isbn13 = isbn13.trim();
+            if isbn13.is_empty() {
+                return None;
+            }
+            let mut ids = RsIds::default();
+            ids.set("isbn13", isbn13);
+            Some(ids)
+        });
+
+        if name.is_none() && author.is_none() && ids.is_none() {
+            return Err(Error::InvalidParams(
+                "At least one of name, author, or isbn13 is required".to_string(),
+            ));
+        }
+
+        Ok(RsLookupBook {
+            name,
+            author,
+            ids,
+            page_key: self.page_key.and_then(non_empty_value),
+        })
+    }
+}
+
+fn non_empty_value(value: String) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
 }
 
 async fn handler_post(
@@ -140,14 +207,75 @@ async fn handler_delete(
     Ok(Json(json!(deleted)))
 }
 
+async fn handler_watched_get(
+    Path((library_id, book_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<Json<Value>> {
+    let book = mc.get_book(&library_id, book_id, &user).await?;
+    let watched = mc
+        .get_watched(
+            HistoryQuery {
+                types: vec![MediaType::Book],
+                id: Some(book_history_ids(&book.item)),
+                ..Default::default()
+            },
+            &user,
+            Some(library_id),
+        )
+        .await?
+        .into_iter()
+        .max_by_key(|entry| entry.date)
+        .ok_or(Error::NotFound("Unable to get watched book".to_string()))?;
+    Ok(Json(json!(watched)))
+}
+
+async fn handler_watched_set(
+    Path((library_id, book_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Json(watched): Json<WatchedLight>,
+) -> Result<()> {
+    let book = mc.get_book(&library_id, book_id, &user).await?;
+    mc.add_watched(
+        WatchedForAdd {
+            kind: MediaType::Book,
+            id: book_history_id(&book.item),
+            date: watched.date,
+        },
+        &user,
+        Some(library_id),
+    )
+    .await?;
+    Ok(())
+}
+
+async fn handler_watched_delete(
+    Path((library_id, book_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<()> {
+    let book = mc.get_book(&library_id, book_id, &user).await?;
+    mc.remove_watched(
+        WatchedForDelete {
+            kind: MediaType::Book,
+            ids: book_history_ids(&book.item).into(),
+        },
+        &user,
+        Some(library_id),
+    )
+    .await?;
+    Ok(())
+}
+
 async fn handler_search_books(
     Path(library_id): Path<String>,
     State(mc): State<ModelController>,
     user: ConnectedUser,
-    Query(query): Query<SearchQuery<RsLookupBook>>,
+    Query(query): Query<BookMetadataSearchQuery>,
 ) -> Result<Json<Value>> {
     let sources = query.sources();
-    let lookup_query = RsLookupQuery::Book(query.lookup);
+    let lookup_query = RsLookupQuery::Book(query.into_lookup()?);
     let groups = mc
         .exec_lookup_metadata_grouped(
             lookup_query,
@@ -172,10 +300,10 @@ async fn handler_search_books_stream(
     Path(library_id): Path<String>,
     State(mc): State<ModelController>,
     user: ConnectedUser,
-    Query(query): Query<SearchQuery<RsLookupBook>>,
+    Query(query): Query<BookMetadataSearchQuery>,
 ) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>> {
     let sources = query.sources();
-    let lookup_query = RsLookupQuery::Book(query.lookup);
+    let lookup_query = RsLookupQuery::Book(query.into_lookup()?);
     let mut rx = mc
         .exec_lookup_metadata_stream_grouped(
             lookup_query,
@@ -252,7 +380,7 @@ async fn handler_lookup_stream(
     State(mc): State<ModelController>,
     user: ConnectedUser,
 ) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>> {
-    let book = mc.get_book(&library_id, book_id, &user).await?;
+    let book = mc.get_book(&library_id, book_id.clone(), &user).await?;
     let name = book.item.name.clone();
     let author = first_person_name(&mc, &library_id, &book.relations, &user).await;
     let ids: RsIds = book.item.into();
@@ -267,9 +395,15 @@ async fn handler_lookup_stream(
         .await?;
 
     let stream = async_stream::stream! {
-        while let Some((source_id, source_name, groups)) = rx.recv().await {
-            let results = SseLookupSearchResult::from_groups(groups);
-            if let Ok(data) = serde_json::to_string(&SseLookupSearchEvent { source_id: &source_id, source_name: &source_name, results: &results }) {
+        while let Some((source_id, source_name, mut groups)) = rx.recv().await {
+            bind_downloads_to_book(&mut groups, &book_id);
+            let results = SseLookupSearchResult::from_groups(&groups);
+            if let Ok(data) = serde_json::to_string(&SseLookupSearchEvent {
+                source_id: &source_id,
+                source_name: &source_name,
+                results: &results,
+                downloads: &groups,
+            }) {
                 yield Ok(Event::default().event("results").data(data));
             }
         }
@@ -426,4 +560,47 @@ async fn handler_post_image(
     }
 
     Ok(Json(json!({"data": "ok"})))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BookMetadataSearchQuery;
+    use crate::Error;
+    use axum::http::StatusCode;
+
+    #[test]
+    fn book_metadata_search_combines_title_author_and_isbn() {
+        let lookup = BookMetadataSearchQuery {
+            name: Some("  The Book  ".to_string()),
+            author: Some("  Jane Doe  ".to_string()),
+            isbn13: Some(" 9781402894626 ".to_string()),
+            page_key: None,
+            source: None,
+        }
+        .into_lookup()
+        .unwrap();
+
+        assert_eq!(lookup.name.as_deref(), Some("The Book"));
+        assert_eq!(lookup.author.as_deref(), Some("Jane Doe"));
+        assert_eq!(
+            lookup.ids.as_ref().and_then(|ids| ids.isbn13()),
+            Some("9781402894626")
+        );
+    }
+
+    #[test]
+    fn book_metadata_search_rejects_empty_criteria() {
+        let result = BookMetadataSearchQuery {
+            name: Some("  ".to_string()),
+            author: None,
+            isbn13: Some(" ".to_string()),
+            page_key: None,
+            source: Some("openlibrary".to_string()),
+        }
+        .into_lookup();
+
+        let error = result.unwrap_err();
+        assert!(matches!(&error, Error::InvalidParams(_)));
+        assert_eq!(error.client_status_and_error().0, StatusCode::BAD_REQUEST);
+    }
 }
