@@ -135,6 +135,7 @@ pub struct ModelController {
     pub plugin_convert_scheduler_running: Arc<RwLock<bool>>,
     pub plugin_convert_concurrency_limits:
         Arc<RwLock<HashMap<String, (Option<usize>, std::time::Instant)>>>,
+    pub plugin_convert_status_failures: Arc<RwLock<HashMap<String, usize>>>,
 
     pub backup_processes: Arc<RwLock<Vec<BackupProcessStatus>>>,
 
@@ -173,6 +174,7 @@ impl ModelController {
             convert_current_process: Arc::new(RwLock::new(None)),
             plugin_convert_scheduler_running: Arc::new(RwLock::new(false)),
             plugin_convert_concurrency_limits: Arc::new(RwLock::new(HashMap::new())),
+            plugin_convert_status_failures: Arc::new(RwLock::new(HashMap::new())),
 
             backup_processes: Arc::new(RwLock::new(vec![])),
             sse_tx,
