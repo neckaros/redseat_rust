@@ -3,6 +3,7 @@ use std::{io::Cursor, path::PathBuf, str::FromStr};
 use super::{mw_range::RangeDefinition, ImageRequestOptions, ImageUploadOptions};
 use crate::{
     domain::{
+        library::LibraryType,
         media::{
             self, ConvertMessage, ConvertProgress, FileType, ItemWithRelations, MediaForUpdate,
             MediaItemReference, MediaWithAction, MediasMessage, VideoMergeRequest,
@@ -720,25 +721,25 @@ async fn handler_post_image(
             return Ok(Json(json!({"data": "ok"})));
         }
 
-        let existing_faces = mc.get_media_faces(&library_id, &media_id, &user).await?;
-        for face in existing_faces {
-            if let Err(e) = mc.delete_face(&library_id, &face.id, &user).await {
+        let library = mc
+            .get_library(&library_id, &user)
+            .await?
+            .ok_or(model::error::Error::LibraryNotFound(library_id.clone()))?;
+        let predict = library.kind == LibraryType::Photos;
+        tokio::spawn(async move {
+            if let Err(e) = mc
+                .reprocess_video_after_thumbnail_change(&library_id, &media_id, predict, &user)
+                .await
+            {
                 log_error(
                     LogServiceType::Other,
                     format!(
-                        "Failed to delete face {} before reprocessing video {}: {}",
-                        face.id, media_id, e
+                        "Failed to reprocess video {} after its thumbnail changed: {}",
+                        media_id, e
                     ),
                 );
             }
-        }
-        mc.process_media_spawn(
-            library_id.clone(),
-            media_id.clone(),
-            false,
-            true,
-            user.clone(),
-        );
+        });
     }
 
     Ok(Json(json!({"data": "ok"})))

@@ -946,7 +946,6 @@ impl ModelController {
                         self.video_processing_images(
                             library_id,
                             media_id,
-                            media.duration.unwrap_or(0) as f64,
                             requesting_user,
                         )
                         .await?,

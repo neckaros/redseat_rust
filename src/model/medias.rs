@@ -131,13 +131,14 @@ pub(super) struct VideoProcessingImage {
 }
 
 fn video_processing_times(duration_seconds: f64) -> Vec<f64> {
-    // Keep the duration-based density used by face recognition, with two extra
-    // samples in every tier. Tag prediction consumes this same frame set.
+    // Preserve tag prediction's prior density for short videos while retaining
+    // face recognition's duration-based density for longer videos. Each shared
+    // tier includes the two additional samples requested for video analysis.
     let mut percents: Vec<f64> = if duration_seconds < 60.0 {
-        vec![
-            2.0, 5.0, 13.0, 21.0, 29.0, 37.0, 45.0, 53.0, 61.0, 69.0, 77.0, 85.0, 93.0,
-            98.0,
-        ]
+        std::iter::once(2.0)
+            .chain((5..=95).step_by(5).map(f64::from))
+            .chain(std::iter::once(98.0))
+            .collect()
     } else if duration_seconds < 2.0 * 60.0 {
         std::iter::once(1.0)
             .chain((2..=98).step_by(5).map(f64::from))
@@ -167,8 +168,10 @@ mod video_processing_times_tests {
     use super::video_processing_times;
 
     #[test]
-    fn adds_two_frames_to_each_duration_tier() {
-        assert_eq!(video_processing_times(30.0).len(), 14);
+    fn uses_expected_shared_sampling_density() {
+        assert_eq!(video_processing_times(30.0).len(), 21);
+        assert_eq!(video_processing_times(59.999).len(), 21);
+        assert_eq!(video_processing_times(60.0).len(), 22);
         assert_eq!(video_processing_times(90.0).len(), 22);
         assert_eq!(video_processing_times(5.0 * 60.0).len(), 52);
         assert_eq!(video_processing_times(20.0 * 60.0).len(), 101);
@@ -176,7 +179,7 @@ mod video_processing_times_tests {
 
     #[test]
     fn produces_ordered_times_inside_the_video() {
-        for duration in [30.0, 90.0, 5.0 * 60.0, 20.0 * 60.0] {
+        for duration in [0.75, 30.0, 90.0, 5.0 * 60.0, 20.0 * 60.0] {
             let times = video_processing_times(duration);
             assert!(times.windows(2).all(|times| times[0] < times[1]));
             assert!(times.iter().all(|time| *time > 0.0 && *time < duration));
@@ -1476,6 +1479,86 @@ impl ModelController {
             }
         });
     }
+
+    pub async fn reprocess_video_after_thumbnail_change(
+        &self,
+        library_id: &str,
+        media_id: &str,
+        predict: bool,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<()> {
+        let existing_face_ids = self
+            .get_media_faces(library_id, media_id, requesting_user)
+            .await?
+            .into_iter()
+            .map(|face| face.id)
+            .collect::<Vec<_>>();
+        let video_images = self
+            .video_processing_images(library_id, media_id, requesting_user)
+            .await?;
+
+        self.process_media_faces_with_video_images(
+            library_id,
+            media_id,
+            requesting_user,
+            None,
+            Some(&video_images),
+        )
+        .await?;
+
+        // Existing assigned faces remain available while matching the new
+        // detections. Remove them only after replacement detection succeeds.
+        for face_id in existing_face_ids {
+            if let Err(e) = self
+                .delete_face(library_id, &face_id, requesting_user)
+                .await
+            {
+                log_error(
+                    LogServiceType::Other,
+                    format!(
+                        "Failed to remove superseded face {} from video {}: {}",
+                        face_id, media_id, e
+                    ),
+                );
+            }
+        }
+
+        if predict {
+            match self
+                .prediction_with_video_images(
+                    library_id,
+                    media_id,
+                    true,
+                    requesting_user,
+                    false,
+                    Some(&video_images),
+                )
+                .await
+            {
+                Ok(_) | Err(crate::Error::NoModelFound) => {}
+                Err(e) => return Err(e),
+            }
+        }
+
+        let media = self
+            .get_media(library_id, media_id.to_owned(), requesting_user)
+            .await?
+            .ok_or(SourcesError::UnableToFindMedia(
+                library_id.to_string(),
+                media_id.to_string(),
+                "reprocess_video_after_thumbnail_change".to_string(),
+            ))?;
+        self.send_media(MediasMessage {
+            library: library_id.to_string(),
+            medias: vec![MediaWithAction {
+                media,
+                action: ElementAction::Updated,
+            }],
+        });
+
+        Ok(())
+    }
+
     pub async fn process_media(
         &self,
         library_id: &str,
@@ -1535,22 +1618,8 @@ impl ModelController {
         }
 
         let video_images = if effective_kind == FileType::Video {
-            let media = self
-                .get_media(library_id, media_id.to_owned(), requesting_user)
-                .await?
-                .ok_or(SourcesError::UnableToFindMedia(
-                    library_id.to_string(),
-                    media_id.to_string(),
-                    "process_media".to_string(),
-                ))?
-                .item;
             match self
-                .video_processing_images(
-                    library_id,
-                    media_id,
-                    media.duration.unwrap_or(0) as f64,
-                    requesting_user,
-                )
+                .video_processing_images(library_id, media_id, requesting_user)
                 .await
             {
                 Ok(images) => Some(images),
@@ -2837,26 +2906,33 @@ impl ModelController {
         &self,
         library_id: &str,
         media_id: &str,
-        duration_seconds: f64,
         requesting_user: &ConnectedUser,
     ) -> RsResult<Vec<VideoProcessingImage>> {
-        let thumbnail = self
-            .media_image(library_id, media_id, None, requesting_user)
-            .await?;
-        let thumbnail = convert_image_reader(
-            thumbnail.stream,
-            image::ImageFormat::Png,
-            None,
-            true,
-        )
-        .await?;
+        let uri = self.get_media_uri(library_id, media_id, Some(240)).await?;
+        let duration_seconds = video_tools::get_duration(&uri)
+            .await?
+            .ok_or_else(|| RsError::Error("Unable to get video duration".to_string()))?;
 
         let processing_times = video_processing_times(duration_seconds);
         let mut images = Vec::with_capacity(processing_times.len() + 1);
-        images.push(VideoProcessingImage {
-            buffer: thumbnail,
-            video_s: None,
-        });
+        if let Ok(thumbnail) = self
+            .media_image(library_id, media_id, None, requesting_user)
+            .await
+        {
+            if let Ok(buffer) = convert_image_reader(
+                thumbnail.stream,
+                image::ImageFormat::Png,
+                None,
+                true,
+            )
+            .await
+            {
+                images.push(VideoProcessingImage {
+                    buffer,
+                    video_s: None,
+                });
+            }
+        }
 
         for seconds in processing_times {
             let buffer = self
@@ -3109,31 +3185,19 @@ impl ModelController {
                 ))?
                 .item;
 
-            let images = if media.kind == FileType::Video {
-                let loaded_video_images = if video_images.is_none() {
-                    Some(
-                        self.video_processing_images(
-                            library_id,
-                            media_id,
-                            media.duration.unwrap_or(0) as f64,
-                            requesting_user,
-                        )
+            let loaded_video_images = if media.kind == FileType::Video && video_images.is_none() {
+                Some(
+                    self.video_processing_images(library_id, media_id, requesting_user)
                         .await?,
-                    )
-                } else {
-                    None
-                };
-                video_images
-                    .or_else(|| loaded_video_images.as_deref())
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|image| image.buffer.clone())
-                    .collect::<Vec<_>>()
+                )
             } else {
+                None
+            };
+            let photo_image = if media.kind != FileType::Video {
                 let reader_response = self
                     .media_image(library_id, media_id, None, requesting_user)
                     .await?;
-                vec![
+                Some(
                     convert_image_reader(
                         reader_response.stream,
                         image::ImageFormat::Png,
@@ -3141,7 +3205,19 @@ impl ModelController {
                         true,
                     )
                     .await?,
-                ]
+                )
+            } else {
+                None
+            };
+            let images: Vec<&[u8]> = if media.kind == FileType::Video {
+                video_images
+                    .or_else(|| loaded_video_images.as_deref())
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|image| image.buffer.as_slice())
+                    .collect()
+            } else {
+                vec![photo_image.as_deref().unwrap_or_default()]
             };
             for plugin in plugins.clone() {
                 let mut path = get_plugin_fodler().await?;
@@ -3152,7 +3228,7 @@ impl ModelController {
                         path.clone(),
                         plugin.settings.bgr.unwrap_or(false),
                         plugin.settings.normalize.unwrap_or(false),
-                        buffer.clone(),
+                        buffer.to_vec(),
                         Some(&mut model),
                     )
                     .await?;
