@@ -394,6 +394,34 @@ mod tests {
         assert_eq!(active[0].plugin_job_id.as_deref(), Some("job-1"));
 
         store
+            .update_plugin_convert_queue_item(
+                "convert-1",
+                PluginConvertQueueForUpdate {
+                    status: Some(PluginConvertQueueStatus::Failed),
+                    error: Some("No space left on device".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let failed = store
+            .list_plugin_convert_queue_items(
+                "library-1",
+                Some("plugin-1".to_string()),
+                Some(vec![PluginConvertQueueStatus::Failed]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].status, PluginConvertQueueStatus::Failed);
+        assert_eq!(
+            failed[0].error.as_deref(),
+            Some("No space left on device")
+        );
+        assert!(store.list_active_plugin_convert_jobs().await.unwrap().is_empty());
+
+        store
             .remove_plugin_convert_queue_item("convert-1")
             .await
             .unwrap();

@@ -2285,6 +2285,8 @@ impl ModelController {
             let upload_id = request.upload_id.clone().unwrap_or_else(|| nanoid!());
             let filename = Self::request_progress_filename(&request);
             let request_url = request.url.clone();
+            let tx_progress =
+                self.create_progress_sender(library_id.to_owned(), Some(upload_id.clone()));
 
             match self
                 .download_individual_request(
@@ -2294,6 +2296,7 @@ impl ModelController {
                     origin.clone(),
                     store,
                     requesting_user,
+                    tx_progress.clone(),
                 )
                 .await
             {
@@ -2317,7 +2320,9 @@ impl ModelController {
                             filename,
                             &request_url,
                             &error_message,
-                        );
+                            &tx_progress,
+                        )
+                        .await;
                     }
 
                     if first_error.is_none() {
@@ -2353,6 +2358,7 @@ impl ModelController {
         origin: Option<RsLink>,
         store: &crate::model::store::sql::library::SqliteLibraryStore,
         requesting_user: &ConnectedUser,
+        tx_progress: mpsc::Sender<RsProgress>,
     ) -> RsResult<Media> {
         let m = self.source_for_library(library_id).await?;
 
@@ -2369,9 +2375,6 @@ impl ModelController {
                 ..Default::default()
             })
         });
-
-        let tx_progress =
-            self.create_progress_sender(library_id.to_owned(), Some(upload_id.clone()));
 
         // Check for origin duplicate
         if let Some(origin) = &mut infos.origin {
@@ -2601,13 +2604,14 @@ impl ModelController {
             .or_else(|| Some(request.url.clone()))
     }
 
-    fn send_individual_download_failure(
+    async fn send_individual_download_failure(
         &self,
         library_id: &str,
         upload_id: &str,
         filename: Option<String>,
         request_url: &str,
         error_message: &str,
+        tx_progress: &mpsc::Sender<RsProgress>,
     ) {
         log_error(
             LogServiceType::Source,
@@ -2616,17 +2620,20 @@ impl ModelController {
                 request_url, error_message
             ),
         );
-        self.send_upload_progress(UploadProgressMessage {
-            library: library_id.to_owned(),
-            progress: RsProgress {
-                id: upload_id.to_owned(),
-                total: Some(1),
-                current: Some(1),
-                kind: RsProgressType::Failed(error_message.to_owned()),
-                filename,
-            },
-            ..Default::default()
-        });
+        let progress = RsProgress {
+            id: upload_id.to_owned(),
+            total: Some(1),
+            current: Some(1),
+            kind: RsProgressType::Failed(error_message.to_owned()),
+            filename,
+        };
+        if tx_progress.send(progress.clone()).await.is_err() {
+            self.send_upload_progress(UploadProgressMessage {
+                library: library_id.to_owned(),
+                progress,
+                ..Default::default()
+            });
+        }
     }
 
     pub fn create_progress_sender(
@@ -3435,11 +3442,17 @@ impl ModelController {
     async fn tick_plugin_convert_queue(&self) -> crate::Result<()> {
         let active = self.store.list_active_plugin_convert_jobs().await?;
         for item in active {
-            if let Err(e) = self.poll_plugin_convert_queue_item(item).await {
+            if let Err(error) = self.poll_plugin_convert_queue_item(item.clone()).await {
+                let error_message = format!("{:#}", error);
                 log_error(
                     LogServiceType::Source,
-                    format!("Failed to poll plugin convert job: {:?}", e),
+                    format!(
+                        "Failed to process plugin convert job {}: {}",
+                        item.id, error_message
+                    ),
                 );
+                self.fail_plugin_convert_queue_item(&item, error_message)
+                    .await?;
             }
         }
 
