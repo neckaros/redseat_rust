@@ -124,6 +124,66 @@ use crate::routes::sse::SseEvent;
 pub const CRYPTO_HEADER_SIZE: u64 = 16 + 4 + 4 + 32 + 256;
 const PLUGIN_CONVERT_CONCURRENCY_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
 
+#[derive(Clone)]
+pub(super) struct VideoProcessingImage {
+    pub buffer: Vec<u8>,
+    pub video_s: Option<f32>,
+}
+
+fn video_processing_times(duration_seconds: f64) -> Vec<f64> {
+    // Keep the duration-based density used by face recognition, with two extra
+    // samples in every tier. Tag prediction consumes this same frame set.
+    let mut percents: Vec<f64> = if duration_seconds < 60.0 {
+        vec![
+            2.0, 5.0, 13.0, 21.0, 29.0, 37.0, 45.0, 53.0, 61.0, 69.0, 77.0, 85.0, 93.0,
+            98.0,
+        ]
+    } else if duration_seconds < 2.0 * 60.0 {
+        std::iter::once(1.0)
+            .chain((2..=98).step_by(5).map(f64::from))
+            .chain(std::iter::once(99.0))
+            .collect()
+    } else if duration_seconds < 10.0 * 60.0 {
+        std::iter::once(2.0)
+            .chain((1..=99).step_by(2).map(f64::from))
+            .chain(std::iter::once(98.0))
+            .collect()
+    } else {
+        std::iter::once(0.5)
+            .chain((1..=99).map(f64::from))
+            .chain(std::iter::once(99.5))
+            .collect()
+    };
+    percents.sort_by(f64::total_cmp);
+
+    percents
+        .into_iter()
+        .map(|percent| duration_seconds * percent / 100.0)
+        .collect()
+}
+
+#[cfg(test)]
+mod video_processing_times_tests {
+    use super::video_processing_times;
+
+    #[test]
+    fn adds_two_frames_to_each_duration_tier() {
+        assert_eq!(video_processing_times(30.0).len(), 14);
+        assert_eq!(video_processing_times(90.0).len(), 22);
+        assert_eq!(video_processing_times(5.0 * 60.0).len(), 52);
+        assert_eq!(video_processing_times(20.0 * 60.0).len(), 101);
+    }
+
+    #[test]
+    fn produces_ordered_times_inside_the_video() {
+        for duration in [30.0, 90.0, 5.0 * 60.0, 20.0 * 60.0] {
+            let times = video_processing_times(duration);
+            assert!(times.windows(2).all(|times| times[0] < times[1]));
+            assert!(times.iter().all(|time| *time > 0.0 && *time < duration));
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaQuery {
@@ -1441,16 +1501,6 @@ impl ModelController {
             ))?
             .item;
 
-        let r = self
-            .process_media_faces(library_id, media_id, requesting_user, None)
-            .await;
-        if let Err(e) = r {
-            log_error(
-                LogServiceType::Source,
-                format!("Face detection failed for {}: {:?}", media_id, e),
-            );
-        }
-
         let effective_kind = file_type_from_mime_or_filename(&existing.mimetype, &existing.name);
         if effective_kind == FileType::Video {
             let r = self
@@ -1484,9 +1534,64 @@ impl ModelController {
             }
         }
 
+        let video_images = if effective_kind == FileType::Video {
+            let media = self
+                .get_media(library_id, media_id.to_owned(), requesting_user)
+                .await?
+                .ok_or(SourcesError::UnableToFindMedia(
+                    library_id.to_string(),
+                    media_id.to_string(),
+                    "process_media".to_string(),
+                ))?
+                .item;
+            match self
+                .video_processing_images(
+                    library_id,
+                    media_id,
+                    media.duration.unwrap_or(0) as f64,
+                    requesting_user,
+                )
+                .await
+            {
+                Ok(images) => Some(images),
+                Err(e) => {
+                    log_error(
+                        LogServiceType::Source,
+                        format!("Unable to load video analysis frames for {}: {:?}", media_id, e),
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let r = self
+            .process_media_faces_with_video_images(
+                library_id,
+                media_id,
+                requesting_user,
+                None,
+                video_images.as_deref(),
+            )
+            .await;
+        if let Err(e) = r {
+            log_error(
+                LogServiceType::Source,
+                format!("Face detection failed for {}: {:?}", media_id, e),
+            );
+        }
+
         if predict {
             let prediction_result = self
-                .prediction(library_id, media_id, true, requesting_user, false)
+                .prediction_with_video_images(
+                    library_id,
+                    media_id,
+                    true,
+                    requesting_user,
+                    false,
+                    video_images.as_deref(),
+                )
                 .await;
             match prediction_result {
                 Ok(_) => Ok(()),
@@ -2728,6 +2833,51 @@ impl ModelController {
         Ok(thumb)
     }
 
+    pub(super) async fn video_processing_images(
+        &self,
+        library_id: &str,
+        media_id: &str,
+        duration_seconds: f64,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Vec<VideoProcessingImage>> {
+        let thumbnail = self
+            .media_image(library_id, media_id, None, requesting_user)
+            .await?;
+        let thumbnail = convert_image_reader(
+            thumbnail.stream,
+            image::ImageFormat::Png,
+            None,
+            true,
+        )
+        .await?;
+
+        let processing_times = video_processing_times(duration_seconds);
+        let mut images = Vec::with_capacity(processing_times.len() + 1);
+        images.push(VideoProcessingImage {
+            buffer: thumbnail,
+            video_s: None,
+        });
+
+        for seconds in processing_times {
+            let buffer = self
+                .get_video_thumb(
+                    library_id,
+                    media_id,
+                    VideoTime::Seconds(seconds),
+                    image::ImageFormat::Png,
+                    Some(70),
+                    requesting_user,
+                )
+                .await?;
+            images.push(VideoProcessingImage {
+                buffer,
+                video_s: Some(seconds as f32),
+            });
+        }
+
+        Ok(images)
+    }
+
     pub async fn get_temporary_local_read_url(
         library_id: &str,
         media_id: &str,
@@ -2917,6 +3067,26 @@ impl ModelController {
         requesting_user: &ConnectedUser,
         notif: bool,
     ) -> crate::Result<Vec<PredictionTagResult>> {
+        self.prediction_with_video_images(
+            library_id,
+            media_id,
+            insert_tags,
+            requesting_user,
+            notif,
+            None,
+        )
+        .await
+    }
+
+    pub(super) async fn prediction_with_video_images(
+        &self,
+        library_id: &str,
+        media_id: &str,
+        insert_tags: bool,
+        requesting_user: &ConnectedUser,
+        notif: bool,
+        video_images: Option<&[VideoProcessingImage]>,
+    ) -> crate::Result<Vec<PredictionTagResult>> {
         let plugins = self
             .get_plugins(
                 PluginQuery {
@@ -2939,31 +3109,40 @@ impl ModelController {
                 ))?
                 .item;
 
-            let mut reader_response = self
-                .media_image(&library_id, &media_id, None, &requesting_user)
-                .await?;
-            let buffer =
-                convert_image_reader(reader_response.stream, image::ImageFormat::Png, None, true)
-                    .await?;
-
-            let mut images = vec![buffer];
-            if media.kind == FileType::Video {
-                let percents: Vec<u32> = (5..=95).step_by(5).collect();
-                //let percents = vec![15];
-                for percent in percents {
-                    let thumb = self
-                        .get_video_thumb(
+            let images = if media.kind == FileType::Video {
+                let loaded_video_images = if video_images.is_none() {
+                    Some(
+                        self.video_processing_images(
                             library_id,
                             media_id,
-                            VideoTime::Percent(percent),
-                            image::ImageFormat::Png,
-                            Some(70),
+                            media.duration.unwrap_or(0) as f64,
                             requesting_user,
                         )
-                        .await?;
-                    images.push(thumb);
-                }
-            }
+                        .await?,
+                    )
+                } else {
+                    None
+                };
+                video_images
+                    .or_else(|| loaded_video_images.as_deref())
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|image| image.buffer.clone())
+                    .collect::<Vec<_>>()
+            } else {
+                let reader_response = self
+                    .media_image(library_id, media_id, None, requesting_user)
+                    .await?;
+                vec![
+                    convert_image_reader(
+                        reader_response.stream,
+                        image::ImageFormat::Png,
+                        None,
+                        true,
+                    )
+                    .await?,
+                ]
+            };
             for plugin in plugins.clone() {
                 let mut path = get_plugin_fodler().await?;
                 path.push(&plugin.path);

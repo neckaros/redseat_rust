@@ -4,7 +4,7 @@ use super::{mw_range::RangeDefinition, ImageRequestOptions, ImageUploadOptions};
 use crate::{
     domain::{
         media::{
-            self, ConvertMessage, ConvertProgress, ItemWithRelations, MediaForUpdate,
+            self, ConvertMessage, ConvertProgress, FileType, ItemWithRelations, MediaForUpdate,
             MediaItemReference, MediaWithAction, MediasMessage, VideoMergeRequest,
         },
         ElementAction,
@@ -696,6 +696,7 @@ async fn handler_post_image(
     user: ConnectedUser,
     mut multipart: Multipart,
 ) -> Result<Json<Value>> {
+    let mut thumbnail_updated = false;
     while let Some(field) = multipart.next_field().await.unwrap() {
         let mut reader = StreamReader::new(field.map_err(|multipart_error| {
             std::io::Error::new(std::io::ErrorKind::Other, multipart_error)
@@ -707,6 +708,37 @@ async fn handler_post_image(
         let reader = Box::pin(Cursor::new(data));
         mc.update_media_image(&library_id, &media_id, Box::pin(reader), &user)
             .await?;
+        thumbnail_updated = true;
+    }
+
+    if thumbnail_updated {
+        let media = mc
+            .get_media(&library_id, media_id.clone(), &user)
+            .await?
+            .ok_or(model::error::Error::MediaNotFound(media_id.clone()))?;
+        if media.item.kind != FileType::Video {
+            return Ok(Json(json!({"data": "ok"})));
+        }
+
+        let existing_faces = mc.get_media_faces(&library_id, &media_id, &user).await?;
+        for face in existing_faces {
+            if let Err(e) = mc.delete_face(&library_id, &face.id, &user).await {
+                log_error(
+                    LogServiceType::Other,
+                    format!(
+                        "Failed to delete face {} before reprocessing video {}: {}",
+                        face.id, media_id, e
+                    ),
+                );
+            }
+        }
+        mc.process_media_spawn(
+            library_id.clone(),
+            media_id.clone(),
+            false,
+            true,
+            user.clone(),
+        );
     }
 
     Ok(Json(json!({"data": "ok"})))
