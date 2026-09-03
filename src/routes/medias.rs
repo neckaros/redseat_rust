@@ -3,8 +3,9 @@ use std::{io::Cursor, path::PathBuf, str::FromStr};
 use super::{mw_range::RangeDefinition, ImageRequestOptions, ImageUploadOptions};
 use crate::{
     domain::{
+        library::LibraryType,
         media::{
-            self, ConvertMessage, ConvertProgress, ItemWithRelations, MediaForUpdate,
+            self, ConvertMessage, ConvertProgress, FileType, ItemWithRelations, MediaForUpdate,
             MediaItemReference, MediaWithAction, MediasMessage, VideoMergeRequest,
         },
         ElementAction,
@@ -696,6 +697,7 @@ async fn handler_post_image(
     user: ConnectedUser,
     mut multipart: Multipart,
 ) -> Result<Json<Value>> {
+    let mut thumbnail_updated = false;
     while let Some(field) = multipart.next_field().await.unwrap() {
         let mut reader = StreamReader::new(field.map_err(|multipart_error| {
             std::io::Error::new(std::io::ErrorKind::Other, multipart_error)
@@ -707,6 +709,37 @@ async fn handler_post_image(
         let reader = Box::pin(Cursor::new(data));
         mc.update_media_image(&library_id, &media_id, Box::pin(reader), &user)
             .await?;
+        thumbnail_updated = true;
+    }
+
+    if thumbnail_updated {
+        let media = mc
+            .get_media(&library_id, media_id.clone(), &user)
+            .await?
+            .ok_or(model::error::Error::MediaNotFound(media_id.clone()))?;
+        if media.item.kind != FileType::Video {
+            return Ok(Json(json!({"data": "ok"})));
+        }
+
+        let library = mc
+            .get_library(&library_id, &user)
+            .await?
+            .ok_or(model::error::Error::LibraryNotFound(library_id.clone()))?;
+        let predict = library.kind == LibraryType::Photos;
+        tokio::spawn(async move {
+            if let Err(e) = mc
+                .reprocess_video_after_thumbnail_change(&library_id, &media_id, predict, &user)
+                .await
+            {
+                log_error(
+                    LogServiceType::Other,
+                    format!(
+                        "Failed to reprocess video {} after its thumbnail changed: {}",
+                        media_id, e
+                    ),
+                );
+            }
+        });
     }
 
     Ok(Json(json!({"data": "ok"})))

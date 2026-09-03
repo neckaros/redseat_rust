@@ -25,7 +25,7 @@ use crate::{
         ElementAction,
     },
     error::{RsError, RsResult},
-    model::medias::MediaFileQuery,
+    model::medias::{MediaFileQuery, VideoProcessingImage},
     plugins::sources::{error::SourcesError, AsyncReadPinBox, FileStreamResult, Source},
     tools::{
         image_tools::{convert_image_reader, ImageSize},
@@ -899,7 +899,24 @@ impl ModelController {
         requesting_user: &ConnectedUser,
         service: Option<Arc<FaceRecognitionService>>,
     ) -> RsResult<Vec<DetectedFaceResult>> {
-        use crate::tools::video_tools::VideoTime;
+        self.process_media_faces_with_video_images(
+            library_id,
+            media_id,
+            requesting_user,
+            service,
+            None,
+        )
+        .await
+    }
+
+    pub(super) async fn process_media_faces_with_video_images(
+        &self,
+        library_id: &str,
+        media_id: &str,
+        requesting_user: &ConnectedUser,
+        service: Option<Arc<FaceRecognitionService>>,
+        video_images: Option<&[VideoProcessingImage]>,
+    ) -> RsResult<Vec<DetectedFaceResult>> {
         let service = if let Some(s) = service {
             s
         } else {
@@ -924,72 +941,24 @@ impl ModelController {
             let mut collected_faces = Vec::new();
 
             if media.kind == FileType::Video {
-                // Video Logic
-
-                // 1. Media Image (Thumbnail) - Optional
-                if let Ok(mut reader_response) = self
-                    .media_image(library_id, media_id, None, requesting_user)
-                    .await
-                {
-                    if let Ok(response) =
-                        crate::tools::image_tools::reader_to_image(&mut reader_response.stream)
-                            .await
-                    {
-                        let faces = service
-                            .detect_and_extract_faces_async(response.image)
-                            .await?;
-                        for face in faces {
-                            let bbox = FaceBBox {
-                                x1: face.bbox.x1,
-                                y1: face.bbox.y1,
-                                x2: face.bbox.x2,
-                                y2: face.bbox.y2,
-                                video_s: None,
-                                video_percent: None,
-                            };
-                            collected_faces.push(CollectedFace {
-                                face,
-                                video_s: None,
-                                video_percent: None,
-                                bbox,
-                            });
-                        }
-                    }
-                }
-
-                // 2. Video Frames
-                let duration = media.duration.unwrap_or(0);
-
-                // Determine percentages to scan
-                let percents = if duration < 1000 * 60 {
-                    // < 1 min
-                    vec![5, 13, 21, 29, 37, 45, 53, 61, 69, 77, 85, 93]
-                } else if duration < 1000 * 60 * 2 {
-                    // < 2 min
-                    (2..=98).step_by(5).collect::<Vec<_>>()
-                } else if duration < 1000 * 60 * 10 {
-                    // < 10 min
-                    (1..=99).step_by(2).collect::<Vec<_>>()
-                } else {
-                    (1..=99).collect::<Vec<_>>()
-                };
-
-                for percent in percents {
-                    // Get thumb as byte buffer
-                    let seconds = (duration as f64) * (percent as f64 / 100.0);
-                    let thumb = self
-                        .get_video_thumb(
+                let loaded_video_images = if video_images.is_none() {
+                    Some(
+                        self.video_processing_images(
                             library_id,
                             media_id,
-                            VideoTime::Seconds(seconds),
-                            image::ImageFormat::Png,
-                            Some(70),
                             requesting_user,
                         )
-                        .await?;
+                        .await?,
+                    )
+                } else {
+                    None
+                };
+                let video_images = video_images
+                    .or_else(|| loaded_video_images.as_deref())
+                    .unwrap_or_default();
 
-                    // Convert to image
-                    let mut cursor = Cursor::new(thumb);
+                for processing_image in video_images {
+                    let mut cursor = Cursor::new(processing_image.buffer.as_slice());
                     if let Ok(response) =
                         crate::tools::image_tools::reader_to_image(&mut cursor).await
                     {
@@ -1002,12 +971,12 @@ impl ModelController {
                                 y1: face.bbox.y1,
                                 x2: face.bbox.x2,
                                 y2: face.bbox.y2,
-                                video_s: Some(seconds as f32),
+                                video_s: processing_image.video_s,
                                 video_percent: None,
                             };
                             collected_faces.push(CollectedFace {
                                 face,
-                                video_s: Some(seconds as f32),
+                                video_s: processing_image.video_s,
                                 video_percent: None,
                                 bbox,
                             });
