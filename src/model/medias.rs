@@ -123,6 +123,10 @@ use crate::routes::sse::SseEvent;
 
 pub const CRYPTO_HEADER_SIZE: u64 = 16 + 4 + 4 + 32 + 256;
 const PLUGIN_CONVERT_CONCURRENCY_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
+const PLUGIN_CONVERT_STATUS_MAX_FAILURES: usize = 3;
+const PLUGIN_CONVERT_STATUS_ERROR: &str = "Unable to retrieve conversion status";
+const PLUGIN_CONVERT_FINALIZATION_ERROR: &str = "Unable to save converted video";
+const PLUGIN_CONVERT_SUBMISSION_ERROR: &str = "Unable to start conversion";
 
 #[derive(Clone)]
 pub(super) struct VideoProcessingImage {
@@ -2285,6 +2289,8 @@ impl ModelController {
             let upload_id = request.upload_id.clone().unwrap_or_else(|| nanoid!());
             let filename = Self::request_progress_filename(&request);
             let request_url = request.url.clone();
+            let tx_progress =
+                self.create_progress_sender(library_id.to_owned(), Some(upload_id.clone()));
 
             match self
                 .download_individual_request(
@@ -2294,6 +2300,7 @@ impl ModelController {
                     origin.clone(),
                     store,
                     requesting_user,
+                    tx_progress.clone(),
                 )
                 .await
             {
@@ -2317,7 +2324,9 @@ impl ModelController {
                             filename,
                             &request_url,
                             &error_message,
-                        );
+                            &tx_progress,
+                        )
+                        .await;
                     }
 
                     if first_error.is_none() {
@@ -2353,6 +2362,7 @@ impl ModelController {
         origin: Option<RsLink>,
         store: &crate::model::store::sql::library::SqliteLibraryStore,
         requesting_user: &ConnectedUser,
+        tx_progress: mpsc::Sender<RsProgress>,
     ) -> RsResult<Media> {
         let m = self.source_for_library(library_id).await?;
 
@@ -2369,9 +2379,6 @@ impl ModelController {
                 ..Default::default()
             })
         });
-
-        let tx_progress =
-            self.create_progress_sender(library_id.to_owned(), Some(upload_id.clone()));
 
         // Check for origin duplicate
         if let Some(origin) = &mut infos.origin {
@@ -2601,13 +2608,14 @@ impl ModelController {
             .or_else(|| Some(request.url.clone()))
     }
 
-    fn send_individual_download_failure(
+    async fn send_individual_download_failure(
         &self,
         library_id: &str,
         upload_id: &str,
         filename: Option<String>,
         request_url: &str,
         error_message: &str,
+        tx_progress: &mpsc::Sender<RsProgress>,
     ) {
         log_error(
             LogServiceType::Source,
@@ -2616,17 +2624,20 @@ impl ModelController {
                 request_url, error_message
             ),
         );
-        self.send_upload_progress(UploadProgressMessage {
-            library: library_id.to_owned(),
-            progress: RsProgress {
-                id: upload_id.to_owned(),
-                total: Some(1),
-                current: Some(1),
-                kind: RsProgressType::Failed(error_message.to_owned()),
-                filename,
-            },
-            ..Default::default()
-        });
+        let progress = RsProgress {
+            id: upload_id.to_owned(),
+            total: Some(1),
+            current: Some(1),
+            kind: RsProgressType::Failed(error_message.to_owned()),
+            filename,
+        };
+        if tx_progress.send(progress.clone()).await.is_err() {
+            self.send_upload_progress(UploadProgressMessage {
+                library: library_id.to_owned(),
+                progress,
+                ..Default::default()
+            });
+        }
     }
 
     pub fn create_progress_sender(
@@ -3416,6 +3427,7 @@ impl ModelController {
         }
 
         self.store.remove_plugin_convert_queue_item(id).await?;
+        self.clear_plugin_convert_status_failures(id).await;
         self.send_convert_progress(ConvertMessage {
             library: item.library_id.clone(),
             progress: ConvertProgress {
@@ -3435,10 +3447,13 @@ impl ModelController {
     async fn tick_plugin_convert_queue(&self) -> crate::Result<()> {
         let active = self.store.list_active_plugin_convert_jobs().await?;
         for item in active {
-            if let Err(e) = self.poll_plugin_convert_queue_item(item).await {
+            if let Err(error) = self.poll_plugin_convert_queue_item(item.clone()).await {
                 log_error(
                     LogServiceType::Source,
-                    format!("Failed to poll plugin convert job: {:?}", e),
+                    format!(
+                        "Failed to process plugin convert job {}: {:#}",
+                        item.id, error
+                    ),
                 );
             }
         }
@@ -3480,8 +3495,15 @@ impl ModelController {
             .await?;
         for item in queued {
             if let Err(e) = self.submit_plugin_convert_queue_item(item.clone()).await {
-                self.fail_plugin_convert_queue_item(&item, e.to_string())
-                    .await?;
+                log_error(
+                    LogServiceType::Source,
+                    format!("Failed to submit plugin convert job {}: {:#}", item.id, e),
+                );
+                self.fail_plugin_convert_queue_item(
+                    &item,
+                    PLUGIN_CONVERT_SUBMISSION_ERROR.to_string(),
+                )
+                .await?;
             }
         }
 
@@ -3563,9 +3585,10 @@ impl ModelController {
 
     async fn poll_plugin_convert_queue_item(
         &self,
-        item: PluginConvertQueueItem,
+        mut item: PluginConvertQueueItem,
     ) -> crate::Result<()> {
         let Some(job_id) = item.plugin_job_id.clone() else {
+            self.clear_plugin_convert_status_failures(&item.id).await;
             self.store
                 .update_plugin_convert_queue_item(
                     &item.id,
@@ -3581,50 +3604,62 @@ impl ModelController {
         let current_status = match self.convert_status(&job_id, &item.plugin_id).await {
             Ok(status) => status,
             Err(e) => {
+                let failures = self.record_plugin_convert_status_failure(&item.id).await;
                 log_error(
                     LogServiceType::Source,
-                    format!("Got convert status error for {}: {:?}", item.id, e),
+                    format!(
+                        "Got convert status error for {} (attempt {}/{}): {:?}",
+                        item.id, failures, PLUGIN_CONVERT_STATUS_MAX_FAILURES, e
+                    ),
                 );
+
+                if failures >= PLUGIN_CONVERT_STATUS_MAX_FAILURES {
+                    if let Err(cancel_error) = self
+                        .convert_cancel(RsRequest::default(), &job_id, &item.plugin_id)
+                        .await
+                    {
+                        log_error(
+                            LogServiceType::Source,
+                            format!(
+                                "Failed to cancel plugin convert job {} after status errors: {:?}",
+                                item.id, cancel_error
+                            ),
+                        );
+                    }
+                    self.fail_plugin_convert_queue_item(
+                        &item,
+                        PLUGIN_CONVERT_STATUS_ERROR.to_string(),
+                    )
+                    .await?;
+                }
                 return Ok(());
             }
         };
+        self.clear_plugin_convert_status_failures(&item.id).await;
 
         let progress = Self::normalize_plugin_progress(current_status.progress);
         let queue_status = Self::queue_status_from_video_status(&current_status.status);
-        self.store
-            .update_plugin_convert_queue_item(
-                &item.id,
-                PluginConvertQueueForUpdate {
-                    status: Some(queue_status),
-                    progress: Some(progress),
-                    ..Default::default()
-                },
-            )
-            .await?;
-
-        let terminal = matches!(
-            current_status.status,
-            RsVideoTranscodeStatus::Completed
-                | RsVideoTranscodeStatus::Failed
-                | RsVideoTranscodeStatus::Canceled
-        );
-        self.send_convert_progress(ConvertMessage {
-            library: item.library_id.clone(),
-            progress: ConvertProgress {
-                id: item.id.clone(),
-                filename: item.filename.clone(),
-                converted_id: item.converted_id.clone(),
-                done: terminal,
-                percent: progress,
-                status: current_status.status.clone(),
-                remaining_secondes: None,
-                request: Some(item.request.clone()),
-            },
-        });
+        item.progress = progress;
 
         match current_status.status {
             RsVideoTranscodeStatus::Completed => {
-                self.finish_plugin_convert_queue_item(item, &job_id).await?;
+                if let Err(error) = self
+                    .finish_plugin_convert_queue_item(item.clone(), &job_id)
+                    .await
+                {
+                    log_error(
+                        LogServiceType::Source,
+                        format!(
+                            "Failed to finalize plugin convert job {}: {:#}",
+                            item.id, error
+                        ),
+                    );
+                    self.fail_plugin_convert_queue_item(
+                        &item,
+                        PLUGIN_CONVERT_FINALIZATION_ERROR.to_string(),
+                    )
+                    .await?;
+                }
             }
             RsVideoTranscodeStatus::Failed => {
                 self.fail_plugin_convert_queue_item(&item, "Plugin conversion failed".to_string())
@@ -3636,15 +3671,67 @@ impl ModelController {
                         &item.id,
                         PluginConvertQueueForUpdate {
                             status: Some(PluginConvertQueueStatus::Canceled),
+                            progress: Some(progress),
                             ..Default::default()
                         },
                     )
                     .await?;
+                self.send_convert_progress(ConvertMessage {
+                    library: item.library_id.clone(),
+                    progress: ConvertProgress {
+                        id: item.id.clone(),
+                        filename: item.filename.clone(),
+                        converted_id: item.converted_id.clone(),
+                        done: true,
+                        percent: progress,
+                        status: RsVideoTranscodeStatus::Canceled,
+                        remaining_secondes: None,
+                        request: Some(item.request.clone()),
+                    },
+                });
             }
-            _ => {}
+            _ => {
+                self.store
+                    .update_plugin_convert_queue_item(
+                        &item.id,
+                        PluginConvertQueueForUpdate {
+                            status: Some(queue_status),
+                            progress: Some(progress),
+                            ..Default::default()
+                        },
+                    )
+                    .await?;
+                self.send_convert_progress(ConvertMessage {
+                    library: item.library_id.clone(),
+                    progress: ConvertProgress {
+                        id: item.id.clone(),
+                        filename: item.filename.clone(),
+                        converted_id: item.converted_id.clone(),
+                        done: false,
+                        percent: progress,
+                        status: current_status.status,
+                        remaining_secondes: None,
+                        request: Some(item.request.clone()),
+                    },
+                });
+            }
         }
 
         Ok(())
+    }
+
+    async fn record_plugin_convert_status_failure(&self, item_id: &str) -> usize {
+        let mut failures = self.plugin_convert_status_failures.write().await;
+        let count = failures.entry(item_id.to_string()).or_default();
+        *count += 1;
+        *count
+    }
+
+    async fn clear_plugin_convert_status_failures(&self, item_id: &str) {
+        self.plugin_convert_status_failures
+            .write()
+            .await
+            .remove(item_id);
     }
 
     async fn finish_plugin_convert_queue_item(
@@ -3797,11 +3884,13 @@ impl ModelController {
         item: &PluginConvertQueueItem,
         error: String,
     ) -> crate::Result<()> {
+        self.clear_plugin_convert_status_failures(&item.id).await;
         self.store
             .update_plugin_convert_queue_item(
                 &item.id,
                 PluginConvertQueueForUpdate {
                     status: Some(PluginConvertQueueStatus::Failed),
+                    progress: Some(item.progress),
                     error: Some(error.clone()),
                     ..Default::default()
                 },
