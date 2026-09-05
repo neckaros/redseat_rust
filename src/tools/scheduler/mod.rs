@@ -218,14 +218,19 @@ impl RsSchedulerState {
 }
 
 pub(crate) fn parse_cron_schedule(expression: &str) -> RsResult<Schedule> {
-    if expression.split_whitespace().count() != 5 {
+    let fields = expression.split_whitespace().collect::<Vec<_>>();
+    if fields.len() != 5 {
         return Err(RsError::InvalidParams(
             "Backup schedules must use five-field cron syntax: minute hour day-of-month month day-of-week"
                 .to_string(),
         ));
     }
 
-    let normalized = format!("0 {} *", expression.trim());
+    let weekdays = normalize_cron_weekdays(fields[4]);
+    let normalized = format!(
+        "0 {} {} {} {} {} *",
+        fields[0], fields[1], fields[2], fields[3], weekdays
+    );
     let schedule = Schedule::from_str(&normalized)
         .map_err(|error| RsError::InvalidParams(format!("Invalid backup schedule: {error}")))?;
     if schedule.upcoming(Utc).next().is_none() {
@@ -234,6 +239,56 @@ pub(crate) fn parse_cron_schedule(expression: &str) -> RsResult<Schedule> {
         ));
     }
     Ok(schedule)
+}
+
+// Standard five-field cron numbers weekdays from Sunday=0 (or 7) through Saturday=6,
+// while the scheduler crate uses Sunday=1 through Saturday=7.
+fn normalize_cron_weekdays(field: &str) -> String {
+    field
+        .split(',')
+        .flat_map(|part| {
+            let (value, step) = match part.split_once('/') {
+                Some((value, step)) if !step.contains('/') => {
+                    let Ok(step) = step.parse::<usize>() else {
+                        return vec![part.to_string()];
+                    };
+                    if step == 0 {
+                        return vec![part.to_string()];
+                    }
+                    (value, Some(step))
+                }
+                Some(_) => return vec![part.to_string()],
+                None => (part, None),
+            };
+
+            if value == "*" || value == "?" {
+                return vec![part.to_string()];
+            }
+
+            let range = if let Some((start, end)) = value.split_once('-') {
+                match (parse_standard_weekday(start), parse_standard_weekday(end)) {
+                    (Some(start), Some(end)) if start <= end => Some((start, end)),
+                    _ => None,
+                }
+            } else {
+                parse_standard_weekday(value).map(|day| (day, step.map_or(day, |_| 7)))
+            };
+
+            let Some((start, end)) = range else {
+                return vec![part.to_string()];
+            };
+            let step = step.unwrap_or(1);
+            (start..=end)
+                .step_by(step)
+                .map(|day| ((day % 7) + 1).to_string())
+                .collect()
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn parse_standard_weekday(value: &str) -> Option<u8> {
+    value.parse::<u8>().ok().filter(|day| *day <= 7)
 }
 
 #[derive(PartialEq, Eq, Hash, Debug, Clone)]
@@ -343,6 +398,8 @@ mod tests {
     #[test]
     fn parses_standard_five_field_cron_schedule() {
         assert!(parse_cron_schedule("0 2 * * *").is_ok());
+        assert!(parse_cron_schedule("0 2 * * 0").is_ok());
+        assert_eq!(normalize_cron_weekdays("1-5/2,0,6-7"), "2,4,6,1,7,1");
         assert!(parse_cron_schedule("0 2 * *").is_err());
     }
 }
