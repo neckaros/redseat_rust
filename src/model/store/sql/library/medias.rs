@@ -53,7 +53,6 @@ pub struct MediaBackup {
     pub id: String,
     pub name: String,
     pub size: Option<u64>,
-    pub hash: String,
 }
 
 impl RsSort {
@@ -144,8 +143,8 @@ fn media_query(user_id: &Option<String>) -> String {
 }
 
 const MEDIA_BACKUP_QUERY: &str = "SELECT 
-            m.id, m.name, m.size, m.md5,
-            (select avg(rating ) from ratings where media_ref = m.id) as rating
+            m.id, m.name, m.size,
+            (select avg(rating) from ratings where type = 'media' and ref = m.id) as rating
 			,(select GROUP_CONCAT(tag_ref || '|' || IFNULL(confidence, 100)) from media_tag_mapping where media_ref = m.id and (confidence != -1 or confidence IS NULL)) as tags
 			,(select GROUP_CONCAT(people_ref ) from media_people_mapping where media_ref = m.id) as people
 			,(select GROUP_CONCAT(serie_ref || '|' || printf('%04d', season) || '|' || printf('%04d', episode)) from media_serie_mapping where media_ref = m.id) as series,
@@ -797,7 +796,6 @@ impl SqliteLibraryStore {
                         id: row.get(0)?,
                         name: row.get(1)?,
                         size: row.get(2)?,
-                        hash: row.get(3)?,
                     };
                     Ok(s)
                 })?;
@@ -1335,6 +1333,32 @@ mod tests {
     use super::SqliteLibraryStore;
     use crate::domain::media::{FileType, MediaForAdd};
     use crate::model::{medias::MediaQuery, store::sql::SqlOrder};
+
+    #[tokio::test]
+    async fn backup_query_handles_migrated_ratings_and_missing_hash() {
+        let connection = tokio_rusqlite::Connection::open_in_memory().await.unwrap();
+        let store = SqliteLibraryStore::new(connection).await.unwrap();
+        store
+            .add_media(
+                MediaForAdd {
+                    name: "backup.jpg".to_string(),
+                    size: Some(123),
+                    ..Default::default()
+                }
+                .into_insert_with_id("backup-media".to_string()),
+            )
+            .await
+            .unwrap();
+
+        let backups = store
+            .get_all_medias_to_backup(0, MediaQuery::default())
+            .await
+            .unwrap();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(backups[0].id, "backup-media");
+        assert_eq!(backups[0].name, "backup.jpg");
+        assert_eq!(backups[0].size, Some(123));
+    }
 
     #[tokio::test]
     async fn media_book_column_and_filter_roundtrip() {
