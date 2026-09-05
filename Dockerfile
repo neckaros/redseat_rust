@@ -1,11 +1,13 @@
 # Server build stage
 FROM rust:1.90-trixie AS builder
+ENV SYSTEM_DEPS_LIBHEIF_LINK=static
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     cmake \
     curl \
     pkg-config \
     build-essential \
+    nasm \
   && rm -rf /var/lib/apt/lists/*
 COPY scripts/install-libheif.sh /tmp/install-libheif.sh
 RUN bash /tmp/install-libheif.sh
