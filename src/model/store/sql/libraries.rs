@@ -138,16 +138,18 @@ impl SqliteStore {
     pub async fn remove_library(&self, library_id: String) -> Result<()> {
         self.server_store
             .call(move |conn| {
-                conn.execute("DELETE FROM Libraries WHERE id = ?", &[&library_id])?;
-                conn.execute(
+                let transaction = conn.transaction()?;
+                transaction.execute(
                     "DELETE FROM Libraries_Users_Rights WHERE library_ref = ?",
                     &[&library_id],
                 )?;
-                conn.execute(
+                transaction.execute(
                     "DELETE FROM Backups_Files WHERE library = ?",
                     &[&library_id],
                 )?;
-                conn.execute("DELETE FROM Invitation WHERE library = ?", &[&library_id])?;
+                transaction.execute("DELETE FROM Invitation WHERE library = ?", &[&library_id])?;
+                transaction.execute("DELETE FROM Libraries WHERE id = ?", &[&library_id])?;
+                transaction.commit()?;
                 Ok(())
             })
             .await?;
@@ -296,9 +298,13 @@ impl SqliteStore {
 
 #[cfg(test)]
 mod tests {
+    use std::{collections::HashMap, sync::RwLock};
+
     use rusqlite::Connection;
+    use tokio_rusqlite::Connection as TokioConnection;
 
     use crate::domain::library::LibraryType;
+    use crate::model::store::{sql::migrate_database, SqliteStore};
 
     #[test]
     fn library_type_books_sql_roundtrip() {
@@ -318,5 +324,53 @@ mod tests {
             .query_row("SELECT kind FROM libs", [], |row| row.get(0))
             .unwrap();
         assert_eq!(parsed, LibraryType::Books);
+    }
+
+    #[tokio::test]
+    async fn remove_library_deletes_backup_files_before_library() {
+        let connection = TokioConnection::open_in_memory().await.unwrap();
+        migrate_database(&connection).await.unwrap();
+        connection
+            .call(|conn| {
+                conn.pragma_update(None, "foreign_keys", true)?;
+                conn.execute(
+                    "INSERT INTO Libraries (id, name, type, source, root, settings)\
+                     VALUES ('library-1', 'Movies', 'movies', 'virtual', '', '{}')",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO Backups (id, source, path, name)\
+                     VALUES ('backup-1', 'local', '', 'Backup')",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO Backups_Files (backup, library, file, sourcehash)\
+                     VALUES ('backup-1', 'library-1', 'movie-1', 'hash-1')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let store = SqliteStore {
+            server_store: connection,
+            libraries_stores: RwLock::new(HashMap::new()),
+        };
+
+        store.remove_library("library-1".to_string()).await.unwrap();
+
+        store
+            .server_store
+            .call(|conn| {
+                let libraries: i64 =
+                    conn.query_row("SELECT COUNT(*) FROM Libraries", [], |row| row.get(0))?;
+                let backup_files: i64 =
+                    conn.query_row("SELECT COUNT(*) FROM Backups_Files", [], |row| row.get(0))?;
+                assert_eq!(libraries, 0);
+                assert_eq!(backup_files, 0);
+                Ok(())
+            })
+            .await
+            .unwrap();
     }
 }
