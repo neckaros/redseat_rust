@@ -1,13 +1,12 @@
 use crate::{
     domain::backup::BackupWithStatus,
-    error::RsError,
     model::{
         backups::{BackupForAdd, BackupForUpdate},
         users::ConnectedUser,
         ModelController,
     },
     plugins::sources::error::SourcesError,
-    tools::scheduler::{backup::BackupTask, RsSchedulerTask},
+    tools::scheduler::{backup::BackupTask, RsSchedulerWhen, RsTaskType},
     Result,
 };
 use axum::{
@@ -106,18 +105,21 @@ async fn handler_backup(
     State(mc): State<ModelController>,
     user: ConnectedUser,
 ) -> Result<Json<Value>> {
-    tokio::spawn(async move {
-        let backup_task = BackupTask {
-            specific_backup: Some(backup_id),
-        };
-        let process = backup_task.execute(mc).await;
-
-        match process {
-            Ok(_) => println!("Task completed successfully"),
-            Err(e) => println!("Task error: {}", e),
-        }
-
-        Ok::<_, RsError>(())
-    });
+    mc.get_backup(&backup_id, &user)
+        .await?
+        .ok_or(SourcesError::UnableToFindBackup(
+            backup_id.clone(),
+            "handler_backup".to_string(),
+        ))?;
+    mc.scheduler
+        .add(
+            RsTaskType::Backup,
+            RsSchedulerWhen::At(0),
+            BackupTask {
+                specific_backup: Some(backup_id),
+            },
+        )
+        .await?;
+    mc.scheduler.tick(mc.clone()).await;
     Ok(Json(json!({"data": "ok"})))
 }

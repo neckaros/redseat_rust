@@ -43,13 +43,14 @@ use crate::{
             AesTokioDecryptStream, AesTokioEncryptStream,
         },
         log::{log_error, log_info},
+        scheduler::{backup::BackupTask, parse_cron_schedule, RsSchedulerWhen, RsTaskType},
     },
 };
 
 use super::{
     error::{Error, Result},
     medias::{MediaFileQuery, MediaQuery, MediaSource},
-    store::sql::backups::BackupInfos,
+    store::{sql::backups::BackupInfos, DatabaseSnapshot},
     users::{ConnectedUser, UserRole},
     ModelController,
 };
@@ -63,6 +64,7 @@ pub struct BackupForAdd {
     pub plugin: Option<String>,
     pub library: Option<String>,
     pub path: String,
+    /// Standard five-field cron expression evaluated in UTC.
     pub schedule: Option<String>,
     pub filter: Option<MediaQuery>,
     pub last: Option<i64>,
@@ -76,7 +78,9 @@ pub struct BackupForUpdate {
     pub plugin: Option<String>,
     pub library: Option<String>,
     pub path: Option<String>,
-    pub schedule: Option<String>,
+    /// Omitted leaves the schedule unchanged; null disables it.
+    #[serde(default, with = "serde_with::rust::double_option")]
+    pub schedule: Option<Option<String>>,
     pub filter: Option<MediaQuery>,
     pub last: Option<i64>,
     pub password: Option<String>,
@@ -85,6 +89,63 @@ pub struct BackupForUpdate {
 }
 
 impl ModelController {
+    pub(crate) async fn create_database_snapshot(
+        &self,
+        library_id: Option<&str>,
+    ) -> RsResult<DatabaseSnapshot> {
+        self.store.create_database_snapshot(library_id).await
+    }
+
+    fn validate_backup_schedule(schedule: Option<&str>) -> Result<()> {
+        if let Some(schedule) = schedule {
+            parse_cron_schedule(schedule)
+                .map_err(|_| Error::InvalidBackupSchedule(schedule.to_string()))?;
+        }
+        Ok(())
+    }
+
+    async fn sync_backup_schedule(&self, backup: &Backup) -> Result<()> {
+        let task = BackupTask {
+            specific_backup: Some(backup.id.clone()),
+        };
+
+        if let Some(schedule) = &backup.schedule {
+            self.scheduler
+                .add(
+                    RsTaskType::Backup,
+                    RsSchedulerWhen::Cron(schedule.clone()),
+                    task,
+                )
+                .await
+                .map_err(|error| Error::Other(error.to_string()))?;
+        } else {
+            self.scheduler
+                .remove_recurring(RsTaskType::Backup, &task)
+                .await
+                .map_err(|error| Error::Other(error.to_string()))?;
+        }
+        Ok(())
+    }
+
+    pub async fn initialize_backup_schedules(&self) -> Result<()> {
+        let backups = self.get_backups(&ConnectedUser::ServerAdmin).await?;
+        for backup in backups {
+            if backup.schedule.is_none() {
+                continue;
+            }
+            if let Err(error) = self.sync_backup_schedule(&backup).await {
+                log_error(
+                    crate::tools::log::LogServiceType::Scheduler,
+                    format!(
+                        "Ignoring invalid schedule for backup {}: {}",
+                        backup.id, error
+                    ),
+                );
+            }
+        }
+        Ok(())
+    }
+
     pub fn send_backup_status(&self, message: BackupMessage) {
         self.broadcast_sse(SseEvent::Backups(message));
     }
@@ -100,6 +161,7 @@ impl ModelController {
             progresses.remove(index);
         }
         progresses.push(status.clone());
+        drop(progresses);
 
         let backup = self
             .get_backup(&backup_id, &ConnectedUser::ServerAdmin)
@@ -118,12 +180,27 @@ impl ModelController {
         Ok(())
     }
 
-    pub async fn is_processing_backup(&self, backup_id: &str) -> bool {
-        self.backup_processes
-            .read()
-            .await
-            .iter()
-            .any(|b| b.backup == backup_id && b.status == BackupStatus::InProgress)
+    /// Atomically claims a backup so manual and scheduled starts cannot race.
+    pub async fn try_start_backup(&self, backup: &Backup) -> bool {
+        let status = BackupProcessStatus::new_from_backup(backup, 0, 0, 0, 0);
+        let mut progresses = self.backup_processes.write().await;
+        if progresses.iter().any(|process| {
+            process.backup == backup.id && process.status == BackupStatus::InProgress
+        }) {
+            return false;
+        }
+        progresses.retain(|process| process.backup != backup.id);
+        progresses.push(status.clone());
+        drop(progresses);
+
+        self.send_backup_status(BackupMessage {
+            action: crate::domain::ElementAction::Updated,
+            backup: BackupWithStatus {
+                backup: backup.clone(),
+                status: Some(status),
+            },
+        });
+        true
     }
     pub async fn to_backups_with_status(&self, backups: Vec<Backup>) -> Vec<BackupWithStatus> {
         let mut backups_with_status = vec![];
@@ -215,6 +292,10 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> Result<Backup> {
         requesting_user.check_role(&UserRole::Admin)?;
+        let schedule_changed = update.schedule.is_some();
+        if let Some(schedule) = update.schedule.as_ref() {
+            Self::validate_backup_schedule(schedule.as_deref())?;
+        }
         self.store.update_backup(backup_id, update).await?;
         let backup =
             self.store
@@ -224,6 +305,10 @@ impl ModelController {
                     backup_id.to_string(),
                     "update_backup".to_string(),
                 ))?;
+
+        if schedule_changed {
+            self.sync_backup_schedule(&backup).await?;
+        }
 
         let backup_with_status = BackupWithStatus {
             backup: backup.clone(),
@@ -243,6 +328,7 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> Result<Backup> {
         requesting_user.check_role(&UserRole::Admin)?;
+        Self::validate_backup_schedule(backup.schedule.as_deref())?;
         let backup = Backup {
             id: nanoid!(),
             name: backup.name,
@@ -258,6 +344,7 @@ impl ModelController {
             plugin: backup.plugin,
         };
         self.store.add_backup(backup.clone()).await?;
+        self.sync_backup_schedule(&backup).await?;
         Ok(backup)
     }
 
@@ -277,6 +364,15 @@ impl ModelController {
                 ))?;
 
         self.store.remove_backup(backup_id.to_string()).await?;
+        self.scheduler
+            .remove_recurring(
+                RsTaskType::Backup,
+                &BackupTask {
+                    specific_backup: Some(backup_id.to_string()),
+                },
+            )
+            .await
+            .map_err(|error| Error::Other(error.to_string()))?;
         Ok(credential)
     }
 

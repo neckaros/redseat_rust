@@ -21,6 +21,7 @@ pub struct Backup {
     pub credentials: Option<String>,
     pub library: Option<String>,
     pub path: String,
+    /// Standard five-field cron expression evaluated in UTC.
     pub schedule: Option<String>,
     pub filter: Option<MediaQuery>,
     pub last: Option<i64>,
@@ -139,6 +140,12 @@ impl BackupProcessStatus {
 
             estimated_remaining_seconds: None,
         }
+    }
+
+    pub fn new_from_backup_error(backup: &Backup) -> Self {
+        let mut status = Self::new_from_backup_done(backup);
+        status.status = BackupStatus::Error;
+        status
     }
 }
 
