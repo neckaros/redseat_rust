@@ -6,11 +6,6 @@ RUN apt-get update && apt-get install -y \
     curl \
     pkg-config \
     build-essential \
-    libaom-dev \
-    libde265-dev \
-    libx265-dev \
-    nasm \
-    zlib1g-dev \
   && rm -rf /var/lib/apt/lists/*
 COPY scripts/install-libheif.sh /tmp/install-libheif.sh
 RUN bash /tmp/install-libheif.sh
@@ -36,11 +31,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
-    libde265-0 \
-    libjpeg62-turbo \
-    libaom3 \
     libdav1d7 \
-    libx265-215 \
+    libjpeg62-turbo \
     libwebp7 \
     libpng16-16t64 \
     libtiff6 \
@@ -49,11 +41,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
-
-COPY --from=builder /usr/local/lib/libheif.so* /usr/local/lib/
-
-# Update library cache
-RUN ldconfig
 
 
 WORKDIR /app

@@ -84,13 +84,14 @@ volumes:
 
 ## Setup development environment
 
-Redseat requires libheif 1.23.3 or newer. You must also have YT-DLP and
-FFmpeg available on `PATH`.
+Redseat requires static libheif 1.23.3 or newer. The release build embeds
+libheif and libde265 in the executable, so they do not need to be shipped as
+side files. You must also have YT-DLP and FFmpeg available on `PATH`.
 
 ### Linux
 
-Install CMake, curl, pkg-config, and the development packages for aom,
-libde265, x265, and zlib. Then install the pinned libheif release:
+Install a C/C++ compiler, CMake, curl, and pkg-config. Then build and install
+the pinned static libheif and libde265 releases:
 
 ```bash
 sudo bash scripts/install-libheif.sh
@@ -100,10 +101,11 @@ cargo run --bin redseat-rust
 
 ### macOS
 
-Homebrew provides libheif for both Apple Silicon and Intel Macs:
+Install the build tools, then build and install the pinned static libraries:
 
 ```bash
-brew install libheif nasm pkg-config
+brew install cmake pkg-config
+REDSEAT_NATIVE_PREFIX="$(brew --prefix)" bash scripts/install-libheif.sh
 pkg-config --modversion libheif
 cargo run --bin redseat-rust
 ```

@@ -6,11 +6,12 @@ fn main() {
     if target_os != "windows" && std::env::var_os("DOCS_RS").is_none() {
         pkg_config::Config::new()
             .cargo_metadata(false)
+            .statik(true)
             .atleast_version("1.23.3")
             .probe("libheif")
             .unwrap_or_else(|error| {
                 panic!(
-                    "libheif 1.23.3 or newer is required; install it with Homebrew or scripts/install-libheif.sh: {error}"
+                    "static libheif 1.23.3 or newer is required; install it with scripts/install-libheif.sh: {error}"
                 )
             });
     }

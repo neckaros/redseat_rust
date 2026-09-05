@@ -39,12 +39,14 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake curl libaom-dev libde265-dev libx265-dev nasm pkg-config zlib1g-dev
+          sudo apt-get install -y cmake curl pkg-config
           sudo bash scripts/install-libheif.sh
 
       - name: Install macOS dependencies
         if: startsWith(matrix.os, 'macos-')
-        run: brew install libheif nasm pkg-config
+        run: |
+          brew install cmake pkg-config
+          REDSEAT_NATIVE_PREFIX="$(brew --prefix)" bash scripts/install-libheif.sh
 
       - name: Install cargo-vcpkg (Windows)
         if: matrix.os == 'windows-latest'
@@ -58,6 +60,22 @@ jobs:
 
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Verify native libraries are embedded (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          if ldd target/${{ matrix.target }}/release/redseat-rust | grep -E 'libheif|libde265'; then
+            echo "release binary must not depend on shared libheif or libde265" >&2
+            exit 1
+          fi
+
+      - name: Verify native libraries are embedded (macOS)
+        if: startsWith(matrix.os, 'macos-')
+        run: |
+          if otool -L target/${{ matrix.target }}/release/redseat-rust | grep -E 'libheif|libde265'; then
+            echo "release binary must not depend on shared libheif or libde265" >&2
+            exit 1
+          fi
 
       - name: Package (Linux)
         if: matrix.os == 'ubuntu-latest'

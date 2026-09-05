@@ -1,2 +1,3 @@
 [env]
+SYSTEM_DEPS_LIBHEIF_LINK = "static"
 VCPKG_OVERLAY_PORTS = { value = "support/vcpkg-overlays", relative = true }
