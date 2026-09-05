@@ -1,0 +1,7 @@
+# Version-control and local worktree metadata
+.git
+.t3
+
+# Rust build output
+target
+debug

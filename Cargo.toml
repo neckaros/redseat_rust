@@ -98,7 +98,8 @@ pbkdf2 = "0.12.2"
 sha1 = "0.10.6"
 hex = "0.4.3"
 rs_torrent_magnet = "0.3.0"
-libheif-sys = { version = "4.0", features = ["v1_19"] }
+# Use the 1.23 API bindings; build.rs enforces the patched system library (>= 1.23.3).
+libheif-sys = { version = "5.3.1", features = ["v1_23"] }
 quickraw = { version = "0.1.6", features = ["rayon"] }
 jxl-oxide = { version = "0.11.1", features = ["image"] }
 sevenz-rust = "0.6.1"
@@ -116,30 +117,16 @@ tower = { version = "0.4", features = ["util"] }
 hyper-util = { version = "0.1", features = ["client", "http1", "client-legacy"] }
 serial_test = "*"
 
-
-# Compile lunix on MAC
-# rustup target add x86_64-unknown-linux-gnu
-# brew install SergioBenitez/osxct/x86_64-unknown-linux-gnu
-# TARGET_CC=x86_64-unknown-linux-gnu cargo build --release --target x86_64-unknown-linux-gnu
-[target.x86_64-unknown-linux-gnu]
-linker = "x86_64-unknown-linux-gnu-gcc"
-
-
+[build-dependencies]
+pkg-config = "0.3"
 
 [package.metadata.vcpkg]
 git = "https://github.com/microsoft/vcpkg"
-rev = "master"
-# Default list can be empty; targets below install the right set per-OS. [web:250]
+rev = "04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4"
+# cargo-vcpkg installs native libraries only for the selected Windows target.
 
 [package.metadata.vcpkg.target]
-# Windows (x86_64) — static libs + dynamic CRT (/MD) [web:117][web:250]
-x86_64-pc-windows-msvc = {  triplet = "x64-windows-static-md", dependencies = ["libheif", "libde265", "aom", "dav1d", "x265"] }
+# Static libraries with the dynamic MSVC runtime (/MD).
+x86_64-pc-windows-msvc = { triplet = "x64-windows-static-md", dependencies = ["libheif[aom,hevc]"] }
 
-# Windows (ARM64) — same model as above [web:117][web:250]
-aarch64-pc-windows-msvc = {  triplet = "arm64-windows-static-md",  dependencies = ["libheif", "libde265", "aom", "dav1d", "x265"] }
-
-# macOS (Intel) — osx triplet; Rust links static third‑party by default on macOS [web:117][web:221]
-x86_64-apple-darwin = {  triplet = "x64-osx",  dependencies = ["libheif", "libde265", "aom", "dav1d", "x265"]}
-
-# macOS (Apple Silicon) — arm64 osx triplet [web:221][web:250]
-aarch64-apple-darwin = {  triplet = "arm64-osx",  dependencies = ["libheif", "libde265", "aom", "dav1d", "x265"]}
+aarch64-pc-windows-msvc = { triplet = "arm64-windows-static-md", dependencies = ["libheif[aom,hevc]"] }

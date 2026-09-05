@@ -82,26 +82,47 @@ volumes:
 
 
 
-# Setup dev env
+## Setup development environment
 
-## Windows
-you need a recent version of visual studio installed for C++ builds
-one-time
+Redseat requires static libheif 1.23.3 or newer. The release build embeds
+libheif and libde265 in the executable, so they do not need to be shipped as
+side files. You must also have YT-DLP and FFmpeg available on `PATH`.
+
+### Linux
+
+Install a C/C++ compiler, CMake, curl, and pkg-config. Then build and install
+the pinned static libheif and libde265 releases:
+
 ```bash
+sudo bash scripts/install-libheif.sh
+pkg-config --modversion libheif
+cargo run --bin redseat-rust
+```
+
+### macOS
+
+Install the build tools, then build and install the pinned static libraries:
+
+```bash
+brew install cmake pkg-config
+REDSEAT_NATIVE_PREFIX="$(brew --prefix)" bash scripts/install-libheif.sh
+pkg-config --modversion libheif
+cargo run --bin redseat-rust
+```
+
+### Windows
+
+Install a recent Visual Studio with the C++ build tools, then run:
+
+```powershell
 cargo install cargo-vcpkg
-```
-fetch vcpkg and build declared ports
-```bash
+$env:VCPKG_OVERLAY_PORTS = (Resolve-Path support/vcpkg-overlays).Path
 cargo vcpkg build
+cargo run --bin redseat-rust
 ```
 
-
-# Setup Dev Environment old
-Windows: vcpkg install libheif:x64-windows-static-md
-You must have YT-DLP and FFMPEG installed (setup in your PATH)
-Env variagles:
-SYSTEM_DEPS_DAV1D_LINK=static
-SYSTEM_DEPS_DAV1D_BUILD_INTERNAL=auto
+The repository pins vcpkg and supplies a libheif 1.23.3 overlay because the
+upstream vcpkg port may lag the latest libheif security patch.
 
 ## run with watch
 cargo watch -c -w src -x "run --bin redseat-rust"
