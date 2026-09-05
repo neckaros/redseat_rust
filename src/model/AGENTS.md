@@ -1,74 +1,31 @@
-# MODEL LAYER - AGENTS.md
+# Model layer
 
-Business logic hub. Central `ModelController` orchestrates stores, plugins, and schedulers.
+`ModelController` in `mod.rs` coordinates business logic, stores, plugins, and
+background work. Root guidance applies; paths below are relative to this directory.
 
-## STRUCTURE
+## Entry points
 
-```
-model/
-├── mod.rs              # ModelController: central state, Trakt client ID (line 153)
-├── medias.rs           # Media lifecycle (1609 lines) - uploads, processing, encryption
-├── people.rs           # Face recognition orchestration (1844 lines)
-├── store.rs            # SqliteStore wrapper
-├── store/sql/          # Query builders, migrations
-│   ├── mod.rs          # RsQueryBuilder, SqlWhereType abstractions
-│   └── library/        # Per-library schema (38 migrations)
-└── plugins/            # WASM plugin model definitions
-```
+- `medias.rs`: uploads, deduplication, processing, and encrypted media I/O.
+- `people.rs`: face processing, matching, clustering, and person image handling.
+- `entity_images.rs`: shared entity image lookup and download helpers.
+- `store.rs`: main `database.db` and per-library `db-{id}.db` connections.
+- `store/sql/mod.rs`: shared query builders and main database migrations.
+- `store/sql/library/mod.rs`: library migrations; sibling entity modules contain
+  SQL and manual `row_to_*` mappings, including face storage in `people.rs`.
 
-## KEY FILES
+## Change constraints
 
-| File | Lines | Purpose |
-|------|-------|---------|
-| `people.rs` | 1844 | Face detection pipeline, clustering (Chinese Whispers), person image fallback |
-| `medias.rs` | 1609 | `add_library_file`, `process_media`, encryption streams, deduplication |
-| `store/sql/library/people.rs` | 1018 | Face embedding storage, weighted search, cluster promotion |
-
-## FACE RECOGNITION FLOW
-
-```
-Media Upload → process_media_faces()
-    ├── Photo: detect faces directly
-    └── Video: sample frames at strategic timestamps
-           ↓
-    Face Detection (ONNX) → Embedding Generation
-           ↓
-    Match against known people OR stage for clustering
-           ↓
-    cluster_unassigned_faces() [Chinese Whispers]
-           ↓
-    Auto-promote clusters (≥10 unique media) to Person
-```
-
-## MEDIA LIFECYCLE
-
-```
-Upload → MD5 dedup check → AES encryption (if library.crypt) → Store
-    ↓
-process_media() spawns:
-    ├── Thumbnail generation
-    ├── FFprobe metadata extraction
-    ├── Face detection (photos/videos)
-    └── AI tag prediction
-```
-
-## DATABASE PATTERNS
-
-- **Multi-DB**: Main `database.db` + per-library `db-{id}.db`
-- **Migrations**: `include_bytes!`, `user_version` pragma tracking
-- **Query Builder**: `RsQueryBuilder` with `SqlWhereType` enum (Equal, Like, In, Between, Custom)
-- **Row Mapping**: Manual `row_to_*` functions, no ORM
-
-## CONVENTIONS
-
-- `*WithAction` wrappers for Socket.IO sync events
-- `*ForAdd`, `*ForUpdate`, `*ForInsert` variants for CRUD
-- Pipe-separated strings for lists (`alt` names)
-- `tokio::spawn` for background processing (watch for `.unwrap()`)
-
-## GOTCHAS
-
-- `FaceRecognitionService` behind `Mutex` - potential contention during scans
-- `person_image` has recursive resolution (local → external → face crop)
-- Encryption integrated into I/O paths - increases complexity
-- 512-float embeddings stored in DB - can grow rapidly
+- Keep library/user permission checks in model operations; callers include more
+  than HTTP handlers.
+- For schema changes, add the next numbered SQL migration in the appropriate
+  database directory and register it in that directory's `mod.rs`, following
+  `include_bytes!` and `user_version` handling. Preserve upgrades from existing DBs.
+- Keep selected column order and `row_to_*` mappings aligned. Reuse query builders
+  and serialization helpers, including pipe-separated list fields where used.
+- Respect timestamp triggers and sync ordering when changing persistence.
+- Follow existing `*ForAdd`, `*ForUpdate`, `*ForInsert`, and `*WithAction` types;
+  keep mutation events consistent with persisted data and the root event-doc rule.
+- Media lifecycle changes must account for deduplication, encryption, and
+  background processing. Face changes may span `people.rs`, the library store,
+  `../tools/recognition.rs`, and `../tools/scheduler/face_recognition.rs`; check
+  those boundaries when changing matching or clustering behavior.
