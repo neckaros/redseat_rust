@@ -1,7 +1,9 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 
+use tempfile::TempDir;
 use tokio_rusqlite::Connection;
 
 use crate::error::{RsError, RsResult};
@@ -18,6 +20,17 @@ pub mod sql;
 pub struct SqliteStore {
     server_store: Connection,
     libraries_stores: RwLock<HashMap<String, Arc<SqliteLibraryStore>>>,
+}
+
+pub(crate) struct DatabaseSnapshot {
+    _directory: TempDir,
+    path: PathBuf,
+}
+
+impl DatabaseSnapshot {
+    pub(crate) fn path(&self) -> &std::path::Path {
+        &self.path
+    }
 }
 
 // Constructor
@@ -131,6 +144,34 @@ impl SqliteStore {
             })?
             .remove(library_id);
         Ok(())
+    }
+
+    pub(crate) async fn create_database_snapshot(
+        &self,
+        library_id: Option<&str>,
+    ) -> RsResult<DatabaseSnapshot> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("snapshot.db");
+
+        if let Some(library_id) = library_id {
+            self.get_library_store(library_id)?
+                .create_database_snapshot(path.clone())
+                .await?;
+        } else {
+            let snapshot_path = path.to_string_lossy().into_owned();
+            self.server_store
+                .call(move |connection| {
+                    connection.execute("VACUUM INTO ?1", [snapshot_path])?;
+                    Ok(())
+                })
+                .await
+                .map_err(super::error::Error::from)?;
+        }
+
+        Ok(DatabaseSnapshot {
+            _directory: directory,
+            path,
+        })
     }
 }
 

@@ -48,6 +48,7 @@ pub enum Error {
     MediaNotFound(String),
     PersonNotFound(String),
     LibraryDeletionInProgress(String),
+    InvalidBackupSchedule(String),
     InvalidPaginationLimit {
         requested: u32,
         maximum: u32,
@@ -146,6 +147,14 @@ impl Error {
                 StatusCode::CONFLICT,
                 ClientError::Custom {
                     message: "Library deletion already in progress".to_string(),
+                },
+            ),
+            Error::InvalidBackupSchedule(schedule) => (
+                StatusCode::BAD_REQUEST,
+                ClientError::Custom {
+                    message: format!(
+                        "Invalid backup schedule '{schedule}'. Use five-field cron syntax in UTC"
+                    ),
                 },
             ),
             Error::InvalidPaginationLimit { requested, maximum } => (

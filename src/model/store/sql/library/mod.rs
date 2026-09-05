@@ -7,6 +7,7 @@ use rusqlite::{
     types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef},
     ToSql,
 };
+use std::path::PathBuf;
 use tokio_rusqlite::Connection;
 
 use super::Result;
@@ -34,6 +35,17 @@ impl SqliteLibraryStore {
         let new = Self { connection };
         new.migrate().await?;
         Ok(new)
+    }
+
+    pub(crate) async fn create_database_snapshot(&self, path: PathBuf) -> Result<()> {
+        let snapshot_path = path.to_string_lossy().into_owned();
+        self.connection
+            .call(move |connection| {
+                connection.execute("VACUUM INTO ?1", [snapshot_path])?;
+                Ok(())
+            })
+            .await?;
+        Ok(())
     }
 
     pub async fn migrate(&self) -> Result<usize> {

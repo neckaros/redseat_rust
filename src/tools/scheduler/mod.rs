@@ -1,18 +1,24 @@
-use crate::{error::RsResult, model::ModelController};
+use crate::{
+    error::{RsError, RsResult},
+    model::ModelController,
+};
 use axum::async_trait;
+use chrono::{DateTime, Utc};
+use cron::Schedule;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     pin::Pin,
+    str::FromStr,
     sync::Arc,
 };
 use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
 use self::{
-    encrypt_library::EncryptLibraryTask, face_recognition::FaceRecognitionTask, ip::RefreshIpTask,
-    iptv_refresh::IptvRefreshTask, refresh::RefreshTask, request_progress::RequestProgressTask,
-    series::SerieTask,
+    backup::BackupTask, encrypt_library::EncryptLibraryTask, face_recognition::FaceRecognitionTask,
+    ip::RefreshIpTask, iptv_refresh::IptvRefreshTask, refresh::RefreshTask,
+    request_progress::RequestProgressTask, series::SerieTask,
 };
 
 use super::{
@@ -31,19 +37,22 @@ pub mod series;
 
 #[derive(Debug, Clone)]
 pub struct RsScheduler {
-    queue: Arc<Mutex<HashSet<RsSchedulerItem>>>,
-    running: Arc<Mutex<HashMap<RsSchedulerItem, RsRunningTask>>>,
+    state: Arc<Mutex<RsSchedulerState>>,
     token: Arc<RwLock<Option<CancellationToken>>>,
+}
+
+#[derive(Debug, Default)]
+struct RsSchedulerState {
+    queue: HashSet<RsSchedulerItem>,
+    running: HashMap<RsSchedulerItem, RsRunningTask>,
 }
 
 impl RsScheduler {
     pub fn new() -> Self {
-        let scheduler = Self {
-            queue: Arc::new(Mutex::new(HashSet::new())),
-            running: Arc::new(Mutex::new(HashMap::new())),
+        Self {
+            state: Arc::new(Mutex::new(RsSchedulerState::default())),
             token: Arc::new(RwLock::new(None)),
-        };
-        scheduler
+        }
     }
 
     pub async fn start(&self, mc: ModelController) -> RsResult<()> {
@@ -68,7 +77,8 @@ impl RsScheduler {
         Ok(())
     }
 
-    /// when should be a timestamp in secondes, use 0 to start asap
+    /// Adds or replaces a task with the same type, parameters, and schedule class.
+    /// `At` values are Unix timestamps in seconds; use 0 to start on the next tick.
     pub async fn add<T: Serialize>(
         &self,
         kind: RsTaskType,
@@ -82,77 +92,97 @@ impl RsScheduler {
             when,
             created: get_time().as_secs(),
         };
-        let mut queue = self.queue.lock().await;
-        queue.insert(item);
+        item.schedule_time()?;
+
+        let mut state = self.state.lock().await;
+        state.cancel_matching(&item, item.when.is_recurring());
+        state.queue.insert(item);
         Ok(())
     }
-    /// when should be a timestamp in secondes, use 0 to start asap
-    pub async fn readd(&self, mut item: RsSchedulerItem) -> RsResult<()> {
-        item.created = get_time().as_secs();
-        let mut queue = self.queue.lock().await;
-        queue.insert(item);
+
+    /// Removes the recurring registration for a task without interrupting an
+    /// execution that is already in progress.
+    pub async fn remove_recurring<T: Serialize>(
+        &self,
+        kind: RsTaskType,
+        params: &T,
+    ) -> RsResult<()> {
+        let serialized = serde_json::to_string(params)?;
+        let mut state = self.state.lock().await;
+        state.remove_matching(kind, &serialized, true);
         Ok(())
     }
 
     pub async fn tick(&self, mc: ModelController) {
-        //log_info(super::log::LogServiceType::Scheduler, format!("Scheduler tick"));
-
-        let mut queue = self.queue.lock().await;
         let now = get_time().as_secs();
-        let tasks: Vec<RsSchedulerItem> = queue
-            .iter()
-            .filter(|t| t.schedule_time() < now)
-            .map(|l| l.clone())
-            .collect();
-        for task in tasks {
-            let item = queue.take(&task);
-            if let Some(item) = item {
-                let scheduler = self.clone();
-                let mc = mc.clone();
-                tokio::spawn(async move {
-                    let task = {
-                        let mut running = scheduler.running.lock().await;
-                        let token = CancellationToken::new();
-                        let task = item.to_task().unwrap();
-                        running.insert(
+        let (ready, invalid) = {
+            let mut state = self.state.lock().await;
+            let mut due = Vec::new();
+            let mut invalid = Vec::new();
+
+            for item in &state.queue {
+                match item.schedule_time() {
+                    Ok(schedule_time) if schedule_time <= now => due.push(item.clone()),
+                    Ok(_) => {}
+                    Err(error) => invalid.push((item.clone(), error)),
+                }
+            }
+
+            for (item, _) in &invalid {
+                state.queue.remove(item);
+            }
+
+            let mut ready = Vec::new();
+            for item in due {
+                let Some(item) = state.queue.take(&item) else {
+                    continue;
+                };
+                match item.to_task() {
+                    Ok(task) => {
+                        state.running.insert(
                             item.clone(),
                             RsRunningTask {
-                                token,
-                                message: None,
+                                token: CancellationToken::new(),
                             },
                         );
-                        task
-                    };
-                    let exec_request = task.execute(mc).await;
-                    if let Err(error) = exec_request {
-                        log_error(
-                            super::log::LogServiceType::Scheduler,
-                            format!("Error executing task {:?} {:#}", item.kind, error),
-                        );
+                        ready.push((item, task));
                     }
-                    let new_item = {
-                        let mut running = scheduler.running.lock().await;
-                        running.remove(&item);
-                        match item.when {
-                            RsSchedulerWhen::At(_) => None,
-                            RsSchedulerWhen::Every(_) => Some(item),
-                        }
-                    };
-                    if let Some(item) = new_item {
-                        if let Err(error) = scheduler.readd(item.clone()).await {
-                            log_error(
-                                super::log::LogServiceType::Scheduler,
-                                format!("Unavble to reschedule task {:?}, {:#}", item, error),
-                            )
-                        }
-                    }
-                });
-            } else {
-                log_error(
-                    super::log::LogServiceType::Scheduler,
-                    format!("Unexpected disapeared task {:?}", item),
-                )
+                    Err(error) => invalid.push((item, error)),
+                }
             }
+            (ready, invalid)
+        };
+
+        for (item, error) in invalid {
+            log_error(
+                super::log::LogServiceType::Scheduler,
+                format!("Unable to schedule task {:?}: {:#}", item.kind, error),
+            );
+        }
+
+        for (item, task) in ready {
+            let scheduler = self.clone();
+            let mc = mc.clone();
+            tokio::spawn(async move {
+                if let Err(error) = task.execute(mc).await {
+                    log_error(
+                        super::log::LogServiceType::Scheduler,
+                        format!("Error executing task {:?}: {:#}", item.kind, error),
+                    );
+                }
+
+                let mut state = scheduler.state.lock().await;
+                let should_repeat = state
+                    .running
+                    .remove(&item)
+                    .is_some_and(|running| !running.token.is_cancelled())
+                    && item.when.is_recurring();
+                if should_repeat {
+                    let mut next = item;
+                    next.created = get_time().as_secs();
+                    state.queue.insert(next);
+                }
+            });
         }
     }
 
@@ -163,13 +193,102 @@ impl RsScheduler {
             true
         }
     }
+}
 
-    // pub async fn start_task(&mut self, ) {
+impl RsSchedulerState {
+    fn cancel_matching(&mut self, task: &RsSchedulerItem, recurring: bool) {
+        self.queue
+            .retain(|queued| !queued.same_registration(task.kind, &task.task, recurring));
+        for (running_task, running) in &self.running {
+            if running_task.same_registration(task.kind, &task.task, recurring) {
+                running.token.cancel();
+            }
+        }
+    }
 
-    //     let handle = tokio::spawn(async move {
+    fn remove_matching(&mut self, kind: RsTaskType, task: &str, recurring: bool) {
+        self.queue
+            .retain(|queued| !queued.same_registration(kind, task, recurring));
+        for (running_task, running) in &self.running {
+            if running_task.same_registration(kind, task, recurring) {
+                running.token.cancel();
+            }
+        }
+    }
+}
 
-    //     });
-    // }
+pub(crate) fn parse_cron_schedule(expression: &str) -> RsResult<Schedule> {
+    let fields = expression.split_whitespace().collect::<Vec<_>>();
+    if fields.len() != 5 {
+        return Err(RsError::InvalidParams(
+            "Backup schedules must use five-field cron syntax: minute hour day-of-month month day-of-week"
+                .to_string(),
+        ));
+    }
+
+    let weekdays = normalize_cron_weekdays(fields[4]);
+    let normalized = format!(
+        "0 {} {} {} {} {} *",
+        fields[0], fields[1], fields[2], fields[3], weekdays
+    );
+    let schedule = Schedule::from_str(&normalized)
+        .map_err(|error| RsError::InvalidParams(format!("Invalid backup schedule: {error}")))?;
+    if schedule.upcoming(Utc).next().is_none() {
+        return Err(RsError::InvalidParams(
+            "Backup schedule has no future occurrence".to_string(),
+        ));
+    }
+    Ok(schedule)
+}
+
+// Standard five-field cron numbers weekdays from Sunday=0 (or 7) through Saturday=6,
+// while the scheduler crate uses Sunday=1 through Saturday=7.
+fn normalize_cron_weekdays(field: &str) -> String {
+    field
+        .split(',')
+        .flat_map(|part| {
+            let (value, step) = match part.split_once('/') {
+                Some((value, step)) if !step.contains('/') => {
+                    let Ok(step) = step.parse::<usize>() else {
+                        return vec![part.to_string()];
+                    };
+                    if step == 0 {
+                        return vec![part.to_string()];
+                    }
+                    (value, Some(step))
+                }
+                Some(_) => return vec![part.to_string()],
+                None => (part, None),
+            };
+
+            if value == "*" || value == "?" {
+                return vec![part.to_string()];
+            }
+
+            let range = if let Some((start, end)) = value.split_once('-') {
+                match (parse_standard_weekday(start), parse_standard_weekday(end)) {
+                    (Some(start), Some(end)) if start <= end => Some((start, end)),
+                    _ => None,
+                }
+            } else {
+                parse_standard_weekday(value).map(|day| (day, step.map_or(day, |_| 7)))
+            };
+
+            let Some((start, end)) = range else {
+                return vec![part.to_string()];
+            };
+            let step = step.unwrap_or(1);
+            (start..=end)
+                .step_by(step)
+                .map(|day| ((day % 7) + 1).to_string())
+                .collect()
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn parse_standard_weekday(value: &str) -> Option<u8> {
+    value.parse::<u8>().ok().filter(|day| *day <= 7)
 }
 
 #[derive(PartialEq, Eq, Hash, Debug, Clone)]
@@ -184,10 +303,18 @@ pub struct RsSchedulerItem {
 pub enum RsSchedulerWhen {
     At(u64),
     Every(u64),
+    Cron(String),
 }
 
-#[derive(PartialEq, Eq, Hash, Debug, Clone)]
+impl RsSchedulerWhen {
+    fn is_recurring(&self) -> bool {
+        matches!(self, Self::Every(_) | Self::Cron(_))
+    }
+}
+
+#[derive(PartialEq, Eq, Hash, Debug, Clone, Copy)]
 pub enum RsTaskType {
+    Backup,
     Refresh,
     Ip,
     Face,
@@ -199,12 +326,19 @@ pub enum RsTaskType {
 #[derive(Debug)]
 pub struct RsRunningTask {
     token: CancellationToken,
-    message: Option<String>,
 }
 
 impl RsSchedulerItem {
+    fn same_registration(&self, kind: RsTaskType, task: &str, recurring: bool) -> bool {
+        self.kind == kind && self.task == task && self.when.is_recurring() == recurring
+    }
+
     pub fn to_task(&self) -> RsResult<Pin<Box<dyn RsSchedulerTask + Send>>> {
         match self.kind {
+            RsTaskType::Backup => {
+                let deserialized: BackupTask = serde_json::from_str(&self.task)?;
+                Ok(Box::pin(deserialized))
+            }
             RsTaskType::Refresh => {
                 let deserialized: RefreshTask = serde_json::from_str(&self.task)?;
                 Ok(Box::pin(deserialized))
@@ -232,10 +366,22 @@ impl RsSchedulerItem {
         }
     }
 
-    pub fn schedule_time(&self) -> u64 {
-        match self.when {
-            RsSchedulerWhen::At(at) => at,
-            RsSchedulerWhen::Every(seconds) => self.created + seconds,
+    pub fn schedule_time(&self) -> RsResult<u64> {
+        match &self.when {
+            RsSchedulerWhen::At(at) => Ok(*at),
+            RsSchedulerWhen::Every(seconds) => Ok(self.created.saturating_add(*seconds)),
+            RsSchedulerWhen::Cron(expression) => {
+                let schedule = parse_cron_schedule(expression)?;
+                let created = i64::try_from(self.created)
+                    .ok()
+                    .and_then(|seconds| DateTime::<Utc>::from_timestamp(seconds, 0))
+                    .ok_or(RsError::TimeCreationError)?;
+                let next = schedule
+                    .after(&created)
+                    .next()
+                    .ok_or(RsError::TimeCreationError)?;
+                u64::try_from(next.timestamp()).map_err(|_| RsError::TimeCreationError)
+            }
         }
     }
 }
@@ -243,4 +389,17 @@ impl RsSchedulerItem {
 #[async_trait]
 pub trait RsSchedulerTask {
     async fn execute(&self, mc: ModelController) -> RsResult<()>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_standard_five_field_cron_schedule() {
+        assert!(parse_cron_schedule("0 2 * * *").is_ok());
+        assert!(parse_cron_schedule("0 2 * * 0").is_ok());
+        assert_eq!(normalize_cron_weekdays("1-5/2,0,6-7"), "2,4,6,1,7,1");
+        assert!(parse_cron_schedule("0 2 * *").is_err());
+    }
 }

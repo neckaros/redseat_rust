@@ -228,6 +228,7 @@ impl ModelController {
                 },
             )
             .await?;
+        mc.initialize_backup_schedules().await?;
         //scheduler.add(RsTaskType::Face, scheduler::RsSchedulerWhen::Every(SECONDS_IN_HOUR * 3), FaceRecognitionTask {specific_library:None} ).await?;
         //scheduler.add(RsTaskType::Refresh, scheduler::RsSchedulerWhen::At(0), RefreshTask {specific_library:None} ).await?;
         //scheduler.tick(mc.clone()).await;
