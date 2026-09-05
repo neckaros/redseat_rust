@@ -1,164 +1,59 @@
-# REDSEAT-RUST KNOWLEDGE BASE
+# Redseat Rust
 
-**Generated:** 2026-01-07  
-**Commit:** 76e5e3c  
-**Branch:** master
+Media server built with Rust, Axum, SQLite, ONNX, and Extism WASM plugins.
+`redseat-rust` runs the server; `redseat-daemon` supervises it. Modules are
+declared by the binary entry points; there is no `lib.rs`.
 
-## OVERVIEW
+## Working approach
 
-Media server with face recognition, WASM plugins, and encrypted library support. Rust/Axum/SQLite/ONNX stack. Daemon-supervised architecture with auto-restart on crash.
+- Carry requested work through implementation and relevant verification. Use
+  context and existing patterns for routine decisions; ask only when missing
+  information materially affects the outcome or authorization is needed.
+- Keep changes focused on the request. Treat these files as project guidance,
+  not a backlog of unrelated fixes; explicit user instructions take precedence.
+- Report the result, validation, and any remaining blocker concisely.
 
-## STRUCTURE
+## Where to work
 
-```
-redseat-rust/
-├── src/
-│   ├── main.rs           # Axum server entry, router composition
-│   ├── daemon/main.rs    # Watchdog process (restarts on exit 101/201)
-│   ├── server.rs         # Config (JSON/env/CLI hierarchy)
-│   ├── model/            # Business logic, ModelController hub
-│   ├── routes/           # Axum handlers, REST + Socket.IO
-│   ├── domain/           # DTOs, camelCase serialization
-│   ├── plugins/          # WASM (Extism) + internal providers
-│   └── tools/            # Recognition, video, encryption, scheduler
-├── test_data/            # Sample images for tests
-├── .github/workflows/    # CI: multi-platform builds + Docker
-└── Cargo.toml            # vcpkg integration for native libs
-```
+| Area | Entry points |
+| --- | --- |
+| Server, configuration, daemon | `src/main.rs`, `src/server.rs`, `src/daemon/main.rs` |
+| HTTP routes and authentication | `src/routes/`, `src/routes/mw_auth.rs` |
+| Business logic and persistence | `src/model/` — see `src/model/AGENTS.md` |
+| API data types | `src/domain/` |
+| Plugins and storage sources | `src/plugins/`, `src/plugins/sources/` |
+| Media utilities and scheduler | `src/tools/` — see `src/tools/AGENTS.md` |
+| Event contract | `docs/SSE.md` |
+| Native dependencies and release builds | `Cargo.toml`, `.github/workflows/builder.yml`, `Dockerfile` |
 
-## WHERE TO LOOK
+## Project constraints
 
-| Task | Location | Notes |
-|------|----------|-------|
-| Add API endpoint | `src/routes/` | Nest under existing entity router |
-| Modify media processing | `src/model/medias.rs` | 1609 lines, spawns background tasks |
-| Face recognition logic | `src/model/people.rs` + `src/tools/recognition.rs` | ONNX inference, clustering |
-| Database schema | `src/model/store/sql/library/*.sql` | Numbered migrations, triggers |
-| Plugin development | `src/plugins/` | WASM via Extism, `Source` trait |
-| External tool wrappers | `src/tools/video_tools.rs` | FFmpeg builder pattern |
-| Config/env variables | `src/server.rs` | `REDSEAT_*` env vars |
-| Encryption | `src/tools/encryption.rs` | AES-256-CBC streaming |
-| Scheduled tasks | `src/tools/scheduler/` | 15s tick loop |
-| SSE and events | `docs/SSE.md` | don't forget to update the SSE.md file if you do modification or add events |
+- Follow the route → `ModelController` → store/plugin structure and existing
+  nested library routes. Preserve authorization checks and streaming range support.
+- Preserve API serialization conventions: camelCase DTOs, sparse optional fields,
+  and existing `kind` → `type` renames.
+- Update `docs/SSE.md` when adding, changing, or removing events or their payloads.
+- Use existing error types and propagate errors with `?`; log failures in detached
+  tasks with the project logging helpers. Avoid panic-based error handling there.
+- Do not hold synchronous lock guards across `.await`. Keep async lock lifetimes
+  limited to the resource they protect.
+- Preserve the daemon exit-code contract: 101 triggers crash recovery; 201 requests
+  a controlled restart.
 
-## ARCHITECTURE
+## Validation
 
-### Binary Targets
-- `redseat-rust`: Main server (Axum, port 8080)
-- `redseat-daemon`: Watchdog that supervises main server
-  - Exit 101 (panic) → restart with retry limit
-  - Exit 201 → controlled restart (for updates)
-
-### Core Components
-- **ModelController** (`src/model/mod.rs`): Central state, injected via Axum State
-- **SqliteStore**: Multi-DB (main `database.db` + per-library `db-{id}.db`)
-- **PluginManager**: WASM plugins via Extism + internal metadata providers
-- **RsScheduler**: Background tasks (backup, face scan, metadata refresh)
-
-### Data Flow
-```
-Request → mw_auth (token resolution) → Handler → ModelController → SqliteStore
-                                                      ↓
-                                              PluginManager/Source
-```
-
-## CONVENTIONS
-
-### Rust Patterns
-- **Error handling**: Central `Error` enum in `src/error.rs`, implements `IntoResponse`
-- **Async traits**: `#[async_trait]` for `Source` and other interfaces
-- **Module organization**: No `lib.rs`, all modules under `main.rs`
-
-### Serialization
-- All DTOs use `#[serde(rename_all = "camelCase")]`
-- `#[serde(skip_serializing_if = "Option::is_none")]` for sparse JSON
-- Field `kind` renamed to `type` in JSON output
-
-### Database
-- Migrations: `include_bytes!` embedded, tracked via `user_version` pragma
-- Triggers manage `modified`/`added` timestamps automatically
-- Lists stored as pipe-separated strings (e.g., `alt` names)
-
-### API
-- RESTful with nested routes: `/libraries/:libraryid/medias/:id`
-- Auth via `Authorization: Bearer`, `SHARETOKEN` header, or `token` query param
-- Range requests supported for streaming
-
-## ANTI-PATTERNS (DO NOT)
-
-| Pattern | Why |
-|---------|-----|
-| `as any`, `@ts-ignore` | N/A (Rust) but avoid `.unwrap()` in spawned tasks |
-| Empty catch blocks | Use `?` operator, log errors via `log_error()` |
-| Suppress type errors | Never use turbofish to force wrong types |
-| Commit secrets | Trakt client ID hardcoded in `src/model/mod.rs:153` - externalize |
-| `std::sync::Mutex` across `.await` | Use `tokio::sync::Mutex` for async code |
-| Panic in background tasks | Always handle errors, don't crash silently |
-
-## GOTCHAS
-
-1. **177 `.unwrap()` calls** - Many in background tasks, can cause silent failures
-2. **libheif unsafe code** - `src/tools/convert/heic.rs` has manual memory management
-3. **Runtime binary downloads** - FFmpeg/ONNX models downloaded on first run
-4. **Global locks** - `FFMPEG_LOCK` can stall parallel transcoding
-5. **No `lib.rs`** - Code sharing between binaries requires re-declaration
-6. **vcpkg required** - Run `cargo vcpkg build` before `cargo build` on dev machines
-
-## EXTERNAL DEPENDENCIES
-
-| Tool | Purpose | Auto-download |
-|------|---------|---------------|
-| FFmpeg/FFprobe | Video processing | Yes (platform-specific) |
-| YT-DLP | Remote video streaming | Yes |
-| ONNX models | Face recognition (Buffalo_L) | Yes (Hugging Face) |
-| ImageMagick | Image conversion (optional) | No, manual install |
-
-## COMMANDS
-
-```bash
-# Development
-cargo vcpkg build                    # One-time: fetch native deps
-cargo watch -c -w src -x "run --bin redseat-rust"
-
-# Build
-cargo build --release
-
-# Test
-cargo test                           # Some tests need ffmpeg/yt-dlp
-
-# Docker
-docker pull neckaros/redseat-rust
-docker run -v redseat_config:/root/.config/redseat -p 8080:8080 neckaros/redseat-rust
-```
-
-### Build and Test Timing
-
-- Native dependencies make cold Windows builds slow. Allow at least 5 minutes for
-  `cargo check --bin redseat-rust` and 6 minutes for the first filtered
-  `cargo test ... --bin redseat-rust` instead of starting with a 2-minute timeout.
-- The `dev` and `test` profiles compile separately. A successful `cargo check`
-  does not make the first `cargo test` fast; expect another native dependency build.
-- After the caches are warm, `cargo check` is typically about 10 seconds and a
-  focused test filter about 2 seconds (machine-dependent).
-- If a Cargo command times out, its compiler subprocess may still be running and
-  holding the target-directory lock. Inspect or wait for that process before
-  retrying; an immediate retry can spend most of its time at
-  `Blocking waiting for file lock on build directory`.
-- For review fixes, validate with `cargo check --bin redseat-rust` first, then run
-  the narrowest relevant test filter to avoid unnecessary test execution.
-
-## ENV VARIABLES
-
-| Variable | Purpose |
-|----------|---------|
-| `REDSEAT_SERVERID` | Force server ID |
-| `REDSEAT_HOME` | Override cloud server URL |
-| `REDSEAT_PORT` | Server port (default: 8080) |
-| `REDSEAT_DIR` | Config directory |
-| `REDSEAT_DOMAIN` | Custom domain (disables IP-based) |
-| `REDSEAT_NOCERT` | Skip TLS cert generation |
-
-## SUBDIRECTORY AGENTS
-
-- `src/model/AGENTS.md` - Face recognition, media lifecycle, store patterns
-- `src/tools/AGENTS.md` - Recognition engine, video tools, encryption
+- For Rust changes, start with `cargo check --bin redseat-rust`, then run the
+  narrowest relevant `cargo test --bin redseat-rust <filter>`. Check the daemon
+  target when changing its code or shared modules.
+- Match verification to the change. Documentation-only edits need content/path
+  review and `git diff --check`; run broader tests when affected behavior or
+  failures justify them. Add tests for meaningful behavior, not to mirror edits.
+- Native setup is platform-specific: CI uses `cargo vcpkg build` on Windows and
+  system packages on Linux/macOS. Consult the build files above before installing
+  dependencies.
+- Cold Windows builds need at least 5 minutes for an initial check and 6 minutes
+  for the first filtered test. Check and test compilation have separate caches.
+  After a timeout, inspect surviving compiler processes before retrying so a
+  second command does not just wait on the build lock.
+- Some media tests require FFmpeg/FFprobe, YT-DLP, or ONNX models; first use may
+  download them. Report unavailable prerequisites and which checks could not run.

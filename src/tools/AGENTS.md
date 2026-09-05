@@ -1,98 +1,30 @@
-# TOOLS LAYER - AGENTS.md
+# Tools layer
 
-Low-level utilities: AI inference, video processing, encryption, scheduling.
+Low-level media processing, inference, encryption, and scheduling. Root guidance
+applies; paths below are relative to this directory.
 
-## STRUCTURE
+## Entry points
 
-```
-tools/
-├── recognition.rs      # ONNX face detection/embedding (1505 lines)
-├── video_tools.rs      # FFmpeg builder pattern (1276 lines)
-├── encryption.rs       # AES-256-CBC streaming (551 lines)
-├── image_tools.rs      # Native + ImageMagick hybrid (639 lines)
-├── scheduler/          # Background task engine
-│   ├── mod.rs          # RsScheduler: 15s tick loop
-│   ├── backup.rs       # Full/incremental backups
-│   ├── face_recognition.rs  # Chunked processing (50/batch)
-│   └── refresh.rs      # Trakt/IMDb metadata sync
-├── convert/            # Format converters (HEIC, JXL, RAW)
-└── video_tools/ytdl.rs # YT-DLP integration
-```
+- `recognition.rs`: ONNX face detection, alignment, embeddings, and model loading.
+- `video_tools.rs`: FFmpeg/FFprobe provisioning, `VideoCommandBuilder`, and progress.
+- `video_tools/ytdl.rs`: YT-DLP integration.
+- `image_tools.rs`, `image_tools/`, `convert/`: image handling and format converters.
+- `encryption.rs`: streaming encryption/decryption and the stored file format.
+- `scheduler/mod.rs`: task lifecycle and cancellation; sibling modules implement jobs.
 
-## KEY FILES
+## Change constraints
 
-| File | Lines | Purpose |
-|------|-------|---------|
-| `recognition.rs` | 1505 | ONNX sessions (Detection/Alignment/Recognition), model auto-download |
-| `video_tools.rs` | 1276 | `VideoCommandBuilder`, NVENC/libx264, progress parsing |
-| `encryption.rs` | 551 | `AesTokioEncryptStream`, custom header with IV/thumbnail sizes |
-
-## FACE RECOGNITION ENGINE
-
-```rust
-FaceRecognitionService {
-    detection: Session,    // SCRFD model
-    alignment: Session,    // Face alignment  
-    recognition: Session,  // ArcFace embedding
-}
-```
-
-- **Model Provisioning**: Auto-downloads from Hugging Face (Buffalo_L)
-- **Math**: Manual similarity transform, bilinear interpolation for ArcFace alignment
-- **Threading**: `intra_threads(1)` to prevent CPU thrashing
-
-## VIDEO TOOLS
-
-```rust
-VideoCommandBuilder::new()
-    .input(path)
-    .set_video_codec(codec, quality)  // NVENC detection
-    .add_overlay(logo_path)
-    .output(dest)
-    .execute_with_progress(callback)
-```
-
-- **Hardware Accel**: CUDA detection via `cuda_runtime_available`
-- **Progress**: Parses `frame=` from FFmpeg stdout
-- **Global Lock**: `FFMPEG_LOCK` protects binary path updates
-
-## ENCRYPTION FORMAT
-
-```
-[16-byte IV][4-byte thumb_size][4-byte meta_size][32-byte mime][256-byte mime2][encrypted_data]
-```
-
-- AES-256-CBC with PKCS7 padding
-- Streaming: `AesTokioEncryptStream` / `AesTokioDecryptStream`
-
-## SCHEDULER
-
-```rust
-RsScheduler {
-    items: Vec<RsSchedulerItem>,
-    running: HashMap<String, CancellationToken>,
-}
-// Ticks every 15 seconds
-```
-
-| Task | Batch | Notes |
-|------|-------|-------|
-| BackupTask | Full library | Handles `.db` files + media |
-| FaceRecognitionTask | 50 items | Detection + clustering |
-| RefreshTask | Incremental | Tracks last update in `.txt` files |
-
-## EXTERNAL BINARIES
-
-| Binary | Auto-download | Sources |
-|--------|---------------|---------|
-| FFmpeg | Yes | BtbN (Win/Linux), evermeet.cx (macOS) |
-| FFprobe | Yes | Same as FFmpeg |
-| YT-DLP | Yes | GitHub releases |
-| ONNX models | Yes | Hugging Face (Buffalo_L) |
-
-## GOTCHAS
-
-- `FFMPEG_LOCK` can stall parallel transcodes
-- Manual vision math in `recognition.rs` - error-prone vs OpenCV
-- First run requires internet for model downloads
-- `unsafe` blocks in `convert/heic.rs` for libheif bindings
+- Keep blocking inference off async executor threads using the existing async
+  wrappers. ONNX sessions use mutexes and one intra-op thread to limit CPU
+  contention; account for both when changing scan concurrency.
+- Use existing external-tool wrappers and preserve platform handling, progress
+  reporting, and error propagation. `FFMPEG_LOCK` coordinates binary use and
+  updates; check its read/write scope when changing provisioning or execution.
+- Preserve compatibility with existing encrypted files. Read the header and
+  reader/writer implementations before changing offsets, size calculations,
+  buffering, or padding; validate round trips and boundary sizes for such changes.
+- In `convert/heic.rs`, preserve ownership and cleanup of libheif allocations
+  across success and error paths.
+- Preserve scheduler cancellation and running-task bookkeeping when changing
+  task execution. Keep batch sizes and cadence tied to the implementation rather
+  than copying current values into instructions.
