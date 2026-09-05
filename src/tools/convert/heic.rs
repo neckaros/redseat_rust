@@ -396,3 +396,17 @@ fn extract_icc_profile_name(raw_profile: &[u8]) -> RsResult<String> {
         "ICC profile does not contain a desc tag".to_string(),
     ));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::read_heic_file_to_image;
+
+    #[test]
+    fn decodes_bundled_heic_fixture() {
+        let data = include_bytes!("../../../test_data/image.heic");
+        let decoded = read_heic_file_to_image(data).expect("HEIC fixture should decode");
+
+        assert!(decoded.image.width() > 0);
+        assert!(decoded.image.height() > 0);
+    }
+}

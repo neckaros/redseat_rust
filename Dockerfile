@@ -1,12 +1,19 @@
 # Server build stage
 FROM rust:1.90-trixie AS builder
 RUN apt-get update && apt-get install -y \
+    ca-certificates \
     cmake \
+    curl \
     pkg-config \
     build-essential \
-    libheif-dev \
+    libaom-dev \
+    libde265-dev \
+    libx265-dev \
     nasm \
+    zlib1g-dev \
   && rm -rf /var/lib/apt/lists/*
+COPY scripts/install-libheif.sh /tmp/install-libheif.sh
+RUN bash /tmp/install-libheif.sh
 WORKDIR /usr/src/redseat-daemon
 
 # Cache dependencies — only invalidated when Cargo.toml/lock/build.rs change
@@ -29,10 +36,6 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
-    # Core libheif runtime from trixie
-    libheif1 \
-    # Decoding plugin(s) for HEIC/HEVC
-    libheif-plugin-libde265 \
     libde265-0 \
     libjpeg62-turbo \
     libaom3 \
@@ -46,6 +49,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /usr/local/lib/libheif.so* /usr/local/lib/
 
 # Update library cache
 RUN ldconfig

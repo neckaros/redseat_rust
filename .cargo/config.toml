@@ -1,0 +1,2 @@
+[env]
+VCPKG_OVERLAY_PORTS = { value = "support/vcpkg-overlays", relative = true }
