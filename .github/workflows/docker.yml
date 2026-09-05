@@ -25,11 +25,21 @@ jobs:
           username: ${{ secrets.DOCKERHUB_LOGIN }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       -
+        name: Configure sccache
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+      -
         name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           tags: neckaros/redseat-rust:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=registry,ref=neckaros/redseat-rust:buildcache
+          cache-to: type=registry,ref=neckaros/redseat-rust:buildcache,mode=max
+          secrets: |
+            sccache_gha_token=${{ env.ACTIONS_RUNTIME_TOKEN }}
+            sccache_gha_url=${{ env.ACTIONS_RESULTS_URL }}
