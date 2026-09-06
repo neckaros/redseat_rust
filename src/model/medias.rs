@@ -858,7 +858,8 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> RsResult<Media> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
-        let _migration_guard = self.library_encryption_gate.read().await;
+        let gate = self.library_encryption_gate(library_id).await;
+        let _migration_guard = gate.read().await;
         self.ensure_library_encryption_writable(library_id).await?;
         let store = self.store.get_library_store(library_id)?;
         let media: MediaForInsert = new_media.into_insert();
@@ -4636,7 +4637,8 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> RsResult<()> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
-        let _migration_guard = self.library_encryption_gate.read().await;
+        let gate = self.library_encryption_gate(library_id).await;
+        let _migration_guard = gate.read().await;
         self.ensure_library_encryption_writable(library_id).await?;
         let store = self.store.get_library_store(library_id)?;
         let existing = store.get_media_source(&media_id).await?;

@@ -141,9 +141,9 @@ pub struct ModelController {
 
     pub chache_libraries: Arc<RwLock<HashMap<String, ServerLibrary>>>,
     pub deleting_libraries: Arc<RwLock<HashSet<String>>>,
-    /// Serializes migration creation against file mutations. Mutations hold a read guard;
-    /// creating the durable job briefly holds the write guard.
-    pub library_encryption_gate: Arc<RwLock<()>>,
+    /// Serializes migration creation against file mutations within each library. Mutations
+    /// hold a read guard; creating the durable job briefly holds the matching write guard.
+    pub library_encryption_gates: Arc<RwLock<HashMap<String, Arc<RwLock<()>>>>>,
 
     /// Broadcast channel for SSE events
     pub sse_tx: broadcast::Sender<SseEvent>,
@@ -172,7 +172,7 @@ impl ModelController {
             scheduler: Arc::new(scheduler),
             chache_libraries: Arc::new(RwLock::new(HashMap::new())),
             deleting_libraries: Arc::new(RwLock::new(HashSet::new())),
-            library_encryption_gate: Arc::new(RwLock::new(())),
+            library_encryption_gates: Arc::new(RwLock::new(HashMap::new())),
             convert_queue: Arc::new(RwLock::new(VecDeque::new())),
             convert_current: Arc::new(RwLock::new(false)),
             convert_current_process: Arc::new(RwLock::new(None)),
@@ -326,6 +326,15 @@ impl ModelController {
         Ok(())
     }
 
+    pub async fn library_encryption_gate(&self, library_id: &str) -> Arc<RwLock<()>> {
+        let mut gates = self.library_encryption_gates.write().await;
+        Arc::clone(
+            gates
+                .entry(library_id.to_string())
+                .or_insert_with(|| Arc::new(RwLock::new(()))),
+        )
+    }
+
     pub async fn cache_update_library(&self, library: ServerLibrary) {
         let mut cache = self.chache_libraries.write().await;
         cache.remove(&library.id);
@@ -404,7 +413,11 @@ impl ModelController {
     }
 
     pub async fn source_for_library(&self, library_id: &str) -> RsResult<Box<dyn Source>> {
-        let guard = self.library_encryption_gate.clone().read_owned().await;
+        let guard = self
+            .library_encryption_gate(library_id)
+            .await
+            .read_owned()
+            .await;
         self.ensure_library_encryption_readable(library_id).await?;
         let source = self.source_for_library_unchecked(library_id).await?;
         Ok(Box::new(GuardedSource::new(source, guard)))
@@ -424,7 +437,11 @@ impl ModelController {
         Ok(source)
     }
     pub async fn library_source_for_library(&self, library_id: &str) -> Result<PathProvider> {
-        let guard = self.library_encryption_gate.clone().read_owned().await;
+        let guard = self
+            .library_encryption_gate(library_id)
+            .await
+            .read_owned()
+            .await;
         self.ensure_library_encryption_readable(library_id).await?;
         Ok(self
             .library_source_for_library_unchecked(library_id)
@@ -616,7 +633,8 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> Result<()> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
-        let _migration_guard = self.library_encryption_gate.read().await;
+        let gate = self.library_encryption_gate(library_id).await;
+        let _migration_guard = gate.read().await;
         self.ensure_library_encryption_writable(library_id).await?;
         self.update_library_image_files(library_id, folder, id, kind, size, reader)
             .await
@@ -671,7 +689,8 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> Result<()> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
-        let _migration_guard = self.library_encryption_gate.read().await;
+        let gate = self.library_encryption_gate(library_id).await;
+        let _migration_guard = gate.read().await;
         self.ensure_library_encryption_writable(library_id).await?;
 
         self.remove_library_image_files(library_id, folder, id, kind, size)

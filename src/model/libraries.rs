@@ -494,7 +494,8 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> Result<Option<super::libraries::ServerLibraryForRead>> {
         requesting_user.check_library_role(&library_id, LibraryRole::Admin)?;
-        let _migration_guard = self.library_encryption_gate.read().await;
+        let gate = self.library_encryption_gate(library_id).await;
+        let _migration_guard = gate.read().await;
         self.ensure_library_encryption_writable(library_id).await?;
 
         self.store.update_library(library_id, update).await?;
@@ -556,7 +557,8 @@ impl ModelController {
             ));
         }
 
-        let _migration_guard = self.library_encryption_gate.write().await;
+        let gate = self.library_encryption_gate(library_id).await;
+        let _migration_guard = gate.write().await;
         if self.deleting_libraries.read().await.contains(library_id) {
             return Err(Error::LibraryDeletionInProgress(library_id.to_string()));
         }
@@ -747,7 +749,8 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> RsResult<ServerLibraryForRead> {
         requesting_user.check_library_role(&library_id, LibraryRole::Admin)?;
-        let _migration_guard = self.library_encryption_gate.read().await;
+        let gate = self.library_encryption_gate(library_id).await;
+        let _migration_guard = gate.read().await;
         self.ensure_library_encryption_writable(library_id).await?;
         let library =
             self.store
@@ -774,7 +777,8 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> RsResult<()> {
         requesting_user.check_role(&UserRole::Admin)?;
-        let _migration_guard = self.library_encryption_gate.read().await;
+        let gate = self.library_encryption_gate(library_id).await;
+        let _migration_guard = gate.read().await;
         self.ensure_library_encryption_writable(library_id).await?;
         let library_id = library_id.to_string();
 
