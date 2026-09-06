@@ -15,7 +15,7 @@ use tokio::sync::broadcast;
 
 use crate::{
     domain::{
-        backup::{BackupFileProgress, BackupMessage},
+        backup::{BackupFileProgress, BackupMessage, BackupWithStatus},
         book::BooksMessage,
         channel::ChannelMessage,
         episode::EpisodesMessage,
@@ -190,26 +190,32 @@ async fn handler_sse(
         .libraries
         .map(|s| s.split(',').map(|l| l.trim().to_string()).collect());
 
-    // Subscribe to broadcast channel
+    // Subscribe before reading the snapshot so updates that happen while the
+    // snapshot is being built remain queued behind it.
     let mut rx = mc.sse_tx.subscribe();
+    let initial_backup_events = mc
+        .get_backups_with_status(&user)
+        .await
+        .map(backup_snapshot_events)
+        .unwrap_or_default();
 
     // Create stream that filters events for this user
     let stream = async_stream::stream! {
+        for event in initial_backup_events {
+            if event_matches_subscription(&event, &user, library_filter.as_deref()) {
+                if let Ok(data) = serde_json::to_string(&event) {
+                    yield Ok::<Event, Infallible>(Event::default()
+                        .event(event.event_name())
+                        .data(data));
+                }
+            }
+        }
+
         loop {
             match rx.recv().await {
                 Ok(event) => {
-                    // Check if event should be sent to this user
-                    if !event.should_send_to(&user) {
+                    if !event_matches_subscription(&event, &user, library_filter.as_deref()) {
                         continue;
-                    }
-
-                    // Apply library filter if specified
-                    if let Some(ref filter) = library_filter {
-                        if let Some(lib_id) = event.library_id() {
-                            if !filter.contains(&lib_id.to_string()) {
-                                continue;
-                            }
-                        }
                     }
 
                     // Serialize and send event
@@ -252,10 +258,39 @@ async fn handler_sse(
     response
 }
 
+fn backup_snapshot_events(backups: Vec<BackupWithStatus>) -> Vec<SseEvent> {
+    backups
+        .into_iter()
+        .map(|backup| {
+            SseEvent::Backups(BackupMessage {
+                action: crate::domain::ElementAction::Updated,
+                backup,
+            })
+        })
+        .collect()
+}
+
+fn event_matches_subscription(
+    event: &SseEvent,
+    user: &ConnectedUser,
+    library_filter: Option<&[String]>,
+) -> bool {
+    if !event.should_send_to(user) {
+        return false;
+    }
+
+    if let (Some(filter), Some(library_id)) = (library_filter, event.library_id()) {
+        return filter.iter().any(|filtered| filtered == library_id);
+    }
+
+    true
+}
+
 #[cfg(test)]
 mod tests {
-    use super::SseEvent;
+    use super::{backup_snapshot_events, SseEvent};
     use crate::domain::{
+        backup::{Backup, BackupWithStatus},
         book::{Book, BookWithAction, BooksMessage},
         watched::{Unwatched, Watched},
         ElementAction,
@@ -332,5 +367,36 @@ mod tests {
         let serialized = serde_json::to_value(&event).unwrap();
         assert_eq!(serialized["unwatched"]["type"], "book");
         assert_eq!(serialized["unwatched"]["ids"][1], "oleid:OL123M");
+    }
+
+    #[test]
+    fn backup_snapshot_includes_idle_state_after_server_restart() {
+        let backup = Backup {
+            id: "backup-1".to_string(),
+            name: "Server backup".to_string(),
+            source: "PluginProvider".to_string(),
+            plugin: Some("pcloud".to_string()),
+            credentials: Some("credential-1".to_string()),
+            library: None,
+            path: "/Backups/server".to_string(),
+            schedule: None,
+            filter: None,
+            last: None,
+            password: None,
+            size: 0,
+        };
+
+        let events = backup_snapshot_events(vec![BackupWithStatus {
+            backup,
+            status: None,
+        }]);
+
+        assert_eq!(events.len(), 1);
+        let SseEvent::Backups(message) = &events[0] else {
+            panic!("expected a backup snapshot event");
+        };
+        assert_eq!(message.backup.backup.id, "backup-1");
+        assert!(message.backup.status.is_none());
+        assert!(matches!(message.action, ElementAction::Updated));
     }
 }

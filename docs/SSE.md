@@ -51,6 +51,12 @@ The endpoint sends `Cache-Control: no-cache, no-transform` and
 `X-Accel-Buffering: no` so reverse proxies flush heartbeat and data events
 immediately instead of buffering an otherwise idle stream.
 
+When an authorized server administrator connects or reconnects, the server first
+emits an `updated` `backups` event for every configured backup with its current
+in-memory status. This snapshot clears stale `inProgress` client state after a
+server restart or a missed terminal event. Live events that occur while the
+snapshot is assembled are queued and delivered afterward.
+
 ## Entity search streams
 
 The following entity-scoped endpoints stream source lookup results as SSE:
