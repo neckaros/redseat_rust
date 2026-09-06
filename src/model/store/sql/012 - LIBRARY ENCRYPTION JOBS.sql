@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS library_encryption_jobs (
     total_items INTEGER NOT NULL DEFAULT 0,
     completed_items INTEGER NOT NULL DEFAULT 0,
     last_error TEXT,
+    retry_count INTEGER NOT NULL DEFAULT 0,
     created INTEGER NOT NULL DEFAULT (unixepoch()),
     modified INTEGER NOT NULL DEFAULT (unixepoch()),
     FOREIGN KEY (library_id) REFERENCES Libraries(id) ON DELETE CASCADE

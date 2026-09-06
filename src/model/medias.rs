@@ -1028,19 +1028,7 @@ impl ModelController {
         } else {
             filename.clone()
         };
-        let m = self.source_for_library(&library_id).await?;
-        let (source, file) = m.writerseek(&disk_filename).await?;
-        let mut file: Pin<Box<dyn AsyncWrite + Send>> = if let Some(key) = &encryption_key {
-            Box::pin(CtrEncryptWriter::new(file, key)?)
-        } else {
-            file
-        };
-        //let file = file.compat_write();
-
-        //let mut file = Box::pin(File::create("D:\\System\\backup\\2024\\7\\foo.zip").await?);
-        let mut zip_writer = ZipFileWriter::with_tokio(&mut file);
-
-        let mut pages = 0usize;
+        let mut page_data = Vec::new();
         for n in from..=to {
             let file = self
                 .library_file(
@@ -1065,6 +1053,22 @@ impl ModelController {
                 )
                 .await?;
 
+            let mut data = Vec::new();
+            let mut input = reader.stream;
+            input.read_to_end(&mut data).await?;
+            page_data.push((filename, data));
+        }
+
+        let m = self.source_for_library(&library_id).await?;
+        let (source, file) = m.writerseek(&disk_filename).await?;
+        let mut file: Pin<Box<dyn AsyncWrite + Send>> = if let Some(key) = &encryption_key {
+            Box::pin(CtrEncryptWriter::new(file, key)?)
+        } else {
+            file
+        };
+        let mut zip_writer = ZipFileWriter::with_tokio(&mut file);
+        let pages = page_data.len();
+        for (filename, data) in page_data {
             let builder = Self::album_zip_entry(filename);
             let mut entry = zip_writer
                 .write_entry_stream(builder)
@@ -1075,7 +1079,7 @@ impl ModelController {
                         Some(error.to_string()),
                     )
                 })?;
-            let mut input = reader.stream.compat();
+            let mut input = Cursor::new(data).compat();
             futures::io::copy(&mut input, &mut entry).await?;
             entry.close().await.map_err(|error| {
                 Error::ServiceError(
@@ -1083,7 +1087,6 @@ impl ModelController {
                     Some(error.to_string()),
                 )
             })?;
-            pages += 1;
         }
 
         zip_writer
@@ -4069,6 +4072,8 @@ impl ModelController {
         self.send_convert_progress(message);
         let media_infos: MediaForUpdate = media.into();
         let reader = File::open(dest).await?;
+        drop(m);
+        drop(local);
         let media = self
             .add_library_file(
                 &element.library,
@@ -4079,7 +4084,10 @@ impl ModelController {
             )
             .await;
 
-        local.remove(&dest_source).await?;
+        self.library_source_for_library_unchecked(&element.library)
+            .await?
+            .remove(&dest_source)
+            .await?;
         match media {
             Ok(media) => {
                 if let Err(e) = store
@@ -4330,6 +4338,8 @@ impl ModelController {
         // Import the merged file as a new media
         let first_media_info: MediaForUpdate = media_paths[0].0.clone().into();
         let reader = File::open(&concat_dest).await?;
+        drop(m);
+        drop(local);
         let media = self
             .add_library_file(
                 library_id,

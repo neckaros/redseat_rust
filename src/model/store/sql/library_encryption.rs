@@ -19,6 +19,7 @@ impl SqliteStore {
             total_items: row.get(6)?,
             completed_items: row.get(7)?,
             last_error: row.get(8)?,
+            retry_count: row.get(9)?,
         })
     }
 
@@ -45,7 +46,7 @@ impl SqliteStore {
                 Ok(conn
                     .query_row(
                         "SELECT id, library_id, source_password, target_password, phase,
-                            snapshot_complete, total_items, completed_items, last_error
+                            snapshot_complete, total_items, completed_items, last_error, retry_count
                      FROM library_encryption_jobs WHERE library_id = ?",
                         params![library_id],
                         Self::row_to_library_encryption_job,
@@ -61,7 +62,7 @@ impl SqliteStore {
             .call(move |conn| {
                 let mut stmt = conn.prepare(
                     "SELECT id, library_id, source_password, target_password, phase,
-                            snapshot_complete, total_items, completed_items, last_error
+                            snapshot_complete, total_items, completed_items, last_error, retry_count
                      FROM library_encryption_jobs
                      WHERE phase = 'running' ORDER BY created",
                 )?;
@@ -87,8 +88,8 @@ impl SqliteStore {
                 transaction.execute(
                     "INSERT INTO library_encryption_jobs
                          (id, library_id, source_password, target_password, phase,
-                          snapshot_complete, total_items, completed_items, last_error)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                          snapshot_complete, total_items, completed_items, last_error, retry_count)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     params![
                         job.id,
                         job.library_id,
@@ -99,6 +100,7 @@ impl SqliteStore {
                         job.total_items,
                         job.completed_items,
                         job.last_error,
+                        job.retry_count,
                     ],
                 )?;
                 transaction.commit()?;
@@ -232,6 +234,25 @@ impl SqliteStore {
         Ok(())
     }
 
+    pub async fn increment_library_encryption_retry(&self, job_id: &str) -> Result<u32> {
+        let job_id = job_id.to_string();
+        Ok(self
+            .server_store
+            .call(move |conn| {
+                conn.execute(
+                    "UPDATE library_encryption_jobs SET retry_count = retry_count + 1,
+                         modified = unixepoch() WHERE id = ? AND phase = 'running'",
+                    params![job_id],
+                )?;
+                Ok(conn.query_row(
+                    "SELECT retry_count FROM library_encryption_jobs WHERE id = ?",
+                    params![job_id],
+                    |row| row.get(0),
+                )?)
+            })
+            .await?)
+    }
+
     pub async fn fail_library_encryption_job(
         &self,
         job_id: &str,
@@ -331,6 +352,7 @@ mod tests {
             total_items: 0,
             completed_items: 0,
             last_error: None,
+            retry_count: 0,
         };
         store
             .create_library_encryption_job(job.clone())
@@ -374,6 +396,14 @@ mod tests {
             .unwrap();
         assert_eq!(items[0].state, "committed");
         assert_eq!(items[0].staged_source.as_deref(), Some("/media/staged"));
+
+        assert_eq!(
+            store
+                .increment_library_encryption_retry(&job.id)
+                .await
+                .unwrap(),
+            1
+        );
 
         store
             .fail_library_encryption_job(&job.id, "scheduler unavailable".to_string())

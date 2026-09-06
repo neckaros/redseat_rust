@@ -207,6 +207,7 @@ pub struct LibraryEncryptionJob {
     pub total_items: u64,
     pub completed_items: u64,
     pub last_error: Option<String>,
+    pub retry_count: u32,
 }
 
 impl LibraryEncryptionJob {
@@ -602,6 +603,7 @@ impl ModelController {
             total_items: 0,
             completed_items: 0,
             last_error: None,
+            retry_count: 0,
         };
         self.store
             .create_library_encryption_job(job.clone())

@@ -170,6 +170,7 @@ operations are temporarily unavailable:
 
 - `encryption-running`
 - `encryption-retry: ...`
+- `encryption-failed: ...`
 - `encryption-completed`
 
 ## TypeScript Client Examples

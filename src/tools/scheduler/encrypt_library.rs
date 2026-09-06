@@ -25,6 +25,7 @@ use tokio::{
 use super::{RsSchedulerTask, RsSchedulerWhen, RsTaskType};
 
 const RETRY_DELAY_SECONDS: u64 = 60;
+const MAX_RETRIES: u32 = 5;
 const LOCAL_FOLDERS: &[&str] = &[
     ".thumbs",
     ".portraits",
@@ -64,6 +65,20 @@ impl RsSchedulerTask for EncryptLibraryTask {
                 mc.store
                     .set_library_encryption_error(&self.job_id, Some(message.clone()))
                     .await?;
+                let retry_count = mc
+                    .store
+                    .increment_library_encryption_retry(&self.job_id)
+                    .await?;
+                if retry_count >= MAX_RETRIES {
+                    mc.store
+                        .fail_library_encryption_job(&self.job_id, message.clone())
+                        .await?;
+                    mc.send_library_status(LibraryStatusMessage {
+                        library: self.library_id.clone(),
+                        message: format!("encryption-failed: {message}"),
+                    });
+                    return Ok(());
+                }
                 mc.send_library_status(LibraryStatusMessage {
                     library: self.library_id.clone(),
                     message: format!("encryption-retry: {message}"),
@@ -393,6 +408,12 @@ impl EncryptLibraryTask {
                 original.display()
             )));
         }
+        if original.exists() && !staged.exists() && !backup.exists() {
+            return Err(RsError::Error(format!(
+                "Prepared encryption checkpoint is missing for {}",
+                original.display()
+            )));
+        }
         Ok(())
     }
 
@@ -528,6 +549,7 @@ mod tests {
             total_items: 1,
             completed_items: 0,
             last_error: None,
+            retry_count: 0,
         };
 
         for checkpoint in 0..=2 {
@@ -564,6 +586,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn local_commit_rejects_a_missing_prepared_stage() {
+        let directory = tempfile::tempdir().unwrap();
+        let original = directory.path().join("movie.mkv");
+        fs::write(&original, b"old").await.unwrap();
+        let job = LibraryEncryptionJob {
+            id: "job".into(),
+            library_id: "library".into(),
+            source_password: None,
+            target_password: Some("password".into()),
+            phase: "running".into(),
+            snapshot_complete: true,
+            total_items: 1,
+            completed_items: 0,
+            last_error: None,
+            retry_count: 0,
+        };
+        let item = LibraryEncryptionItem {
+            id: "item".into(),
+            job_id: job.id.clone(),
+            kind: "local".into(),
+            media_id: None,
+            source: original.to_string_lossy().into_owned(),
+            staged_source: Some(
+                EncryptLibraryTask::local_stage_path(&original, &job.id, "item")
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            state: "prepared".into(),
+        };
+
+        assert!(EncryptLibraryTask::commit_local(&job, &item)
+            .await
+            .is_err());
+        assert_eq!(fs::read(original).await.unwrap(), b"old");
+    }
+
+    #[tokio::test]
     async fn transform_rekeys_via_plaintext() {
         let plaintext = b"redseat durable encryption".to_vec();
         let encrypt_job = LibraryEncryptionJob {
@@ -576,6 +635,7 @@ mod tests {
             total_items: 1,
             completed_items: 0,
             last_error: None,
+            retry_count: 0,
         };
         let (encrypted_writer, mut encrypted_reader) = duplex(1024);
         EncryptLibraryTask::transform(
