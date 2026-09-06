@@ -1028,7 +1028,9 @@ impl ModelController {
         } else {
             filename.clone()
         };
+        const MAX_SPLIT_TEMP_BYTES: u64 = 2 * 1024 * 1024 * 1024;
         let mut page_data = Vec::new();
+        let mut total_temp_bytes = 0u64;
         for n in from..=to {
             let file = self
                 .library_file(
@@ -1053,10 +1055,18 @@ impl ModelController {
                 )
                 .await?;
 
-            let mut data = Vec::new();
-            let mut input = reader.stream;
-            input.read_to_end(&mut data).await?;
-            page_data.push((filename, data));
+            let temp = Self::spool_to_temp(reader.stream, ".split-page").await?;
+            total_temp_bytes = total_temp_bytes
+                .checked_add(tokio::fs::metadata(&temp).await?.len())
+                .ok_or_else(|| RsError::Error("Split page size overflow".to_string()))?;
+            if total_temp_bytes > MAX_SPLIT_TEMP_BYTES {
+                return Err(Error::ServiceError(
+                    "SPLIT".to_string(),
+                    Some("Selected pages exceed the 2 GiB temporary-storage limit".to_string()),
+                )
+                .into());
+            }
+            page_data.push((filename, temp));
         }
 
         let m = self.source_for_library(&library_id).await?;
@@ -1068,7 +1078,7 @@ impl ModelController {
         };
         let mut zip_writer = ZipFileWriter::with_tokio(&mut file);
         let pages = page_data.len();
-        for (filename, data) in page_data {
+        for (filename, temp) in page_data {
             let builder = Self::album_zip_entry(filename);
             let mut entry = zip_writer
                 .write_entry_stream(builder)
@@ -1079,7 +1089,7 @@ impl ModelController {
                         Some(error.to_string()),
                     )
                 })?;
-            let mut input = Cursor::new(data).compat();
+            let mut input = tokio::fs::File::open(&temp).await?.compat();
             futures::io::copy(&mut input, &mut entry).await?;
             entry.close().await.map_err(|error| {
                 Error::ServiceError(
