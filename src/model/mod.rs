@@ -536,14 +536,13 @@ impl ModelController {
                             false,
                         )
                         .await?;
-                        self.update_library_image(
+                        self.update_library_image_files(
                             &library_id,
                             folder,
                             id,
                             &kind,
                             &size,
                             image.as_slice(),
-                            &ConnectedUser::ServerAdmin,
                         )
                         .await?;
 
@@ -619,6 +618,19 @@ impl ModelController {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         let _migration_guard = self.library_encryption_gate.read().await;
         self.ensure_library_encryption_writable(library_id).await?;
+        self.update_library_image_files(library_id, folder, id, kind, size, reader)
+            .await
+    }
+
+    async fn update_library_image_files<T: AsyncRead>(
+        &self,
+        library_id: &str,
+        folder: &str,
+        id: &str,
+        kind: &Option<ImageType>,
+        size: &Option<ImageSize>,
+        reader: T,
+    ) -> Result<()> {
         self.remove_library_image_files(library_id, folder, id, kind, size)
             .await?;
 

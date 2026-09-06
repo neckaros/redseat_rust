@@ -119,6 +119,7 @@ async fn handler_request_url(
             ))
         }
         crate::plugins::sources::SourceRead::Request(r) => Json(json!(r)),
+        crate::plugins::sources::SourceRead::Guarded(_, _) => Json(json!({"stream": true})),
     };
     Ok(body)
 }
@@ -173,6 +174,7 @@ async fn handler_request_process(
             ))
         }
         crate::plugins::sources::SourceRead::Request(r) => Json(json!(r)),
+        crate::plugins::sources::SourceRead::Guarded(_, _) => Json(json!({"stream": true})),
     };
     Ok(body)
 }

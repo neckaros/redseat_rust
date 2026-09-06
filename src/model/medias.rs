@@ -1376,19 +1376,18 @@ impl ModelController {
 
         // Password-based CTR decryption (separate from client-side crypt flag)
         if let Some(ref key) = encryption_key {
-            // Resolve Request to Stream first so decryption can wrap the stream
-            if matches!(reader_response, SourceRead::Request(_)) {
-                let stream_reader = reader_response
-                    .into_reader(
-                        Some(library_id),
-                        range.clone(),
-                        None,
-                        Some((self.clone(), &requesting_user)),
-                        None,
-                    )
-                    .await?;
-                reader_response = SourceRead::Stream(stream_reader);
-            }
+            // Resolve both direct and guarded provider results so decryption wraps the
+            // actual response stream and retains the maintenance guard for its lifetime.
+            let stream_reader = reader_response
+                .into_reader(
+                    Some(library_id),
+                    range.clone(),
+                    None,
+                    Some((self.clone(), &requesting_user)),
+                    None,
+                )
+                .await?;
+            reader_response = SourceRead::Stream(stream_reader);
 
             if let Some(ref original_range) = client_range {
                 // Range request: read nonce separately, then decrypt at offset

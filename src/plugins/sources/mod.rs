@@ -203,6 +203,7 @@ pub enum SourceRead {
     Stream(FileStreamResult<AsyncReadPinBox>),
     //Buffer(FileBufferResult),
     Request(RsRequest),
+    Guarded(Box<SourceRead>, Arc<OwnedRwLockReadGuard<()>>),
 }
 
 impl SourceRead {
@@ -210,6 +211,7 @@ impl SourceRead {
         match self {
             SourceRead::Stream(s) => s.name.clone(),
             SourceRead::Request(r) => r.filename_or_extract_from_url(),
+            SourceRead::Guarded(source, _) => source.filename(),
         }
     }
 
@@ -217,6 +219,7 @@ impl SourceRead {
         match self {
             SourceRead::Stream(s) => s.size,
             SourceRead::Request(r) => r.size,
+            SourceRead::Guarded(source, _) => source.size(),
         }
     }
 
@@ -224,6 +227,7 @@ impl SourceRead {
         match self {
             SourceRead::Stream(s) => s.mime.clone(),
             SourceRead::Request(r) => r.mime.clone(),
+            SourceRead::Guarded(source, _) => source.mimetype(),
         }
     }
 }
@@ -308,6 +312,16 @@ impl SourceRead {
         //println!("into_reader");
         match self {
             SourceRead::Stream(reader) => Ok(reader),
+            SourceRead::Guarded(source, guard) => {
+                let mut reader = source
+                    .into_reader(library_id, range, progress, mc, retry)
+                    .await?;
+                reader.stream = Box::pin(GuardedReader {
+                    inner: reader.stream,
+                    _guard: guard,
+                });
+                Ok(reader)
+            }
             SourceRead::Request(request) => {
                 //println!("into_reader req {:?}", request);
                 match request.status {
@@ -473,6 +487,18 @@ impl SourceRead {
         mc: Option<(ModelController, &ConnectedUser)>,
     ) -> RsResult<axum::response::Response> {
         match self {
+            SourceRead::Guarded(source, guard) => {
+                let mut reader = source
+                    .into_reader(Some(library_id), range, None, mc, None)
+                    .await?;
+                reader.stream = Box::pin(GuardedReader {
+                    inner: reader.stream,
+                    _guard: guard,
+                });
+                SourceRead::Stream(reader)
+                    .into_response(library_id, None, None, None)
+                    .await
+            }
             SourceRead::Stream(reader) => {
                 let headers = reader
                     .hearders()
@@ -590,6 +616,21 @@ impl SourceRead {
     }
 }
 
+struct GuardedReader {
+    inner: AsyncReadPinBox,
+    _guard: Arc<OwnedRwLockReadGuard<()>>,
+}
+
+impl AsyncRead for GuardedReader {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        self.get_mut().inner.as_mut().poll_read(cx, buf)
+    }
+}
+
 type BoxedStringFuture = Pin<Box<dyn Future<Output = RsResult<RsResult<String>>> + Send>>;
 
 #[async_trait]
@@ -631,14 +672,14 @@ pub trait Source: Send + Sync {
 /// perform I/O. Password migration takes the matching write guard before becoming active.
 pub struct GuardedSource {
     inner: Box<dyn Source>,
-    _guard: OwnedRwLockReadGuard<()>,
+    _guard: Arc<OwnedRwLockReadGuard<()>>,
 }
 
 impl GuardedSource {
     pub fn new(inner: Box<dyn Source>, guard: OwnedRwLockReadGuard<()>) -> Self {
         Self {
             inner,
-            _guard: guard,
+            _guard: Arc::new(guard),
         }
     }
 }
@@ -674,7 +715,19 @@ impl Source for GuardedSource {
     }
 
     async fn get_file(&self, source: &str, range: Option<RangeDefinition>) -> RsResult<SourceRead> {
-        self.inner.get_file(source, range).await
+        match self.inner.get_file(source, range).await? {
+            SourceRead::Stream(mut reader) => {
+                reader.stream = Box::pin(GuardedReader {
+                    inner: reader.stream,
+                    _guard: Arc::clone(&self._guard),
+                });
+                Ok(SourceRead::Stream(reader))
+            }
+            source => Ok(SourceRead::Guarded(
+                Box::new(source),
+                Arc::clone(&self._guard),
+            )),
+        }
     }
 
     async fn writer(
@@ -683,18 +736,109 @@ impl Source for GuardedSource {
         length: Option<u64>,
         mime: Option<String>,
     ) -> RsResult<(BoxedStringFuture, Pin<Box<dyn AsyncWrite + Send>>)> {
-        self.inner.writer(name, length, mime).await
+        let (source, writer) = self.inner.writer(name, length, mime).await?;
+        let future_guard = Arc::clone(&self._guard);
+        let guarded_source = Box::pin(async move {
+            let _guard = future_guard;
+            source.await
+        });
+        let guarded_writer = Box::pin(GuardedWriter {
+            inner: writer,
+            _guard: Arc::clone(&self._guard),
+        });
+        Ok((guarded_source, guarded_writer))
     }
 
     async fn writerseek(
         &self,
         name: &str,
     ) -> RsResult<(String, Pin<Box<dyn AsyncSeekableWrite + Send>>)> {
-        self.inner.writerseek(name).await
+        let (source, writer) = self.inner.writerseek(name).await?;
+        Ok((
+            source,
+            Box::pin(GuardedSeekWriter {
+                inner: writer,
+                _guard: Arc::clone(&self._guard),
+            }),
+        ))
     }
 
     async fn clean(&self, sources: Vec<String>) -> RsResult<Vec<(String, u64)>> {
         self.inner.clean(sources).await
+    }
+}
+
+struct GuardedWriter {
+    inner: Pin<Box<dyn AsyncWrite + Send>>,
+    _guard: Arc<OwnedRwLockReadGuard<()>>,
+}
+
+impl AsyncWrite for GuardedWriter {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        self.get_mut().inner.as_mut().poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        self.get_mut().inner.as_mut().poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        self.get_mut().inner.as_mut().poll_shutdown(cx)
+    }
+}
+
+struct GuardedSeekWriter {
+    inner: Pin<Box<dyn AsyncSeekableWrite + Send>>,
+    _guard: Arc<OwnedRwLockReadGuard<()>>,
+}
+
+impl AsyncWrite for GuardedSeekWriter {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        self.get_mut().inner.as_mut().poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        self.get_mut().inner.as_mut().poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        self.get_mut().inner.as_mut().poll_shutdown(cx)
+    }
+}
+
+impl AsyncSeek for GuardedSeekWriter {
+    fn start_seek(
+        self: Pin<&mut Self>,
+        position: std::io::SeekFrom,
+    ) -> std::io::Result<()> {
+        self.get_mut().inner.as_mut().start_seek(position)
+    }
+
+    fn poll_complete(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<u64>> {
+        self.get_mut().inner.as_mut().poll_complete(cx)
     }
 }
 
@@ -712,6 +856,28 @@ pub async fn local_provider_for_library(library: &ServerLibrary) -> RsResult<Pat
         &library.settings.data_path,
     )
     .await
+}
+
+#[cfg(test)]
+mod maintenance_guard_tests {
+    use super::{AsyncReadPinBox, GuardedReader};
+    use std::{io::Cursor, sync::Arc};
+    use tokio::sync::RwLock;
+
+    #[tokio::test]
+    async fn guarded_reader_holds_maintenance_gate_until_stream_is_dropped() {
+        let gate = Arc::new(RwLock::new(()));
+        let guard = Arc::clone(&gate).read_owned().await;
+        let inner: AsyncReadPinBox = Box::pin(Cursor::new(Vec::<u8>::new()));
+        let reader = GuardedReader {
+            inner,
+            _guard: Arc::new(guard),
+        };
+
+        assert!(gate.try_write().is_err());
+        drop(reader);
+        assert!(gate.try_write().is_ok());
+    }
 }
 
 pub async fn local_provider(

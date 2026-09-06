@@ -28,6 +28,7 @@ const RETRY_DELAY_SECONDS: u64 = 60;
 const LOCAL_FOLDERS: &[&str] = &[
     ".thumbs",
     ".portraits",
+    ".movies",
     ".series",
     ".books",
     ".faces",
@@ -496,6 +497,11 @@ mod tests {
             EncryptLibraryTask::transformed_size(Some(100), true, true),
             Some(100)
         );
+    }
+
+    #[test]
+    fn encryption_snapshot_includes_movie_artwork() {
+        assert!(super::LOCAL_FOLDERS.contains(&".movies"));
     }
 
     #[test]

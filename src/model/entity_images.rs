@@ -172,14 +172,19 @@ impl ModelController {
             }
         }
 
-        let source = local_provider.get_file(&image_path, None).await?;
-        match source {
-            SourceRead::Stream(s) => {
-                let key = self.get_library_encryption_key(library_id).await;
-                Ok(Self::decrypt_stream_if_needed(s, &key))
-            }
-            SourceRead::Request(_) => Err(crate::Error::GenericRedseatError),
-        }
+        let source = local_provider
+            .get_file(&image_path, None)
+            .await?
+            .into_reader(
+                Some(library_id),
+                None,
+                None,
+                Some((self.clone(), requesting_user)),
+                None,
+            )
+            .await?;
+        let key = self.get_library_encryption_key(library_id).await;
+        Ok(Self::decrypt_stream_if_needed(source, &key))
     }
 
     /// Serve a local entity image (non-external-ID path).
