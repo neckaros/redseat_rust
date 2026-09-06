@@ -214,6 +214,10 @@ impl LibraryEncryptionJob {
     pub fn is_active(&self) -> bool {
         self.phase == "running"
     }
+
+    pub fn blocks_io(&self) -> bool {
+        matches!(self.phase.as_str(), "running" | "failed")
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -532,7 +536,7 @@ impl ModelController {
                 total_items: job.total_items,
                 last_error: job.last_error.clone(),
                 password_protected: library.password.is_some(),
-                target_password_protected: job.is_active().then_some(job.target_password.is_some()),
+                target_password_protected: job.blocks_io().then_some(job.target_password.is_some()),
             },
             None => LibraryEncryptionStatus {
                 phase: "idle".to_string(),
@@ -563,13 +567,29 @@ impl ModelController {
         if self.deleting_libraries.read().await.contains(library_id) {
             return Err(Error::LibraryDeletionInProgress(library_id.to_string()));
         }
-        if self
-            .store
-            .get_library_encryption_job(library_id)
-            .await?
-            .is_some_and(|job| job.is_active())
-        {
-            return Err(Error::LibraryEncryptionInProgress(library_id.to_string()));
+        if let Some(existing) = self.store.get_library_encryption_job(library_id).await? {
+            if existing.is_active() {
+                return Err(Error::LibraryEncryptionInProgress(library_id.to_string()));
+            }
+            if existing.phase == "failed" {
+                if existing.target_password != target_password {
+                    return Err(Error::InvalidLibraryEncryptionRequest(
+                        "A failed migration must be resumed with the same target password"
+                            .to_string(),
+                    ));
+                }
+                self.store.resume_library_encryption_job(&existing.id).await?;
+                if let Err(error) = self.schedule_library_encryption_job(&existing).await {
+                    let message = error.to_string();
+                    self.store
+                        .fail_library_encryption_job(&existing.id, message.clone())
+                        .await?;
+                    return Err(Error::Other(message));
+                }
+                return self
+                    .get_library_encryption_status(library_id, requesting_user)
+                    .await;
+            }
         }
 
         let library = self

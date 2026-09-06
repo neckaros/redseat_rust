@@ -1490,17 +1490,26 @@ impl ModelController {
     ) {
         let mc = self.clone();
         tokio::spawn(async move {
-            let r = mc
-                .process_media(&library_id, &media_id, thumb, predict, &requesting_user)
-                .await;
-            if let Err(error) = r {
-                log_error(
-                    crate::tools::log::LogServiceType::Source,
-                    format!(
-                        "Unable to process media {} for predictions: {:?}",
-                        media_id, error
-                    ),
-                );
+            loop {
+                let result = mc
+                    .process_media(&library_id, &media_id, thumb, predict, &requesting_user)
+                    .await;
+                match result {
+                    Err(crate::Error::Model(
+                        crate::model::error::Error::LibraryEncryptionUnavailable(_),
+                    )) => tokio::time::sleep(Duration::from_secs(60)).await,
+                    Err(error) => {
+                        log_error(
+                            crate::tools::log::LogServiceType::Source,
+                            format!(
+                                "Unable to process media {} for predictions: {:?}",
+                                media_id, error
+                            ),
+                        );
+                        break;
+                    }
+                    Ok(()) => break,
+                }
             }
         });
     }
@@ -2850,6 +2859,7 @@ impl ModelController {
             }
             _ => Err(crate::model::error::Error::UnsupportedTypeForThumb),
         }?;
+        drop(m);
         self.update_library_image(
             &library_id,
             ".thumbs",
@@ -3065,13 +3075,10 @@ impl ModelController {
                     "get_media_uri".to_string(),
                 ))?;
 
-        let m = self.source_for_library(library_id).await?;
-        let local_path = m.local_path(&source.source);
-        if let Some(local_path) = local_path {
-            Ok(local_path.to_string_lossy().to_string())
-        } else {
-            Ok(ModelController::get_temporary_local_read_url(library_id, media_id, delay).await?)
-        }
+        let _ = source;
+        // Route external tools through the guarded media endpoint. Returning a bare local path
+        // would drop the maintenance guard before FFmpeg or FFprobe opens the file.
+        Ok(ModelController::get_temporary_local_read_url(library_id, media_id, delay).await?)
     }
 
     // -- Media HLS session management --
@@ -3308,6 +3315,7 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> crate::Result<()> {
         requesting_user.check_file_role(library_id, media_id, LibraryRole::Write)?;
+        self.ensure_library_encryption_writable(library_id).await?;
         let store = self.store.get_library_store(library_id)?;
         let media = store
             .get_media(media_id, requesting_user.user_id().ok())
@@ -3375,7 +3383,17 @@ impl ModelController {
                     drop(queue);
 
                     if let Some(element) = element {
-                        let _ = mc.convert_element(element).await;
+                        if let Err(error) = mc.convert_element(element.clone()).await {
+                            if matches!(
+                                error,
+                                crate::Error::Model(
+                                    crate::model::error::Error::LibraryEncryptionUnavailable(_)
+                                )
+                            ) {
+                                mc.convert_queue.write().await.push_front(element);
+                                tokio::time::sleep(Duration::from_secs(60)).await;
+                            }
+                        }
                     } else {
                         break;
                     }

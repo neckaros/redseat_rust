@@ -307,7 +307,7 @@ impl ModelController {
             .store
             .get_library_encryption_job(library_id)
             .await?
-            .is_some_and(|job| job.is_active())
+            .is_some_and(|job| job.blocks_io())
         {
             return Err(Error::LibraryEncryptionInProgress(library_id.to_string()));
         }
@@ -319,7 +319,7 @@ impl ModelController {
             .store
             .get_library_encryption_job(library_id)
             .await?
-            .is_some_and(|job| job.is_active())
+            .is_some_and(|job| job.blocks_io())
         {
             return Err(Error::LibraryEncryptionUnavailable(library_id.to_string()));
         }

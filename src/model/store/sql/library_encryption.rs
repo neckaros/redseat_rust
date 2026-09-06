@@ -273,6 +273,22 @@ impl SqliteStore {
         Ok(())
     }
 
+    pub async fn resume_library_encryption_job(&self, job_id: &str) -> Result<()> {
+        let job_id = job_id.to_string();
+        self.server_store
+            .call(move |conn| {
+                conn.execute(
+                    "UPDATE library_encryption_jobs
+                     SET phase = 'running', retry_count = 0, last_error = NULL,
+                         modified = unixepoch() WHERE id = ? AND phase = 'failed'",
+                    params![job_id],
+                )?;
+                Ok(())
+            })
+            .await?;
+        Ok(())
+    }
+
     pub async fn complete_library_encryption_job(&self, job_id: &str) -> Result<()> {
         let job_id = job_id.to_string();
         self.server_store
@@ -417,6 +433,18 @@ mod tests {
         assert_eq!(failed.phase, "failed");
         assert_eq!(failed.last_error.as_deref(), Some("scheduler unavailable"));
         assert!(store.list_active_library_encryption_jobs().await.unwrap().is_empty());
+        store
+            .resume_library_encryption_job(&job.id)
+            .await
+            .unwrap();
+        let resumed = store
+            .get_library_encryption_job("library-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(resumed.phase, "running");
+        assert_eq!(resumed.retry_count, 0);
+        assert!(resumed.last_error.is_none());
 
         store
             .set_library_password("library-1", job.target_password.clone())
