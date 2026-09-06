@@ -10,6 +10,7 @@ use crate::model::deleted::DeletedQuery;
 use crate::model::episodes::{EpisodeForUpdate, EpisodeQuery};
 use crate::model::movies::MovieQuery;
 use crate::model::series::SerieForUpdate;
+use crate::model::store::sql::backups::BackupMediaState;
 use crate::model::store::sql::library::medias::MediaBackup;
 use crate::plugins::sources::path_provider::PathProvider;
 use crate::server::get_server_file_path_array;
@@ -83,7 +84,7 @@ impl RsSchedulerTask for BackupTask {
                             )))?;
 
                     if library.source != "virtual" {
-                        let backed_up = mc.get_backup_backup_files(&backup.id).await?;
+                        let backed_up = mc.get_backup_media_states(&backup.id, library_id).await?;
                         let media_query = backup.filter.clone().unwrap_or_default();
                         let backup_medias = pending_backup_medias(
                             mc.get_medias_to_backup(
@@ -93,7 +94,6 @@ impl RsSchedulerTask for BackupTask {
                             )
                             .await?,
                             &backed_up,
-                            library_id,
                         );
                         let total = backup_medias.len() as u64;
                         let total_size: u64 =
@@ -136,10 +136,8 @@ impl RsSchedulerTask for BackupTask {
                                 log_info(
                                     crate::tools::log::LogServiceType::Scheduler,
                                     format!(
-                                        "Deleted {} files from backup: {} ({})",
-                                        deleted_count,
-                                        backup_file.file,
-                                        human_bytes(backup_file.size as f64)
+                                        "Deleted {} files from backup: {}",
+                                        deleted_count, backup_file.file
                                     ),
                                 );
                             }
@@ -332,12 +330,10 @@ impl RsSchedulerTask for BackupTask {
 
 fn pending_backup_medias(
     medias: Vec<MediaBackup>,
-    backed_up: &[BackupFile],
-    library_id: &str,
+    backed_up: &[BackupMediaState],
 ) -> Vec<MediaBackup> {
     let latest_backups = backed_up
         .iter()
-        .filter(|file| file.library.as_deref() == Some(library_id) && file.error.is_none())
         .fold(HashMap::<&str, i64>::new(), |mut latest, file| {
             latest
                 .entry(file.file.as_str())
@@ -382,26 +378,8 @@ async fn backup_file(
 #[cfg(test)]
 mod tests {
     use super::pending_backup_medias;
-    use crate::{domain::backup::BackupFile, model::store::sql::library::medias::MediaBackup};
-
-    fn backup_file(file: &str, modified: i64) -> BackupFile {
-        BackupFile {
-            backup: "backup".to_string(),
-            library: Some("library".to_string()),
-            file: file.to_string(),
-            id: format!("backup-{file}"),
-            path: file.to_string(),
-            hash: String::new(),
-            sourcehash: "hash".to_string(),
-            size: 0,
-            modified,
-            added: modified,
-            iv: None,
-            thumb_size: None,
-            info_size: None,
-            error: None,
-        }
-    }
+    use crate::model::store::sql::backups::BackupMediaState;
+    use crate::model::store::sql::library::medias::MediaBackup;
 
     #[test]
     fn selects_missing_and_stale_media_for_backup() {
@@ -425,9 +403,18 @@ mod tests {
                 modified: 30,
             },
         ];
-        let backups = vec![backup_file("current", 10), backup_file("stale", 15)];
+        let backups = vec![
+            BackupMediaState {
+                file: "current".to_string(),
+                modified: 10,
+            },
+            BackupMediaState {
+                file: "stale".to_string(),
+                modified: 15,
+            },
+        ];
 
-        let pending = pending_backup_medias(medias, &backups, "library");
+        let pending = pending_backup_medias(medias, &backups);
         assert_eq!(
             pending
                 .into_iter()

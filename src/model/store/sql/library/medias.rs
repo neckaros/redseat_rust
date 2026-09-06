@@ -143,16 +143,31 @@ fn media_query(user_id: &Option<String>) -> String {
     }
 }
 
-const MEDIA_BACKUP_QUERY: &str = "SELECT 
-            m.id, m.name, m.size,
-            MAX(IFNULL(m.added, 0), IFNULL(m.created, 0), IFNULL(m.modified, 0)) as backup_modified,
-            (select avg(rating) from ratings where type = 'media' and ref = m.id) as rating
-			,(select GROUP_CONCAT(tag_ref || '|' || IFNULL(confidence, 100)) from media_tag_mapping where media_ref = m.id and (confidence != -1 or confidence IS NULL)) as tags
-			,(select GROUP_CONCAT(people_ref ) from media_people_mapping where media_ref = m.id) as people
-			,(select GROUP_CONCAT(serie_ref || '|' || printf('%04d', season) || '|' || printf('%04d', episode)) from media_serie_mapping where media_ref = m.id) as series,
-            m.fnumber, m.icc, m.mp
-			
-            FROM medias as m";
+fn media_backup_query(query: &MediaQuery) -> String {
+    let mut filter_fields = Vec::new();
+    if query.min_rating.is_some() || query.max_rating.is_some() || query.sort == RsSort::Rating {
+        filter_fields.push(
+            ", (SELECT AVG(rating) FROM ratings WHERE type = 'media' AND ref = m.id) AS rating",
+        );
+    }
+    if !query.people.is_empty() {
+        filter_fields.push(
+            ", (SELECT GROUP_CONCAT(people_ref) FROM media_people_mapping WHERE media_ref = m.id) AS people",
+        );
+    }
+    if !query.series.is_empty() {
+        filter_fields.push(
+            ", (SELECT GROUP_CONCAT(serie_ref || '|' || printf('%04d', season) || '|' || printf('%04d', episode)) FROM media_serie_mapping WHERE media_ref = m.id) AS series",
+        );
+    }
+
+    format!(
+        "SELECT m.id, m.name, m.size,
+                MAX(IFNULL(m.added, 0), IFNULL(m.created, 0), IFNULL(m.modified, 0)) AS backup_modified{}
+         FROM medias AS m",
+        filter_fields.concat()
+    )
+}
 
 impl SqliteLibraryStore {
     fn row_to_mediasource(row: &Row) -> rusqlite::Result<MediaSource> {
@@ -757,6 +772,7 @@ impl SqliteLibraryStore {
 
     pub async fn get_all_medias_to_backup(&self, query: MediaQuery) -> Result<Vec<MediaBackup>> {
         //println!("mediaquery: {:?}", query);
+        let backup_query = media_backup_query(&query);
         let rows = self
             .connection
             .call(move |conn| {
@@ -768,7 +784,7 @@ impl SqliteLibraryStore {
         {}
         ORDER BY backup_modified ASC",
                     where_query.format_recursive(),
-                    MEDIA_BACKUP_QUERY,
+                    backup_query,
                     where_query.format()
                 ))?;
                 //format!("query: {:?}", query.expanded_sql());
@@ -1312,9 +1328,31 @@ impl SqliteLibraryStore {
 
 #[cfg(test)]
 mod tests {
-    use super::SqliteLibraryStore;
+    use super::{media_backup_query, SqliteLibraryStore};
     use crate::domain::media::{FileType, MediaForAdd};
-    use crate::model::{medias::MediaQuery, store::sql::SqlOrder};
+    use crate::model::{
+        medias::{MediaQuery, RsSort},
+        store::sql::SqlOrder,
+    };
+
+    #[test]
+    fn default_backup_inventory_skips_relation_subqueries() {
+        let query = media_backup_query(&MediaQuery::default());
+        assert!(!query.contains("FROM ratings"));
+        assert!(!query.contains("media_people_mapping"));
+        assert!(!query.contains("media_serie_mapping"));
+
+        let filtered = media_backup_query(&MediaQuery {
+            min_rating: Some(3.0),
+            people: vec!["person".to_string()],
+            series: vec!["series".to_string()],
+            sort: RsSort::Rating,
+            ..Default::default()
+        });
+        assert!(filtered.contains("FROM ratings"));
+        assert!(filtered.contains("media_people_mapping"));
+        assert!(filtered.contains("media_serie_mapping"));
+    }
 
     #[tokio::test]
     async fn backup_query_handles_migrated_ratings_and_missing_hash() {
@@ -1325,6 +1363,7 @@ mod tests {
                 MediaForAdd {
                     name: "backup.jpg".to_string(),
                     size: Some(123),
+                    md5: Some("source-hash".to_string()),
                     ..Default::default()
                 }
                 .into_insert_with_id("backup-media".to_string()),

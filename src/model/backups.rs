@@ -50,7 +50,10 @@ use crate::{
 use super::{
     error::{Error, Result},
     medias::{MediaFileQuery, MediaQuery, MediaSource},
-    store::{sql::backups::BackupInfos, DatabaseSnapshot},
+    store::{
+        sql::backups::{BackupInfos, BackupMediaState},
+        DatabaseSnapshot,
+    },
     users::{ConnectedUser, UserRole},
     ModelController,
 };
@@ -86,6 +89,22 @@ pub struct BackupForUpdate {
     pub password: Option<String>,
     pub size: Option<u64>,
     pub name: Option<String>,
+}
+
+fn backup_media_version_key(md5: Option<String>, backup_file_id: &str) -> String {
+    match md5.filter(|hash| !hash.is_empty()) {
+        Some(hash) => format!("version:{hash}:{backup_file_id}"),
+        None => format!("version:missing:{backup_file_id}"),
+    }
+}
+
+fn backup_source_matches(stored: &str, source_hash: &str) -> bool {
+    stored == source_hash
+        || stored
+            .strip_prefix("version:")
+            .and_then(|version| version.rsplit_once(':'))
+            .map(|(hash, _)| hash == source_hash)
+            .unwrap_or(false)
 }
 
 impl ModelController {
@@ -384,6 +403,19 @@ impl ModelController {
         Ok(backup_files)
     }
 
+    /// Get the latest successful backup timestamp for each media in a library backup.
+    ///
+    /// UNPROTECTED INTERNAL USE ONLY
+    pub async fn get_backup_media_states(
+        &self,
+        backup_id: &str,
+        library_id: &str,
+    ) -> Result<Vec<BackupMediaState>> {
+        self.store
+            .get_backup_media_states(backup_id, library_id)
+            .await
+    }
+
     /// Get all the backup files for a library, whatever the backup
     pub async fn get_library_backup_files(
         &self,
@@ -442,7 +474,7 @@ impl ModelController {
 
         Ok(backup_files
             .into_iter()
-            .any(|b| b.sourcehash == source_hash))
+            .any(|b| backup_source_matches(&b.sourcehash, source_hash)))
     }
 
     /// Get a specific backup file from ID
@@ -885,12 +917,13 @@ impl ModelController {
             )
             .await?;
 
+        let source_hash = backup_media_version_key(media_info.md5.clone(), &id);
         let backup_file = self
             .upload_backup(
                 source_read,
                 media_id.to_string(),
                 backup_id.to_string(),
-                media_info.md5.clone().unwrap_or("none".to_string()),
+                source_hash,
                 media_info.max_date(),
                 Some(library_id.to_string()),
                 Some(media_info),
@@ -1146,5 +1179,29 @@ impl ModelController {
 
         self.store.add_backup_error(error).await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{backup_media_version_key, backup_source_matches};
+
+    #[test]
+    fn media_backup_versions_get_unique_keys_even_for_the_same_content() {
+        let first = backup_media_version_key(Some("hash".to_string()), "first-id");
+        let second = backup_media_version_key(Some("hash".to_string()), "second-id");
+        assert_ne!(first, second);
+        assert!(first.contains("hash"));
+        assert_eq!(
+            backup_media_version_key(None, "first-id"),
+            "version:missing:first-id"
+        );
+        assert_ne!(
+            backup_media_version_key(None, "first-id"),
+            backup_media_version_key(None, "second-id")
+        );
+        assert!(backup_source_matches("hash", "hash"));
+        assert!(backup_source_matches("version:hash:first-id", "hash"));
+        assert!(!backup_source_matches("version:missing:first-id", "hash"));
     }
 }

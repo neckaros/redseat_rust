@@ -12,6 +12,12 @@ pub struct BackupInfos {
     pub size: Option<u64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackupMediaState {
+    pub file: String,
+    pub modified: i64,
+}
+
 const BACKUP_FILE_QUERY_ELEMENTS: &str = "backup, library, file, id, path, hash, sourcehash, size, modified, added, iv, infoSize, thumbsize, error";
 
 impl SqliteStore {
@@ -203,6 +209,36 @@ impl SqliteStore {
         Ok(row)
     }
 
+    pub async fn get_backup_media_states(
+        &self,
+        backup_id: &str,
+        library_id: &str,
+    ) -> Result<Vec<BackupMediaState>> {
+        let backup_id = backup_id.to_owned();
+        let library_id = library_id.to_owned();
+        let states = self
+            .server_store
+            .call(move |conn| {
+                let mut query = conn.prepare(
+                    "SELECT file, MAX(modified)
+                     FROM Backups_Files
+                     WHERE backup = ? AND library = ? AND file <> 'db' AND error IS NULL
+                     GROUP BY file",
+                )?;
+                let rows = query.query_map(params![backup_id, library_id], |row| {
+                    Ok(BackupMediaState {
+                        file: row.get(0)?,
+                        modified: row.get(1)?,
+                    })
+                })?;
+                let states =
+                    rows.collect::<std::result::Result<Vec<BackupMediaState>, rusqlite::Error>>()?;
+                Ok(states)
+            })
+            .await?;
+        Ok(states)
+    }
+
     /// For a specific media id get all the files for a specific backup
     pub async fn get_backup_media_backup_files(
         &self,
@@ -278,18 +314,7 @@ impl SqliteStore {
     pub async fn add_backup_file(&self, backup: BackupFile) -> Result<()> {
         self.server_store.call( move |conn| { 
             conn.execute("INSERT INTO Backups_Files (backup, library, file, id, path, hash, sourcehash, size, modified, added, iv, thumbsize, infoSize, error)
-            VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (backup, library, file, sourcehash) DO UPDATE SET
-                id = excluded.id,
-                path = excluded.path,
-                hash = excluded.hash,
-                size = excluded.size,
-                modified = excluded.modified,
-                added = excluded.added,
-                iv = excluded.iv,
-                thumbsize = excluded.thumbsize,
-                infoSize = excluded.infoSize,
-                error = excluded.error", params![
+            VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params![
                 backup.backup,
                 backup.library,
                 backup.file,
@@ -396,7 +421,7 @@ mod tests {
             id: id.to_string(),
             path: path.to_string(),
             hash: String::new(),
-            sourcehash: "same-source".to_string(),
+            sourcehash: format!("version:{id}"),
             size: 1,
             modified,
             added: modified,
@@ -408,7 +433,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn replaces_same_hash_backup_with_newer_media_version() {
+    async fn summarizes_latest_media_state_without_loading_version_history() {
         let connection = Connection::open_in_memory().await.unwrap();
         migrate_database(&connection).await.unwrap();
         connection
@@ -439,13 +464,22 @@ mod tests {
             .await
             .unwrap();
 
-        let files = store
+        let versions = store
             .get_backup_media_backup_files("backup", "media")
             .await
             .unwrap();
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].id, "new");
-        assert_eq!(files[0].path, "new-path");
-        assert_eq!(files[0].modified, 20);
+        assert_eq!(versions.len(), 2);
+        assert_eq!(
+            store.get_backup_files_infos("backup").await.unwrap().size,
+            Some(2)
+        );
+
+        let states = store
+            .get_backup_media_states("backup", "library")
+            .await
+            .unwrap();
+        assert_eq!(states.len(), 1);
+        assert_eq!(states[0].file, "media");
+        assert_eq!(states[0].modified, 20);
     }
 }
