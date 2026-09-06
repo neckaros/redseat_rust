@@ -26,6 +26,16 @@ declared by the binary entry points; there is no `lib.rs`.
 | Event contract | `docs/SSE.md` |
 | Native dependencies and release builds | `Cargo.toml`, `.github/workflows/builder.yml`, `Dockerfile` |
 
+## Agent worktrees and Cargo
+
+- Use the current worktree; do not create nested worktrees.
+- The root agent owns Cargo verification.
+- Subagents should investigate, review, or edit non-overlapping files.
+- Do not run concurrent Cargo commands from multiple agents.
+- Never run `cargo clean` while another T3 task is active.
+- Start verification with `cargo check --bin redseat-rust`, followed by the
+  narrowest relevant filtered test.
+
 ## Project constraints
 
 - Follow the route → `ModelController` → store/plugin structure and existing
