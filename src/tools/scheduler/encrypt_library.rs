@@ -131,6 +131,13 @@ impl EncryptLibraryTask {
             });
             let mut items = mc.store.list_library_encryption_items(&job.id).await?;
             for item in &mut items {
+                if Self::local_prepared_stage_needs_rebuild(&job, item) {
+                    mc.store
+                        .reset_library_encryption_item_pending(&item.id)
+                        .await?;
+                    item.staged_source = None;
+                    item.state = "pending".to_string();
+                }
                 if item.state == "pending" {
                     item.staged_source = Some(Self::prepare_item(mc, &job, item).await?);
                     item.state = "prepared".to_string();
@@ -273,6 +280,8 @@ impl EncryptLibraryTask {
         let output: Pin<Box<dyn AsyncWrite + Send>> =
             Box::pin(BufWriter::new(fs::File::create(&staged).await?));
         Self::transform(input, output, job).await?;
+        fs::File::open(&staged).await?.sync_all().await?;
+        Self::sync_parent(&staged).await?;
         let staged = staged.to_string_lossy().into_owned();
         mc.store
             .mark_library_encryption_item_prepared(&item.id, &staged)
@@ -354,6 +363,31 @@ impl EncryptLibraryTask {
         Ok(())
     }
 
+    fn local_prepared_stage_needs_rebuild(
+        job: &LibraryEncryptionJob,
+        item: &LibraryEncryptionItem,
+    ) -> bool {
+        if item.kind != "local" || item.state != "prepared" {
+            return false;
+        }
+        let original = PathBuf::from(&item.source);
+        let staged = item
+            .staged_source
+            .as_ref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| Self::local_stage_path(&original, &job.id, &item.id));
+        let backup = Self::local_backup_path(&original, &job.id, &item.id);
+        original.exists() && !staged.exists() && !backup.exists()
+    }
+
+    async fn sync_parent(path: &std::path::Path) -> RsResult<()> {
+        #[cfg(unix)]
+        if let Some(parent) = path.parent() {
+            fs::File::open(parent).await?.sync_all().await?;
+        }
+        Ok(())
+    }
+
     async fn commit_item(
         mc: &ModelController,
         job: &LibraryEncryptionJob,
@@ -389,9 +423,11 @@ impl EncryptLibraryTask {
 
         if staged.exists() && original.exists() && !backup.exists() {
             fs::rename(&original, &backup).await?;
+            Self::sync_parent(&original).await?;
         }
         if staged.exists() && !original.exists() && backup.exists() {
             fs::rename(&staged, &original).await?;
+            Self::sync_parent(&original).await?;
         }
         if !staged.exists() && original.exists() && backup.exists() {
             return Ok(());
@@ -455,6 +491,7 @@ impl EncryptLibraryTask {
                 Self::local_backup_path(&PathBuf::from(&item.source), &job.id, &item.id);
             if backup.exists() {
                 fs::remove_file(&backup).await?;
+                Self::sync_parent(&backup).await?;
             }
         } else if item.kind == "remote"
             && item.staged_source.as_deref() != Some(item.source.as_str())
@@ -616,6 +653,9 @@ mod tests {
             state: "prepared".into(),
         };
 
+        assert!(EncryptLibraryTask::local_prepared_stage_needs_rebuild(
+            &job, &item
+        ));
         assert!(EncryptLibraryTask::commit_local(&job, &item)
             .await
             .is_err());

@@ -186,6 +186,21 @@ impl SqliteStore {
         Ok(())
     }
 
+    pub async fn reset_library_encryption_item_pending(&self, item_id: &str) -> Result<()> {
+        let item_id = item_id.to_string();
+        self.server_store
+            .call(move |conn| {
+                conn.execute(
+                    "UPDATE library_encryption_items SET staged_source = NULL, state = 'pending'
+                     WHERE id = ? AND state = 'prepared'",
+                    params![item_id],
+                )?;
+                Ok(())
+            })
+            .await?;
+        Ok(())
+    }
+
     pub async fn mark_library_encryption_item_committed(&self, item_id: &str) -> Result<()> {
         let item_id = item_id.to_string();
         self.server_store
@@ -389,6 +404,20 @@ mod tests {
             .set_library_encryption_snapshot(&job.id, vec![item])
             .await
             .unwrap();
+        store
+            .mark_library_encryption_item_prepared("item-1", "/media/staged")
+            .await
+            .unwrap();
+        store
+            .reset_library_encryption_item_pending("item-1")
+            .await
+            .unwrap();
+        let reset_items = store
+            .list_library_encryption_items(&job.id)
+            .await
+            .unwrap();
+        assert_eq!(reset_items[0].state, "pending");
+        assert!(reset_items[0].staged_source.is_none());
         store
             .mark_library_encryption_item_prepared("item-1", "/media/staged")
             .await

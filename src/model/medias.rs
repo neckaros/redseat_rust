@@ -1020,14 +1020,6 @@ impl ModelController {
         }
         let filename = format!("{}-{}-{}.zip", remove_extension(&media.name), from, to);
 
-        let crypted = self.cache_get_library_crypt(library_id).await;
-        let encryption_key = self.get_library_encryption_key(library_id).await;
-        let id = nanoid!();
-        let disk_filename = if crypted || encryption_key.is_some() {
-            id.clone()
-        } else {
-            filename.clone()
-        };
         const MAX_SPLIT_TEMP_BYTES: u64 = 2 * 1024 * 1024 * 1024;
         let mut page_data = Vec::new();
         let mut total_temp_bytes = 0u64;
@@ -1070,6 +1062,16 @@ impl ModelController {
         }
 
         let m = self.source_for_library(&library_id).await?;
+        // Read the encryption state only after the output provider has acquired the
+        // maintenance guard. The writer and key then describe the same library epoch.
+        let crypted = self.cache_get_library_crypt(library_id).await;
+        let encryption_key = self.get_library_encryption_key(library_id).await;
+        let id = nanoid!();
+        let disk_filename = if crypted || encryption_key.is_some() {
+            id.clone()
+        } else {
+            filename.clone()
+        };
         let (source, file) = m.writerseek(&disk_filename).await?;
         let mut file: Pin<Box<dyn AsyncWrite + Send>> = if let Some(key) = &encryption_key {
             Box::pin(CtrEncryptWriter::new(file, key)?)
@@ -3999,8 +4001,17 @@ impl ModelController {
             ))?
             .item;
 
-        let m = self.source_for_library(&element.library).await?;
-        let local = self.library_source_for_library(&element.library).await?;
+        let _maintenance_guard = self
+            .library_encryption_gate(&element.library)
+            .await
+            .read_owned()
+            .await;
+        self.ensure_library_encryption_readable(&element.library)
+            .await?;
+        let m = self.source_for_library_unchecked(&element.library).await?;
+        let local = self
+            .library_source_for_library_unchecked(&element.library)
+            .await?;
         let path = m
             .local_path(media.source.as_ref().ok_or(Error::ServiceError(
                 "Convert".to_owned(),
@@ -4102,6 +4113,7 @@ impl ModelController {
         let reader = File::open(dest).await?;
         drop(m);
         drop(local);
+        drop(_maintenance_guard);
         let media = self
             .add_library_file(
                 &element.library,
@@ -4170,8 +4182,16 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> crate::Result<Media> {
         let store = self.store.get_library_store(library_id)?;
-        let m = self.source_for_library(library_id).await?;
-        let local = self.library_source_for_library(library_id).await?;
+        let _maintenance_guard = self
+            .library_encryption_gate(library_id)
+            .await
+            .read_owned()
+            .await;
+        self.ensure_library_encryption_readable(library_id).await?;
+        let m = self.source_for_library_unchecked(library_id).await?;
+        let local = self
+            .library_source_for_library_unchecked(library_id)
+            .await?;
         let first_request = &request.items[0].request;
         let output_format = first_request.format.clone();
         let output_codec = first_request.codec.clone();
@@ -4368,6 +4388,7 @@ impl ModelController {
         let reader = File::open(&concat_dest).await?;
         drop(m);
         drop(local);
+        drop(_maintenance_guard);
         let media = self
             .add_library_file(
                 library_id,

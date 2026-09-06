@@ -956,8 +956,9 @@ impl ModelController {
         let sources = store.get_all_sources().await?;
         println!("sources count: {}", sources.len());
         let cleaned = m.clean(sources).await?;
-
-        let local = self.library_source_for_library(library_id).await?;
+        let local = self
+            .library_source_for_library_unchecked(library_id)
+            .await?;
 
         local.clean_temp()?;
         Ok(cleaned)
