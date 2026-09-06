@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
 use tokio::{
     fs::File,
-    io::{copy, AsyncRead, AsyncReadExt, AsyncWriteExt},
+    io::{copy, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     sync::mpsc,
     time::sleep,
     time::Duration,
@@ -858,6 +858,8 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> RsResult<Media> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        let _migration_guard = self.library_encryption_gate.read().await;
+        self.ensure_library_encryption_writable(library_id).await?;
         let store = self.store.get_library_store(library_id)?;
         let media: MediaForInsert = new_media.into_insert();
         store.add_media(media.clone()).await?;
@@ -1018,14 +1020,20 @@ impl ModelController {
         let filename = format!("{}-{}-{}.zip", remove_extension(&media.name), from, to);
 
         let crypted = self.cache_get_library_crypt(library_id).await;
+        let encryption_key = self.get_library_encryption_key(library_id).await;
         let id = nanoid!();
-        let disk_filename = if crypted {
+        let disk_filename = if crypted || encryption_key.is_some() {
             id.clone()
         } else {
             filename.clone()
         };
         let m = self.source_for_library(&library_id).await?;
-        let (source, mut file) = m.writerseek(&disk_filename).await?;
+        let (source, file) = m.writerseek(&disk_filename).await?;
+        let mut file: Pin<Box<dyn AsyncWrite + Send>> = if let Some(key) = &encryption_key {
+            Box::pin(CtrEncryptWriter::new(file, key)?)
+        } else {
+            file
+        };
         //let file = file.compat_write();
 
         //let mut file = Box::pin(File::create("D:\\System\\backup\\2024\\7\\foo.zip").await?);
@@ -1133,6 +1141,7 @@ impl ModelController {
                 media: new_file,
             })
             .await?;
+        drop(m);
         self.update_media(library_id, id.to_owned(), infos, false, requesting_user)
             .await?;
         let r = self
@@ -1833,6 +1842,7 @@ impl ModelController {
                 media: new_file,
             })
             .await?;
+        drop(m);
         self.update_media(library_id, id.to_owned(), infos, false, requesting_user)
             .await?;
         let library: crate::model::libraries::ServerLibraryForRead = self
@@ -2215,6 +2225,7 @@ impl ModelController {
                 media: new_file,
             })
             .await?;
+        drop(m);
         self.update_media(library_id, id.to_owned(), infos, false, requesting_user)
             .await?;
 
@@ -2549,6 +2560,7 @@ impl ModelController {
                 media: new_file,
             })
             .await?;
+        drop(m);
         self.update_media(library_id, id.to_owned(), infos, false, requesting_user)
             .await?;
 
@@ -4625,6 +4637,8 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> RsResult<()> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        let _migration_guard = self.library_encryption_gate.read().await;
+        self.ensure_library_encryption_writable(library_id).await?;
         let store = self.store.get_library_store(library_id)?;
         let existing = store.get_media_source(&media_id).await?;
 
@@ -4638,7 +4652,7 @@ impl ModelController {
         };
 
         if let Some(existing) = existing {
-            let m = self.source_for_library(&library_id).await?;
+            let m = self.source_for_library_unchecked(&library_id).await?;
             let r = m.remove(&existing.source).await;
             if r.is_ok() {
                 log_info(
@@ -4648,27 +4662,13 @@ impl ModelController {
             }
             store.remove_media(media_id.to_string()).await?;
         }
-        self.remove_library_image(
-            library_id,
-            ".thumbs",
-            media_id,
-            &None,
-            &None,
-            requesting_user,
-        )
-        .await?;
+        self.remove_library_image_files(library_id, ".thumbs", media_id, &None, &None)
+            .await?;
 
         // Delete cached face images (ignore errors - cache cleanup is best effort)
         for face_id in face_ids {
             if let Err(e) = self
-                .remove_library_image(
-                    library_id,
-                    ".faces",
-                    &face_id,
-                    &None,
-                    &None,
-                    requesting_user,
-                )
+                .remove_library_image_files(library_id, ".faces", &face_id, &None, &None)
                 .await
             {
                 log_info(

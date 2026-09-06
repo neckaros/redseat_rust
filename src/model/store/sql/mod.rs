@@ -2,6 +2,7 @@ pub mod backups;
 pub mod credentials;
 pub mod libraries;
 pub mod library;
+pub mod library_encryption;
 pub mod plugin_convert_queue;
 pub mod plugins;
 pub mod users;
@@ -129,8 +130,17 @@ pub async fn migrate_database(connection: &Connection) -> Result<usize> {
                 println!("Update SQL to version 11 (plugin convert queue)")
             }
 
+            if version < 12 {
+                let update =
+                    String::from_utf8_lossy(include_bytes!("012 - LIBRARY ENCRYPTION JOBS.sql"));
+                conn.execute_batch(&update)?;
+
+                conn.pragma_update(None, "user_version", 12)?;
+                println!("Update SQL to version 12 (durable library encryption jobs)")
+            }
+
             conn.execute("VACUUM;", params![])?;
-            Ok(11)
+            Ok(12)
         })
         .await?;
 

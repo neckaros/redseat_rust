@@ -150,10 +150,18 @@ impl ModelController {
                 false,
             )
             .await?;
-            let (_, mut writer) = local_provider.get_file_write_stream(&image_path).await?;
-            let write_result = async {
-                writer.write_all(&resized).await?;
-                writer.shutdown().await
+            let (_, writer) = local_provider.get_file_write_stream(&image_path).await?;
+            let write_result: crate::error::RsResult<()> = async {
+                if let Some(key) = self.get_library_encryption_key(library_id).await {
+                    let mut writer = crate::tools::encryption::CtrEncryptWriter::new(writer, &key)?;
+                    writer.write_all(&resized).await?;
+                    writer.shutdown().await?;
+                } else {
+                    let mut writer = writer;
+                    writer.write_all(&resized).await?;
+                    writer.shutdown().await?;
+                }
+                Ok(())
             }
             .await;
             if let Err(error) = write_result {
@@ -166,7 +174,10 @@ impl ModelController {
 
         let source = local_provider.get_file(&image_path, None).await?;
         match source {
-            SourceRead::Stream(s) => Ok(s),
+            SourceRead::Stream(s) => {
+                let key = self.get_library_encryption_key(library_id).await;
+                Ok(Self::decrypt_stream_if_needed(s, &key))
+            }
             SourceRead::Request(_) => Err(crate::Error::GenericRedseatError),
         }
     }

@@ -23,7 +23,7 @@ use std::{
 use tokio::{
     fs::File,
     io::{copy, AsyncRead, AsyncSeek, AsyncWrite, AsyncWriteExt, BufReader},
-    sync::{mpsc::Sender, Mutex},
+    sync::{mpsc::Sender, Mutex, OwnedRwLockReadGuard},
     time::sleep,
 };
 
@@ -593,7 +593,7 @@ impl SourceRead {
 type BoxedStringFuture = Pin<Box<dyn Future<Output = RsResult<RsResult<String>>> + Send>>;
 
 #[async_trait]
-pub trait Source: Send {
+pub trait Source: Send + Sync {
     async fn new(root: ServerLibrary, controller: ModelController) -> RsResult<Self>
     where
         Self: Sized;
@@ -625,6 +625,77 @@ pub trait Source: Send {
     async fn clean(&self, sources: Vec<String>) -> RsResult<Vec<(String, u64)>>;
 
     //async fn fill_file_information(&self, file: &mut ServerFile) -> SourcesResult<()>;
+}
+
+/// Keeps a library maintenance read guard alive for as long as a source provider can
+/// perform I/O. Password migration takes the matching write guard before becoming active.
+pub struct GuardedSource {
+    inner: Box<dyn Source>,
+    _guard: OwnedRwLockReadGuard<()>,
+}
+
+impl GuardedSource {
+    pub fn new(inner: Box<dyn Source>, guard: OwnedRwLockReadGuard<()>) -> Self {
+        Self {
+            inner,
+            _guard: guard,
+        }
+    }
+}
+
+#[async_trait]
+impl Source for GuardedSource {
+    async fn new(_: ServerLibrary, _: ModelController) -> RsResult<Self> {
+        unreachable!("GuardedSource is only constructed around an existing provider")
+    }
+
+    async fn new_from_backup(_: Backup, _: ModelController) -> RsResult<Self> {
+        unreachable!("GuardedSource is only constructed around an existing provider")
+    }
+
+    async fn init(&self) -> SourcesResult<()> {
+        self.inner.init().await
+    }
+
+    async fn exists(&self, name: &str) -> bool {
+        self.inner.exists(name).await
+    }
+
+    async fn remove(&self, name: &str) -> RsResult<()> {
+        self.inner.remove(name).await
+    }
+
+    async fn fill_infos(&self, source: &str, infos: &mut MediaForUpdate) -> RsResult<()> {
+        self.inner.fill_infos(source, infos).await
+    }
+
+    fn local_path(&self, source: &str) -> Option<PathBuf> {
+        self.inner.local_path(source)
+    }
+
+    async fn get_file(&self, source: &str, range: Option<RangeDefinition>) -> RsResult<SourceRead> {
+        self.inner.get_file(source, range).await
+    }
+
+    async fn writer(
+        &self,
+        name: &str,
+        length: Option<u64>,
+        mime: Option<String>,
+    ) -> RsResult<(BoxedStringFuture, Pin<Box<dyn AsyncWrite + Send>>)> {
+        self.inner.writer(name, length, mime).await
+    }
+
+    async fn writerseek(
+        &self,
+        name: &str,
+    ) -> RsResult<(String, Pin<Box<dyn AsyncSeekableWrite + Send>>)> {
+        self.inner.writerseek(name).await
+    }
+
+    async fn clean(&self, sources: Vec<String>) -> RsResult<Vec<(String, u64)>> {
+        self.inner.clean(sources).await
+    }
 }
 
 pub trait LocalSource: Send {

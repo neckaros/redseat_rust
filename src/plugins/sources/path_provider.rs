@@ -20,6 +20,7 @@ use tokio::{
         copy, AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt, BufReader,
         BufWriter,
     },
+    sync::OwnedRwLockReadGuard,
 };
 
 use crate::{
@@ -43,11 +44,17 @@ use super::{
 pub struct PathProvider {
     root: PathBuf,
     for_local: bool,
+    _maintenance_guard: Option<OwnedRwLockReadGuard<()>>,
 }
 
 const FILE_IO_BUFFER_SIZE: usize = 4 * 1024 * 1024;
 
 impl PathProvider {
+    pub fn with_maintenance_guard(mut self, guard: OwnedRwLockReadGuard<()>) -> Self {
+        self._maintenance_guard = Some(guard);
+        self
+    }
+
     pub fn get_full_path(&self, source: &str) -> PathBuf {
         let mut path = self.root.clone();
         path.push(&source);
@@ -223,6 +230,7 @@ impl PathProvider {
         PathProvider {
             root: path,
             for_local: true,
+            _maintenance_guard: None,
         }
     }
 }
@@ -234,6 +242,7 @@ impl Source for PathProvider {
             Ok(PathProvider {
                 root: PathBuf::from_str(&root).map_err(|_| SourcesError::Error)?,
                 for_local: false,
+                _maintenance_guard: None,
             })
         } else {
             Err(SourcesError::Error.into())
@@ -244,6 +253,7 @@ impl Source for PathProvider {
         Ok(PathProvider {
             root: PathBuf::from_str(&backup.path).map_err(|_| SourcesError::Error)?,
             for_local: true,
+            _maintenance_guard: None,
         })
     }
 

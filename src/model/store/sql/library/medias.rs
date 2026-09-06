@@ -755,6 +755,21 @@ impl SqliteLibraryStore {
         Ok(())
     }
 
+    /// Repoint every media row that shares one physical provider source.
+    pub async fn update_media_sources(&self, old_source: &str, new_source: &str) -> Result<usize> {
+        let old_source = old_source.to_string();
+        let new_source = new_source.to_string();
+        Ok(self
+            .connection
+            .call(move |conn| {
+                Ok(conn.execute(
+                    "UPDATE medias SET source = ? WHERE source = ?",
+                    params![new_source, old_source],
+                )?)
+            })
+            .await?)
+    }
+
     pub async fn get_medias_locs(&self, precision: u32) -> Result<Vec<RsGpsPosition>> {
         let rows = self.connection.call( move |conn| { 
 
@@ -1427,5 +1442,37 @@ mod tests {
             .unwrap();
         assert_eq!(by_book.len(), 1);
         assert_eq!(by_book[0].item.id, media_id);
+    }
+
+    #[tokio::test]
+    async fn updating_a_physical_source_repoints_every_media_reference() {
+        let connection = tokio_rusqlite::Connection::open_in_memory().await.unwrap();
+        let store = SqliteLibraryStore::new(connection).await.unwrap();
+        for id in ["media-1", "media-2"] {
+            store
+                .add_media(
+                    MediaForAdd {
+                        name: format!("{id}.jpg"),
+                        source: Some("shared/source.jpg".to_string()),
+                        ..Default::default()
+                    }
+                    .into_insert_with_id(id.to_string()),
+                )
+                .await
+                .unwrap();
+        }
+
+        let updated = store
+            .update_media_sources("shared/source.jpg", "staged/source.jpg")
+            .await
+            .unwrap();
+
+        assert_eq!(updated, 2);
+        for id in ["media-1", "media-2"] {
+            assert_eq!(
+                store.get_media_source(id).await.unwrap().unwrap().source,
+                "staged/source.jpg"
+            );
+        }
     }
 }
