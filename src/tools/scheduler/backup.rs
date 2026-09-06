@@ -364,9 +364,6 @@ async fn backup_file(
     mc: &ModelController,
 ) -> RsResult<BackupFile> {
     let id = nanoid!();
-    let existing = mc
-        .get_backup_media_backup_files(&backup.id, &backup_media.id, &ConnectedUser::ServerAdmin)
-        .await?;
     let backedup = mc
         .upload_backup_media(
             &backup.id,
@@ -376,26 +373,8 @@ async fn backup_file(
             &ConnectedUser::ServerAdmin,
         )
         .await?;
-    let replaced_path = existing
-        .iter()
-        .find(|existing| {
-            existing.sourcehash == backedup.sourcehash && existing.path != backedup.path
-        })
-        .map(|existing| existing.path.clone());
     mc.add_backup_file(backedup.clone(), &ConnectedUser::ServerAdmin)
         .await?;
-
-    if let Some(path) = replaced_path {
-        if let Err(error) = mc.remove_backup_storage_file(&backup.id, &path).await {
-            log_error(
-                crate::tools::log::LogServiceType::Scheduler,
-                format!(
-                    "Unable to remove replaced backup file {} for media {}: {}",
-                    path, backup_media.id, error
-                ),
-            );
-        }
-    }
 
     Ok(backedup)
 }
