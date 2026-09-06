@@ -55,7 +55,9 @@ When an authorized server administrator connects or reconnects, the server first
 emits an `updated` `backups` event for every configured backup with its current
 in-memory status. This snapshot clears stale `inProgress` client state after a
 server restart or a missed terminal event. Live events that occur while the
-snapshot is assembled are queued and delivered afterward.
+snapshot is assembled are queued; backup updates are coalesced into the snapshot
+so it cannot be followed by older backup state, and other events are delivered
+afterward.
 
 ## Entity search streams
 
