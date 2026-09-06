@@ -27,11 +27,12 @@ use crate::{
 };
 use axum::{async_trait, Error};
 use chrono::{DateTime, Duration};
+use futures::FutureExt;
 use human_bytes::human_bytes;
 use nanoid::nanoid;
 use rs_plugin_common_interfaces::ElementType;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::{collections::HashMap, future::Future, panic::AssertUnwindSafe};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::RsSchedulerTask;
@@ -70,7 +71,7 @@ impl RsSchedulerTask for BackupTask {
                 continue;
             }
 
-            let result: RsResult<()> = async {
+            let result = catch_backup_panic(&backup.id, async {
                 if let Some(library_id) = &backup.library {
                     let mut backup_files_infos = mc
                         .get_backup_files_infos(&backup.id, &ConnectedUser::ServerAdmin)
@@ -304,7 +305,7 @@ impl RsSchedulerTask for BackupTask {
                 }
 
                 Ok(())
-            }
+            })
             .await;
 
             match result {
@@ -325,6 +326,18 @@ impl RsSchedulerTask for BackupTask {
             "Backed up all configured targets".to_string(),
         );
         Ok(())
+    }
+}
+
+async fn catch_backup_panic<F>(backup_id: &str, run: F) -> RsResult<()>
+where
+    F: Future<Output = RsResult<()>>,
+{
+    match AssertUnwindSafe(run).catch_unwind().await {
+        Ok(result) => result,
+        Err(_) => Err(RsError::Error(format!(
+            "Backup {backup_id} stopped unexpectedly"
+        ))),
     }
 }
 
@@ -377,7 +390,7 @@ async fn backup_file(
 
 #[cfg(test)]
 mod tests {
-    use super::pending_backup_medias;
+    use super::{catch_backup_panic, pending_backup_medias};
     use crate::model::store::sql::backups::BackupMediaState;
     use crate::model::store::sql::library::medias::MediaBackup;
 
@@ -422,5 +435,21 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["stale", "missing"]
         );
+    }
+
+    #[tokio::test]
+    async fn converts_backup_panics_to_errors() {
+        let result = catch_backup_panic("backup-1", async {
+            panic!("provider panic");
+            #[allow(unreachable_code)]
+            Ok(())
+        })
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(crate::error::RsError::Error(message))
+                if message == "Backup backup-1 stopped unexpectedly"
+        ));
     }
 }

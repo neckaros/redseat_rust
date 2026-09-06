@@ -15,7 +15,7 @@ use tokio::sync::broadcast;
 
 use crate::{
     domain::{
-        backup::{BackupFileProgress, BackupMessage},
+        backup::{BackupFileProgress, BackupMessage, BackupWithStatus},
         book::BooksMessage,
         channel::ChannelMessage,
         episode::EpisodesMessage,
@@ -29,9 +29,12 @@ use crate::{
         watched::{Unwatched, Watched},
     },
     model::{
-        media_progresses::MediasProgressMessage, media_ratings::MediasRatingMessage,
-        users::ConnectedUser, ModelController,
+        media_progresses::MediasProgressMessage,
+        media_ratings::MediasRatingMessage,
+        users::{ConnectedUser, UserRole},
+        ModelController,
     },
+    Result,
 };
 
 /// Unified SSE event that wraps all possible event types
@@ -184,32 +187,66 @@ async fn handler_sse(
     State(mc): State<ModelController>,
     user: ConnectedUser,
     Query(params): Query<SseQueryParams>,
-) -> Response {
+) -> Result<Response> {
     // Parse library filter if provided
     let library_filter: Option<Vec<String>> = params
         .libraries
         .map(|s| s.split(',').map(|l| l.trim().to_string()).collect());
 
-    // Subscribe to broadcast channel
+    // Subscribe before reading the snapshot so updates that happen while the
+    // snapshot is being built remain queued behind it.
     let mut rx = mc.sse_tx.subscribe();
+    let is_server_admin = user.check_role(&UserRole::Admin).is_ok();
+    let mut initial_backup_events = if is_server_admin {
+        backup_snapshot_events(mc.get_backups_with_status(&user).await?)
+    } else {
+        Vec::new()
+    };
+    let mut queued_events = Vec::new();
+    let queued_event_count = rx.len();
+    for _ in 0..queued_event_count {
+        match rx.try_recv() {
+            Ok(event) if is_server_admin => {
+                if let Some(event) =
+                    coalesce_backup_snapshot_event(&mut initial_backup_events, event)
+                {
+                    queued_events.push(event);
+                }
+            }
+            Ok(event) => queued_events.push(event),
+            Err(broadcast::error::TryRecvError::Empty) => break,
+            Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
+            Err(broadcast::error::TryRecvError::Closed) => break,
+        }
+    }
 
     // Create stream that filters events for this user
     let stream = async_stream::stream! {
+        for event in initial_backup_events {
+            if event_matches_subscription(&event, &user, library_filter.as_deref()) {
+                if let Ok(data) = serde_json::to_string(&event) {
+                    yield Ok::<Event, Infallible>(Event::default()
+                        .event(event.event_name())
+                        .data(data));
+                }
+            }
+        }
+
+        for event in queued_events {
+            if event_matches_subscription(&event, &user, library_filter.as_deref()) {
+                if let Ok(data) = serde_json::to_string(&event) {
+                    yield Ok::<Event, Infallible>(Event::default()
+                        .event(event.event_name())
+                        .data(data));
+                }
+            }
+        }
+
         loop {
             match rx.recv().await {
                 Ok(event) => {
-                    // Check if event should be sent to this user
-                    if !event.should_send_to(&user) {
+                    if !event_matches_subscription(&event, &user, library_filter.as_deref()) {
                         continue;
-                    }
-
-                    // Apply library filter if specified
-                    if let Some(ref filter) = library_filter {
-                        if let Some(lib_id) = event.library_id() {
-                            if !filter.contains(&lib_id.to_string()) {
-                                continue;
-                            }
-                        }
                     }
 
                     // Serialize and send event
@@ -249,13 +286,62 @@ async fn handler_sse(
         HeaderName::from_static("x-accel-buffering"),
         HeaderValue::from_static("no"),
     );
-    response
+    Ok(response)
+}
+
+fn backup_snapshot_events(backups: Vec<BackupWithStatus>) -> Vec<SseEvent> {
+    backups
+        .into_iter()
+        .map(|backup| {
+            SseEvent::Backups(BackupMessage {
+                action: crate::domain::ElementAction::Updated,
+                backup,
+            })
+        })
+        .collect()
+}
+
+fn coalesce_backup_snapshot_event(
+    snapshot: &mut Vec<SseEvent>,
+    event: SseEvent,
+) -> Option<SseEvent> {
+    let SseEvent::Backups(message) = event else {
+        return Some(event);
+    };
+
+    let backup_id = &message.backup.backup.id;
+    if let Some(existing) = snapshot.iter_mut().find(|event| {
+        matches!(event, SseEvent::Backups(existing) if existing.backup.backup.id == *backup_id)
+    }) {
+        *existing = SseEvent::Backups(message);
+    } else {
+        snapshot.push(SseEvent::Backups(message));
+    }
+
+    None
+}
+
+fn event_matches_subscription(
+    event: &SseEvent,
+    user: &ConnectedUser,
+    library_filter: Option<&[String]>,
+) -> bool {
+    if !event.should_send_to(user) {
+        return false;
+    }
+
+    if let (Some(filter), Some(library_id)) = (library_filter, event.library_id()) {
+        return filter.iter().any(|filtered| filtered == library_id);
+    }
+
+    true
 }
 
 #[cfg(test)]
 mod tests {
-    use super::SseEvent;
+    use super::{backup_snapshot_events, coalesce_backup_snapshot_event, SseEvent};
     use crate::domain::{
+        backup::{Backup, BackupMessage, BackupProcessStatus, BackupStatus, BackupWithStatus},
         book::{Book, BookWithAction, BooksMessage},
         watched::{Unwatched, Watched},
         ElementAction,
@@ -332,5 +418,76 @@ mod tests {
         let serialized = serde_json::to_value(&event).unwrap();
         assert_eq!(serialized["unwatched"]["type"], "book");
         assert_eq!(serialized["unwatched"]["ids"][1], "oleid:OL123M");
+    }
+
+    #[test]
+    fn backup_snapshot_includes_idle_state_after_server_restart() {
+        let backup = Backup {
+            id: "backup-1".to_string(),
+            name: "Server backup".to_string(),
+            source: "PluginProvider".to_string(),
+            plugin: Some("pcloud".to_string()),
+            credentials: Some("credential-1".to_string()),
+            library: None,
+            path: "/Backups/server".to_string(),
+            schedule: None,
+            filter: None,
+            last: None,
+            password: None,
+            size: 0,
+        };
+
+        let events = backup_snapshot_events(vec![BackupWithStatus {
+            backup,
+            status: None,
+        }]);
+
+        assert_eq!(events.len(), 1);
+        let SseEvent::Backups(message) = &events[0] else {
+            panic!("expected a backup snapshot event");
+        };
+        assert_eq!(message.backup.backup.id, "backup-1");
+        assert!(message.backup.status.is_none());
+        assert!(matches!(message.action, ElementAction::Updated));
+    }
+
+    #[test]
+    fn queued_backup_updates_replace_older_snapshot_state() {
+        let backup = Backup {
+            id: "backup-1".to_string(),
+            name: "Server backup".to_string(),
+            source: "PluginProvider".to_string(),
+            plugin: Some("pcloud".to_string()),
+            credentials: Some("credential-1".to_string()),
+            library: None,
+            path: "/Backups/server".to_string(),
+            schedule: None,
+            filter: None,
+            last: None,
+            password: None,
+            size: 0,
+        };
+        let mut snapshot = backup_snapshot_events(vec![BackupWithStatus {
+            backup: backup.clone(),
+            status: Some(BackupProcessStatus::new_from_backup(&backup, 2, 1, 100, 50)),
+        }]);
+        let latest_status = BackupProcessStatus::new_from_backup_done(&backup);
+        let queued = SseEvent::Backups(BackupMessage {
+            action: ElementAction::Updated,
+            backup: BackupWithStatus {
+                backup,
+                status: Some(latest_status),
+            },
+        });
+
+        assert!(coalesce_backup_snapshot_event(&mut snapshot, queued).is_none());
+        assert_eq!(snapshot.len(), 1);
+        let SseEvent::Backups(message) = &snapshot[0] else {
+            panic!("expected a backup snapshot event");
+        };
+        assert!(matches!(
+            message.backup.status.as_ref().map(|status| &status.status),
+            Some(BackupStatus::Done)
+        ));
     }
 }
