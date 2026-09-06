@@ -10,6 +10,7 @@ use crate::model::deleted::DeletedQuery;
 use crate::model::episodes::{EpisodeForUpdate, EpisodeQuery};
 use crate::model::movies::MovieQuery;
 use crate::model::series::SerieForUpdate;
+use crate::model::store::sql::backups::BackupMediaState;
 use crate::model::store::sql::library::medias::MediaBackup;
 use crate::plugins::sources::path_provider::PathProvider;
 use crate::server::get_server_file_path_array;
@@ -30,6 +31,7 @@ use human_bytes::human_bytes;
 use nanoid::nanoid;
 use rs_plugin_common_interfaces::ElementType;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::RsSchedulerTask;
@@ -82,15 +84,17 @@ impl RsSchedulerTask for BackupTask {
                             )))?;
 
                     if library.source != "virtual" {
+                        let backed_up = mc.get_backup_media_states(&backup.id, library_id).await?;
                         let media_query = backup.filter.clone().unwrap_or_default();
-                        let backup_medias = mc
-                            .get_medias_to_backup(
+                        let backup_medias = pending_backup_medias(
+                            mc.get_medias_to_backup(
                                 library_id,
-                                backup_files_infos.max_date.unwrap_or(i64::min_value()),
                                 media_query,
                                 &ConnectedUser::ServerAdmin,
                             )
-                            .await?;
+                            .await?,
+                            &backed_up,
+                        );
                         let total = backup_medias.len() as u64;
                         let total_size: u64 =
                             backup_medias.iter().filter_map(|backup| backup.size).sum();
@@ -116,8 +120,6 @@ impl RsSchedulerTask for BackupTask {
                                 &ConnectedUser::ServerAdmin,
                             )
                             .await?;
-                        let backed_up = mc.get_backup_backup_files(&backup.id).await?;
-
                         for delete in deleted {
                             if let Some(backup_file) =
                                 backed_up.iter().find(|x| x.file == delete.id)
@@ -134,10 +136,8 @@ impl RsSchedulerTask for BackupTask {
                                 log_info(
                                     crate::tools::log::LogServiceType::Scheduler,
                                     format!(
-                                        "Deleted {} files from backup: {} ({})",
-                                        deleted_count,
-                                        backup_file.file,
-                                        human_bytes(backup_file.size as f64)
+                                        "Deleted {} files from backup: {}",
+                                        deleted_count, backup_file.file
                                     ),
                                 );
                             }
@@ -146,57 +146,41 @@ impl RsSchedulerTask for BackupTask {
                         let mut current = 0u64;
                         for backup_media in backup_medias {
                             current += 1;
-                            if backed_up
-                                .iter()
-                                .any(|b| b.file == backup_media.id && &b.backup == &backup.id)
-                            {
-                                // should also check sourcehash in the future for modifications
-                                log_info(
+                            let message = BackupProcessStatus::new_from_backup(
+                                &backup, total, current, total_size, done_size,
+                            );
+                            mc.set_backup_status(message).await?;
+                            log_info(
+                                crate::tools::log::LogServiceType::Scheduler,
+                                format!(
+                                    "Backing up library {} file: {} ({})",
+                                    library_id,
+                                    backup_media.id,
+                                    human_bytes(backup_media.size.unwrap_or(0) as f64)
+                                ),
+                            );
+
+                            let backedup =
+                                backup_file(&backup_media, &backup, library_id, &mc).await;
+
+                            if let Err(e) = backedup {
+                                log_error(
                                     crate::tools::log::LogServiceType::Scheduler,
                                     format!(
-                                        "Duplicate backup file found for library {} file: {} ({})",
+                                        "Backing up library {} file {} failed with error: {}",
                                         library_id,
                                         backup_media.id,
-                                        human_bytes(backup_media.size.unwrap_or(0) as f64)
+                                        e.to_string()
                                     ),
                                 );
-                            } else {
-                                let message = BackupProcessStatus::new_from_backup(
-                                    &backup, total, current, total_size, done_size,
+                                let error = BackupError::new(
+                                    backup.id.clone(),
+                                    library_id.to_string(),
+                                    backup_media.id.clone(),
+                                    e,
                                 );
-                                mc.set_backup_status(message).await?;
-                                log_info(
-                                    crate::tools::log::LogServiceType::Scheduler,
-                                    format!(
-                                        "Backing up library {} file: {} ({})",
-                                        library_id,
-                                        backup_media.id,
-                                        human_bytes(backup_media.size.unwrap_or(0) as f64)
-                                    ),
-                                );
-
-                                let backedup =
-                                    backup_file(&backup_media, &backup, library_id, &mc).await;
-
-                                if let Err(e) = backedup {
-                                    log_error(
-                                        crate::tools::log::LogServiceType::Scheduler,
-                                        format!(
-                                            "Backing up library {} file {} failed with error: {}",
-                                            library_id,
-                                            backup_media.id,
-                                            e.to_string()
-                                        ),
-                                    );
-                                    let error = BackupError::new(
-                                        backup.id.clone(),
-                                        library_id.to_string(),
-                                        backup_media.id.clone(),
-                                        e,
-                                    );
-                                    mc.add_backup_error(error, &ConnectedUser::ServerAdmin)
-                                        .await?;
-                                }
+                                mc.add_backup_error(error, &ConnectedUser::ServerAdmin)
+                                    .await?;
                             }
                             done_size += backup_media.size.unwrap_or(0);
                             log_info(
@@ -344,6 +328,31 @@ impl RsSchedulerTask for BackupTask {
     }
 }
 
+fn pending_backup_medias(
+    medias: Vec<MediaBackup>,
+    backed_up: &[BackupMediaState],
+) -> Vec<MediaBackup> {
+    let latest_backups = backed_up
+        .iter()
+        .fold(HashMap::<&str, i64>::new(), |mut latest, file| {
+            latest
+                .entry(file.file.as_str())
+                .and_modify(|modified| *modified = (*modified).max(file.modified))
+                .or_insert(file.modified);
+            latest
+        });
+
+    medias
+        .into_iter()
+        .filter(|media| {
+            latest_backups
+                .get(media.id.as_str())
+                .map(|modified| *modified < media.modified)
+                .unwrap_or(true)
+        })
+        .collect()
+}
+
 async fn backup_file(
     backup_media: &MediaBackup,
     backup: &Backup,
@@ -364,4 +373,54 @@ async fn backup_file(
         .await?;
 
     Ok(backedup)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pending_backup_medias;
+    use crate::model::store::sql::backups::BackupMediaState;
+    use crate::model::store::sql::library::medias::MediaBackup;
+
+    #[test]
+    fn selects_missing_and_stale_media_for_backup() {
+        let medias = vec![
+            MediaBackup {
+                id: "current".to_string(),
+                name: "current".to_string(),
+                size: None,
+                modified: 10,
+            },
+            MediaBackup {
+                id: "stale".to_string(),
+                name: "stale".to_string(),
+                size: None,
+                modified: 20,
+            },
+            MediaBackup {
+                id: "missing".to_string(),
+                name: "missing".to_string(),
+                size: None,
+                modified: 30,
+            },
+        ];
+        let backups = vec![
+            BackupMediaState {
+                file: "current".to_string(),
+                modified: 10,
+            },
+            BackupMediaState {
+                file: "stale".to_string(),
+                modified: 15,
+            },
+        ];
+
+        let pending = pending_backup_medias(medias, &backups);
+        assert_eq!(
+            pending
+                .into_iter()
+                .map(|media| media.id)
+                .collect::<Vec<_>>(),
+            vec!["stale", "missing"]
+        );
+    }
 }

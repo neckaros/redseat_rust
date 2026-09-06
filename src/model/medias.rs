@@ -727,13 +727,12 @@ impl ModelController {
     pub async fn get_medias_to_backup(
         &self,
         library_id: &str,
-        after: i64,
         query: MediaQuery,
         requesting_user: &ConnectedUser,
     ) -> RsResult<Vec<MediaBackup>> {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id)?;
-        let medias = store.get_all_medias_to_backup(after, query).await?;
+        let medias = store.get_all_medias_to_backup(query).await?;
         Ok(medias)
     }
 
