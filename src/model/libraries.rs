@@ -604,9 +604,13 @@ impl ModelController {
         self.store
             .create_library_encryption_job(job.clone())
             .await?;
-        self.schedule_library_encryption_job(&job)
-            .await
-            .map_err(|error| Error::Other(error.to_string()))?;
+        if let Err(error) = self.schedule_library_encryption_job(&job).await {
+            let message = error.to_string();
+            self.store
+                .fail_library_encryption_job(&job.id, message.clone())
+                .await?;
+            return Err(Error::Other(message));
+        }
 
         Ok(LibraryEncryptionStatus {
             phase: job.phase,

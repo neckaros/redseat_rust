@@ -232,6 +232,26 @@ impl SqliteStore {
         Ok(())
     }
 
+    pub async fn fail_library_encryption_job(
+        &self,
+        job_id: &str,
+        error: String,
+    ) -> Result<()> {
+        let job_id = job_id.to_string();
+        self.server_store
+            .call(move |conn| {
+                conn.execute(
+                    "UPDATE library_encryption_jobs
+                     SET phase = 'failed', last_error = ?, modified = unixepoch()
+                     WHERE id = ? AND phase = 'running'",
+                    params![error, job_id],
+                )?;
+                Ok(())
+            })
+            .await?;
+        Ok(())
+    }
+
     pub async fn complete_library_encryption_job(&self, job_id: &str) -> Result<()> {
         let job_id = job_id.to_string();
         self.server_store
@@ -354,6 +374,19 @@ mod tests {
             .unwrap();
         assert_eq!(items[0].state, "committed");
         assert_eq!(items[0].staged_source.as_deref(), Some("/media/staged"));
+
+        store
+            .fail_library_encryption_job(&job.id, "scheduler unavailable".to_string())
+            .await
+            .unwrap();
+        let failed = store
+            .get_library_encryption_job("library-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(failed.phase, "failed");
+        assert_eq!(failed.last_error.as_deref(), Some("scheduler unavailable"));
+        assert!(store.list_active_library_encryption_jobs().await.unwrap().is_empty());
 
         store
             .set_library_password("library-1", job.target_password.clone())
