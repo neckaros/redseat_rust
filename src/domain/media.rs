@@ -33,6 +33,7 @@ impl From<&SourceRead> for MediaForUpdate {
                 size: r.size.clone(),
                 ..Default::default()
             },
+            SourceRead::Guarded(source, _) => MediaForUpdate::from(source.as_ref()),
         }
     }
 }

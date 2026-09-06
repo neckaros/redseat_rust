@@ -29,6 +29,7 @@ use crate::{
         watched::{Unwatched, Watched},
     },
     model::{
+        libraries::LibrarySocketMessage,
         media_progresses::MediasProgressMessage,
         media_ratings::MediasRatingMessage,
         users::{ConnectedUser, UserRole},
@@ -224,7 +225,7 @@ async fn handler_sse(
     let stream = async_stream::stream! {
         for event in initial_backup_events {
             if event_matches_subscription(&event, &user, library_filter.as_deref()) {
-                if let Ok(data) = serde_json::to_string(&event) {
+                if let Some(data) = event_data_for_user(&event, &user) {
                     yield Ok::<Event, Infallible>(Event::default()
                         .event(event.event_name())
                         .data(data));
@@ -234,7 +235,7 @@ async fn handler_sse(
 
         for event in queued_events {
             if event_matches_subscription(&event, &user, library_filter.as_deref()) {
-                if let Ok(data) = serde_json::to_string(&event) {
+                if let Some(data) = event_data_for_user(&event, &user) {
                     yield Ok::<Event, Infallible>(Event::default()
                         .event(event.event_name())
                         .data(data));
@@ -250,7 +251,7 @@ async fn handler_sse(
                     }
 
                     // Serialize and send event
-                    if let Ok(data) = serde_json::to_string(&event) {
+                    if let Some(data) = event_data_for_user(&event, &user) {
                         yield Ok::<Event, Infallible>(Event::default()
                             .event(event.event_name())
                             .data(data));
@@ -287,6 +288,21 @@ async fn handler_sse(
         HeaderValue::from_static("no"),
     );
     Ok(response)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+enum LibraryEventForSocket {
+    Library(LibrarySocketMessage),
+}
+
+fn event_data_for_user(event: &SseEvent, user: &ConnectedUser) -> Option<String> {
+    match event {
+        SseEvent::Library(message) => message.for_socket(user).and_then(|message| {
+            serde_json::to_string(&LibraryEventForSocket::Library(message)).ok()
+        }),
+        _ => serde_json::to_string(event).ok(),
+    }
 }
 
 fn backup_snapshot_events(backups: Vec<BackupWithStatus>) -> Vec<SseEvent> {
@@ -339,10 +355,13 @@ fn event_matches_subscription(
 
 #[cfg(test)]
 mod tests {
-    use super::{backup_snapshot_events, coalesce_backup_snapshot_event, SseEvent};
+    use super::{
+        backup_snapshot_events, coalesce_backup_snapshot_event, event_data_for_user, SseEvent,
+    };
     use crate::domain::{
         backup::{Backup, BackupMessage, BackupProcessStatus, BackupStatus, BackupWithStatus},
         book::{Book, BookWithAction, BooksMessage},
+        library::{LibraryMessage, ServerLibrary},
         watched::{Unwatched, Watched},
         ElementAction,
     };
@@ -376,6 +395,25 @@ mod tests {
         let serialized = serde_json::to_string(&event).unwrap();
         assert!(serialized.contains("\"books\""));
         assert!(serialized.contains("\"library\":\"lib-books\""));
+    }
+
+    #[test]
+    fn library_sse_events_do_not_expose_passwords() {
+        let event = SseEvent::Library(LibraryMessage {
+            action: ElementAction::Updated,
+            library: ServerLibrary {
+                id: "library-1".to_string(),
+                password: Some("do-not-serialize".to_string()),
+                ..Default::default()
+            },
+        });
+
+        let serialized = event_data_for_user(&event, &ConnectedUser::ServerAdmin).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&serialized).unwrap();
+
+        assert_eq!(json["library"]["library"]["passwordProtected"], true);
+        assert!(json["library"]["library"].get("password").is_none());
+        assert!(!serialized.contains("do-not-serialize"));
     }
 
     #[test]

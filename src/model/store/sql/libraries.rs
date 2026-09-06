@@ -220,8 +220,6 @@ impl SqliteStore {
                     &mut values,
                 );
                 super::add_for_sql_update(update.plugin, "plugin", &mut columns, &mut values);
-                super::add_for_sql_update(update.password, "password", &mut columns, &mut values);
-
                 if columns.len() > 0 {
                     values.push(Box::new(library_id));
                     let update_sql =

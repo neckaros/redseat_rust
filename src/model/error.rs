@@ -48,6 +48,9 @@ pub enum Error {
     MediaNotFound(String),
     PersonNotFound(String),
     LibraryDeletionInProgress(String),
+    LibraryEncryptionInProgress(String),
+    LibraryEncryptionUnavailable(String),
+    InvalidLibraryEncryptionRequest(String),
     InvalidBackupSchedule(String),
     InvalidPaginationLimit {
         requested: u32,
@@ -147,6 +150,26 @@ impl Error {
                 StatusCode::CONFLICT,
                 ClientError::Custom {
                     message: "Library deletion already in progress".to_string(),
+                },
+            ),
+            Error::LibraryEncryptionInProgress(_) => (
+                StatusCode::CONFLICT,
+                ClientError::Custom {
+                    message: "Library encryption migration already in progress".to_string(),
+                },
+            ),
+            Error::LibraryEncryptionUnavailable(_) => (
+                StatusCode::CONFLICT,
+                ClientError::Custom {
+                    message:
+                        "Library files are temporarily unavailable during encryption maintenance"
+                            .to_string(),
+                },
+            ),
+            Error::InvalidLibraryEncryptionRequest(message) => (
+                StatusCode::BAD_REQUEST,
+                ClientError::Custom {
+                    message: message.clone(),
                 },
             ),
             Error::InvalidBackupSchedule(schedule) => (

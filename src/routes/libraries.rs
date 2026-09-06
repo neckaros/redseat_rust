@@ -4,7 +4,7 @@ use crate::{
     domain::library::{LibraryLimits, LibraryRole},
     model::{
         deleted::DeletedQuery,
-        libraries::{ServerLibraryForAdd, ServerLibraryForUpdate},
+        libraries::{LibraryEncryptionRequest, ServerLibraryForAdd, ServerLibraryForUpdate},
         media_progresses::MediaProgressesQuery,
         media_ratings::MediaRatingsQuery,
         users::ConnectedUser,
@@ -20,7 +20,7 @@ use axum::{
     extract::{Multipart, Path, Query, State},
     middleware,
     response::Response,
-    routing::{delete, get, patch, post},
+    routing::{delete, get, patch, post, put},
     Json, Router,
 };
 use futures::TryStreamExt;
@@ -46,6 +46,9 @@ pub fn routes(mc: ModelController) -> Router {
         .route("/:id/watermarks/:watermark", get(handler_watermarks_get))
         .route("/:id", get(handler_id))
         .route("/:id", patch(handler_patch))
+        .route("/:id/encryption", get(handler_encryption_status))
+        .route("/:id/encryption", put(handler_encryption_put))
+        .route("/:id/encryption", delete(handler_encryption_delete))
         .route("/:id/deleted", get(handler_list_deleted))
         .route("/:id/progresses", get(handler_list_progress))
         .route("/:id/ratings", get(handler_list_ratings))
@@ -56,6 +59,39 @@ pub fn routes(mc: ModelController) -> Router {
         .route("/:id/invitation", post(handler_invitation))
         .merge(delete_routes)
         .with_state(mc)
+}
+
+async fn handler_encryption_status(
+    Path(library_id): Path<String>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<Json<Value>> {
+    Ok(Json(json!(
+        mc.get_library_encryption_status(&library_id, &user).await?
+    )))
+}
+
+async fn handler_encryption_put(
+    Path(library_id): Path<String>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Json(request): Json<LibraryEncryptionRequest>,
+) -> Result<(StatusCode, Json<Value>)> {
+    let status = mc
+        .request_library_encryption_change(&library_id, Some(request.password), &user)
+        .await?;
+    Ok((StatusCode::ACCEPTED, Json(json!(status))))
+}
+
+async fn handler_encryption_delete(
+    Path(library_id): Path<String>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<(StatusCode, Json<Value>)> {
+    let status = mc
+        .request_library_encryption_change(&library_id, None, &user)
+        .await?;
+    Ok((StatusCode::ACCEPTED, Json(json!(status))))
 }
 
 async fn handler_libraries(

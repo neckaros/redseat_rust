@@ -165,6 +165,14 @@ its entity relationship.
 - `delete-completed`
 - `delete-failed: ...`
 
+Password-encryption maintenance emits these messages while the library's file
+operations are temporarily unavailable:
+
+- `encryption-running`
+- `encryption-retry: ...`
+- `encryption-failed: ...`
+- `encryption-completed`
+
 ## TypeScript Client Examples
 
 ### Basic Connection

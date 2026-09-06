@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
 use tokio::{
     fs::File,
-    io::{copy, AsyncRead, AsyncReadExt, AsyncWriteExt},
+    io::{copy, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     sync::mpsc,
     time::sleep,
     time::Duration,
@@ -858,6 +858,9 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> RsResult<Media> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        let gate = self.library_encryption_gate(library_id).await;
+        let _migration_guard = gate.read().await;
+        self.ensure_library_encryption_writable(library_id).await?;
         let store = self.store.get_library_store(library_id)?;
         let media: MediaForInsert = new_media.into_insert();
         store.add_media(media.clone()).await?;
@@ -1017,21 +1020,9 @@ impl ModelController {
         }
         let filename = format!("{}-{}-{}.zip", remove_extension(&media.name), from, to);
 
-        let crypted = self.cache_get_library_crypt(library_id).await;
-        let id = nanoid!();
-        let disk_filename = if crypted {
-            id.clone()
-        } else {
-            filename.clone()
-        };
-        let m = self.source_for_library(&library_id).await?;
-        let (source, mut file) = m.writerseek(&disk_filename).await?;
-        //let file = file.compat_write();
-
-        //let mut file = Box::pin(File::create("D:\\System\\backup\\2024\\7\\foo.zip").await?);
-        let mut zip_writer = ZipFileWriter::with_tokio(&mut file);
-
-        let mut pages = 0usize;
+        const MAX_SPLIT_TEMP_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+        let mut page_data = Vec::new();
+        let mut total_temp_bytes = 0u64;
         for n in from..=to {
             let file = self
                 .library_file(
@@ -1056,6 +1047,40 @@ impl ModelController {
                 )
                 .await?;
 
+            let temp = Self::spool_to_temp(reader.stream, ".split-page").await?;
+            total_temp_bytes = total_temp_bytes
+                .checked_add(tokio::fs::metadata(&temp).await?.len())
+                .ok_or_else(|| RsError::Error("Split page size overflow".to_string()))?;
+            if total_temp_bytes > MAX_SPLIT_TEMP_BYTES {
+                return Err(Error::ServiceError(
+                    "SPLIT".to_string(),
+                    Some("Selected pages exceed the 2 GiB temporary-storage limit".to_string()),
+                )
+                .into());
+            }
+            page_data.push((filename, temp));
+        }
+
+        let m = self.source_for_library(&library_id).await?;
+        // Read the encryption state only after the output provider has acquired the
+        // maintenance guard. The writer and key then describe the same library epoch.
+        let crypted = self.cache_get_library_crypt(library_id).await;
+        let encryption_key = self.get_library_encryption_key(library_id).await;
+        let id = nanoid!();
+        let disk_filename = if crypted || encryption_key.is_some() {
+            id.clone()
+        } else {
+            filename.clone()
+        };
+        let (source, file) = m.writerseek(&disk_filename).await?;
+        let mut file: Pin<Box<dyn AsyncWrite + Send>> = if let Some(key) = &encryption_key {
+            Box::pin(CtrEncryptWriter::new(file, key)?)
+        } else {
+            file
+        };
+        let mut zip_writer = ZipFileWriter::with_tokio(&mut file);
+        let pages = page_data.len();
+        for (filename, temp) in page_data {
             let builder = Self::album_zip_entry(filename);
             let mut entry = zip_writer
                 .write_entry_stream(builder)
@@ -1066,7 +1091,7 @@ impl ModelController {
                         Some(error.to_string()),
                     )
                 })?;
-            let mut input = reader.stream.compat();
+            let mut input = tokio::fs::File::open(&temp).await?.compat();
             futures::io::copy(&mut input, &mut entry).await?;
             entry.close().await.map_err(|error| {
                 Error::ServiceError(
@@ -1074,7 +1099,6 @@ impl ModelController {
                     Some(error.to_string()),
                 )
             })?;
-            pages += 1;
         }
 
         zip_writer
@@ -1133,6 +1157,7 @@ impl ModelController {
                 media: new_file,
             })
             .await?;
+        drop(m);
         self.update_media(library_id, id.to_owned(), infos, false, requesting_user)
             .await?;
         let r = self
@@ -1367,19 +1392,18 @@ impl ModelController {
 
         // Password-based CTR decryption (separate from client-side crypt flag)
         if let Some(ref key) = encryption_key {
-            // Resolve Request to Stream first so decryption can wrap the stream
-            if matches!(reader_response, SourceRead::Request(_)) {
-                let stream_reader = reader_response
-                    .into_reader(
-                        Some(library_id),
-                        range.clone(),
-                        None,
-                        Some((self.clone(), &requesting_user)),
-                        None,
-                    )
-                    .await?;
-                reader_response = SourceRead::Stream(stream_reader);
-            }
+            // Resolve both direct and guarded provider results so decryption wraps the
+            // actual response stream and retains the maintenance guard for its lifetime.
+            let stream_reader = reader_response
+                .into_reader(
+                    Some(library_id),
+                    range.clone(),
+                    None,
+                    Some((self.clone(), &requesting_user)),
+                    None,
+                )
+                .await?;
+            reader_response = SourceRead::Stream(stream_reader);
 
             if let Some(ref original_range) = client_range {
                 // Range request: read nonce separately, then decrypt at offset
@@ -1468,17 +1492,26 @@ impl ModelController {
     ) {
         let mc = self.clone();
         tokio::spawn(async move {
-            let r = mc
-                .process_media(&library_id, &media_id, thumb, predict, &requesting_user)
-                .await;
-            if let Err(error) = r {
-                log_error(
-                    crate::tools::log::LogServiceType::Source,
-                    format!(
-                        "Unable to process media {} for predictions: {:?}",
-                        media_id, error
-                    ),
-                );
+            loop {
+                let result = mc
+                    .process_media(&library_id, &media_id, thumb, predict, &requesting_user)
+                    .await;
+                match result {
+                    Err(crate::Error::Model(
+                        crate::model::error::Error::LibraryEncryptionUnavailable(_),
+                    )) => tokio::time::sleep(Duration::from_secs(60)).await,
+                    Err(error) => {
+                        log_error(
+                            crate::tools::log::LogServiceType::Source,
+                            format!(
+                                "Unable to process media {} for predictions: {:?}",
+                                media_id, error
+                            ),
+                        );
+                        break;
+                    }
+                    Ok(()) => break,
+                }
             }
         });
     }
@@ -1833,6 +1866,7 @@ impl ModelController {
                 media: new_file,
             })
             .await?;
+        drop(m);
         self.update_media(library_id, id.to_owned(), infos, false, requesting_user)
             .await?;
         let library: crate::model::libraries::ServerLibraryForRead = self
@@ -2215,6 +2249,7 @@ impl ModelController {
                 media: new_file,
             })
             .await?;
+        drop(m);
         self.update_media(library_id, id.to_owned(), infos, false, requesting_user)
             .await?;
 
@@ -2549,6 +2584,7 @@ impl ModelController {
                 media: new_file,
             })
             .await?;
+        drop(m);
         self.update_media(library_id, id.to_owned(), infos, false, requesting_user)
             .await?;
 
@@ -2825,6 +2861,7 @@ impl ModelController {
             }
             _ => Err(crate::model::error::Error::UnsupportedTypeForThumb),
         }?;
+        drop(m);
         self.update_library_image(
             &library_id,
             ".thumbs",
@@ -3040,13 +3077,10 @@ impl ModelController {
                     "get_media_uri".to_string(),
                 ))?;
 
-        let m = self.source_for_library(library_id).await?;
-        let local_path = m.local_path(&source.source);
-        if let Some(local_path) = local_path {
-            Ok(local_path.to_string_lossy().to_string())
-        } else {
-            Ok(ModelController::get_temporary_local_read_url(library_id, media_id, delay).await?)
-        }
+        let _ = source;
+        // Route external tools through the guarded media endpoint. Returning a bare local path
+        // would drop the maintenance guard before FFmpeg or FFprobe opens the file.
+        Ok(ModelController::get_temporary_local_read_url(library_id, media_id, delay).await?)
     }
 
     // -- Media HLS session management --
@@ -3283,6 +3317,7 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> crate::Result<()> {
         requesting_user.check_file_role(library_id, media_id, LibraryRole::Write)?;
+        self.ensure_library_encryption_writable(library_id).await?;
         let store = self.store.get_library_store(library_id)?;
         let media = store
             .get_media(media_id, requesting_user.user_id().ok())
@@ -3350,7 +3385,17 @@ impl ModelController {
                     drop(queue);
 
                     if let Some(element) = element {
-                        let _ = mc.convert_element(element).await;
+                        if let Err(error) = mc.convert_element(element.clone()).await {
+                            if matches!(
+                                error,
+                                crate::Error::Model(
+                                    crate::model::error::Error::LibraryEncryptionUnavailable(_)
+                                )
+                            ) {
+                                mc.convert_queue.write().await.push_front(element);
+                                tokio::time::sleep(Duration::from_secs(60)).await;
+                            }
+                        }
                     } else {
                         break;
                     }
@@ -3956,8 +4001,17 @@ impl ModelController {
             ))?
             .item;
 
-        let m = self.source_for_library(&element.library).await?;
-        let local = self.library_source_for_library(&element.library).await?;
+        let _maintenance_guard = self
+            .library_encryption_gate(&element.library)
+            .await
+            .read_owned()
+            .await;
+        self.ensure_library_encryption_readable(&element.library)
+            .await?;
+        let m = self.source_for_library_unchecked(&element.library).await?;
+        let local = self
+            .library_source_for_library_unchecked(&element.library)
+            .await?;
         let path = m
             .local_path(media.source.as_ref().ok_or(Error::ServiceError(
                 "Convert".to_owned(),
@@ -4057,6 +4111,9 @@ impl ModelController {
         self.send_convert_progress(message);
         let media_infos: MediaForUpdate = media.into();
         let reader = File::open(dest).await?;
+        drop(m);
+        drop(local);
+        drop(_maintenance_guard);
         let media = self
             .add_library_file(
                 &element.library,
@@ -4067,7 +4124,10 @@ impl ModelController {
             )
             .await;
 
-        local.remove(&dest_source).await?;
+        self.library_source_for_library_unchecked(&element.library)
+            .await?
+            .remove(&dest_source)
+            .await?;
         match media {
             Ok(media) => {
                 if let Err(e) = store
@@ -4122,8 +4182,16 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> crate::Result<Media> {
         let store = self.store.get_library_store(library_id)?;
-        let m = self.source_for_library(library_id).await?;
-        let local = self.library_source_for_library(library_id).await?;
+        let _maintenance_guard = self
+            .library_encryption_gate(library_id)
+            .await
+            .read_owned()
+            .await;
+        self.ensure_library_encryption_readable(library_id).await?;
+        let m = self.source_for_library_unchecked(library_id).await?;
+        let local = self
+            .library_source_for_library_unchecked(library_id)
+            .await?;
         let first_request = &request.items[0].request;
         let output_format = first_request.format.clone();
         let output_codec = first_request.codec.clone();
@@ -4318,6 +4386,9 @@ impl ModelController {
         // Import the merged file as a new media
         let first_media_info: MediaForUpdate = media_paths[0].0.clone().into();
         let reader = File::open(&concat_dest).await?;
+        drop(m);
+        drop(local);
+        drop(_maintenance_guard);
         let media = self
             .add_library_file(
                 library_id,
@@ -4625,6 +4696,9 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> RsResult<()> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        let gate = self.library_encryption_gate(library_id).await;
+        let _migration_guard = gate.read().await;
+        self.ensure_library_encryption_writable(library_id).await?;
         let store = self.store.get_library_store(library_id)?;
         let existing = store.get_media_source(&media_id).await?;
 
@@ -4638,7 +4712,7 @@ impl ModelController {
         };
 
         if let Some(existing) = existing {
-            let m = self.source_for_library(&library_id).await?;
+            let m = self.source_for_library_unchecked(&library_id).await?;
             let r = m.remove(&existing.source).await;
             if r.is_ok() {
                 log_info(
@@ -4648,27 +4722,13 @@ impl ModelController {
             }
             store.remove_media(media_id.to_string()).await?;
         }
-        self.remove_library_image(
-            library_id,
-            ".thumbs",
-            media_id,
-            &None,
-            &None,
-            requesting_user,
-        )
-        .await?;
+        self.remove_library_image_files(library_id, ".thumbs", media_id, &None, &None)
+            .await?;
 
         // Delete cached face images (ignore errors - cache cleanup is best effort)
         for face_id in face_ids {
             if let Err(e) = self
-                .remove_library_image(
-                    library_id,
-                    ".faces",
-                    &face_id,
-                    &None,
-                    &None,
-                    requesting_user,
-                )
+                .remove_library_image_files(library_id, ".faces", &face_id, &None, &None)
                 .await
             {
                 log_info(

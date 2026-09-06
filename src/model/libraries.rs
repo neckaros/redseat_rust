@@ -105,8 +105,9 @@ pub struct ServerLibraryForRead {
     pub settings: Option<ServerLibrarySettings>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub roles: Option<Vec<LibraryRole>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub password: Option<String>,
+    #[serde(default)]
+    #[serde(rename = "passwordProtected")]
+    pub password_protected: bool,
 
     #[serde(default)]
     pub hidden: bool,
@@ -122,7 +123,7 @@ impl From<ServerLibrary> for ServerLibraryForRead {
             crypt: lib.crypt,
             settings: Some(lib.settings),
             roles: None,
-            password: lib.password,
+            password_protected: lib.password.is_some(),
 
             ..Default::default()
         }
@@ -143,7 +144,7 @@ impl ServerLibraryForRead {
             crypt: lib.crypt,
             settings: Some(lib.settings),
             roles: Some(roles.to_owned()),
-            password: lib.password,
+            password_protected: lib.password.is_some(),
             ..Default::default()
         }
     }
@@ -157,7 +158,77 @@ pub struct ServerLibraryForUpdate {
     pub settings: Option<ServerLibrarySettings>,
     pub credentials: Option<String>,
     pub plugin: Option<String>,
-    pub password: Option<String>,
+    #[serde(
+        rename = "password",
+        default,
+        skip_serializing,
+        deserialize_with = "reject_password_update"
+    )]
+    _password: Option<()>,
+}
+
+fn reject_password_update<'de, D>(deserializer: D) -> std::result::Result<Option<()>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let _ = serde::de::IgnoredAny::deserialize(deserializer)?;
+    Err(<D::Error as serde::de::Error>::custom(
+        "password changes must use the library encryption endpoint",
+    ))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryEncryptionRequest {
+    pub password: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryEncryptionStatus {
+    pub phase: String,
+    pub processed_items: u64,
+    pub total_items: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    pub password_protected: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_password_protected: Option<bool>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LibraryEncryptionJob {
+    pub id: String,
+    pub library_id: String,
+    pub source_password: Option<String>,
+    pub target_password: Option<String>,
+    pub phase: String,
+    pub snapshot_complete: bool,
+    pub total_items: u64,
+    pub completed_items: u64,
+    pub last_error: Option<String>,
+    pub retry_count: u32,
+}
+
+impl LibraryEncryptionJob {
+    pub fn is_active(&self) -> bool {
+        self.phase == "running"
+    }
+
+    pub fn blocks_io(&self) -> bool {
+        matches!(self.phase.as_str(), "running" | "failed")
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LibraryEncryptionItem {
+    pub id: String,
+    pub job_id: String,
+    pub kind: String,
+    pub media_id: Option<String>,
+    pub source: String,
+    pub staged_source: Option<String>,
+    pub state: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -428,11 +499,9 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> Result<Option<super::libraries::ServerLibraryForRead>> {
         requesting_user.check_library_role(&library_id, LibraryRole::Admin)?;
-
-        // Check if password is being changed to trigger encryption migration
-        let old_library = self.cache_get_library(library_id).await;
-        let old_password = old_library.and_then(|l| l.password.clone());
-        let new_password = update.password.clone();
+        let gate = self.library_encryption_gate(library_id).await;
+        let _migration_guard = gate.read().await;
+        self.ensure_library_encryption_writable(library_id).await?;
 
         self.store.update_library(library_id, update).await?;
         let library = self.store.get_library(library_id).await?;
@@ -443,47 +512,158 @@ impl ModelController {
                 library: library.clone(),
             });
 
-            // Schedule encryption migration if password changed
-            if new_password != old_password {
-                if let Some(ref _new_pw) = new_password {
-                    // Password was set or changed: encrypt existing files
-                    use crate::tools::scheduler::{
-                        encrypt_library::EncryptLibraryTask, RsSchedulerWhen, RsTaskType,
-                    };
-                    let task = EncryptLibraryTask::new_encrypt(library_id.to_string());
-                    if let Err(e) = self
-                        .scheduler
-                        .add(RsTaskType::EncryptLibrary, RsSchedulerWhen::At(0), task)
-                        .await
-                    {
-                        log_error(
-                            LogServiceType::Other,
-                            format!("Failed to schedule encryption task: {:?}", e),
-                        );
-                    }
-                } else {
-                    // Password was removed: decrypt existing files
-                    use crate::tools::scheduler::{
-                        encrypt_library::EncryptLibraryTask, RsSchedulerWhen, RsTaskType,
-                    };
-                    let task = EncryptLibraryTask::new_decrypt(library_id.to_string());
-                    if let Err(e) = self
-                        .scheduler
-                        .add(RsTaskType::EncryptLibrary, RsSchedulerWhen::At(0), task)
-                        .await
-                    {
-                        log_error(
-                            LogServiceType::Other,
-                            format!("Failed to schedule decryption task: {:?}", e),
-                        );
-                    }
-                }
-            }
-
             Ok(map_library_for_user(library, &requesting_user))
         } else {
             Ok(None)
         }
+    }
+
+    pub async fn get_library_encryption_status(
+        &self,
+        library_id: &str,
+        requesting_user: &ConnectedUser,
+    ) -> Result<LibraryEncryptionStatus> {
+        requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
+        let library = self
+            .get_internal_library(library_id)
+            .await?
+            .ok_or(Error::LibraryNotFound(library_id.to_string()))?;
+        let job = self.store.get_library_encryption_job(library_id).await?;
+        Ok(match job {
+            Some(job) => LibraryEncryptionStatus {
+                phase: job.phase.clone(),
+                processed_items: job.completed_items,
+                total_items: job.total_items,
+                last_error: job.last_error.clone(),
+                password_protected: library.password.is_some(),
+                target_password_protected: job.blocks_io().then_some(job.target_password.is_some()),
+            },
+            None => LibraryEncryptionStatus {
+                phase: "idle".to_string(),
+                processed_items: 0,
+                total_items: 0,
+                last_error: None,
+                password_protected: library.password.is_some(),
+                target_password_protected: None,
+            },
+        })
+    }
+
+    pub async fn request_library_encryption_change(
+        &self,
+        library_id: &str,
+        target_password: Option<String>,
+        requesting_user: &ConnectedUser,
+    ) -> Result<LibraryEncryptionStatus> {
+        requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
+        if target_password.as_deref().is_some_and(str::is_empty) {
+            return Err(Error::InvalidLibraryEncryptionRequest(
+                "Password must not be empty; use DELETE to remove encryption".to_string(),
+            ));
+        }
+
+        let gate = self.library_encryption_gate(library_id).await;
+        let _migration_guard = gate.write().await;
+        if self.deleting_libraries.read().await.contains(library_id) {
+            return Err(Error::LibraryDeletionInProgress(library_id.to_string()));
+        }
+        if let Some(existing) = self.store.get_library_encryption_job(library_id).await? {
+            if existing.is_active() {
+                return Err(Error::LibraryEncryptionInProgress(library_id.to_string()));
+            }
+            if existing.phase == "failed" {
+                if existing.target_password != target_password {
+                    return Err(Error::InvalidLibraryEncryptionRequest(
+                        "A failed migration must be resumed with the same target password"
+                            .to_string(),
+                    ));
+                }
+                self.store.resume_library_encryption_job(&existing.id).await?;
+                if let Err(error) = self.schedule_library_encryption_job(&existing).await {
+                    let message = error.to_string();
+                    self.store
+                        .fail_library_encryption_job(&existing.id, message.clone())
+                        .await?;
+                    return Err(Error::Other(message));
+                }
+                return self
+                    .get_library_encryption_status(library_id, requesting_user)
+                    .await;
+            }
+        }
+
+        let library = self
+            .get_internal_library(library_id)
+            .await?
+            .ok_or(Error::LibraryNotFound(library_id.to_string()))?;
+        if library.crypt.unwrap_or(false) {
+            return Err(Error::InvalidLibraryEncryptionRequest(
+                "Server password encryption cannot be changed while legacy client encryption is enabled"
+                    .to_string(),
+            ));
+        }
+        if library.source == "virtual" {
+            return Err(Error::InvalidLibraryEncryptionRequest(
+                "Virtual libraries do not contain files to encrypt".to_string(),
+            ));
+        }
+        if library.password == target_password {
+            return Err(Error::InvalidLibraryEncryptionRequest(
+                "The requested password state is already active".to_string(),
+            ));
+        }
+
+        let job = LibraryEncryptionJob {
+            id: nanoid!(),
+            library_id: library_id.to_string(),
+            source_password: library.password.clone(),
+            target_password: target_password.clone(),
+            phase: "running".to_string(),
+            snapshot_complete: false,
+            total_items: 0,
+            completed_items: 0,
+            last_error: None,
+            retry_count: 0,
+        };
+        self.store
+            .create_library_encryption_job(job.clone())
+            .await?;
+        if let Err(error) = self.schedule_library_encryption_job(&job).await {
+            let message = error.to_string();
+            self.store
+                .fail_library_encryption_job(&job.id, message.clone())
+                .await?;
+            return Err(Error::Other(message));
+        }
+
+        Ok(LibraryEncryptionStatus {
+            phase: job.phase,
+            processed_items: 0,
+            total_items: 0,
+            last_error: None,
+            password_protected: library.password.is_some(),
+            target_password_protected: Some(target_password.is_some()),
+        })
+    }
+
+    async fn schedule_library_encryption_job(&self, job: &LibraryEncryptionJob) -> RsResult<()> {
+        use crate::tools::scheduler::{
+            encrypt_library::EncryptLibraryTask, RsSchedulerWhen, RsTaskType,
+        };
+        self.scheduler
+            .add(
+                RsTaskType::EncryptLibrary,
+                RsSchedulerWhen::At(0),
+                EncryptLibraryTask::new(job.id.clone(), job.library_id.clone()),
+            )
+            .await
+    }
+
+    pub async fn initialize_library_encryption_jobs(&self) -> RsResult<()> {
+        for job in self.store.list_active_library_encryption_jobs().await? {
+            self.schedule_library_encryption_job(&job).await?;
+        }
+        Ok(())
     }
 
     pub async fn add_library(
@@ -591,6 +771,9 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> RsResult<ServerLibraryForRead> {
         requesting_user.check_library_role(&library_id, LibraryRole::Admin)?;
+        let gate = self.library_encryption_gate(library_id).await;
+        let _migration_guard = gate.read().await;
+        self.ensure_library_encryption_writable(library_id).await?;
         let library =
             self.store
                 .get_library(&library_id)
@@ -616,6 +799,9 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> RsResult<()> {
         requesting_user.check_role(&UserRole::Admin)?;
+        let gate = self.library_encryption_gate(library_id).await;
+        let _migration_guard = gate.read().await;
+        self.ensure_library_encryption_writable(library_id).await?;
         let library_id = library_id.to_string();
 
         {
@@ -770,8 +956,9 @@ impl ModelController {
         let sources = store.get_all_sources().await?;
         println!("sources count: {}", sources.len());
         let cleaned = m.clean(sources).await?;
-
-        let local = self.library_source_for_library(library_id).await?;
+        let local = self
+            .library_source_for_library_unchecked(library_id)
+            .await?;
 
         local.clean_temp()?;
         Ok(cleaned)
@@ -997,5 +1184,40 @@ mod tests {
                 "user-c".to_string(),
             ])
         );
+    }
+
+    #[test]
+    fn library_reads_expose_only_password_protection_state() {
+        let library = ServerLibrary {
+            password: Some("do-not-serialize".to_string()),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(ServerLibraryForRead::from(library)).unwrap();
+
+        assert_eq!(json["passwordProtected"], true);
+        assert!(json.get("password").is_none());
+        assert!(json.get("password_protected").is_none());
+    }
+
+    #[test]
+    fn ordinary_library_updates_reject_password_fields() {
+        let result = serde_json::from_value::<ServerLibraryForUpdate>(serde_json::json!({
+            "name": "Renamed",
+            "password": "must-use-the-encryption-endpoint"
+        }));
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn ordinary_library_updates_keep_ignoring_unrelated_fields() {
+        let result = serde_json::from_value::<ServerLibraryForUpdate>(serde_json::json!({
+            "id": "library-1",
+            "name": "Renamed",
+            "passwordProtected": true
+        }));
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().name.as_deref(), Some("Renamed"));
     }
 }

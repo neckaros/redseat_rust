@@ -154,6 +154,7 @@ async fn handler_urlrequest(
     let body = match wasm {
         crate::plugins::sources::SourceRead::Stream(_) => Json(json!({"stream": true})),
         crate::plugins::sources::SourceRead::Request(r) => Json(json!(r)),
+        crate::plugins::sources::SourceRead::Guarded(_, _) => Json(json!({"stream": true})),
     };
     Ok(body)
 }

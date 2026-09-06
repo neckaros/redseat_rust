@@ -33,7 +33,7 @@ use crate::{
         medias::{imdb::ImdbContext, trakt::TraktContext},
         sources::{
             error::SourcesError, local_provider_for_library, path_provider::PathProvider,
-            AsyncReadPinBox, FileStreamResult, Source, SourceRead,
+            AsyncReadPinBox, FileStreamResult, GuardedSource, Source, SourceRead,
         },
         PluginManager,
     },
@@ -123,7 +123,7 @@ impl VideoConvertQueueElement {
 
 #[derive(Clone)]
 pub struct ModelController {
-    store: Arc<SqliteStore>,
+    pub(crate) store: Arc<SqliteStore>,
     pub plugin_manager: Arc<PluginManager>,
     pub trakt: Arc<TraktContext>,
     pub imdb: Arc<ImdbContext>,
@@ -141,6 +141,9 @@ pub struct ModelController {
 
     pub chache_libraries: Arc<RwLock<HashMap<String, ServerLibrary>>>,
     pub deleting_libraries: Arc<RwLock<HashSet<String>>>,
+    /// Serializes migration creation against file mutations within each library. Mutations
+    /// hold a read guard; creating the durable job briefly holds the matching write guard.
+    pub library_encryption_gates: Arc<RwLock<HashMap<String, Arc<RwLock<()>>>>>,
 
     /// Broadcast channel for SSE events
     pub sse_tx: broadcast::Sender<SseEvent>,
@@ -169,6 +172,7 @@ impl ModelController {
             scheduler: Arc::new(scheduler),
             chache_libraries: Arc::new(RwLock::new(HashMap::new())),
             deleting_libraries: Arc::new(RwLock::new(HashSet::new())),
+            library_encryption_gates: Arc::new(RwLock::new(HashMap::new())),
             convert_queue: Arc::new(RwLock::new(VecDeque::new())),
             convert_current: Arc::new(RwLock::new(false)),
             convert_current_process: Arc::new(RwLock::new(None)),
@@ -195,6 +199,7 @@ impl ModelController {
 
         let scheduler = &mc.scheduler;
         scheduler.start(mc.clone()).await?;
+        mc.initialize_library_encryption_jobs().await?;
 
         scheduler
             .add(
@@ -297,6 +302,39 @@ impl ModelController {
             .map(derive_key)
     }
 
+    pub async fn ensure_library_encryption_writable(&self, library_id: &str) -> Result<()> {
+        if self
+            .store
+            .get_library_encryption_job(library_id)
+            .await?
+            .is_some_and(|job| job.blocks_io())
+        {
+            return Err(Error::LibraryEncryptionInProgress(library_id.to_string()));
+        }
+        Ok(())
+    }
+
+    pub async fn ensure_library_encryption_readable(&self, library_id: &str) -> Result<()> {
+        if self
+            .store
+            .get_library_encryption_job(library_id)
+            .await?
+            .is_some_and(|job| job.blocks_io())
+        {
+            return Err(Error::LibraryEncryptionUnavailable(library_id.to_string()));
+        }
+        Ok(())
+    }
+
+    pub async fn library_encryption_gate(&self, library_id: &str) -> Arc<RwLock<()>> {
+        let mut gates = self.library_encryption_gates.write().await;
+        Arc::clone(
+            gates
+                .entry(library_id.to_string())
+                .or_insert_with(|| Arc::new(RwLock::new(()))),
+        )
+    }
+
     pub async fn cache_update_library(&self, library: ServerLibrary) {
         let mut cache = self.chache_libraries.write().await;
         cache.remove(&library.id);
@@ -314,12 +352,6 @@ impl ModelController {
         Ok(())
     }
 
-    /// Get all distinct media source paths for a library (used by encryption migration task)
-    pub async fn get_all_media_sources(&self, library_id: &str) -> RsResult<Vec<String>> {
-        let store = self.store.get_library_store(library_id)?;
-        Ok(store.get_all_sources().await?)
-    }
-
     /// Get all (media_id, source) pairs for a library (used by encryption migration task)
     pub async fn get_all_media_id_sources(
         &self,
@@ -327,17 +359,6 @@ impl ModelController {
     ) -> RsResult<Vec<(String, String)>> {
         let store = self.store.get_library_store(library_id)?;
         Ok(store.get_all_media_id_sources().await?)
-    }
-
-    /// Update the source reference for a media record
-    pub async fn update_media_source(
-        &self,
-        library_id: &str,
-        media_id: &str,
-        new_source: &str,
-    ) -> RsResult<()> {
-        let store = self.store.get_library_store(library_id)?;
-        Ok(store.update_media_source(media_id, new_source).await?)
     }
 
     pub async fn get_user_unchecked(&self, user_id: &str) -> Result<users::ServerUser> {
@@ -392,6 +413,20 @@ impl ModelController {
     }
 
     pub async fn source_for_library(&self, library_id: &str) -> RsResult<Box<dyn Source>> {
+        let guard = self
+            .library_encryption_gate(library_id)
+            .await
+            .read_owned()
+            .await;
+        self.ensure_library_encryption_readable(library_id).await?;
+        let source = self.source_for_library_unchecked(library_id).await?;
+        Ok(Box::new(GuardedSource::new(source, guard)))
+    }
+
+    pub(crate) async fn source_for_library_unchecked(
+        &self,
+        library_id: &str,
+    ) -> RsResult<Box<dyn Source>> {
         let library = self.store.get_library(library_id).await?.ok_or_else(|| {
             Error::LibraryNotFoundFor(library_id.to_string(), "source_for_library".to_string())
         })?;
@@ -402,6 +437,22 @@ impl ModelController {
         Ok(source)
     }
     pub async fn library_source_for_library(&self, library_id: &str) -> Result<PathProvider> {
+        let guard = self
+            .library_encryption_gate(library_id)
+            .await
+            .read_owned()
+            .await;
+        self.ensure_library_encryption_readable(library_id).await?;
+        Ok(self
+            .library_source_for_library_unchecked(library_id)
+            .await?
+            .with_maintenance_guard(guard))
+    }
+
+    pub(crate) async fn library_source_for_library_unchecked(
+        &self,
+        library_id: &str,
+    ) -> Result<PathProvider> {
         let library = self.store.get_library(library_id).await?.ok_or_else(|| {
             Error::LibraryNotFoundFor(
                 library_id.to_string(),
@@ -502,14 +553,13 @@ impl ModelController {
                             false,
                         )
                         .await?;
-                        self.update_library_image(
+                        self.update_library_image_files(
                             &library_id,
                             folder,
                             id,
                             &kind,
                             &size,
                             image.as_slice(),
-                            &ConnectedUser::ServerAdmin,
                         )
                         .await?;
 
@@ -583,10 +633,28 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> Result<()> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
-        self.remove_library_image(library_id, folder, id, kind, size, requesting_user)
+        let gate = self.library_encryption_gate(library_id).await;
+        let _migration_guard = gate.read().await;
+        self.ensure_library_encryption_writable(library_id).await?;
+        self.update_library_image_files(library_id, folder, id, kind, size, reader)
+            .await
+    }
+
+    async fn update_library_image_files<T: AsyncRead>(
+        &self,
+        library_id: &str,
+        folder: &str,
+        id: &str,
+        kind: &Option<ImageType>,
+        size: &Option<ImageSize>,
+        reader: T,
+    ) -> Result<()> {
+        self.remove_library_image_files(library_id, folder, id, kind, size)
             .await?;
 
-        let m = self.library_source_for_library(&library_id).await?;
+        let m = self
+            .library_source_for_library_unchecked(&library_id)
+            .await?;
 
         let source_filepath = format!(
             "{}/{}{}{}.avif",
@@ -621,8 +689,25 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> Result<()> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        let gate = self.library_encryption_gate(library_id).await;
+        let _migration_guard = gate.read().await;
+        self.ensure_library_encryption_writable(library_id).await?;
 
-        let m = self.library_source_for_library(&library_id).await?;
+        self.remove_library_image_files(library_id, folder, id, kind, size)
+            .await
+    }
+
+    pub(crate) async fn remove_library_image_files(
+        &self,
+        library_id: &str,
+        folder: &str,
+        id: &str,
+        kind: &Option<ImageType>,
+        size: &Option<ImageSize>,
+    ) -> Result<()> {
+        let m = self
+            .library_source_for_library_unchecked(&library_id)
+            .await?;
 
         let source_filepath = format!(
             "{}/{}{}{}.avif",
