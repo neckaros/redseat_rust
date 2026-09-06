@@ -53,6 +53,7 @@ pub struct MediaBackup {
     pub id: String,
     pub name: String,
     pub size: Option<u64>,
+    pub modified: i64,
 }
 
 impl RsSort {
@@ -144,6 +145,7 @@ fn media_query(user_id: &Option<String>) -> String {
 
 const MEDIA_BACKUP_QUERY: &str = "SELECT 
             m.id, m.name, m.size,
+            MAX(IFNULL(m.added, 0), IFNULL(m.created, 0), IFNULL(m.modified, 0)) as backup_modified,
             (select avg(rating) from ratings where type = 'media' and ref = m.id) as rating
 			,(select GROUP_CONCAT(tag_ref || '|' || IFNULL(confidence, 100)) from media_tag_mapping where media_ref = m.id and (confidence != -1 or confidence IS NULL)) as tags
 			,(select GROUP_CONCAT(people_ref ) from media_people_mapping where media_ref = m.id) as people
@@ -753,39 +755,18 @@ impl SqliteLibraryStore {
         Ok(rows)
     }
 
-    pub async fn get_all_medias_to_backup(
-        &self,
-        after: i64,
-        query: MediaQuery,
-    ) -> Result<Vec<MediaBackup>> {
+    pub async fn get_all_medias_to_backup(&self, query: MediaQuery) -> Result<Vec<MediaBackup>> {
         //println!("mediaquery: {:?}", query);
         let rows = self
             .connection
             .call(move |conn| {
                 let mut where_query = Self::build_media_query(query, LibraryLimits::default());
-                where_query.add_where(SqlWhereType::After(
-                    "(
-                    CASE
-                        WHEN added >= created AND added >= modified THEN added
-                        WHEN created >= modified THEN created
-                        ELSE modified
-                    END
-                )"
-                    .to_string(),
-                    Box::new(after),
-                ));
                 let mut query = conn.prepare(&format!(
                     "
         {}
         {}
         {}
-        ORDER BY (
-                CASE
-                    WHEN added >= created AND added >= modified THEN added
-                    WHEN created >= modified THEN created
-                    ELSE modified
-                END
-            ) ASC",
+        ORDER BY backup_modified ASC",
                     where_query.format_recursive(),
                     MEDIA_BACKUP_QUERY,
                     where_query.format()
@@ -796,6 +777,7 @@ impl SqliteLibraryStore {
                         id: row.get(0)?,
                         name: row.get(1)?,
                         size: row.get(2)?,
+                        modified: row.get(3)?,
                     };
                     Ok(s)
                 })?;
@@ -1351,13 +1333,14 @@ mod tests {
             .unwrap();
 
         let backups = store
-            .get_all_medias_to_backup(0, MediaQuery::default())
+            .get_all_medias_to_backup(MediaQuery::default())
             .await
             .unwrap();
         assert_eq!(backups.len(), 1);
         assert_eq!(backups[0].id, "backup-media");
         assert_eq!(backups[0].name, "backup.jpg");
         assert_eq!(backups[0].size, Some(123));
+        assert!(backups[0].modified > 0);
     }
 
     #[tokio::test]

@@ -9,7 +9,6 @@ use crate::{
 };
 
 pub struct BackupInfos {
-    pub max_date: Option<i64>,
     pub size: Option<u64>,
 }
 
@@ -259,25 +258,38 @@ impl SqliteStore {
 
     pub async fn get_backup_files_infos(&self, backup_id: &str) -> Result<BackupInfos> {
         let backup_id = backup_id.to_owned();
-        let row = self.server_store.call( move |conn| { 
-            let mut query = conn.prepare("SELECT MAX(modified), SUM(size) FROM Backups_Files WHERE backup = ?  and file <> 'db'")?;
+        let row = self
+            .server_store
+            .call(move |conn| {
+                let mut query = conn.prepare(
+                    "SELECT SUM(size) FROM Backups_Files WHERE backup = ?  and file <> 'db'",
+                )?;
 
-            let row: BackupInfos = query.query_row(
-                params![backup_id], |row| Ok(BackupInfos {
-                    max_date: row.get(0)?,
-                    size: row.get(1)?
-                }),
-            )?;
-            
-            Ok(row)
-        }).await?;
+                let row: BackupInfos = query.query_row(params![backup_id], |row| {
+                    Ok(BackupInfos { size: row.get(0)? })
+                })?;
+
+                Ok(row)
+            })
+            .await?;
         Ok(row)
     }
 
     pub async fn add_backup_file(&self, backup: BackupFile) -> Result<()> {
         self.server_store.call( move |conn| { 
             conn.execute("INSERT INTO Backups_Files (backup, library, file, id, path, hash, sourcehash, size, modified, added, iv, thumbsize, infoSize, error)
-            VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params![
+            VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (backup, library, file, sourcehash) DO UPDATE SET
+                id = excluded.id,
+                path = excluded.path,
+                hash = excluded.hash,
+                size = excluded.size,
+                modified = excluded.modified,
+                added = excluded.added,
+                iv = excluded.iv,
+                thumbsize = excluded.thumbsize,
+                infoSize = excluded.infoSize,
+                error = excluded.error", params![
                 backup.backup,
                 backup.library,
                 backup.file,
@@ -366,5 +378,74 @@ impl SqliteStore {
             })
             .await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::store::sql::migrate_database;
+    use std::{collections::HashMap, sync::RwLock};
+    use tokio_rusqlite::Connection;
+
+    fn backup_file(id: &str, path: &str, modified: i64) -> BackupFile {
+        BackupFile {
+            backup: "backup".to_string(),
+            library: Some("library".to_string()),
+            file: "media".to_string(),
+            id: id.to_string(),
+            path: path.to_string(),
+            hash: String::new(),
+            sourcehash: "same-source".to_string(),
+            size: 1,
+            modified,
+            added: modified,
+            iv: None,
+            thumb_size: None,
+            info_size: None,
+            error: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn replaces_same_hash_backup_with_newer_media_version() {
+        let connection = Connection::open_in_memory().await.unwrap();
+        migrate_database(&connection).await.unwrap();
+        connection
+            .call(|connection| {
+                connection.execute(
+                    "INSERT INTO Libraries (id, name, type, source, root, settings) VALUES ('library', 'Library', 'photos', 'local', '', '{}')",
+                    [],
+                )?;
+                connection.execute(
+                    "INSERT INTO Backups (id, source, path, name) VALUES ('backup', 'local', '', 'Backup')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let store = SqliteStore {
+            server_store: connection,
+            libraries_stores: RwLock::new(HashMap::new()),
+        };
+
+        store
+            .add_backup_file(backup_file("old", "old-path", 10))
+            .await
+            .unwrap();
+        store
+            .add_backup_file(backup_file("new", "new-path", 20))
+            .await
+            .unwrap();
+
+        let files = store
+            .get_backup_media_backup_files("backup", "media")
+            .await
+            .unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].id, "new");
+        assert_eq!(files[0].path, "new-path");
+        assert_eq!(files[0].modified, 20);
     }
 }
