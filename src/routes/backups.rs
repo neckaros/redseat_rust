@@ -1,5 +1,5 @@
 use crate::{
-    domain::backup::BackupWithStatus,
+    domain::backup::{BackupFile, BackupWithStatus},
     model::{
         backups::{BackupForAdd, BackupForUpdate},
         users::ConnectedUser,
@@ -25,7 +25,10 @@ pub fn routes(mc: ModelController) -> Router {
         .route("/:id", get(handler_get))
         .route("/:id", patch(handler_patch))
         .route("/:id", delete(handler_delete))
-        .route("/:id/medias/:media_id", get(handler_get_last_backup_media))
+        .route(
+            "/:id/medias/:media_id",
+            get(handler_get_latest_backup_media),
+        )
         .route("/:id/start", get(handler_backup))
         .with_state(mc)
 }
@@ -81,7 +84,7 @@ async fn handler_post(
     Ok(body)
 }
 
-async fn handler_get_last_backup_media(
+async fn handler_get_latest_backup_media(
     Path((backup_id, media_id)): Path<(String, String)>,
     State(mc): State<ModelController>,
     user: ConnectedUser,
@@ -89,11 +92,11 @@ async fn handler_get_last_backup_media(
     let backups = mc
         .get_backup_media_backup_files(&backup_id, &media_id, &user)
         .await?;
-    let last = backups.last().ok_or(SourcesError::UnableToFindBackup(
+    let latest = latest_backup_file(&backups).ok_or(SourcesError::UnableToFindBackup(
         backup_id,
-        "handler_get_last_backup_media".to_string(),
+        "handler_get_latest_backup_media".to_string(),
     ))?;
-    let reader = mc.get_backup_file_reader(&last.id, &user).await?;
+    let reader = mc.get_backup_file_reader(&latest.id, &user).await?;
     let response = reader
         .into_response("nope", None, None, Some((mc.clone(), &user)))
         .await?;
@@ -122,4 +125,47 @@ async fn handler_backup(
         .await?;
     mc.scheduler.tick(mc.clone()).await;
     Ok(Json(json!({"data": "ok"})))
+}
+
+fn latest_backup_file(backups: &[BackupFile]) -> Option<&BackupFile> {
+    backups.iter().max_by_key(|backup| backup.added)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn backup_file(id: &str, added: i64) -> BackupFile {
+        BackupFile {
+            backup: "backup".to_string(),
+            library: None,
+            file: "db".to_string(),
+            id: id.to_string(),
+            path: id.to_string(),
+            hash: String::new(),
+            sourcehash: String::new(),
+            size: 0,
+            modified: added,
+            added,
+            iv: None,
+            thumb_size: None,
+            info_size: None,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn latest_backup_file_uses_added_timestamp_instead_of_result_order() {
+        let backups = vec![
+            backup_file("middle", 200),
+            backup_file("oldest", 100),
+            backup_file("latest", 300),
+        ];
+
+        assert_eq!(
+            latest_backup_file(&backups).map(|backup| backup.id.as_str()),
+            Some("latest")
+        );
+        assert!(latest_backup_file(&[]).is_none());
+    }
 }
