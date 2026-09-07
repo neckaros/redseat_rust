@@ -438,14 +438,8 @@ impl ModelController {
             ))?;
 
         let mut all_updated = vec![tag.clone()];
-        if update.name.is_some() || update.params.is_some() {
-            let mut updated = self
-                .get_tags(
-                    library_id,
-                    TagQuery::new_with_path(format!("{}%", tag.childs_path())),
-                    requesting_user,
-                )
-                .await?;
+        if update.name.is_some() || update.parent.is_some() || update.params.is_some() {
+            let mut updated = store.get_tag_descendants(&tag.childs_path()).await?;
             all_updated.append(&mut updated);
         }
         self.send_tags(TagMessage {

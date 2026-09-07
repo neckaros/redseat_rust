@@ -36,6 +36,16 @@ impl SqliteLibraryStore {
         })
     }
 
+    pub async fn get_tag_descendants(&self, prefix: &str) -> Result<Vec<Tag>> {
+        let prefix = prefix.to_string();
+        let tags = self.connection.call(move |conn| {
+            let mut query = conn.prepare("SELECT id, name, parent, type, alt, thumb, params, modified, added, generated, path, otherids FROM tags WHERE substr(path, 1, ?1) = ?2")?;
+            let rows = query.query_map(params![prefix.chars().count() as i64, prefix], Self::row_to_tag)?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        }).await?;
+        Ok(tags)
+    }
+
     pub async fn get_tags(&self, query: TagQuery) -> Result<Vec<Tag>> {
         let pagination = pagination_clause(query.limit, query.offset)?;
         let row = self.connection.call( move |conn| { 
@@ -123,7 +133,13 @@ impl SqliteLibraryStore {
             let tx = conn.transaction()?;
             let mut where_query = QueryBuilder::new();
             where_query.add_update(&update.name, "name");
-            where_query.add_update(&update.parent, "parent");
+            // An empty parent ID is an explicit move to root. Omission keeps
+            // the current parent, preserving the existing PATCH contract.
+            if update.parent.as_deref() == Some("") {
+                where_query.add_nullify("parent");
+            } else {
+                where_query.add_update(&update.parent, "parent");
+            }
             where_query.add_update(&update.kind, "type");
 
             let alts = replace_add_remove_from_array(existing_tag.alt.clone(), update.alt, update.add_alts, update.remove_alts);
@@ -161,17 +177,33 @@ impl SqliteLibraryStore {
                 tx.execute("DELETE FROM channel_tag_mapping WHERE tag_ref = ?", [&id])?;
             }
             
-            if let Some(new_name) = &update.name {
-                tx.execute("UPDATE tags SET path = REPLACE(path, ?, ?) where path like ?", params![existing_tag.childs_path(), format!("{}{}/", existing_tag.path, new_name), existing_tag.childs_path()])?;
-            } 
-            if let Some(new_parent) = update.parent {
-                let mut query_parent = tx.prepare("SELECT id, name, parent, type, alt, thumb, params, modified, added, generated, path, otherids FROM tags WHERE id = ?")?;
-                let parent = query_parent.query_row([&new_parent],Self::row_to_tag)?;
-                
-                tx.execute("UPDATE tags SET path = ? where id = ?", params![parent.childs_path(), &existing_tag.id])?;
-
-                tx.execute("UPDATE tags SET path = REPLACE(path, ?, ?) where path like ?", params![existing_tag.childs_path(), format!("{}{}/", parent.childs_path(), &existing_tag.name), existing_tag.childs_path()])?;
-            } 
+            if update.name.is_some() || update.parent.is_some() {
+                let new_path = match update.parent.as_deref() {
+                    Some("") => "/".to_string(),
+                    Some(parent_id) => {
+                        let parent = tx.query_row(
+                            "SELECT id, name, parent, type, alt, thumb, params, modified, added, generated, path, otherids FROM tags WHERE id = ?",
+                            [parent_id], Self::row_to_tag,
+                        )?;
+                        if parent.id == existing_tag.id || parent.path.starts_with(&existing_tag.childs_path()) {
+                            return Err(tokio_rusqlite::Error::Other(std::io::Error::new(std::io::ErrorKind::InvalidInput, "A tag cannot be moved beneath itself or its descendants").into()));
+                        }
+                        parent.childs_path()
+                    }
+                    None => existing_tag.path.clone(),
+                };
+                let new_name = update.name.as_deref().unwrap_or(&existing_tag.name);
+                let old_prefix = existing_tag.childs_path();
+                let new_prefix = format!("{}{}/", new_path, new_name);
+                let prefix_length = old_prefix.chars().count() as i64;
+                tx.execute("UPDATE tags SET path = ? WHERE id = ?", params![new_path, &existing_tag.id])?;
+                // Match the literal prefix, including wildcard characters in
+                // names, and only replace the leading ancestor path.
+                tx.execute(
+                    "UPDATE tags SET path = ?1 || substr(path, ?2 + 1) WHERE substr(path, 1, ?2) = ?3",
+                    params![new_prefix, prefix_length, old_prefix],
+                )?;
+            }
 
             tx.commit()?;
             Ok(())
@@ -306,5 +338,129 @@ impl SqliteLibraryStore {
             Ok(())
         }).await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn tag_root_store() -> SqliteLibraryStore {
+        let store =
+            SqliteLibraryStore::new(tokio_rusqlite::Connection::open_in_memory().await.unwrap())
+                .await
+                .unwrap();
+        for (id, name, parent) in [
+            ("p", "Parent", None),
+            ("t", "Tag_%é", Some("p")),
+            ("c", "Child", Some("t")),
+            ("other", "TagXXé", Some("p")),
+            ("other-child", "Other child", Some("other")),
+        ] {
+            store
+                .add_tag(TagForInsert {
+                    id: id.into(),
+                    name: name.into(),
+                    parent: parent.map(str::to_string),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+        }
+        store
+    }
+
+    #[tokio::test]
+    async fn tag_root_move_updates_descendants_and_is_retryable() {
+        let store = tag_root_store().await;
+        for _ in 0..2 {
+            store
+                .update_tag(
+                    "t",
+                    TagForUpdate {
+                        parent: Some(String::new()),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+            let tag = store.get_tag("t").await.unwrap().unwrap();
+            assert_eq!(tag.parent, None);
+            assert_eq!(tag.path, "/");
+            let descendants = store.get_tag_descendants(&tag.childs_path()).await.unwrap();
+            assert_eq!(descendants.len(), 1);
+            assert_eq!(descendants[0].id, "c");
+            assert_eq!(store.get_tag("c").await.unwrap().unwrap().path, "/Tag_%é/");
+            assert_eq!(
+                store.get_tag("other-child").await.unwrap().unwrap().path,
+                "/Parent/TagXXé/"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn tag_root_move_with_rename_updates_descendants_once() {
+        let store = tag_root_store().await;
+        store
+            .update_tag(
+                "t",
+                TagForUpdate {
+                    parent: Some(String::new()),
+                    name: Some("Renamed".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(store.get_tag("c").await.unwrap().unwrap().path, "/Renamed/");
+    }
+
+    #[tokio::test]
+    async fn tag_root_omission_preserves_parent_and_invalid_moves_roll_back() {
+        let store = tag_root_store().await;
+        store
+            .update_tag(
+                "t",
+                TagForUpdate {
+                    name: Some("Renamed".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            store.get_tag("t").await.unwrap().unwrap().parent.as_deref(),
+            Some("p")
+        );
+        for parent in ["missing", "t", "c"] {
+            assert!(store
+                .update_tag(
+                    "t",
+                    TagForUpdate {
+                        parent: Some(parent.into()),
+                        ..Default::default()
+                    }
+                )
+                .await
+                .is_err());
+            assert_eq!(
+                store.get_tag("t").await.unwrap().unwrap().parent.as_deref(),
+                Some("p")
+            );
+        }
+        store
+            .update_tag(
+                "t",
+                TagForUpdate {
+                    parent: Some("other".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            store.get_tag("c").await.unwrap().unwrap().path,
+            "/Parent/TagXXé/Renamed/"
+        );
     }
 }
