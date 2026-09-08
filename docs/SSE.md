@@ -934,3 +934,13 @@ Connected clients can apply live `watched` and `unwatched` SSE events. After bei
 |-----------|------|-------------|
 | `after` | number | Only return watched items modified after this timestamp (milliseconds). This does not report deletions. |
 | `types` | string[] | Filter by content types (e.g., `movie`, `episode`) |
+
+### Tag parent changes
+
+`PATCH /libraries/:libraryid/tags/:id` accepts `{"parent":""}` to move
+an existing tag to root. Omitting `parent` (or sending `null`, as in the
+existing optional-field contract) leaves its parent unchanged. A nonempty
+parent ID moves the tag beneath that tag. The `tags` update event includes
+the moved tag and descendants whose paths changed, including moves to root.
+Descendants are identified through parent IDs; same-named siblings and their
+children are excluded even when their display paths match the moved subtree.
