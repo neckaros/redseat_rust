@@ -149,8 +149,17 @@ impl SerieForUpdate {
         if existing.kind != incoming.kind {
             update.kind = incoming.kind.map(|kind| kind.to_string());
         }
-        if existing.alt != incoming.alt {
-            update.alt = incoming.alt;
+        if let Some(returned) = incoming.alt {
+            let stored = existing.alt.as_deref().unwrap_or_default();
+            let mut added = Vec::new();
+            for alias in returned {
+                if !stored.contains(&alias) && !added.contains(&alias) {
+                    added.push(alias);
+                }
+            }
+            if !added.is_empty() {
+                update.add_alts = Some(added);
+            }
         }
         if existing.status != incoming.status {
             update.status = incoming.status;

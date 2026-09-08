@@ -147,6 +147,64 @@ mod tests {
         assert!(update.birthday.is_some());
         assert!(update.death.is_some());
         assert_eq!(update.kind.as_deref(), Some("Acting"));
-        assert!(!update.socials.unwrap().is_empty());
+        assert!(!update.add_socials.unwrap().is_empty());
+    }
+    #[tokio::test]
+    async fn metadata_refresh_person_preserves_stored_socials() {
+        use crate::model::store::sql::library::SqliteLibraryStore;
+        let connection = tokio_rusqlite::Connection::open_in_memory().await.unwrap();
+        let store = SqliteLibraryStore::new(connection).await.unwrap();
+        let manual = RsLink {
+            platform: "link".into(),
+            id: "https://manual.example.com".into(),
+            ..Default::default()
+        };
+        let provider = RsLink {
+            platform: "link".into(),
+            id: "https://provider.example.com".into(),
+            ..Default::default()
+        };
+        let stored = Person {
+            id: "refresh-person".into(),
+            name: "Person".into(),
+            socials: Some(vec![manual.clone()]),
+            ..Default::default()
+        };
+        store
+            .add_person(crate::model::people::PersonForInsert {
+                id: stored.id.clone(),
+                person: crate::model::people::PersonForAdd {
+                    name: stored.name.clone(),
+                    socials: stored.socials.clone(),
+                    ..Default::default()
+                },
+            })
+            .await
+            .unwrap();
+        let incoming = Person {
+            socials: Some(vec![provider.clone(), provider.clone()]),
+            ..stored.clone()
+        };
+        let update = PersonForUpdate::from_refresh(&stored, incoming);
+        assert!(update.socials.is_none());
+        assert_eq!(
+            update.add_socials.as_ref().unwrap(),
+            &vec![provider.clone()]
+        );
+        store.update_person(&stored.id, update).await.unwrap();
+        let loaded = store.get_person(&stored.id).await.unwrap().unwrap();
+        assert_eq!(
+            loaded.socials.as_ref().unwrap(),
+            &vec![manual, provider.clone()]
+        );
+        for socials in [None, Some(vec![]), Some(vec![provider])] {
+            let incoming = Person {
+                socials,
+                ..loaded.clone()
+            };
+            let update = PersonForUpdate::from_refresh(&loaded, incoming);
+            assert!(update.socials.is_none());
+            assert!(update.add_socials.is_none());
+        }
     }
 }

@@ -351,12 +351,14 @@ mod tests {
         let stored = Serie {
             id: "refresh-series".into(),
             name: "Old".into(),
+            alt: Some(vec!["Manual alias".into()]),
             otherids: Some(OtherIds::from(vec!["offline:keep".into()])),
             ..Default::default()
         };
         store.add_serie(stored.clone()).await.unwrap();
         let fresh = Serie {
             name: "New".into(),
+            alt: Some(vec!["Provider alias".into(), "Provider alias".into()]),
             year: Some(2026),
             tvdb: Some(42),
             imdb_rating: Some(8.0),
@@ -374,6 +376,19 @@ mod tests {
             .unwrap();
         let loaded = store.get_serie(&stored.id).await.unwrap().unwrap().item;
         assert_eq!(loaded.name, "New");
+        assert_eq!(
+            loaded.alt.as_ref().unwrap(),
+            &vec!["Manual alias".to_string(), "Provider alias".to_string()]
+        );
+        for aliases in [vec![], vec!["Provider alias".into()]] {
+            let partial = Serie {
+                alt: Some(aliases),
+                ..loaded.clone()
+            };
+            assert!(!SerieForUpdate::from_refresh(&loaded, partial)
+                .unwrap()
+                .has_update());
+        }
         assert_eq!(loaded.year, Some(2026));
         assert_eq!(loaded.tvdb, Some(42));
         assert_eq!(loaded.imdb_rating, Some(8.0));

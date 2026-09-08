@@ -191,8 +191,17 @@ impl PersonForUpdate {
         if person.kind != new_person.kind {
             updates.kind = new_person.kind;
         }
-        if person.socials != new_person.socials {
-            updates.socials = new_person.socials;
+        if let Some(returned) = new_person.socials {
+            let existing = person.socials.as_deref().unwrap_or_default();
+            let mut added = Vec::new();
+            for link in returned {
+                if !existing.contains(&link) && !added.contains(&link) {
+                    added.push(link);
+                }
+            }
+            if !added.is_empty() {
+                updates.add_socials = Some(added);
+            }
         }
         let ids = crate::domain::merge_refresh_ids(
             person.otherids.as_ref(),

@@ -50,7 +50,7 @@ pub fn book_enrichment_update(book: &Book, matched: Book) -> BookForUpdate {
     if book.volume.is_none() {
         updates.volume = matched.volume;
     }
-    if book.chapter.is_none() {
+    if book.chapter.is_none() && book.serie_ref.is_some() {
         updates.chapter = matched.chapter;
     }
     if book.airdate.is_none() {
@@ -107,5 +107,27 @@ mod tests {
             .unwrap()
             .contains("provider", "123"));
         assert!(!book_enrichment_update(&stored, Book::default()).has_update());
+    }
+    #[test]
+    fn metadata_refresh_book_chapter_requires_existing_series() {
+        let incoming = Book {
+            chapter: Some(3.0),
+            overview: Some("Description".into()),
+            ..Default::default()
+        };
+        let standalone = book_enrichment_update(&Book::default(), incoming.clone());
+        assert!(standalone.chapter.is_none());
+        assert_eq!(standalone.overview.as_deref(), Some("Description"));
+        assert!(standalone.has_update());
+        let mut linked = Book {
+            serie_ref: Some("local-series".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            book_enrichment_update(&linked, incoming.clone()).chapter,
+            Some(3.0)
+        );
+        linked.chapter = Some(1.0);
+        assert!(book_enrichment_update(&linked, incoming).chapter.is_none());
     }
 }
