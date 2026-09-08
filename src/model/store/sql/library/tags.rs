@@ -14,7 +14,6 @@ use crate::{
         },
         tags::{TagForAdd, TagForInsert, TagQuery},
     },
-    plugins::sources::error::SourcesError,
     tools::array_tools::replace_add_remove_from_array,
 };
 
@@ -122,15 +121,31 @@ impl SqliteLibraryStore {
 
     pub async fn update_tag(&self, tag_id: &str, update: TagForUpdate) -> Result<()> {
         let id = tag_id.to_string();
-        let existing_tag = self.get_tag(&tag_id).await?.ok_or_else(|| {
-            SourcesError::UnableToFindTag(
-                "store".to_string(),
-                tag_id.to_string(),
-                "update_serie".to_string(),
-            )
-        })?;
-        self.connection.call( move |conn| { 
+        self.connection.call(move |conn| {
             let tx = conn.transaction()?;
+            let existing_tag = tx.query_row(
+                "SELECT id, name, parent, type, alt, thumb, params, modified, added, generated, path, otherids FROM tags WHERE id = ?",
+                [&id], Self::row_to_tag,
+            ).optional()?;
+            let Some(existing_tag) = existing_tag else {
+                return Ok(Err(Error::TagNotFound(id)));
+            };
+            // Validate against identities before changing any parent links.
+            if let Some(parent_id) = update.parent.as_deref().filter(|id| !id.is_empty()) {
+                let cyclic: bool = tx.query_row(
+                    "WITH RECURSIVE subtree(id) AS (
+                        SELECT id FROM tags WHERE id = ?1
+                        UNION
+                        SELECT tags.id FROM tags JOIN subtree ON tags.parent = subtree.id
+                    ) SELECT EXISTS(SELECT 1 FROM subtree WHERE id = ?2)",
+                    params![id, parent_id], |row| row.get(0),
+                )?;
+                if cyclic {
+                    return Ok(Err(Error::InvalidIdForAction(
+                        "move tag beneath itself or its descendants".into(), parent_id.into(),
+                    )));
+                }
+            }
             let mut where_query = QueryBuilder::new();
             where_query.add_update(&update.name, "name");
             // An empty parent ID is an explicit move to root. Omission keeps
@@ -185,9 +200,6 @@ impl SqliteLibraryStore {
                             "SELECT id, name, parent, type, alt, thumb, params, modified, added, generated, path, otherids FROM tags WHERE id = ?",
                             [parent_id], Self::row_to_tag,
                         )?;
-                        if parent.id == existing_tag.id || parent.path.starts_with(&existing_tag.childs_path()) {
-                            return Err(tokio_rusqlite::Error::Other(std::io::Error::new(std::io::ErrorKind::InvalidInput, "A tag cannot be moved beneath itself or its descendants").into()));
-                        }
                         parent.childs_path()
                     }
                     None => existing_tag.path.clone(),
@@ -197,17 +209,22 @@ impl SqliteLibraryStore {
                 let new_prefix = format!("{}{}/", new_path, new_name);
                 let prefix_length = old_prefix.chars().count() as i64;
                 tx.execute("UPDATE tags SET path = ? WHERE id = ?", params![new_path, &existing_tag.id])?;
-                // Match the literal prefix, including wildcard characters in
-                // names, and only replace the leading ancestor path.
+                // Parent IDs identify the subtree even when sibling names match.
+                // Replace only the leading ancestor path (SQLite counts characters).
                 tx.execute(
-                    "UPDATE tags SET path = ?1 || substr(path, ?2 + 1) WHERE substr(path, 1, ?2) = ?3",
-                    params![new_prefix, prefix_length, old_prefix],
+                    "WITH RECURSIVE descendants(id) AS (
+                        SELECT id FROM tags WHERE parent = ?3
+                        UNION
+                        SELECT tags.id FROM tags JOIN descendants ON tags.parent = descendants.id
+                    ) UPDATE tags SET path = ?1 || substr(path, ?2 + 1)
+                      WHERE id IN (SELECT id FROM descendants)",
+                    params![new_prefix, prefix_length, id],
                 )?;
             }
 
             tx.commit()?;
-            Ok(())
-        }).await?;
+            Ok(Ok(()))
+        }).await??;
 
         Ok(())
     }
@@ -354,6 +371,9 @@ mod tests {
             ("p", "Parent", None),
             ("t", "Tag_%é", Some("p")),
             ("c", "Child", Some("t")),
+            ("duplicate", "Tag_%é", Some("p")),
+            ("duplicate-child", "Duplicate child", Some("duplicate")),
+            ("grandchild", "Grandchild", Some("c")),
             ("other", "TagXXé", Some("p")),
             ("other-child", "Other child", Some("other")),
         ] {
@@ -388,8 +408,20 @@ mod tests {
             assert_eq!(tag.parent, None);
             assert_eq!(tag.path, "/");
             let descendants = store.get_tag_descendants(&tag.childs_path()).await.unwrap();
-            assert_eq!(descendants.len(), 1);
-            assert_eq!(descendants[0].id, "c");
+            assert_eq!(descendants.len(), 2);
+            assert_eq!(
+                store.get_tag("grandchild").await.unwrap().unwrap().path,
+                "/Tag_%é/Child/"
+            );
+            assert_eq!(
+                store
+                    .get_tag("duplicate-child")
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .path,
+                "/Parent/Tag_%é/"
+            );
             assert_eq!(store.get_tag("c").await.unwrap().unwrap().path, "/Tag_%é/");
             assert_eq!(
                 store.get_tag("other-child").await.unwrap().unwrap().path,
@@ -416,6 +448,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tag_root_overlapping_rename_and_move_preserve_paths() {
+        let store = tag_root_store().await;
+        let (rename, move_to_root) = tokio::join!(
+            store.update_tag(
+                "t",
+                TagForUpdate {
+                    name: Some("Renamed".into()),
+                    ..Default::default()
+                }
+            ),
+            store.update_tag(
+                "t",
+                TagForUpdate {
+                    parent: Some(String::new()),
+                    ..Default::default()
+                }
+            ),
+        );
+        rename.unwrap();
+        move_to_root.unwrap();
+        let tag = store.get_tag("t").await.unwrap().unwrap();
+        assert_eq!(tag.name, "Renamed");
+        assert_eq!(tag.parent, None);
+        assert_eq!(
+            store.get_tag("c").await.unwrap().unwrap().path,
+            tag.childs_path()
+        );
+        assert_eq!(
+            store.get_tag("grandchild").await.unwrap().unwrap().path,
+            "/Renamed/Child/"
+        );
+    }
+
+    #[tokio::test]
+    async fn tag_root_move_to_duplicate_siblings_child_is_valid() {
+        let store = tag_root_store().await;
+        store
+            .update_tag(
+                "t",
+                TagForUpdate {
+                    parent: Some("duplicate-child".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            store.get_tag("c").await.unwrap().unwrap().path,
+            "/Parent/Tag_%é/Duplicate child/Tag_%é/"
+        );
+    }
+
+    #[tokio::test]
     async fn tag_root_omission_preserves_parent_and_invalid_moves_roll_back() {
         let store = tag_root_store().await;
         store
@@ -433,16 +518,22 @@ mod tests {
             Some("p")
         );
         for parent in ["missing", "t", "c"] {
-            assert!(store
+            let error = store
                 .update_tag(
                     "t",
                     TagForUpdate {
                         parent: Some(parent.into()),
                         ..Default::default()
-                    }
+                    },
                 )
                 .await
-                .is_err());
+                .unwrap_err();
+            if parent != "missing" {
+                assert_eq!(
+                    error.client_status_and_error().0,
+                    hyper::StatusCode::BAD_REQUEST
+                );
+            }
             assert_eq!(
                 store.get_tag("t").await.unwrap().unwrap().parent.as_deref(),
                 Some("p")
