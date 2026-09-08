@@ -185,6 +185,12 @@ impl SqliteLibraryStore {
                 where_query.add_update(&update.airdate, "airdate");
                 where_query.add_update(&update.digitalairdate, "digitalairdate");
 
+                where_query.add_update(&update.duration, "duration");
+                where_query.add_update(&update.overview, "overview");
+                where_query.add_update(&update.country, "country");
+                where_query.add_update(&update.lang, "lang");
+                where_query.add_update(&update.original, "original");
+
                 where_query.add_update(&update.status, "status");
                 where_query.add_update(&update.trailer, "trailer");
 
@@ -296,5 +302,70 @@ impl SqliteLibraryStore {
             })
             .await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SqliteLibraryStore;
+    use crate::domain::movie::{Movie, MovieForUpdate};
+
+    #[tokio::test]
+    async fn movie_metadata_updates_roundtrip() {
+        let connection = tokio_rusqlite::Connection::open_in_memory().await.unwrap();
+        let store = SqliteLibraryStore::new(connection).await.unwrap();
+        store
+            .add_movie(Movie {
+                id: "movie-refresh".to_string(),
+                name: "Example".to_string(),
+                imdb: Some("tt1234567".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // Each field must trigger an update even when it is the only change.
+        for update in [
+            MovieForUpdate {
+                overview: Some("A movie overview".to_string()),
+                ..Default::default()
+            },
+            MovieForUpdate {
+                duration: Some(120),
+                ..Default::default()
+            },
+            MovieForUpdate {
+                country: Some("US".to_string()),
+                ..Default::default()
+            },
+            MovieForUpdate {
+                lang: Some("en".to_string()),
+                ..Default::default()
+            },
+            MovieForUpdate {
+                original: Some("Original title".to_string()),
+                ..Default::default()
+            },
+            MovieForUpdate {
+                imdb_rating: Some(7.5),
+                imdb_votes: Some(1234),
+                ..Default::default()
+            },
+        ] {
+            assert!(update.has_update());
+            store.update_movie("movie-refresh", update).await.unwrap();
+        }
+
+        let movie = store.get_movie("movie-refresh").await.unwrap().unwrap();
+        assert_eq!(movie.overview.as_deref(), Some("A movie overview"));
+        assert_eq!(movie.duration, Some(120));
+        assert_eq!(movie.country.as_deref(), Some("US"));
+        assert_eq!(movie.lang.as_deref(), Some("en"));
+        assert_eq!(movie.original.as_deref(), Some("Original title"));
+        assert_eq!(movie.imdb_rating, Some(7.5));
+        assert_eq!(movie.imdb_votes, Some(1234));
+        assert_eq!(movie.imdb.as_deref(), Some("tt1234567"));
+        assert_eq!(movie.name, "Example");
+        assert!(!MovieForUpdate::default().has_update());
     }
 }

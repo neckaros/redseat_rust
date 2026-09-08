@@ -663,7 +663,7 @@ impl ModelController {
             ids: Some(ids.clone()),
             page_key: None,
         };
-        let new_movie = if let Some(movie) = self
+        let mut new_movie = if let Some(movie) = self
             .lookup_movie_metadata(library_id, lookup_query, requesting_user)
             .await?
         {
@@ -676,10 +676,51 @@ impl ModelController {
             )
             .into());
         };
+        // Metadata providers may omit IMDb IDs already known by the library.
+        if new_movie.imdb.is_none() {
+            new_movie.imdb = movie.imdb.clone();
+        }
+        new_movie.fill_imdb_ratings(&self.imdb).await;
         let mut updates = MovieForUpdate {
             ..Default::default()
         };
 
+        if movie.name != new_movie.name {
+            updates.name = Some(new_movie.name);
+        }
+        if movie.kind != new_movie.kind {
+            updates.kind = new_movie.kind;
+        }
+        if movie.year != new_movie.year {
+            updates.year = new_movie.year.map(u32::from);
+        }
+        if movie.duration != new_movie.duration {
+            updates.duration = new_movie.duration.map(u64::from);
+        }
+        if movie.overview != new_movie.overview {
+            updates.overview = new_movie.overview;
+        }
+        if movie.country != new_movie.country {
+            updates.country = new_movie.country;
+        }
+        if movie.lang != new_movie.lang {
+            updates.lang = new_movie.lang;
+        }
+        if movie.original != new_movie.original {
+            updates.original = new_movie.original;
+        }
+        if movie.slug != new_movie.slug {
+            updates.slug = new_movie.slug;
+        }
+        if movie.trakt != new_movie.trakt {
+            updates.trakt = new_movie.trakt;
+        }
+        if movie.imdb_rating != new_movie.imdb_rating {
+            updates.imdb_rating = new_movie.imdb_rating;
+        }
+        if movie.imdb_votes != new_movie.imdb_votes {
+            updates.imdb_votes = new_movie.imdb_votes;
+        }
         if movie.status != new_movie.status {
             updates.status = new_movie.status;
         }

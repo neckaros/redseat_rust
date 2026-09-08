@@ -60,6 +60,11 @@ impl MovieForUpdate {
             || self.trakt_votes.is_some()
             || self.trailer.is_some()
             || self.year.is_some()
+            || self.duration.is_some()
+            || self.overview.is_some()
+            || self.country.is_some()
+            || self.lang.is_some()
+            || self.original.is_some()
     }
 }
 
