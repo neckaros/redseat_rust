@@ -439,7 +439,7 @@ impl ModelController {
 
         let mut all_updated = vec![tag.clone()];
         if update.name.is_some() || update.parent.is_some() || update.params.is_some() {
-            let mut updated = store.get_tag_descendants(&tag.childs_path()).await?;
+            let mut updated = store.get_tag_descendants(&tag.id).await?;
             all_updated.append(&mut updated);
         }
         self.send_tags(TagMessage {

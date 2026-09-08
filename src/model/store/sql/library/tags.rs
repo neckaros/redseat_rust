@@ -35,11 +35,16 @@ impl SqliteLibraryStore {
         })
     }
 
-    pub async fn get_tag_descendants(&self, prefix: &str) -> Result<Vec<Tag>> {
-        let prefix = prefix.to_string();
+    pub async fn get_tag_descendants(&self, tag_id: &str) -> Result<Vec<Tag>> {
+        let tag_id = tag_id.to_string();
         let tags = self.connection.call(move |conn| {
-            let mut query = conn.prepare("SELECT id, name, parent, type, alt, thumb, params, modified, added, generated, path, otherids FROM tags WHERE substr(path, 1, ?1) = ?2")?;
-            let rows = query.query_map(params![prefix.chars().count() as i64, prefix], Self::row_to_tag)?;
+            let mut query = conn.prepare("WITH RECURSIVE descendants(id) AS (
+                SELECT id FROM tags WHERE parent = ?1
+                UNION
+                SELECT tags.id FROM tags JOIN descendants ON tags.parent = descendants.id
+            ) SELECT id, name, parent, type, alt, thumb, params, modified, added, generated, path, otherids
+              FROM tags WHERE id IN (SELECT id FROM descendants) AND id != ?1")?;
+            let rows = query.query_map([tag_id], Self::row_to_tag)?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         }).await?;
         Ok(tags)
@@ -407,7 +412,7 @@ mod tests {
             let tag = store.get_tag("t").await.unwrap().unwrap();
             assert_eq!(tag.parent, None);
             assert_eq!(tag.path, "/");
-            let descendants = store.get_tag_descendants(&tag.childs_path()).await.unwrap();
+            let descendants = store.get_tag_descendants(&tag.id).await.unwrap();
             assert_eq!(descendants.len(), 2);
             assert_eq!(
                 store.get_tag("grandchild").await.unwrap().unwrap().path,
@@ -427,6 +432,63 @@ mod tests {
                 store.get_tag("other-child").await.unwrap().unwrap().path,
                 "/Parent/TagXXé/"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn tag_root_descendant_events_exclude_same_named_siblings() {
+        for move_to_root in [false, true] {
+            let store = tag_root_store().await;
+            if move_to_root {
+                store
+                    .update_tag(
+                        "duplicate",
+                        TagForUpdate {
+                            parent: Some(String::new()),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .unwrap();
+            } else {
+                store
+                    .update_tag(
+                        "t",
+                        TagForUpdate {
+                            name: Some("Unique".into()),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .unwrap();
+            }
+            store
+                .update_tag(
+                    "t",
+                    TagForUpdate {
+                        parent: move_to_root.then(String::new),
+                        name: Some("Tag_%é".into()),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+
+            let tag = store.get_tag("t").await.unwrap().unwrap();
+            let sibling = store.get_tag("duplicate").await.unwrap().unwrap();
+            assert_eq!(tag.childs_path(), sibling.childs_path());
+            let mut ids: Vec<_> = store
+                .get_tag_descendants(&tag.id)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|tag| tag.id)
+                .collect();
+            ids.sort();
+            assert_eq!(ids, vec!["c", "grandchild"]);
+            let sibling_descendants = store.get_tag_descendants(&sibling.id).await.unwrap();
+            assert_eq!(sibling_descendants.len(), 1);
+            assert_eq!(sibling_descendants[0].id, "duplicate-child");
         }
     }
 
