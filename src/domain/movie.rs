@@ -78,17 +78,10 @@ impl MovieForUpdate {
         if movie.trakt != new_movie.trakt {
             updates.trakt = new_movie.trakt;
         }
-        if let Some(returned_ids) = new_movie.otherids {
-            let mut merged_ids = movie.otherids.clone().unwrap_or_default();
-            // A provider response may contain only a subset of the known IDs.
-            for entry in returned_ids.as_slice() {
-                if let Some((key, value)) = entry.split_once(':') {
-                    merged_ids.add(key, value);
-                }
-            }
-            if !merged_ids.as_slice().is_empty() && movie.otherids.as_ref() != Some(&merged_ids) {
-                updates.otherids = Some(serde_json::to_string(&merged_ids)?);
-            }
+        let merged_ids =
+            super::merge_refresh_ids(movie.otherids.as_ref(), new_movie.otherids.as_ref());
+        if merged_ids != movie.otherids {
+            updates.otherids = merged_ids.as_ref().map(serde_json::to_string).transpose()?;
         }
         if movie.imdb_rating != new_movie.imdb_rating {
             updates.imdb_rating = new_movie.imdb_rating;

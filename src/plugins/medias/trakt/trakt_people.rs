@@ -79,6 +79,8 @@ impl From<TraktPerson> for Person {
             id: format!("trakt:{}", value.ids.trakt.unwrap()),
             name: value.name,
             bio: value.biography,
+            birthday: value.birthday,
+            death: value.death,
             country: value.birthplace,
             gender: value.gender.map(Gender::from),
             imdb: value.ids.imdb,
@@ -123,4 +125,28 @@ pub struct TraktCrew {
 pub struct TraktPeopleSearchElement {
     pub score: f64,
     pub person: TraktPerson,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::people::PersonForUpdate;
+    #[test]
+    fn metadata_refresh_person_converts_and_updates_provider_fields() {
+        let raw: TraktPerson = serde_json::from_value(serde_json::json!({
+            "name":"Person", "ids":{"trakt":42}, "birthday":"1980-01-01", "death":"2020-01-01",
+            "birthplace":"France", "gender":"female", "known_for_department":"Acting", "homepage":"https://example.com"
+        })).unwrap();
+        let person: Person = raw.into();
+        assert!(person.birthday.is_some());
+        assert!(person.death.is_some());
+        let update = PersonForUpdate::from_refresh(&Person::default(), person);
+        assert_eq!(update.country.as_deref(), Some("France"));
+        assert_eq!(update.gender, Some(Gender::Female));
+        assert_eq!(update.trakt, Some(42));
+        assert!(update.birthday.is_some());
+        assert!(update.death.is_some());
+        assert_eq!(update.kind.as_deref(), Some("Acting"));
+        assert!(!update.socials.unwrap().is_empty());
+    }
 }

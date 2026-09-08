@@ -505,28 +505,7 @@ impl ModelController {
             });
 
         if let Some(matched) = matched {
-            let mut updates = BookForUpdate::default();
-            if book.isbn13.is_none() {
-                updates.isbn13 = matched.isbn13;
-            }
-            if book.openlibrary_edition_id.is_none() {
-                updates.openlibrary_edition_id = matched.openlibrary_edition_id;
-            }
-            if book.openlibrary_work_id.is_none() {
-                updates.openlibrary_work_id = matched.openlibrary_work_id;
-            }
-            if book.google_books_volume_id.is_none() {
-                updates.google_books_volume_id = matched.google_books_volume_id;
-            }
-            if book.asin.is_none() {
-                updates.asin = matched.asin;
-            }
-            if book.year.is_none() {
-                updates.year = matched.year;
-            }
-            if book.overview.is_none() {
-                updates.overview = matched.overview;
-            }
+            let updates = crate::domain::book::book_enrichment_update(&book, matched);
             if updates.has_update() {
                 self.update_book(
                     library_id,

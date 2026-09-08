@@ -58,3 +58,23 @@ pub enum ElementAction {
     Added,
     Updated,
 }
+
+/// Merge provider IDs without discarding IDs from providers absent in this response.
+pub fn merge_refresh_ids(
+    existing: Option<&rs_plugin_common_interfaces::domain::other_ids::OtherIds>,
+    returned: Option<&rs_plugin_common_interfaces::domain::other_ids::OtherIds>,
+) -> Option<rs_plugin_common_interfaces::domain::other_ids::OtherIds> {
+    let mut merged = existing.cloned().unwrap_or_default();
+    if let Some(returned) = returned {
+        for entry in returned.as_slice() {
+            if let Some((key, value)) = entry.split_once(':') {
+                merged.add(key, value);
+            }
+        }
+    }
+    if merged.as_slice().is_empty() {
+        existing.cloned()
+    } else {
+        Some(merged)
+    }
+}

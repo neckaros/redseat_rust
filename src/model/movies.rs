@@ -419,9 +419,9 @@ impl ModelController {
             .await?;
         //Imdb rating
         for mut movie in movies {
-            let existing_votes = movie.imdb_votes.unwrap_or(0);
+            let existing_rating = (movie.imdb_rating, movie.imdb_votes);
             movie.fill_imdb_ratings(&self.imdb).await;
-            if existing_votes != movie.imdb_votes.unwrap_or(0) {
+            if existing_rating != (movie.imdb_rating, movie.imdb_votes) {
                 self.update_movie(
                     library_id,
                     movie.id,
