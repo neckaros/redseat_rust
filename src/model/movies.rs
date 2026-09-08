@@ -681,70 +681,7 @@ impl ModelController {
             new_movie.imdb = movie.imdb.clone();
         }
         new_movie.fill_imdb_ratings(&self.imdb).await;
-        let mut updates = MovieForUpdate {
-            ..Default::default()
-        };
-
-        if movie.name != new_movie.name {
-            updates.name = Some(new_movie.name);
-        }
-        if movie.kind != new_movie.kind {
-            updates.kind = new_movie.kind;
-        }
-        if movie.year != new_movie.year {
-            updates.year = new_movie.year.map(u32::from);
-        }
-        if movie.duration != new_movie.duration {
-            updates.duration = new_movie.duration.map(u64::from);
-        }
-        if movie.overview != new_movie.overview {
-            updates.overview = new_movie.overview;
-        }
-        if movie.country != new_movie.country {
-            updates.country = new_movie.country;
-        }
-        if movie.lang != new_movie.lang {
-            updates.lang = new_movie.lang;
-        }
-        if movie.original != new_movie.original {
-            updates.original = new_movie.original;
-        }
-        if movie.slug != new_movie.slug {
-            updates.slug = new_movie.slug;
-        }
-        if movie.trakt != new_movie.trakt {
-            updates.trakt = new_movie.trakt;
-        }
-        if movie.imdb_rating != new_movie.imdb_rating {
-            updates.imdb_rating = new_movie.imdb_rating;
-        }
-        if movie.imdb_votes != new_movie.imdb_votes {
-            updates.imdb_votes = new_movie.imdb_votes;
-        }
-        if movie.status != new_movie.status {
-            updates.status = new_movie.status;
-        }
-        if movie.trakt_rating != new_movie.trakt_rating {
-            updates.trakt_rating = new_movie.trakt_rating;
-        }
-        if movie.trakt_votes != new_movie.trakt_votes {
-            updates.trakt_votes = new_movie.trakt_votes;
-        }
-        if movie.trailer != new_movie.trailer {
-            updates.trailer = new_movie.trailer;
-        }
-        if movie.imdb != new_movie.imdb {
-            updates.imdb = new_movie.imdb;
-        }
-        if movie.tmdb != new_movie.tmdb {
-            updates.tmdb = new_movie.tmdb;
-        }
-        if movie.digitalairdate != new_movie.digitalairdate {
-            updates.digitalairdate = new_movie.digitalairdate;
-        }
-        if movie.airdate != new_movie.airdate {
-            updates.airdate = new_movie.airdate;
-        }
+        let updates = MovieForUpdate::from_refresh(&movie, new_movie)?;
 
         let new_movie = self
             .update_movie(library_id, movie_id.to_string(), updates, requesting_user)

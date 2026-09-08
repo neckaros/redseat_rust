@@ -368,4 +368,28 @@ mod tests {
         assert_eq!(movie.name, "Example");
         assert!(!MovieForUpdate::default().has_update());
     }
+    #[tokio::test]
+    async fn movie_refresh_other_ids_and_max_duration_roundtrip() {
+        use rs_plugin_common_interfaces::domain::other_ids::OtherIds;
+        let connection = tokio_rusqlite::Connection::open_in_memory().await.unwrap();
+        let store = SqliteLibraryStore::new(connection).await.unwrap();
+        let mut movie = Movie {
+            id: "refresh-ids".to_string(),
+            name: "Example".to_string(),
+            ..Default::default()
+        };
+        store.add_movie(movie.clone()).await.unwrap();
+        for value in ["provider:first", "provider:changed"] {
+            let refreshed = Movie {
+                otherids: Some(OtherIds::from(vec![value.to_string()])),
+                duration: Some(u32::MAX),
+                ..movie.clone()
+            };
+            let update = MovieForUpdate::from_refresh(&movie, refreshed.clone()).unwrap();
+            store.update_movie(&movie.id, update).await.unwrap();
+            movie = store.get_movie(&movie.id).await.unwrap().unwrap();
+            assert_eq!(movie.otherids, refreshed.otherids);
+            assert_eq!(movie.duration, Some(u32::MAX));
+        }
+    }
 }
