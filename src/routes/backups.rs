@@ -12,6 +12,7 @@ use crate::{
 use axum::{
     body::Body,
     extract::{Path, State},
+    http::{header, HeaderValue},
     response::Response,
     routing::{delete, get, patch, post},
     Json, Router,
@@ -97,9 +98,15 @@ async fn handler_get_latest_backup_media(
         "handler_get_latest_backup_media".to_string(),
     ))?;
     let reader = mc.get_backup_file_reader(&latest.id, &user).await?;
-    let response = reader
+    let mut response = reader
         .into_response("nope", None, None, Some((mc.clone(), &user)))
         .await?;
+    if latest.file == "db" && latest.library.is_some() {
+        response.headers_mut().insert(
+            header::CONTENT_DISPOSITION,
+            HeaderValue::from_static("attachment; filename=\"library.rslibrary\""),
+        );
+    }
     Ok(response)
 }
 
