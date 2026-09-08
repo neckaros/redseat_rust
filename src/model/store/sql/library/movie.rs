@@ -376,6 +376,7 @@ mod tests {
         let mut movie = Movie {
             id: "refresh-ids".to_string(),
             name: "Example".to_string(),
+            otherids: Some(OtherIds::from(vec!["offline:keep".to_string()])),
             ..Default::default()
         };
         store.add_movie(movie.clone()).await.unwrap();
@@ -388,7 +389,13 @@ mod tests {
             let update = MovieForUpdate::from_refresh(&movie, refreshed.clone()).unwrap();
             store.update_movie(&movie.id, update).await.unwrap();
             movie = store.get_movie(&movie.id).await.unwrap().unwrap();
-            assert_eq!(movie.otherids, refreshed.otherids);
+            let ids = movie.otherids.as_ref().unwrap();
+            assert!(ids.contains("offline", "keep"));
+            assert_eq!(
+                ids.get("provider").as_deref(),
+                value.strip_prefix("provider:")
+            );
+            assert_eq!(ids.as_slice().len(), 2);
             assert_eq!(movie.duration, Some(u32::MAX));
         }
     }

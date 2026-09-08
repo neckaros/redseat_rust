@@ -78,12 +78,17 @@ impl MovieForUpdate {
         if movie.trakt != new_movie.trakt {
             updates.trakt = new_movie.trakt;
         }
-        if movie.otherids != new_movie.otherids {
-            updates.otherids = new_movie
-                .otherids
-                .as_ref()
-                .map(serde_json::to_string)
-                .transpose()?;
+        if let Some(returned_ids) = new_movie.otherids {
+            let mut merged_ids = movie.otherids.clone().unwrap_or_default();
+            // A provider response may contain only a subset of the known IDs.
+            for entry in returned_ids.as_slice() {
+                if let Some((key, value)) = entry.split_once(':') {
+                    merged_ids.add(key, value);
+                }
+            }
+            if !merged_ids.as_slice().is_empty() && movie.otherids.as_ref() != Some(&merged_ids) {
+                updates.otherids = Some(serde_json::to_string(&merged_ids)?);
+            }
         }
         if movie.imdb_rating != new_movie.imdb_rating {
             updates.imdb_rating = new_movie.imdb_rating;
@@ -202,6 +207,42 @@ mod tests {
         let missing = MovieForUpdate::from_refresh(&movie, Movie::default()).unwrap();
         assert!(missing.otherids.is_none());
         assert!(!missing.has_update());
+    }
+
+    #[test]
+    fn movie_refresh_merges_partial_other_ids_by_provider() {
+        let movie = Movie {
+            otherids: Some(OtherIds::from(vec![
+                "provider:first".to_string(),
+                "offline:keep".to_string(),
+            ])),
+            ..Default::default()
+        };
+        let refreshed = Movie {
+            otherids: Some(OtherIds::from(vec![
+                "PROVIDER:changed:123".to_string(),
+                "new:456".to_string(),
+            ])),
+            ..movie.clone()
+        };
+        let update = MovieForUpdate::from_refresh(&movie, refreshed).unwrap();
+        let merged: OtherIds = serde_json::from_str(update.otherids.as_ref().unwrap()).unwrap();
+        assert_eq!(
+            merged.as_slice(),
+            &["provider:changed:123", "offline:keep", "new:456"]
+        );
+        for ids in [
+            OtherIds::default(),
+            OtherIds::from(vec!["provider:first".to_string()]),
+        ] {
+            let refreshed = Movie {
+                otherids: Some(ids),
+                ..movie.clone()
+            };
+            assert!(!MovieForUpdate::from_refresh(&movie, refreshed)
+                .unwrap()
+                .has_update());
+        }
     }
 
     #[test]
