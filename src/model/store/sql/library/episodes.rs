@@ -389,8 +389,62 @@ ORDER BY airdate ASC
                     .collect();
                 let mut changed_keys: HashMap<(u32, u32), ElementAction> = HashMap::new();
 
-                for episode in episodes {
+                for mut episode in episodes {
                     let key = (episode.season, episode.number);
+                    if let Some(stored) = existing.get(&key) {
+                        if episode.abs.is_none() {
+                            episode.abs = stored.abs;
+                        }
+                        if episode.name.is_none() {
+                            episode.name = stored.name.clone();
+                        }
+                        if episode.overview.is_none() {
+                            episode.overview = stored.overview.clone();
+                        }
+                        if episode.airdate.is_none() {
+                            episode.airdate = stored.airdate;
+                        }
+                        if episode.duration.is_none() {
+                            episode.duration = stored.duration;
+                        }
+                        if episode.alt.is_none() {
+                            episode.alt = stored.alt.clone();
+                        }
+                        if episode.params.is_none() {
+                            episode.params = stored.params.clone();
+                        }
+                        if episode.imdb.is_none() {
+                            episode.imdb = stored.imdb.clone();
+                        }
+                        if episode.slug.is_none() {
+                            episode.slug = stored.slug.clone();
+                        }
+                        if episode.tmdb.is_none() {
+                            episode.tmdb = stored.tmdb;
+                        }
+                        if episode.trakt.is_none() {
+                            episode.trakt = stored.trakt;
+                        }
+                        if episode.tvdb.is_none() {
+                            episode.tvdb = stored.tvdb;
+                        }
+                        if episode.imdb_rating.is_none() {
+                            episode.imdb_rating = stored.imdb_rating;
+                        }
+                        if episode.imdb_votes.is_none() {
+                            episode.imdb_votes = stored.imdb_votes;
+                        }
+                        if episode.trakt_rating.is_none() {
+                            episode.trakt_rating = stored.trakt_rating;
+                        }
+                        if episode.trakt_votes.is_none() {
+                            episode.trakt_votes = stored.trakt_votes;
+                        }
+                        episode.otherids = crate::domain::merge_refresh_ids(
+                            stored.otherids.as_ref(),
+                            episode.otherids.as_ref(),
+                        );
+                    }
                     let existed = existing.contains_key(&key);
                     let changed = tx.execute(
                         "INSERT INTO episodes (
@@ -657,4 +711,48 @@ mod tests {
         assert_eq!(page.len(), 1);
         assert_eq!(page[0].number, 2);
     }
+    #[tokio::test]
+    async fn metadata_refresh_episode_preserves_omitted_fields() {
+        use rs_plugin_common_interfaces::domain::other_ids::OtherIds;
+        let connection = tokio_rusqlite::Connection::open_in_memory().await.unwrap();
+        let store = SqliteLibraryStore::new(connection).await.unwrap();
+        let mut stored = episode(1, "Original");
+        stored.overview = Some("Description".into());
+        stored.duration = Some(45);
+        stored.imdb_rating = Some(8.0);
+        stored.imdb_votes = Some(100);
+        stored.otherids = Some(OtherIds::from(vec![
+            "offline:keep".into(),
+            "provider:old".into(),
+        ]));
+        store.add_episode(stored).await.unwrap();
+        let mut fresh = episode(1, "Updated");
+        fresh.otherids = Some(OtherIds::from(vec!["provider:new".into()]));
+        let sync = store
+            .sync_serie_episodes("serie-1", vec![fresh.clone()])
+            .await
+            .unwrap();
+        let loaded = &sync.episodes[0];
+        assert_eq!(loaded.name.as_deref(), Some("Updated"));
+        assert_eq!(loaded.overview.as_deref(), Some("Description"));
+        assert_eq!(loaded.duration, Some(45));
+        assert_eq!(loaded.imdb_rating, Some(8.0));
+        assert_eq!(loaded.imdb_votes, Some(100));
+        assert!(loaded
+            .otherids
+            .as_ref()
+            .unwrap()
+            .contains("offline", "keep"));
+        assert!(loaded
+            .otherids
+            .as_ref()
+            .unwrap()
+            .contains("provider", "new"));
+        let unchanged = store
+            .sync_serie_episodes("serie-1", vec![fresh])
+            .await
+            .unwrap();
+        assert!(unchanged.changes.is_empty());
+    }
+
 }

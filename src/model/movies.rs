@@ -419,9 +419,9 @@ impl ModelController {
             .await?;
         //Imdb rating
         for mut movie in movies {
-            let existing_votes = movie.imdb_votes.unwrap_or(0);
+            let existing_rating = (movie.imdb_rating, movie.imdb_votes);
             movie.fill_imdb_ratings(&self.imdb).await;
-            if existing_votes != movie.imdb_votes.unwrap_or(0) {
+            if existing_rating != (movie.imdb_rating, movie.imdb_votes) {
                 self.update_movie(
                     library_id,
                     movie.id,
@@ -663,7 +663,7 @@ impl ModelController {
             ids: Some(ids.clone()),
             page_key: None,
         };
-        let new_movie = if let Some(movie) = self
+        let mut new_movie = if let Some(movie) = self
             .lookup_movie_metadata(library_id, lookup_query, requesting_user)
             .await?
         {
@@ -676,34 +676,12 @@ impl ModelController {
             )
             .into());
         };
-        let mut updates = MovieForUpdate {
-            ..Default::default()
-        };
-
-        if movie.status != new_movie.status {
-            updates.status = new_movie.status;
+        // Metadata providers may omit IMDb IDs already known by the library.
+        if new_movie.imdb.is_none() {
+            new_movie.imdb = movie.imdb.clone();
         }
-        if movie.trakt_rating != new_movie.trakt_rating {
-            updates.trakt_rating = new_movie.trakt_rating;
-        }
-        if movie.trakt_votes != new_movie.trakt_votes {
-            updates.trakt_votes = new_movie.trakt_votes;
-        }
-        if movie.trailer != new_movie.trailer {
-            updates.trailer = new_movie.trailer;
-        }
-        if movie.imdb != new_movie.imdb {
-            updates.imdb = new_movie.imdb;
-        }
-        if movie.tmdb != new_movie.tmdb {
-            updates.tmdb = new_movie.tmdb;
-        }
-        if movie.digitalairdate != new_movie.digitalairdate {
-            updates.digitalairdate = new_movie.digitalairdate;
-        }
-        if movie.airdate != new_movie.airdate {
-            updates.airdate = new_movie.airdate;
-        }
+        new_movie.fill_imdb_ratings(&self.imdb).await;
+        let updates = MovieForUpdate::from_refresh(&movie, new_movie)?;
 
         let new_movie = self
             .update_movie(library_id, movie_id.to_string(), updates, requesting_user)

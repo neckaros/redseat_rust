@@ -151,6 +151,69 @@ pub struct PersonForUpdate {
     pub remove_otherids: Option<Vec<String>>,
 }
 
+impl PersonForUpdate {
+    pub fn from_refresh(person: &Person, new_person: Person) -> Self {
+        let mut updates = PersonForUpdate {
+            ..Default::default()
+        };
+
+        if person.name != new_person.name {
+            updates.name = Some(new_person.name);
+        }
+        if person.bio != new_person.bio {
+            updates.bio = new_person.bio;
+        }
+        if person.imdb != new_person.imdb {
+            updates.imdb = new_person.imdb;
+        }
+        if person.tmdb != new_person.tmdb {
+            updates.tmdb = new_person.tmdb;
+        }
+        if person.slug != new_person.slug {
+            updates.slug = new_person.slug;
+        }
+        if person.birthday != new_person.birthday {
+            updates.birthday = new_person.birthday;
+        }
+        if person.death != new_person.death {
+            updates.death = new_person.death;
+        }
+
+        if person.country != new_person.country {
+            updates.country = new_person.country;
+        }
+        if person.gender != new_person.gender {
+            updates.gender = new_person.gender;
+        }
+        if person.trakt != new_person.trakt {
+            updates.trakt = new_person.trakt;
+        }
+        if person.kind != new_person.kind {
+            updates.kind = new_person.kind;
+        }
+        if let Some(returned) = new_person.socials {
+            let existing = person.socials.as_deref().unwrap_or_default();
+            let mut added = Vec::new();
+            for link in returned {
+                if !existing.contains(&link) && !added.contains(&link) {
+                    added.push(link);
+                }
+            }
+            if !added.is_empty() {
+                updates.add_socials = Some(added);
+            }
+        }
+        let ids = crate::domain::merge_refresh_ids(
+            person.otherids.as_ref(),
+            new_person.otherids.as_ref(),
+        );
+        if ids != person.otherids {
+            updates.otherids = ids;
+        }
+        updates
+    }
+}
+
 lazy_static! {
     static ref FACE_RECOGNITION_SERVICE: Mutex<Option<Arc<FaceRecognitionService>>> =
         Mutex::new(None);
@@ -858,31 +921,7 @@ impl ModelController {
             .ok_or(RsError::NotFoundPerson(person_id.to_string()))?;
         let ids: RsIds = person.clone().into();
         let new_person = self.trakt.get_person(&ids).await?;
-        let mut updates = PersonForUpdate {
-            ..Default::default()
-        };
-
-        if person.name != new_person.name {
-            updates.name = Some(new_person.name);
-        }
-        if person.bio != new_person.bio {
-            updates.bio = new_person.bio;
-        }
-        if person.imdb != new_person.imdb {
-            updates.imdb = new_person.imdb;
-        }
-        if person.tmdb != new_person.tmdb {
-            updates.tmdb = new_person.tmdb;
-        }
-        if person.slug != new_person.slug {
-            updates.slug = new_person.slug;
-        }
-        if person.birthday != new_person.birthday {
-            updates.birthday = new_person.birthday;
-        }
-        if person.death != new_person.death {
-            updates.death = new_person.death;
-        }
+        let updates = PersonForUpdate::from_refresh(&person, new_person);
 
         let new_person = self
             .update_person(library_id, person_id.to_string(), updates, requesting_user)

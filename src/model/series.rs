@@ -141,6 +141,87 @@ fn external_serie_image_fallback(
 }
 
 impl SerieForUpdate {
+    pub fn from_refresh(existing: &Serie, incoming: Serie) -> serde_json::Result<Self> {
+        let mut update = Self::default();
+        if existing.name != incoming.name {
+            update.name = Some(incoming.name);
+        }
+        if existing.kind != incoming.kind {
+            update.kind = incoming.kind.map(|kind| kind.to_string());
+        }
+        if let Some(returned) = incoming.alt {
+            let stored = existing.alt.as_deref().unwrap_or_default();
+            let mut added = Vec::new();
+            for alias in returned {
+                if !stored.contains(&alias) && !added.contains(&alias) {
+                    added.push(alias);
+                }
+            }
+            if !added.is_empty() {
+                update.add_alts = Some(added);
+            }
+        }
+        if existing.status != incoming.status {
+            update.status = incoming.status;
+        }
+        if existing.params != incoming.params {
+            update.params = incoming.params;
+        }
+        if existing.imdb != incoming.imdb {
+            update.imdb = incoming.imdb;
+        }
+        if existing.slug != incoming.slug {
+            update.slug = incoming.slug;
+        }
+        if existing.tmdb != incoming.tmdb {
+            update.tmdb = incoming.tmdb;
+        }
+        if existing.trakt != incoming.trakt {
+            update.trakt = incoming.trakt;
+        }
+        if existing.tvdb != incoming.tvdb {
+            update.tvdb = incoming.tvdb;
+        }
+        if existing.openlibrary_work_id != incoming.openlibrary_work_id {
+            update.openlibrary_work_id = incoming.openlibrary_work_id;
+        }
+        if existing.anilist_manga_id != incoming.anilist_manga_id {
+            update.anilist_manga_id = incoming.anilist_manga_id;
+        }
+        if existing.mangadex_manga_uuid != incoming.mangadex_manga_uuid {
+            update.mangadex_manga_uuid = incoming.mangadex_manga_uuid;
+        }
+        if existing.myanimelist_manga_id != incoming.myanimelist_manga_id {
+            update.myanimelist_manga_id = incoming.myanimelist_manga_id;
+        }
+        if existing.imdb_rating != incoming.imdb_rating {
+            update.imdb_rating = incoming.imdb_rating;
+        }
+        if existing.imdb_votes != incoming.imdb_votes {
+            update.imdb_votes = incoming.imdb_votes;
+        }
+        if existing.trakt_rating != incoming.trakt_rating {
+            update.trakt_rating = incoming.trakt_rating;
+        }
+        if existing.trakt_votes != incoming.trakt_votes {
+            update.trakt_votes = incoming.trakt_votes;
+        }
+        if existing.trailer != incoming.trailer {
+            update.trailer = incoming.trailer;
+        }
+        if existing.year != incoming.year {
+            update.year = incoming.year;
+        }
+        let ids = crate::domain::merge_refresh_ids(
+            existing.otherids.as_ref(),
+            incoming.otherids.as_ref(),
+        );
+        if ids != existing.otherids {
+            update.otherids = ids.as_ref().map(serde_json::to_string).transpose()?;
+        }
+        Ok(update)
+    }
+
     pub fn has_update(&self) -> bool {
         self != &SerieForUpdate::default()
     }
@@ -684,28 +765,12 @@ impl ModelController {
             )
             .into());
         };
-        let mut updates = SerieForUpdate {
-            ..Default::default()
-        };
-
-        if serie.status != new_serie.status {
-            updates.status = new_serie.status;
+        let mut new_serie = new_serie;
+        if new_serie.imdb.is_none() {
+            new_serie.imdb = serie.imdb.clone();
         }
-        if serie.trakt_rating != new_serie.trakt_rating {
-            updates.trakt_rating = new_serie.trakt_rating;
-        }
-        if serie.trakt_votes != new_serie.trakt_votes {
-            updates.trakt_votes = new_serie.trakt_votes;
-        }
-        if serie.trailer != new_serie.trailer {
-            updates.trailer = new_serie.trailer;
-        }
-        if serie.imdb != new_serie.imdb {
-            updates.imdb = new_serie.imdb;
-        }
-        if serie.tmdb != new_serie.tmdb {
-            updates.tmdb = new_serie.tmdb;
-        }
+        new_serie.fill_imdb_ratings(&self.imdb).await;
+        let updates = SerieForUpdate::from_refresh(&serie, new_serie)?;
 
         let new_serie = self
             .update_serie(library_id, serie_id.to_string(), updates, requesting_user)
@@ -727,10 +792,10 @@ impl ModelController {
             .collect();
         //Imdb rating
         for mut serie in all_series {
-            let existing_votes = serie.imdb_votes.unwrap_or(0);
+            let existing_rating = (serie.imdb_rating, serie.imdb_votes);
             serie.fill_imdb_ratings(&self.imdb).await;
             let serieid = serie.id.clone();
-            if existing_votes != serie.imdb_votes.unwrap_or(0) {
+            if existing_rating != (serie.imdb_rating, serie.imdb_votes) {
                 self.update_serie(
                     library_id,
                     serie.id,

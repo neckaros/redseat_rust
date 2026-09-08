@@ -172,6 +172,7 @@ impl SqliteLibraryStore {
                 where_query.add_update(&update.name, "name");
                 where_query.add_update(&update.kind, "type");
 
+                where_query.add_update(&update.params, "params");
                 where_query.add_update(&update.status, "status");
                 where_query.add_update(&update.trailer, "trailer");
 
@@ -342,4 +343,77 @@ mod tests {
         let updated = store.get_serie("serie-books-ids").await.unwrap().unwrap();
         assert_eq!(updated.item.myanimelist_manga_id, Some(99));
     }
+    #[tokio::test]
+    async fn metadata_refresh_series_roundtrip() {
+        use rs_plugin_common_interfaces::domain::other_ids::OtherIds;
+        let connection = tokio_rusqlite::Connection::open_in_memory().await.unwrap();
+        let store = SqliteLibraryStore::new(connection).await.unwrap();
+        let stored = Serie {
+            id: "refresh-series".into(),
+            name: "Old".into(),
+            alt: Some(vec!["Manual alias".into()]),
+            otherids: Some(OtherIds::from(vec!["offline:keep".into()])),
+            ..Default::default()
+        };
+        store.add_serie(stored.clone()).await.unwrap();
+        let fresh = Serie {
+            name: "New".into(),
+            alt: Some(vec!["Provider alias".into(), "Provider alias".into()]),
+            year: Some(2026),
+            tvdb: Some(42),
+            imdb_rating: Some(8.0),
+            imdb_votes: Some(100),
+            params: Some(serde_json::json!({"overview":"Description"})),
+            otherids: Some(OtherIds::from(vec!["provider:123".into()])),
+            ..stored.clone()
+        };
+        store
+            .update_serie(
+                &stored.id,
+                SerieForUpdate::from_refresh(&stored, fresh).unwrap(),
+            )
+            .await
+            .unwrap();
+        let loaded = store.get_serie(&stored.id).await.unwrap().unwrap().item;
+        assert_eq!(loaded.name, "New");
+        assert_eq!(
+            loaded.alt.as_ref().unwrap(),
+            &vec!["Manual alias".to_string(), "Provider alias".to_string()]
+        );
+        for aliases in [vec![], vec!["Provider alias".into()]] {
+            let partial = Serie {
+                alt: Some(aliases),
+                ..loaded.clone()
+            };
+            assert!(!SerieForUpdate::from_refresh(&loaded, partial)
+                .unwrap()
+                .has_update());
+        }
+        assert_eq!(loaded.year, Some(2026));
+        assert_eq!(loaded.tvdb, Some(42));
+        assert_eq!(loaded.imdb_rating, Some(8.0));
+        assert_eq!(loaded.imdb_votes, Some(100));
+        assert_eq!(
+            loaded.params,
+            Some(serde_json::json!({"overview":"Description"}))
+        );
+        assert!(loaded
+            .otherids
+            .as_ref()
+            .unwrap()
+            .contains("offline", "keep"));
+        assert!(loaded
+            .otherids
+            .as_ref()
+            .unwrap()
+            .contains("provider", "123"));
+        let sparse = Serie {
+            name: loaded.name.clone(),
+            ..Default::default()
+        };
+        assert!(!SerieForUpdate::from_refresh(&loaded, sparse)
+            .unwrap()
+            .has_update());
+    }
+
 }
