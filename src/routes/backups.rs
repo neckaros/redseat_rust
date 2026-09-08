@@ -1,22 +1,23 @@
 use crate::{
     domain::backup::{BackupFile, BackupWithStatus},
     model::{
-        backups::{BackupForAdd, BackupForUpdate},
+        backups::{sqlite_backup_reader, BackupForAdd, BackupForUpdate},
         users::ConnectedUser,
         ModelController,
     },
-    plugins::sources::error::SourcesError,
+    plugins::sources::{error::SourcesError, SourceRead},
     tools::scheduler::{backup::BackupTask, RsSchedulerWhen, RsTaskType},
     Result,
 };
 use axum::{
     body::Body,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{header, HeaderValue},
     response::Response,
     routing::{delete, get, patch, post},
     Json, Router,
 };
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 pub fn routes(mc: ModelController) -> Router {
@@ -85,8 +86,15 @@ async fn handler_post(
     Ok(body)
 }
 
+#[derive(Default, Deserialize)]
+struct BackupDownloadQuery {
+    #[serde(default)]
+    sqlite: bool,
+}
+
 async fn handler_get_latest_backup_media(
     Path((backup_id, media_id)): Path<(String, String)>,
+    Query(query): Query<BackupDownloadQuery>,
     State(mc): State<ModelController>,
     user: ConnectedUser,
 ) -> Result<Response<Body>> {
@@ -98,10 +106,30 @@ async fn handler_get_latest_backup_media(
         "handler_get_latest_backup_media".to_string(),
     ))?;
     let reader = mc.get_backup_file_reader(&latest.id, &user).await?;
+    let reader = if query.sqlite && latest.file == "db" {
+        let stream = reader
+            .into_reader(
+                latest.library.as_deref(),
+                None,
+                None,
+                Some((mc.clone(), &user)),
+                None,
+            )
+            .await?;
+        SourceRead::Stream(sqlite_backup_reader(stream, latest.library.is_some()).await?)
+    } else {
+        reader
+    };
     let mut response = reader
         .into_response("nope", None, None, Some((mc.clone(), &user)))
         .await?;
-    if latest.file == "db" && latest.library.is_some() {
+    if query.sqlite && latest.file == "db" {
+        response.headers_mut().insert(
+            header::ACCEPT_RANGES,
+            HeaderValue::from_static("none"),
+        );
+    }
+    if latest.file == "db" && latest.library.is_some() && !query.sqlite {
         response.headers_mut().insert(
             header::CONTENT_DISPOSITION,
             HeaderValue::from_static("attachment; filename=\"library.rslibrary\""),

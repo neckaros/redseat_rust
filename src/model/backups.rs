@@ -59,6 +59,46 @@ use super::{
 };
 use crate::routes::sse::SseEvent;
 
+/// Extract SQLite from a decrypted backup without buffering the database.
+/// Library backups have a little-endian i32 metadata length and JSON prefix;
+/// server backups already contain plain SQLite.
+pub(crate) async fn sqlite_backup_reader(
+    mut reader: FileStreamResult<AsyncReadPinBox>,
+    library: bool,
+) -> RsResult<FileStreamResult<AsyncReadPinBox>> {
+    let invalid = || std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid SQLite backup");
+    if library {
+        let length = reader.stream.read_i32_le().await?;
+        if length < 0 {
+            return Err(invalid().into());
+        }
+        let prefix_size = 4 + length as u64;
+        reader.size = reader
+            .size
+            .map(|size| size.checked_sub(prefix_size).ok_or_else(invalid))
+            .transpose()?;
+        let skipped = copy(
+            &mut (&mut reader.stream).take(length as u64),
+            &mut tokio::io::sink(),
+        )
+        .await?;
+        if skipped != length as u64 {
+            return Err(invalid().into());
+        }
+    }
+    let mut signature = [0; 16];
+    reader.stream.read_exact(&mut signature).await?;
+    if &signature != b"SQLite format 3\0" {
+        return Err(invalid().into());
+    }
+    reader.stream = Box::pin(Cursor::new(signature).chain(reader.stream));
+    reader.name = Some("database.sqlite".to_string());
+    reader.mime = Some("application/vnd.sqlite3".to_string());
+    reader.range = None;
+    reader.accept_range = false;
+    Ok(reader)
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BackupForAdd {
     pub name: String,
@@ -1184,7 +1224,75 @@ impl ModelController {
 
 #[cfg(test)]
 mod tests {
-    use super::{backup_media_version_key, backup_source_matches};
+    use super::*;
+
+    fn backup_stream(data: Vec<u8>, known_size: bool) -> FileStreamResult<AsyncReadPinBox> {
+        FileStreamResult {
+            size: known_size.then_some(data.len() as u64),
+            stream: Box::pin(Cursor::new(data)),
+            accept_range: false,
+            range: None,
+            mime: None,
+            name: None,
+            cleanup: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn sqlite_download_extracts_a_valid_database() {
+        let database = tempfile::NamedTempFile::new().unwrap();
+        let connection = rusqlite::Connection::open(database.path()).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE example(value TEXT); INSERT INTO example VALUES ('saved');",
+            )
+            .unwrap();
+        drop(connection);
+        let sqlite = fs::read(database.path()).await.unwrap();
+        let metadata = br#"{"name":"Library"}"#;
+        for library in [false, true] {
+            for known_size in [false, true] {
+                let mut data = Vec::new();
+                if library {
+                    data.extend_from_slice(&(metadata.len() as i32).to_le_bytes());
+                    data.extend_from_slice(metadata);
+                }
+                data.extend_from_slice(&sqlite);
+                let mut reader = sqlite_backup_reader(backup_stream(data, known_size), library)
+                    .await
+                    .unwrap();
+                assert_eq!(reader.size, known_size.then_some(sqlite.len() as u64));
+                assert_eq!(reader.name.as_deref(), Some("database.sqlite"));
+                assert_eq!(reader.mime.as_deref(), Some("application/vnd.sqlite3"));
+                let mut output = Vec::new();
+                reader.stream.read_to_end(&mut output).await.unwrap();
+                assert_eq!(output, sqlite);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn sqlite_download_rejects_malformed_backups() {
+        for data in [
+            vec![],
+            (-1_i32).to_le_bytes().to_vec(),
+            100_i32.to_le_bytes().to_vec(),
+            [0_i32.to_le_bytes().as_slice(), b"not a sqlite db!"].concat(),
+        ] {
+            for known_size in [false, true] {
+                assert!(
+                    sqlite_backup_reader(backup_stream(data.clone(), known_size), true)
+                        .await
+                        .is_err()
+                );
+            }
+        }
+        assert!(
+            sqlite_backup_reader(backup_stream(vec![0; 16], true), false)
+                .await
+                .is_err()
+        );
+    }
 
     #[test]
     fn media_backup_versions_get_unique_keys_even_for_the_same_content() {
