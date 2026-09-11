@@ -43,12 +43,12 @@ where
     Fut: Future<Output = RsResult<Option<Person>>>,
 {
     let summary_kind = summary.kind.clone();
-    let ids: RsIds = summary.into();
+    let ids: RsIds = summary.clone().into();
     if ids.as_all_external_ids().is_empty() {
         return Ok(None);
     }
-    if let Some(existing) = store.get_person_by_external_id(ids.clone()).await? {
-        return Ok(Some((existing, None)));
+    if let Some(existing) = store.persist_existing_refresh_person(summary).await? {
+        return Ok(Some(existing));
     }
     let Some(mut details) = lookup(ids.clone()).await? else {
         return Ok(None);

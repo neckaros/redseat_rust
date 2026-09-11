@@ -44,11 +44,29 @@ impl SqliteLibraryStore {
         Ok(first)
     }
 
-    /// Adds missing IDs only to existing profiles; rechecks inside the write transaction.
+    /// Enrich a known profile without ever creating one from a credit summary.
+    pub(crate) async fn persist_existing_refresh_person(
+        &self,
+        incoming: Person,
+    ) -> Result<Option<(Person, Option<ElementAction>)>> {
+        self.persist_refresh_person_inner(incoming, false).await
+    }
+
     pub(crate) async fn persist_refresh_person(
         &self,
-        mut incoming: Person,
+        incoming: Person,
     ) -> Result<(Person, Option<ElementAction>)> {
+        self.persist_refresh_person_inner(incoming, true)
+            .await?
+            .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows.into())
+    }
+
+    /// Match and enrich/create atomically; existing profiles receive missing IDs only.
+    async fn persist_refresh_person_inner(
+        &self,
+        mut incoming: Person,
+        allow_create: bool,
+    ) -> Result<Option<(Person, Option<ElementAction>)>> {
         Ok(self.connection.call(move |conn| {
             let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let ids: RsIds = incoming.clone().into();
@@ -71,6 +89,8 @@ impl SqliteLibraryStore {
                         params![merged.imdb, merged.tmdb, merged.trakt, merged.slug, merged.otherids, existing.id])?;
                 }
                 (existing.id, changed.then_some(ElementAction::Updated))
+            } else if !allow_create {
+                return Ok(None);
             } else {
                 incoming.id = nanoid::nanoid!();
                 let socials = incoming.socials.as_ref().map(serde_json::to_string).transpose()
@@ -86,7 +106,7 @@ impl SqliteLibraryStore {
             };
             let person = tx.query_row(&format!("SELECT {} FROM people WHERE id = ?", Self::PEOPLE_FIELDS), [&id], Self::row_to_person)?;
             tx.commit()?;
-            Ok((person, action))
+            Ok(Some((person, action)))
         }).await?)
     }
 
@@ -181,6 +201,139 @@ mod tests {
             })
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn refresh_people_fast_path_persists_summary_ids_without_replacing_profile() {
+        let store = store().await;
+        existing(&store, None).await;
+        let credit = Person {
+            imdb: Some("nm0042".into()),
+            kind: Some(crate::domain::people::PersonType::Actor),
+            otherids: Some(vec!["custom:42".into()].into()),
+            ..summary()
+        };
+        let (person, action) = resolve_refresh_person(&store, credit.clone(), |_| async {
+            panic!("A matching summary must not fetch full details");
+            #[allow(unreachable_code)]
+            Ok(None)
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(person.id, "local-person");
+        assert_eq!(person.tmdb, Some(42));
+        assert_eq!(person.name, "User's Name");
+        assert_eq!(person.bio.as_deref(), Some("User's biography"));
+        assert_eq!(person.kind, None);
+        assert_eq!(
+            person.otherids.unwrap().get("custom").as_deref(),
+            Some("42")
+        );
+        assert!(matches!(action, Some(ElementAction::Updated)));
+
+        for summary in [credit, summary()] {
+            let (person, action) = resolve_refresh_person(&store, summary, |_| async {
+                panic!("Saved IDs must resolve later credits without fetching details");
+                #[allow(unreachable_code)]
+                Ok(None)
+            })
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(person.id, "local-person");
+            assert!(action.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn refresh_people_relationship_sync_strictly_advances_after_metadata() {
+        let store = store().await;
+        existing(&store, Some(42)).await;
+        store
+            .connection
+            .call(|conn| {
+                conn.execute_batch(
+                    "
+                INSERT INTO movies (id, name) VALUES ('movie', 'Movie');
+                INSERT INTO series (id, name) VALUES ('serie', 'Show');
+            ",
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        for (entity, id) in [
+            (PeopleEntity::Movie, "movie"),
+            (PeopleEntity::Serie, "serie"),
+        ] {
+            let (table, _, _) = entity.tables();
+            let cursor = store
+                .connection
+                .call(move |conn| {
+                    // A future timestamp makes a same-clock-tick regression deterministic.
+                    conn.execute(
+                        &format!("UPDATE {table} SET modified = 4000000000000 WHERE id = ?"),
+                        [id],
+                    )?;
+                    conn.execute(
+                        &format!("UPDATE {table} SET name = 'Refreshed' WHERE id = ?"),
+                        [id],
+                    )?;
+                    Ok(conn.query_row(
+                        &format!("SELECT modified FROM {table} WHERE id = ?"),
+                        [id],
+                        |row| row.get::<_, i64>(0),
+                    )?)
+                })
+                .await
+                .unwrap();
+            assert!(cursor > 4000000000000);
+            assert!(store
+                .add_entity_person(entity, id, "local-person")
+                .await
+                .unwrap());
+            let linked = store
+                .connection
+                .call(move |conn| {
+                    Ok(conn.query_row(
+                        &format!("SELECT modified FROM {table} WHERE id = ? AND modified > ?"),
+                        params![id, cursor],
+                        |row| row.get::<_, i64>(0),
+                    )?)
+                })
+                .await
+                .unwrap();
+            assert_eq!(linked, cursor + 1);
+            assert!(!store
+                .add_entity_person(entity, id, "local-person")
+                .await
+                .unwrap());
+            let (_, mapping, reference) = entity.tables();
+            store
+                .connection
+                .call(move |conn| {
+                    let unchanged: i64 = conn.query_row(
+                        &format!("SELECT modified FROM {table} WHERE id = ?"),
+                        [id],
+                        |row| row.get(0),
+                    )?;
+                    assert_eq!(unchanged, linked);
+                    conn.execute(
+                        &format!("DELETE FROM {mapping} WHERE {reference} = ?"),
+                        [id],
+                    )?;
+                    let deleted: i64 = conn.query_row(
+                        &format!("SELECT modified FROM {table} WHERE id = ? AND modified > ?"),
+                        params![id, linked],
+                        |row| row.get(0),
+                    )?;
+                    assert_eq!(deleted, linked + 1);
+                    Ok(())
+                })
+                .await
+                .unwrap();
+        }
     }
 
     #[tokio::test]
@@ -625,7 +778,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(store.migrate().await.unwrap(), 55);
+        assert_eq!(store.migrate().await.unwrap(), 56);
         assert_eq!(
             store
                 .get_person("local-person")

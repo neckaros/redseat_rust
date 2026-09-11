@@ -948,12 +948,13 @@ children are excluded even when their display paths match the moved subtree.
 ### People imported during movie/show refresh
 
 Movie and show refreshes consume plugin `relations.people_details`. The server
-first matches library people by external ID; only unmatched people require a
+first matches library people by external ID and saves newly supplied IDs without
+replacing profile metadata; only unmatched people require a
 plugin person lookup and a second ID match. New people emit `people` / `Added`;
 existing people receiving missing external IDs emit `people` / `Updated` without
 replacing their profile metadata. Failed or unmatched detail lookups are skipped.
 
-New movie/show people relationships advance the parent’s `modified` timestamp and
+New movie/show people relationships strictly advance the parent’s `modified` timestamp and
 emit the existing `movies` or `series` event with an `Updated` action, including
 when the metadata itself did not change. Clients can reload the relationship via
 `GET /libraries/:libraryId/movies/:id/people` or
@@ -977,3 +978,7 @@ People search and streaming search use plugins without a built-in Trakt fallback
 
 Merging people preserves movie/show relationships, including shared credits,
 and advances affected parents' `modified` timestamps for incremental sync.
+
+Movie/show metadata and relationship timestamp updates are monotonic per entity,
+including changes within the same millisecond, so strict `modified > after` sync
+can detect a relationship change after observing the preceding metadata update.
