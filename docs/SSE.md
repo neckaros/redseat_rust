@@ -944,3 +944,41 @@ parent ID moves the tag beneath that tag. The `tags` update event includes
 the moved tag and descendants whose paths changed, including moves to root.
 Descendants are identified through parent IDs; same-named siblings and their
 children are excluded even when their display paths match the moved subtree.
+
+### People imported during movie/show refresh
+
+Movie and show refreshes consume plugin `relations.people_details`. The server
+first matches library people by external ID and saves newly supplied IDs without
+replacing profile metadata; only unmatched people require a
+plugin person lookup and a second ID match. New people emit `people` / `Added`;
+existing people receiving missing external IDs emit `people` / `Updated` without
+replacing their profile metadata. Failed or unmatched detail lookups are skipped.
+
+New movie/show people relationships strictly advance the parent’s `modified` timestamp and
+emit the existing `movies` or `series` event with an `Updated` action, including
+when the metadata itself did not change. Clients can reload the relationship via
+`GET /libraries/:libraryId/movies/:id/people` or
+`GET /libraries/:libraryId/series/:id/people` (arrays of `Person`). Refresh adds
+relationships idempotently and preserves existing links when credits are omitted
+or a lookup fails; it does not remove people or relationships.
+
+
+### Person types and plugin metadata refresh
+
+Person payloads retain a string `type`: canonical values include `Actor`,
+`Director`, `Writer`, `Producer`, `Creator`, `Author`, `Family`, `Friends`,
+and `Singer`. Custom strings are preserved exactly; plugins map their own
+department/job names to canonical values. Existing database values remain valid.
+
+`GET /libraries/:libraryId/people/:id/refresh` refreshes a person's metadata
+through plugins and emits the existing `people` / `Updated` payload. As with
+person edits, this requires library Admin access. Results must share a known
+external ID with the person; an unmatched lookup leaves the profile unchanged.
+People search and streaming search use plugins without a built-in Trakt fallback.
+
+Merging people preserves movie/show relationships, including shared credits,
+and advances affected parents' `modified` timestamps for incremental sync.
+
+Movie/show metadata and relationship timestamp updates are monotonic per entity,
+including changes within the same millisecond, so strict `modified > after` sync
+can detect a relationship change after observing the preceding metadata update.

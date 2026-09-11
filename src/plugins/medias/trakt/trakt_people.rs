@@ -88,7 +88,7 @@ impl From<TraktPerson> for Person {
             tmdb: value.ids.tmdb,
             trakt: value.ids.trakt,
             socials,
-            kind: value.known_for_department.map(|v| v.to_string()),
+            kind: value.known_for_department.map(Into::into),
 
             ..Default::default()
         }
@@ -146,7 +146,7 @@ mod tests {
         assert_eq!(update.trakt, Some(42));
         assert!(update.birthday.is_some());
         assert!(update.death.is_some());
-        assert_eq!(update.kind.as_deref(), Some("Acting"));
+        assert_eq!(update.kind.as_ref().map(|kind| kind.as_str()), Some("Acting"));
         assert!(!update.add_socials.unwrap().is_empty());
     }
     #[tokio::test]

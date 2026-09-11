@@ -55,6 +55,7 @@ pub fn routes(mc: ModelController) -> Router {
         .route("/:id", get(handler_get))
         .route("/:id", patch(handler_patch))
         .route("/:id", delete(handler_delete))
+        .route("/:id/refresh", get(handler_refresh))
         .route("/:id/image", get(handler_image))
         .route("/:id/image", post(handler_post_image))
         .route("/:id/image/search", get(handler_image_search))
@@ -87,6 +88,14 @@ async fn handler_get(
     let library = mc.get_person(&library_id, tag_id, &user).await?;
     let body = Json(json!(library));
     Ok(body)
+}
+
+async fn handler_refresh(
+    Path((library_id, person_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<Json<Value>> {
+    Ok(Json(json!(mc.refresh_person(&library_id, &person_id, &user).await?)))
 }
 
 async fn handler_patch(

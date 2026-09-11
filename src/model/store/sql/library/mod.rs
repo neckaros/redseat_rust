@@ -15,6 +15,7 @@ use super::Result;
 pub mod books;
 pub mod channels;
 pub mod deleted;
+pub mod entity_people;
 pub mod episodes;
 pub mod media_progress;
 pub mod media_ratings;
@@ -364,6 +365,28 @@ impl SqliteLibraryStore {
                     );
                 }
 
+                if version < 55 {
+                    let migration = String::from_utf8_lossy(include_bytes!("055 - ENTITY PEOPLE.sql"));
+                    conn.execute_batch(&migration)?;
+                    version = 55;
+                    conn.pragma_update(None, "user_version", version)?;
+                    log_info(
+                        LogServiceType::Database,
+                        format!("Update Library Database to version: {}", version),
+                    );
+                }
+
+                if version < 56 {
+                    let migration = String::from_utf8_lossy(include_bytes!("056 - ENTITY PEOPLE SYNC.sql"));
+                    conn.execute_batch(&migration)?;
+                    version = 56;
+                    conn.pragma_update(None, "user_version", version)?;
+                    log_info(
+                        LogServiceType::Database,
+                        format!("Update Library Database to version: {}", version),
+                    );
+                }
+
                 // VACUUM is expensive on large media libraries; schema startup
                 // should be read-only once the database is current.
                 if initial_version != version {
@@ -421,7 +444,7 @@ mod tests {
         let connection = tokio_rusqlite::Connection::open_in_memory().await.unwrap();
         let store = SqliteLibraryStore::new(connection).await.unwrap();
         let version = store.migrate().await.unwrap();
-        assert_eq!(version, 54);
+        assert_eq!(version, 56);
 
         // Set up: insert a book and a media attached to it
         store

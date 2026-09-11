@@ -21,9 +21,9 @@ use crate::{
 };
 
 impl SqliteLibraryStore {
-    const PEOPLE_FIELDS: &str = "id, name, socials, type, alt, portrait, params, birthday, modified, added, posterv, generated, imdb, slug, tmdb, trakt, death, gender, country, bio, otherids";
+    pub(super) const PEOPLE_FIELDS: &str = "id, name, socials, type, alt, portrait, params, birthday, modified, added, posterv, generated, imdb, slug, tmdb, trakt, death, gender, country, bio, otherids";
 
-    fn row_to_person(row: &Row) -> rusqlite::Result<Person> {
+    pub(super) fn row_to_person(row: &Row) -> rusqlite::Result<Person> {
         Ok(Person {
             id: row.get(0)?,
             name: row.get(1)?,
@@ -115,44 +115,10 @@ else 0 end) as score", q, q, q, q, q, q);
     }
 
     pub async fn get_person_by_external_id(&self, ids: RsIds) -> Result<Option<Person>> {
-        let row = self
+        Ok(self
             .connection
-            .call(move |conn| {
-                let mut conditions = vec![
-                    "imdb = ?".to_string(),
-                    "slug = ?".to_string(),
-                    "tmdb = ?".to_string(),
-                    "trakt = ?".to_string(),
-                ];
-                let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
-                    Box::new(ids.imdb().unwrap_or("zz").to_string()),
-                    Box::new(ids.slug().unwrap_or("zz").to_string()),
-                    Box::new(ids.tmdb().unwrap_or(0)),
-                    Box::new(ids.trakt().unwrap_or(0)),
-                ];
-
-                // Check all external IDs against otherids column
-                for ext_id in ids.as_all_external_ids() {
-                    conditions.push("otherids LIKE ?".to_string());
-                    params_vec.push(Box::new(format!("%\"{}\"%", ext_id)));
-                }
-
-                let where_clause = conditions.join(" OR ");
-                let sql = format!(
-                    "SELECT {} FROM people WHERE {}",
-                    Self::PEOPLE_FIELDS,
-                    where_clause
-                );
-                let mut query = conn.prepare(&sql)?;
-                let params_refs: Vec<&dyn rusqlite::types::ToSql> =
-                    params_vec.iter().map(|p| p.as_ref()).collect();
-                let row = query
-                    .query_row(params_from_iter(params_refs), Self::row_to_person)
-                    .optional()?;
-                Ok(row)
-            })
-            .await?;
-        Ok(row)
+            .call(move |conn| Ok(Self::find_person_by_ids(conn, &ids)?))
+            .await?)
     }
 
     pub async fn update_person(&self, person_id: &str, update: PersonForUpdate) -> Result<()> {
@@ -1114,6 +1080,9 @@ else 0 end) as score", q, q, q, q, q, q);
         source_person_id: &str,
         target_person_id: &str,
     ) -> Result<usize> {
+        if source_person_id == target_person_id {
+            return Ok(0);
+        }
         let source_id = source_person_id.to_string();
         let target_id = target_person_id.to_string();
         let res = self
@@ -1144,6 +1113,22 @@ else 0 end) as score", q, q, q, q, q, q);
                     "UPDATE media_people_mapping SET people_ref = ? WHERE people_ref = ?",
                     params![target_id, source_id],
                 )?;
+
+                // Preserve movie/show credits when the source person is merged away.
+                for (mapping, reference) in [
+                    ("movie_people_mapping", "movie_ref"),
+                    ("serie_people_mapping", "serie_ref"),
+                ] {
+                    tx.execute(
+                        &format!("INSERT OR IGNORE INTO {mapping} ({reference}, people_ref)
+                            SELECT {reference}, ? FROM {mapping} WHERE people_ref = ?"),
+                        params![target_id, source_id],
+                    )?;
+                    tx.execute(
+                        &format!("DELETE FROM {mapping} WHERE people_ref = ?"),
+                        [&source_id],
+                    )?;
+                }
 
                 tx.commit()?;
                 Ok(faces_affected)

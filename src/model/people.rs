@@ -19,7 +19,7 @@ use crate::{
         library::LibraryRole,
         media::{FileType, Media, MediaWithAction, MediasMessage},
         people::{
-            FaceBBox, FaceEmbedding, PeopleMessage, Person, PersonWithAction, UnassignedFace,
+            FaceBBox, FaceEmbedding, PeopleMessage, Person, PersonType, PersonWithAction, UnassignedFace,
         },
         tag::Tag,
         ElementAction,
@@ -37,7 +37,7 @@ use crate::{
 use rs_plugin_common_interfaces::{
     domain::{other_ids::OtherIds, rs_ids::RsIds},
     lookup::{
-        RsLookupMetadataResult, RsLookupMetadataResultWrapper, RsLookupMetadataResults,
+        RsLookupMetadataResult, RsLookupMetadataResults,
         RsLookupMovie, RsLookupPerson, RsLookupQuery,
     },
     url::RsLink,
@@ -47,7 +47,6 @@ use tokio_util::io::StreamReader;
 
 use super::{
     entity_images::EntityImageConfig,
-    entity_search::optional_trakt_search,
     error::{Error, Result},
     users::ConnectedUser,
     ModelController,
@@ -62,7 +61,7 @@ pub struct PersonForAdd {
     pub name: String,
     pub socials: Option<Vec<RsLink>>,
     #[serde(rename = "type")]
-    pub kind: Option<String>,
+    pub kind: Option<PersonType>,
     pub alt: Option<Vec<String>>,
     pub portrait: Option<String>,
     pub params: Option<Value>,
@@ -122,7 +121,7 @@ pub struct PersonForUpdate {
     pub socials: Option<Vec<RsLink>>,
 
     #[serde(rename = "type")]
-    pub kind: Option<String>,
+    pub kind: Option<PersonType>,
 
     pub alt: Option<Vec<String>>,
     pub add_alts: Option<Vec<String>>,
@@ -318,29 +317,9 @@ impl ModelController {
             if let Some(person) = store.get_person_by_external_id(ids.clone()).await? {
                 Ok(Some(person))
             } else {
-                let lookup_query = RsLookupQuery::Person(RsLookupPerson {
-                    name: Some(String::new()),
-                    ids: Some(ids.clone()),
-                    page_key: None,
-                });
-                let plugin_results = self
-                    .exec_lookup_metadata_grouped(
-                        lookup_query,
-                        Some(library_id.to_string()),
-                        requesting_user,
-                        None,
-                        None,
-                    )
+                self.lookup_person_metadata(library_id, ids, requesting_user)
                     .await
-                    .map_err(|e| Error::ServiceError(format!("{:?}", e), None))?;
-                let plugin_person = plugin_results
-                    .into_iter()
-                    .flat_map(|(_, _, r)| r.results)
-                    .find_map(|result| match result.metadata {
-                        RsLookupMetadataResult::Person(person) => Some(person),
-                        _ => None,
-                    });
-                Ok(plugin_person)
+                    .map_err(|e| Error::ServiceError(format!("{:?}", e), None))
             }
         } else {
             let tag = store.get_person(&tag_id).await?;
@@ -759,26 +738,6 @@ impl ModelController {
         sources: Option<Vec<String>>,
         requesting_user: &ConnectedUser,
     ) -> RsResult<Vec<(String, String, RsLookupMetadataResults)>> {
-        let include_trakt = sources
-            .as_deref()
-            .map_or(true, |s| s.iter().any(|id| id == "trakt"));
-        let trakt_entries = if include_trakt {
-            optional_trakt_search("people", self.trakt.search_person(&query).await).map(
-                |trakt_results| {
-                    trakt_results
-                        .into_iter()
-                        .map(|(person, match_type)| RsLookupMetadataResultWrapper {
-                            metadata: RsLookupMetadataResult::Person(person),
-                            match_type,
-                            ..Default::default()
-                        })
-                        .collect()
-                },
-            )
-        } else {
-            None
-        };
-
         let lookup_query = RsLookupQuery::Person(RsLookupPerson {
             name: query.name,
             ids: query.ids,
@@ -788,7 +747,7 @@ impl ModelController {
             library_id,
             lookup_query,
             |r| matches!(r.metadata, RsLookupMetadataResult::Person(_)),
-            trakt_entries,
+            None,
             sources,
             requesting_user,
         )
@@ -802,26 +761,6 @@ impl ModelController {
         sources: Option<Vec<String>>,
         requesting_user: &ConnectedUser,
     ) -> RsResult<tokio::sync::mpsc::Receiver<(String, String, RsLookupMetadataResults)>> {
-        let include_trakt = sources
-            .as_deref()
-            .map_or(true, |s| s.iter().any(|id| id == "trakt"));
-        let trakt_entries = if include_trakt {
-            optional_trakt_search("people", self.trakt.search_person(&query).await).map(
-                |trakt_results| {
-                    trakt_results
-                        .into_iter()
-                        .map(|(person, match_type)| RsLookupMetadataResultWrapper {
-                            metadata: RsLookupMetadataResult::Person(person),
-                            match_type,
-                            ..Default::default()
-                        })
-                        .collect()
-                },
-            )
-        } else {
-            None
-        };
-
         let lookup_query = RsLookupQuery::Person(RsLookupPerson {
             name: query.name,
             ids: query.ids,
@@ -831,7 +770,7 @@ impl ModelController {
             library_id,
             lookup_query,
             |r| matches!(r.metadata, RsLookupMetadataResult::Person(_)),
-            trakt_entries,
+            None,
             sources,
             requesting_user,
         )
@@ -920,7 +859,10 @@ impl ModelController {
             .await?
             .ok_or(RsError::NotFoundPerson(person_id.to_string()))?;
         let ids: RsIds = person.clone().into();
-        let new_person = self.trakt.get_person(&ids).await?;
+        let new_person = self
+            .lookup_person_metadata(library_id, ids, requesting_user)
+            .await?
+            .ok_or(RsError::NotFoundPerson(person_id.to_string()))?;
         let updates = PersonForUpdate::from_refresh(&person, new_person);
 
         let new_person = self
@@ -1759,6 +1701,10 @@ impl ModelController {
             .get_person(library_id, target_person_id.to_string(), requesting_user)
             .await?
             .ok_or_else(|| RsError::NotFoundPerson(target_person_id.to_string()))?;
+
+        if source_person_id == target_person_id {
+            return Ok(0);
+        }
 
         // Transfer faces
         let store = self.store.get_library_store(library_id)?;

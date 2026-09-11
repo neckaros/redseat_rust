@@ -5181,9 +5181,9 @@ dependencies = [
 
 [[package]]
 name = "rs-plugin-common-interfaces"
-version = "0.37.0"
+version = "0.38.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a6ae7862918f3afe0747386b02fb46cbae6ee5d24b4d2e62931c648f6eb0cfd"
+checksum = "266a6333d08b83e883532be49228ed17719b0e8faf08a700d13081b7bc377d56"
 dependencies = [
  "base64 0.22.1",
  "regex",

@@ -3,7 +3,7 @@ use std::{collections::HashMap, io::Cursor};
 use async_recursion::async_recursion;
 use nanoid::nanoid;
 use rs_plugin_common_interfaces::{
-    domain::rs_ids::RsIds,
+    domain::{rs_ids::RsIds, Relations},
     lookup::{
         RsLookupMetadataResult, RsLookupMetadataResultWrapper, RsLookupMetadataResults,
         RsLookupMovie, RsLookupQuery,
@@ -90,6 +90,18 @@ impl ModelController {
         query: RsLookupMovie,
         requesting_user: &ConnectedUser,
     ) -> RsResult<Option<Movie>> {
+        Ok(self
+            .lookup_movie_metadata_with_relations(library_id, query, requesting_user)
+            .await?
+            .map(|(metadata, _)| metadata))
+    }
+
+    async fn lookup_movie_metadata_with_relations(
+        &self,
+        library_id: &str,
+        query: RsLookupMovie,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Option<(Movie, Option<Relations>)>> {
         let lookup_ids = query.ids.clone().unwrap_or_default();
         let mut groups = self
             .exec_lookup_metadata_grouped(
@@ -102,21 +114,22 @@ impl ModelController {
             .await?;
         merge_result_ids(&mut groups);
 
-        Ok(groups.into_iter().flat_map(|(_, _, r)| r.results).find_map(
-            |result| match result.metadata {
+        Ok(groups
+            .into_iter()
+            .flat_map(|(_, _, r)| r.results)
+            .find_map(|result| match result.metadata {
                 RsLookupMetadataResult::Movie(movie) => {
                     let result_ids: RsIds = movie.clone().into();
                     if lookup_ids.as_all_external_ids().is_empty()
                         || result_ids.has_common_id(&lookup_ids)
                     {
-                        Some(movie)
+                        Some((movie, result.relations))
                     } else {
                         None
                     }
                 }
                 _ => None,
-            },
-        ))
+            }))
     }
 
     pub async fn get_movies(
@@ -663,8 +676,8 @@ impl ModelController {
             ids: Some(ids.clone()),
             page_key: None,
         };
-        let mut new_movie = if let Some(movie) = self
-            .lookup_movie_metadata(library_id, lookup_query, requesting_user)
+        let (mut new_movie, relations) = if let Some(movie) = self
+            .lookup_movie_metadata_with_relations(library_id, lookup_query, requesting_user)
             .await?
         {
             movie
@@ -686,6 +699,31 @@ impl ModelController {
         let new_movie = self
             .update_movie(library_id, movie_id.to_string(), updates, requesting_user)
             .await?;
+        if let Some(people) = relations.and_then(|relations| relations.people_details) {
+            if self
+                .refresh_entity_people(
+                    library_id,
+                    super::entity_people::PeopleEntity::Movie,
+                    movie_id,
+                    people,
+                    requesting_user,
+                )
+                .await?
+            {
+                let store = self.store.get_library_store(library_id)?;
+                let updated = store.get_movie(movie_id).await?.ok_or_else(|| {
+                    Error::ServiceError("Refreshed entity disappeared".to_string(), None)
+                })?;
+                self.send_movie(MoviesMessage {
+                    library: library_id.to_string(),
+                    movies: vec![MovieWithAction {
+                        action: ElementAction::Updated,
+                        movie: updated.clone(),
+                    }],
+                });
+                return Ok(updated);
+            }
+        }
         Ok(new_movie)
     }
 
