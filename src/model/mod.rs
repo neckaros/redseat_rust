@@ -11,6 +11,7 @@ pub mod books;
 pub mod channels;
 pub mod deleted;
 pub mod entity_images;
+pub mod entity_people;
 pub mod entity_search;
 pub mod episodes;
 pub mod history;

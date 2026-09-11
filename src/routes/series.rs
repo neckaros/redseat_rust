@@ -50,6 +50,7 @@ pub fn routes(mc: ModelController) -> Router {
         .route("/searchstream", get(handler_search_series_stream))
         .route("/", post(handler_post))
         .route("/:id", get(handler_get))
+        .route("/:id/people", get(handler_people))
         .route("/:id", patch(handler_patch))
         .route("/:id/refresh", get(handler_refresh))
         .route("/:id/import", put(handler_import))
@@ -455,4 +456,20 @@ async fn handler_post_image(
     }
 
     Ok(Json(json!({"data": "ok"})))
+}
+
+async fn handler_people(
+    Path((library_id, id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<Json<Value>> {
+    let people = mc
+        .get_entity_people(
+            &library_id,
+            crate::model::entity_people::PeopleEntity::Serie,
+            &id,
+            &user,
+        )
+        .await?;
+    Ok(Json(json!(people)))
 }

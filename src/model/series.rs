@@ -3,7 +3,7 @@ use std::{collections::HashMap, io::Cursor};
 use async_recursion::async_recursion;
 use nanoid::nanoid;
 use rs_plugin_common_interfaces::{
-    domain::{rs_ids::RsIds, serie::SerieStatus, ItemWithRelations},
+    domain::{rs_ids::RsIds, serie::SerieStatus, ItemWithRelations, Relations},
     lookup::{
         RsLookupMetadataResult, RsLookupMetadataResultWrapper, RsLookupMetadataResults,
         RsLookupMovie, RsLookupQuery, RsLookupSerie,
@@ -234,6 +234,18 @@ impl ModelController {
         query: RsLookupSerie,
         requesting_user: &ConnectedUser,
     ) -> RsResult<Option<Serie>> {
+        Ok(self
+            .lookup_serie_metadata_with_relations(library_id, query, requesting_user)
+            .await?
+            .map(|(metadata, _)| metadata))
+    }
+
+    async fn lookup_serie_metadata_with_relations(
+        &self,
+        library_id: &str,
+        query: RsLookupSerie,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Option<(Serie, Option<Relations>)>> {
         let lookup_ids = query.ids.clone().unwrap_or_default();
         let mut groups = self
             .exec_lookup_metadata_grouped(
@@ -246,21 +258,22 @@ impl ModelController {
             .await?;
         merge_result_ids(&mut groups);
 
-        Ok(groups.into_iter().flat_map(|(_, _, r)| r.results).find_map(
-            |result| match result.metadata {
+        Ok(groups
+            .into_iter()
+            .flat_map(|(_, _, r)| r.results)
+            .find_map(|result| match result.metadata {
                 RsLookupMetadataResult::Serie(serie) => {
                     let result_ids: RsIds = serie.clone().into();
                     if lookup_ids.as_all_external_ids().is_empty()
                         || result_ids.has_common_id(&lookup_ids)
                     {
-                        Some(serie)
+                        Some((serie, result.relations))
                     } else {
                         None
                     }
                 }
                 _ => None,
-            },
-        ))
+            }))
     }
 
     pub async fn get_series(
@@ -752,8 +765,8 @@ impl ModelController {
             ids: Some(ids.clone()),
             page_key: None,
         };
-        let new_serie = if let Some(serie) = self
-            .lookup_serie_metadata(library_id, lookup_query, requesting_user)
+        let (new_serie, relations) = if let Some(serie) = self
+            .lookup_serie_metadata_with_relations(library_id, lookup_query, requesting_user)
             .await?
         {
             serie
@@ -775,6 +788,35 @@ impl ModelController {
         let new_serie = self
             .update_serie(library_id, serie_id.to_string(), updates, requesting_user)
             .await?;
+        if let Some(people) = relations.and_then(|relations| relations.people_details) {
+            if self
+                .refresh_entity_people(
+                    library_id,
+                    super::entity_people::PeopleEntity::Serie,
+                    serie_id,
+                    people,
+                    requesting_user,
+                )
+                .await?
+            {
+                let store = self.store.get_library_store(library_id)?;
+                let updated = store
+                    .get_serie(serie_id)
+                    .await?
+                    .map(|value| value.item)
+                    .ok_or_else(|| {
+                        Error::ServiceError("Refreshed entity disappeared".to_string(), None)
+                    })?;
+                self.send_serie(SeriesMessage {
+                    library: library_id.to_string(),
+                    series: vec![SerieWithAction {
+                        action: ElementAction::Updated,
+                        serie: updated.clone(),
+                    }],
+                });
+                return Ok(updated);
+            }
+        }
         Ok(new_serie)
     }
 
