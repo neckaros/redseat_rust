@@ -1080,6 +1080,9 @@ else 0 end) as score", q, q, q, q, q, q);
         source_person_id: &str,
         target_person_id: &str,
     ) -> Result<usize> {
+        if source_person_id == target_person_id {
+            return Ok(0);
+        }
         let source_id = source_person_id.to_string();
         let target_id = target_person_id.to_string();
         let res = self
@@ -1110,6 +1113,22 @@ else 0 end) as score", q, q, q, q, q, q);
                     "UPDATE media_people_mapping SET people_ref = ? WHERE people_ref = ?",
                     params![target_id, source_id],
                 )?;
+
+                // Preserve movie/show credits when the source person is merged away.
+                for (mapping, reference) in [
+                    ("movie_people_mapping", "movie_ref"),
+                    ("serie_people_mapping", "serie_ref"),
+                ] {
+                    tx.execute(
+                        &format!("INSERT OR IGNORE INTO {mapping} ({reference}, people_ref)
+                            SELECT {reference}, ? FROM {mapping} WHERE people_ref = ?"),
+                        params![target_id, source_id],
+                    )?;
+                    tx.execute(
+                        &format!("DELETE FROM {mapping} WHERE people_ref = ?"),
+                        [&source_id],
+                    )?;
+                }
 
                 tx.commit()?;
                 Ok(faces_affected)

@@ -42,6 +42,7 @@ where
     F: FnOnce(RsIds) -> Fut,
     Fut: Future<Output = RsResult<Option<Person>>>,
 {
+    let summary_kind = summary.kind.clone();
     let ids: RsIds = summary.into();
     if ids.as_all_external_ids().is_empty() {
         return Ok(None);
@@ -60,11 +61,50 @@ where
     let mut combined = ids;
     combined.merge(&returned_ids);
     combined.apply_to(&mut details);
+    details.kind = details.kind.or(summary_kind);
     // Recheck and create/update in one transaction, including concurrent refreshes.
     Ok(Some(store.persist_refresh_person(details).await?))
 }
 
 impl ModelController {
+    /// Select metadata only when a plugin returns one of the requested external IDs.
+    pub(crate) async fn lookup_person_metadata(
+        &self,
+        library_id: &str,
+        ids: RsIds,
+        user: &ConnectedUser,
+    ) -> RsResult<Option<Person>> {
+        user.check_library_role(library_id, LibraryRole::Read)?;
+        if ids.as_all_external_ids().is_empty() {
+            return Ok(None);
+        }
+        let mut groups = self
+            .exec_lookup_metadata_grouped(
+                RsLookupQuery::Person(RsLookupPerson {
+                    name: None,
+                    ids: Some(ids.clone()),
+                    page_key: None,
+                }),
+                Some(library_id.to_string()),
+                user,
+                None,
+                None,
+            )
+            .await?;
+        super::entity_search::merge_result_ids(&mut groups);
+        Ok(groups
+            .into_iter()
+            .flat_map(|(_, _, results)| results.results)
+            .find_map(|result| match result.metadata {
+                RsLookupMetadataResult::Person(person)
+                    if ids.has_common_id(&person.clone().into()) =>
+                {
+                    Some(person)
+                }
+                _ => None,
+            }))
+    }
+
     pub async fn get_entity_people(
         &self,
         library_id: &str,
@@ -94,31 +134,7 @@ impl ModelController {
         for summary in people {
             let label = summary.id.clone();
             let resolved = resolve_refresh_person(&store, summary, |ids| async move {
-                let mut groups = self
-                    .exec_lookup_metadata_grouped(
-                        RsLookupQuery::Person(RsLookupPerson {
-                            name: None,
-                            ids: Some(ids.clone()),
-                            page_key: None,
-                        }),
-                        Some(library_id.to_string()),
-                        user,
-                        None,
-                        None,
-                    )
-                    .await?;
-                super::entity_search::merge_result_ids(&mut groups);
-                Ok(groups
-                    .into_iter()
-                    .flat_map(|(_, _, results)| results.results)
-                    .find_map(|result| match result.metadata {
-                        RsLookupMetadataResult::Person(person)
-                            if ids.has_common_id(&person.clone().into()) =>
-                        {
-                            Some(person)
-                        }
-                        _ => None,
-                    }))
+                self.lookup_person_metadata(library_id, ids, user).await
             })
             .await;
             match resolved {

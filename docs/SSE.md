@@ -960,3 +960,20 @@ when the metadata itself did not change. Clients can reload the relationship via
 `GET /libraries/:libraryId/series/:id/people` (arrays of `Person`). Refresh adds
 relationships idempotently and preserves existing links when credits are omitted
 or a lookup fails; it does not remove people or relationships.
+
+
+### Person types and plugin metadata refresh
+
+Person payloads retain a string `type`: canonical values include `Actor`,
+`Director`, `Writer`, `Producer`, `Creator`, `Author`, `Family`, `Friends`,
+and `Singer`. Custom strings are preserved exactly; plugins map their own
+department/job names to canonical values. Existing database values remain valid.
+
+`GET /libraries/:libraryId/people/:id/refresh` refreshes a person's metadata
+through plugins and emits the existing `people` / `Updated` payload. As with
+person edits, this requires library Admin access. Results must share a known
+external ID with the person; an unmatched lookup leaves the profile unchanged.
+People search and streaming search use plugins without a built-in Trakt fallback.
+
+Merging people preserves movie/show relationships, including shared credits,
+and advances affected parents' `modified` timestamps for incremental sync.

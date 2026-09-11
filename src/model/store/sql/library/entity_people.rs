@@ -184,6 +184,161 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn refresh_people_uses_credit_type_only_when_details_omit_it() {
+        use crate::domain::people::PersonType;
+        let store = store().await;
+        let credit = Person {
+            kind: Some(PersonType::Director),
+            ..summary()
+        };
+        let (created, _) =
+            resolve_refresh_person(&store, credit.clone(), |_| async { Ok(Some(summary())) })
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(created.kind, Some(PersonType::Director));
+        let (reused, _) = resolve_refresh_person(
+            &store,
+            Person {
+                kind: Some(PersonType::Actor),
+                ..credit
+            },
+            |_| async {
+                panic!("Existing person must retain their type without a lookup");
+                #[allow(unreachable_code)]
+                Ok(None)
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(reused.id, created.id);
+        assert_eq!(reused.kind, Some(PersonType::Director));
+    }
+
+    #[tokio::test]
+    async fn refresh_people_type_json_and_database_compatibility() {
+        use crate::domain::people::PersonType;
+        use crate::model::people::PersonForUpdate;
+
+        let store = store().await;
+        for (index, (wire, expected)) in [
+            ("Actor", PersonType::Actor),
+            ("Director", PersonType::Director),
+            ("Author", PersonType::Author),
+            ("Family", PersonType::Family),
+            ("Friends", PersonType::Friends),
+            ("Singer", PersonType::Singer),
+            ("custom name", PersonType::Custom("custom name".into())),
+            ("Acting", PersonType::Custom("Acting".into())),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let id = format!("person-{index}");
+            let add: PersonForAdd = serde_json::from_value(serde_json::json!({
+                "name": "Person", "type": wire
+            }))
+            .unwrap();
+            assert_eq!(add.kind, Some(expected.clone()));
+            assert_eq!(serde_json::to_value(&add).unwrap()["type"], wire);
+            store
+                .add_person(PersonForInsert {
+                    id: id.clone(),
+                    person: add,
+                })
+                .await
+                .unwrap();
+            let person = store.get_person(&id).await.unwrap().unwrap();
+            assert_eq!(person.kind, Some(expected));
+            assert_eq!(serde_json::to_value(person).unwrap()["type"], wire);
+
+            let update: PersonForUpdate = serde_json::from_value(serde_json::json!({
+                "type": "custom updated"
+            }))
+            .unwrap();
+            store.update_person(&id, update).await.unwrap();
+            assert_eq!(
+                store.get_person(&id).await.unwrap().unwrap().kind,
+                Some(PersonType::Custom("custom updated".into()))
+            );
+        }
+        // Existing TEXT values remain readable without rewriting or alias mapping.
+        store
+            .connection
+            .call(|conn| {
+                conn.execute(
+                    "UPDATE people SET type = 'acteur' WHERE id = 'person-0'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            store.get_person("person-0").await.unwrap().unwrap().kind,
+            Some(PersonType::Custom("acteur".into()))
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_people_merge_preserves_movie_and_show_links() {
+        let store = store().await;
+        existing(&store, None).await;
+        store
+            .add_person(PersonForInsert {
+                id: "target".into(),
+                person: PersonForAdd {
+                    name: "Target".into(),
+                    ..Default::default()
+                },
+            })
+            .await
+            .unwrap();
+        store
+            .connection
+            .call(|conn| {
+                conn.execute(
+                    "INSERT INTO movies (id, name) VALUES ('movie', 'Movie')",
+                    [],
+                )?;
+                conn.execute("INSERT INTO series (id, name) VALUES ('serie', 'Show')", [])?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        for (entity, id) in [
+            (PeopleEntity::Movie, "movie"),
+            (PeopleEntity::Serie, "serie"),
+        ] {
+            store
+                .add_entity_person(entity, id, "local-person")
+                .await
+                .unwrap();
+        }
+        store
+            .add_entity_person(PeopleEntity::Movie, "movie", "target")
+            .await
+            .unwrap();
+        store
+            .transfer_faces_between_people("local-person", "target")
+            .await
+            .unwrap();
+        store
+            .transfer_faces_between_people("target", "target")
+            .await
+            .unwrap();
+        for (entity, id) in [
+            (PeopleEntity::Movie, "movie"),
+            (PeopleEntity::Serie, "serie"),
+        ] {
+            let people = store.get_entity_people(entity, id).await.unwrap();
+            assert_eq!(people.len(), 1);
+            assert_eq!(people[0].id, "target");
+        }
+    }
+
+    #[tokio::test]
     async fn refresh_people_known_id_skips_plugin() {
         let store = store().await;
         existing(&store, Some(42)).await;
@@ -246,6 +401,7 @@ mod tests {
                 Ok(Some(Person {
                     imdb: Some("nm0042".into()),
                     bio: Some("Full profile".into()),
+                    kind: Some(crate::domain::people::PersonType::Actor),
                     ..summary()
                 }))
             })
@@ -256,6 +412,7 @@ mod tests {
         assert_eq!(first.0.id, second.0.id);
         assert_ne!(first.0.id, "tmdb:42");
         assert_eq!(first.0.bio.as_deref(), Some("Full profile"));
+        assert_eq!(first.0.kind, Some(crate::domain::people::PersonType::Actor));
         assert_eq!(
             [first.1, second.1]
                 .iter()
