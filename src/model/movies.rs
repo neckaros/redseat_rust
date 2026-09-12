@@ -159,6 +159,33 @@ impl ModelController {
         Ok(movies)
     }
 
+    /// Local movie lists share one credit query after filtering and watched hydration.
+    pub async fn get_movies_with_relations(
+        &self,
+        library_id: &str,
+        query: MovieQuery,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Vec<rs_plugin_common_interfaces::domain::ItemWithRelations<Movie>>> {
+        let movies = self.get_movies(library_id, query, requesting_user).await?;
+        let mut credits = self
+            .title_credit_snapshots(
+                library_id,
+                super::entity_people::PeopleEntity::Movie,
+                movies.iter().map(|movie| movie.id.clone()).collect(),
+            )
+            .await?;
+        Ok(movies
+            .into_iter()
+            .map(|movie| {
+                let relations = credits.remove(&movie.id);
+                rs_plugin_common_interfaces::domain::ItemWithRelations {
+                    item: movie,
+                    relations,
+                }
+            })
+            .collect())
+    }
+
     pub async fn get_movie(
         &self,
         library_id: &str,
@@ -412,9 +439,9 @@ impl ModelController {
                 library: library_id.to_string(),
                 movies: vec![MovieWithAction {
                     action: ElementAction::Updated,
-                    movie: movie.clone(),
+                    movie: rs_plugin_common_interfaces::domain::ItemWithRelations { item: movie.clone(), relations: None },
                 }],
-            });
+            }).await;
             Ok(movie)
         } else {
             let movie = self
@@ -453,7 +480,29 @@ impl ModelController {
         Ok(())
     }
 
-    pub fn send_movie(&self, message: MoviesMessage) {
+    pub async fn send_movie(&self, mut message: MoviesMessage) {
+        match self
+            .title_credit_snapshots(
+                &message.library,
+                super::entity_people::PeopleEntity::Movie,
+                message
+                    .movies
+                    .iter()
+                    .map(|entry| entry.movie.item.id.clone())
+                    .collect(),
+            )
+            .await
+        {
+            Ok(mut snapshots) => {
+                for entry in &mut message.movies {
+                    entry.movie.relations = snapshots.remove(&entry.movie.item.id);
+                }
+            }
+            Err(error) => crate::tools::log::log_warn(
+                crate::tools::log::LogServiceType::Source,
+                format!("Unable to load movie event credits: {error}"),
+            ),
+        }
         self.broadcast_sse(SseEvent::Movies(message));
     }
 
@@ -482,9 +531,9 @@ impl ModelController {
             library: library_id.to_string(),
             movies: vec![MovieWithAction {
                 action: ElementAction::Added,
-                movie: new_person.clone(),
+                movie: rs_plugin_common_interfaces::domain::ItemWithRelations { item: new_person.clone(), relations: None },
             }],
-        });
+        }).await;
 
         let mc = self.clone();
         let lib_id = library_id.to_string();
@@ -612,9 +661,9 @@ impl ModelController {
             library: library_id.to_string(),
             movies: vec![MovieWithAction {
                 action: ElementAction::Deleted,
-                movie: existing.clone(),
+                movie: rs_plugin_common_interfaces::domain::ItemWithRelations { item: existing.clone(), relations: None },
             }],
-        });
+        }).await;
         Ok(existing)
     }
 
@@ -722,9 +771,9 @@ impl ModelController {
                     library: library_id.to_string(),
                     movies: vec![MovieWithAction {
                         action: ElementAction::Updated,
-                        movie: updated.clone(),
+                        movie: rs_plugin_common_interfaces::domain::ItemWithRelations { item: updated.clone(), relations: None },
                     }],
-                });
+                }).await;
                 return Ok(updated);
             }
         }
@@ -948,10 +997,10 @@ impl ModelController {
         self.send_movie(MoviesMessage {
             library: library_id.to_string(),
             movies: vec![MovieWithAction {
-                movie,
+                movie: rs_plugin_common_interfaces::domain::ItemWithRelations { item: movie, relations: None },
                 action: ElementAction::Updated,
             }],
-        });
+        }).await;
         Ok(())
     }
 }

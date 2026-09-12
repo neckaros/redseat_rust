@@ -130,14 +130,23 @@ impl SqliteLibraryStore {
                     b.id, b.name, b.type, b.serie_ref, b.volume, b.chapter, b.year, b.airdate, b.overview, b.pages, b.params, b.lang, b.original,
                     b.isbn13, b.openlibrary_edition_id, b.openlibrary_work_id, b.google_books_volume_id, b.asin, b.otherids, b.modified, b.added,
                     (SELECT GROUP_CONCAT(tag_ref || '|' || IFNULL(confidence, 100)) FROM book_tag_mapping WHERE book_ref = b.id) AS tags,
-                    (SELECT GROUP_CONCAT(people_ref) FROM book_people_mapping WHERE book_ref = b.id) AS people
+                    NULL AS people
                     FROM books b {}{}{}",
                     where_query.format(),
                     where_query.format_order(),
                     pagination
                 ))?;
                 let rows = statement.query_map(where_query.values(), Self::row_to_book)?;
-                let values = rows.collect::<std::result::Result<Vec<ItemWithRelations<Book>>, rusqlite::Error>>()?;
+                let mut values = rows.collect::<std::result::Result<Vec<ItemWithRelations<Book>>, rusqlite::Error>>()?;
+                let mut credits = Self::load_people_relations(conn, crate::model::entity_people::PeopleEntity::Book, &values.iter().map(|item| item.item.id.clone()).collect::<Vec<_>>())?;
+                for item in &mut values {
+                    if let Some(snapshot) = credits.remove(&item.item.id) {
+                        let relations = item.relations.get_or_insert_default();
+                        relations.people = snapshot.people;
+                        relations.people_roles = snapshot.people_roles;
+                        relations.people_characters = snapshot.people_characters;
+                    }
+                }
                 Ok(values)
             })
             .await?;

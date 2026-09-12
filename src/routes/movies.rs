@@ -89,7 +89,7 @@ async fn handler_list(
     user: ConnectedUser,
     Query(query): Query<MovieQuery>,
 ) -> Result<Json<Value>> {
-    let libraries = mc.get_movies(&library_id, query, &user).await?;
+    let libraries = mc.get_movies_with_relations(&library_id, query, &user).await?;
     let body = Json(json!(libraries));
     Ok(body)
 }
@@ -110,7 +110,7 @@ async fn handler_upcoming(
     user: ConnectedUser,
 ) -> Result<Json<Value>> {
     let libraries = mc
-        .get_movies(
+        .get_movies_with_relations(
             &library_id,
             MovieQuery {
                 in_digital: Some(false),
@@ -130,7 +130,7 @@ async fn handler_ondeck(
     user: ConnectedUser,
 ) -> Result<Json<Value>> {
     let libraries = mc
-        .get_movies(
+        .get_movies_with_relations(
             &library_id,
             MovieQuery {
                 in_digital: Some(true),

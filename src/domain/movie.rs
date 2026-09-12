@@ -145,7 +145,7 @@ impl MovieForUpdate {
 #[serde(rename_all = "camelCase")]
 pub struct MovieWithAction {
     pub action: ElementAction,
-    pub movie: Movie,
+    pub movie: rs_plugin_common_interfaces::domain::ItemWithRelations<Movie>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

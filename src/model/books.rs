@@ -84,6 +84,7 @@ impl ModelController {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id)?;
         let mut books = store.get_books(query).await?;
+
         self.fill_books_watched(&mut books, requesting_user, Some(library_id.to_string()))
             .await?;
         Ok(books)
@@ -235,9 +236,9 @@ impl ModelController {
                                         library: library_id.to_string(),
                                         books: vec![BookWithAction {
                                             action: ElementAction::Updated,
-                                            book: updated.item,
+                                            book: rs_plugin_common_interfaces::domain::ItemWithRelations { item: updated.item, relations: None },
                                         }],
-                                    });
+                                    }).await;
                                 }
                             }
                             return self
@@ -618,9 +619,9 @@ impl ModelController {
             library: library_id.to_string(),
             books: vec![BookWithAction {
                 action: ElementAction::Added,
-                book: inserted.clone(),
+                book: rs_plugin_common_interfaces::domain::ItemWithRelations { item: inserted.clone(), relations: None },
             }],
-        });
+        }).await;
 
         let mc = self.clone();
         let lib_id = library_id.to_string();
@@ -748,9 +749,9 @@ impl ModelController {
             library: library_id.to_string(),
             books: vec![BookWithAction {
                 action: ElementAction::Updated,
-                book: updated.clone(),
+                book: rs_plugin_common_interfaces::domain::ItemWithRelations { item: updated.clone(), relations: None },
             }],
-        });
+        }).await;
         Ok(updated)
     }
 
@@ -787,13 +788,35 @@ impl ModelController {
             library: library_id.to_string(),
             books: vec![BookWithAction {
                 action: ElementAction::Deleted,
-                book: existing.clone(),
+                book: rs_plugin_common_interfaces::domain::ItemWithRelations { item: existing.clone(), relations: None },
             }],
-        });
+        }).await;
         Ok(existing)
     }
 
-    pub fn send_book(&self, message: BooksMessage) {
+    pub async fn send_book(&self, mut message: BooksMessage) {
+        match self
+            .title_credit_snapshots(
+                &message.library,
+                super::entity_people::PeopleEntity::Book,
+                message
+                    .books
+                    .iter()
+                    .map(|entry| entry.book.item.id.clone())
+                    .collect(),
+            )
+            .await
+        {
+            Ok(mut snapshots) => {
+                for entry in &mut message.books {
+                    entry.book.relations = snapshots.remove(&entry.book.item.id);
+                }
+            }
+            Err(error) => crate::tools::log::log_warn(
+                crate::tools::log::LogServiceType::Source,
+                format!("Unable to load book event credits: {error}"),
+            ),
+        }
         self.broadcast_sse(SseEvent::Books(message));
     }
 
@@ -1020,9 +1043,9 @@ impl ModelController {
             library: library_id.to_string(),
             books: vec![BookWithAction {
                 action: ElementAction::Updated,
-                book,
+                book: rs_plugin_common_interfaces::domain::ItemWithRelations { item: book, relations: None },
             }],
-        });
+        }).await;
         Ok(())
     }
 }

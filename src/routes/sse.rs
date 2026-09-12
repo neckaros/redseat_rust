@@ -383,11 +383,11 @@ mod tests {
             library: "lib-books".to_string(),
             books: vec![BookWithAction {
                 action: ElementAction::Added,
-                book: Book {
+                book: rs_plugin_common_interfaces::domain::ItemWithRelations { item: Book {
                     id: "book-1".to_string(),
                     name: "Book 1".to_string(),
                     ..Default::default()
-                },
+                }, relations: None },
             }],
         });
         assert_eq!(event.event_name(), "books");

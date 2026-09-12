@@ -287,6 +287,7 @@ impl ModelController {
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id)?;
         let people = store.get_series(query).await?;
+
         Ok(people)
     }
 
@@ -506,9 +507,9 @@ impl ModelController {
                 library: library_id.to_string(),
                 series: vec![SerieWithAction {
                     action: ElementAction::Updated,
-                    serie: serie.clone(),
+                    serie: rs_plugin_common_interfaces::domain::ItemWithRelations { item: serie.clone(), relations: None },
                 }],
-            });
+            }).await;
             Ok(serie)
         } else {
             let serie = self
@@ -524,7 +525,29 @@ impl ModelController {
         }
     }
 
-    pub fn send_serie(&self, message: SeriesMessage) {
+    pub async fn send_serie(&self, mut message: SeriesMessage) {
+        match self
+            .title_credit_snapshots(
+                &message.library,
+                super::entity_people::PeopleEntity::Serie,
+                message
+                    .series
+                    .iter()
+                    .map(|entry| entry.serie.item.id.clone())
+                    .collect(),
+            )
+            .await
+        {
+            Ok(mut snapshots) => {
+                for entry in &mut message.series {
+                    entry.serie.relations = snapshots.remove(&entry.serie.item.id);
+                }
+            }
+            Err(error) => crate::tools::log::log_warn(
+                crate::tools::log::LogServiceType::Source,
+                format!("Unable to load serie event credits: {error}"),
+            ),
+        }
         self.broadcast_sse(SseEvent::Series(message));
     }
 
@@ -563,9 +586,9 @@ impl ModelController {
             library: library_id.to_string(),
             series: vec![SerieWithAction {
                 action: ElementAction::Added,
-                serie: inserted_serie.clone(),
+                serie: rs_plugin_common_interfaces::domain::ItemWithRelations { item: inserted_serie.clone(), relations: None },
             }],
-        });
+        }).await;
 
         let mc = self.clone();
         let inserted_serie_id = inserted_serie.id.clone();
@@ -737,9 +760,9 @@ impl ModelController {
             library: library_id.to_string(),
             series: vec![SerieWithAction {
                 action: ElementAction::Deleted,
-                serie: existing.clone(),
+                serie: rs_plugin_common_interfaces::domain::ItemWithRelations { item: existing.clone(), relations: None },
             }],
-        });
+        }).await;
         Ok(existing)
     }
 
@@ -815,9 +838,9 @@ impl ModelController {
                     library: library_id.to_string(),
                     series: vec![SerieWithAction {
                         action: ElementAction::Updated,
-                        serie: updated.clone(),
+                        serie: rs_plugin_common_interfaces::domain::ItemWithRelations { item: updated.clone(), relations: None },
                     }],
-                });
+                }).await;
                 return Ok(updated);
             }
         }
@@ -1155,10 +1178,10 @@ impl ModelController {
         self.send_serie(SeriesMessage {
             library: library_id.to_string(),
             series: vec![SerieWithAction {
-                serie,
+                serie: rs_plugin_common_interfaces::domain::ItemWithRelations { item: serie, relations: None },
                 action: ElementAction::Updated,
             }],
-        });
+        }).await;
         Ok(())
     }
 }

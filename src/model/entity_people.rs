@@ -69,6 +69,21 @@ where
 }
 
 impl ModelController {
+    pub(crate) async fn title_credit_snapshots(
+        &self,
+        library_id: &str,
+        entity: PeopleEntity,
+        ids: Vec<String>,
+    ) -> RsResult<std::collections::HashMap<String, rs_plugin_common_interfaces::domain::Relations>>
+    {
+        Ok(self
+            .store
+            .get_library_store(library_id)?
+            .get_people_relations_batch(entity, ids)
+            .await?)
+    }
+
+
     /// Select metadata only when a plugin returns one of the requested external IDs.
     pub(crate) async fn lookup_person_metadata(
         &self,
