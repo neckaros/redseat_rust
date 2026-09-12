@@ -982,3 +982,43 @@ and advances affected parents' `modified` timestamps for incremental sync.
 Movie/show metadata and relationship timestamp updates are monotonic per entity,
 including changes within the same millisecond, so strict `modified > after` sync
 can detect a relationship change after observing the preceding metadata update.
+
+### Relationship roles
+
+Movie/show/book person links store nullable JSON role lists separately from the
+person's general `type`. Their people endpoints return the existing flattened
+person fields plus optional `roles: ["Actor", "Director"]`. Missing roles mean
+unknown; empty lists explicitly clear roles. Canonical and custom strings use
+PersonType; role lists are deduplicated and order does not signify priority.
+
+Plugin `relations.peopleRoles` maps credit IDs to role lists. Neither summary
+nor full-profile `type` is used as a substitute for explicit relationship roles.
+Legacy plugins without this map leave roles unchanged/unknown; omitted entries
+preserve stored roles. Refresh combines multiple
+credits resolving to the same person before saving.
+
+Migration 057 leaves old links unknown. Refresh movies/shows normally to backfill.
+For books, `GET /libraries/:libraryId/books/:id/people/refresh` (Write) fetches
+matching book metadata and reuses saved people by ID; it never fabricates roles
+from their profiles. `GET /libraries/:libraryId/books/:id/people` requires Read.
+An unmatched book lookup leaves links unchanged. Book creation stores roles from
+supplied relations for resolved people.
+
+Role-only changes advance the parent timestamp and normal refresh flows emit the
+existing movies/series/books Updated event. Consumers should reload the parent's
+people list. Merges union roles across shared links and preserve unknown values.
+The people_ref index narrows person-specific JSON role queries to their credits.
+
+Character names are stored independently in nullable `characters` JSON arrays.
+Plugin `peopleCharacters` uses the same credit IDs as `peopleRoles`. Missing
+names preserve stored values; empty arrays clear names; merges union both lists.
+People endpoints expose `characters` alongside `roles`, without modifying
+the general profile. Existing links acquire names on refresh when the plugin
+supplies them.
+
+Movie, show, and book list endpoints accept optional `person` (local person ID)
+and `role` (exact canonical/custom string) query parameters. Combined filters
+match both on the same relationship. For example:
+`GET /libraries/:libraryId/movies?person=:nolanId&role=Director`.
+Filtering by person uses the mapping index before checking the small JSON lists;
+role-only searches may scan more relationship rows.

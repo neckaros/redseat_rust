@@ -1114,14 +1114,27 @@ else 0 end) as score", q, q, q, q, q, q);
                     params![target_id, source_id],
                 )?;
 
-                // Preserve movie/show credits when the source person is merged away.
+                // Preserve book/movie/show credits when the source person is merged away.
                 for (mapping, reference) in [
                     ("movie_people_mapping", "movie_ref"),
                     ("serie_people_mapping", "serie_ref"),
+                    ("book_people_mapping", "book_ref"),
                 ] {
+                    let confidence = if mapping == "book_people_mapping" { ", confidence" } else { "" };
                     tx.execute(
-                        &format!("INSERT OR IGNORE INTO {mapping} ({reference}, people_ref)
-                            SELECT {reference}, ? FROM {mapping} WHERE people_ref = ?"),
+                        &format!("INSERT INTO {mapping} ({reference}, people_ref, roles, characters{confidence})
+                            SELECT {reference}, ?, roles, characters{confidence} FROM {mapping} WHERE people_ref = ?
+                            ON CONFLICT({reference}, people_ref) DO UPDATE SET roles =
+                            CASE WHEN {mapping}.roles IS NULL AND excluded.roles IS NULL THEN NULL
+                            ELSE (SELECT json_group_array(value) FROM (
+                                SELECT value FROM json_each({mapping}.roles)
+                                UNION SELECT value FROM json_each(excluded.roles) ORDER BY value
+                            )) END,
+                            characters = CASE WHEN {mapping}.characters IS NULL AND excluded.characters IS NULL THEN NULL
+                            ELSE (SELECT json_group_array(value) FROM (
+                                SELECT value FROM json_each({mapping}.characters)
+                                UNION SELECT value FROM json_each(excluded.characters) ORDER BY value
+                            )) END"),
                         params![target_id, source_id],
                     )?;
                     tx.execute(

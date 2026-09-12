@@ -76,6 +76,8 @@ pub fn routes(mc: ModelController) -> Router {
         .route("/:id/image/search", get(handler_image_search))
         .route("/:id/image/fetch", post(handler_image_fetch))
         .route("/:id/image/refresh", get(handler_image_refresh))
+        .route("/:id/people", get(handler_people))
+        .route("/:id/people/refresh", get(handler_refresh_people))
         .route("/:id/image", post(handler_post_image))
         .route("/:id/rating", get(handler_rating_get))
         .route("/:id/rating", patch(handler_rating_set))
@@ -611,4 +613,30 @@ mod tests {
         assert!(matches!(&error, Error::InvalidParams(_)));
         assert_eq!(error.client_status_and_error().0, StatusCode::BAD_REQUEST);
     }
+}
+
+async fn handler_people(
+    Path((library_id, id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<Json<Value>> {
+    Ok(Json(json!(
+        mc.get_entity_people(
+            &library_id,
+            crate::model::entity_people::PeopleEntity::Book,
+            &id,
+            &user
+        )
+        .await?
+    )))
+}
+
+async fn handler_refresh_people(
+    Path((library_id, id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<Json<Value>> {
+    Ok(Json(json!(
+        mc.refresh_book_people(&library_id, &id, &user).await?
+    )))
 }

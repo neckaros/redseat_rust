@@ -5,7 +5,7 @@ use super::ElementAction;
 use rs_plugin_common_interfaces::{url::RsLink, Gender};
 
 pub use rs_plugin_common_interfaces::domain::media::{FaceBBox, FaceEmbedding};
-pub use rs_plugin_common_interfaces::domain::person::{Person, PersonType};
+pub use rs_plugin_common_interfaces::domain::person::{Person, PersonType, PersonWithRoles};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]

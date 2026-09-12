@@ -71,6 +71,7 @@ impl SqliteLibraryStore {
             .connection
             .call(move |conn| {
                 let mut where_query = RsQueryBuilder::new();
+                Self::add_people_filter(&mut where_query, crate::model::entity_people::PeopleEntity::Movie, query.person, query.role);
                 if let Some(q) = query.after {
                     where_query.add_where(SqlWhereType::After("modified".to_owned(), Box::new(q)));
                 }
