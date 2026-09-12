@@ -56,6 +56,8 @@ pub enum RsMovieSort {
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct MovieQuery {
+    pub person: Option<String>,
+    pub role: Option<crate::domain::people::PersonType>,
     pub after: Option<i64>,
     pub in_digital: Option<bool>,
 
@@ -699,13 +701,15 @@ impl ModelController {
         let new_movie = self
             .update_movie(library_id, movie_id.to_string(), updates, requesting_user)
             .await?;
-        if let Some(people) = relations.and_then(|relations| relations.people_details) {
+        if let Some(relations) = relations.filter(|relations| relations.people_details.is_some()) {
             if self
                 .refresh_entity_people(
                     library_id,
                     super::entity_people::PeopleEntity::Movie,
                     movie_id,
-                    people,
+                    relations.people_details.unwrap_or_default(),
+                    relations.people_roles,
+                    relations.people_characters,
                     requesting_user,
                 )
                 .await?

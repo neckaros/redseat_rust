@@ -3,11 +3,37 @@ use rusqlite::{params, params_from_iter};
 
 use super::{Result, SqliteLibraryStore};
 use crate::{
-    domain::{people::Person, ElementAction},
+    domain::{
+        people::{Person, PersonType, PersonWithRoles},
+        ElementAction,
+    },
     model::{entity_people::PeopleEntity, store::to_pipe_separated_optional},
 };
 
 impl SqliteLibraryStore {
+    pub(super) fn add_people_filter(
+        query: &mut super::super::RsQueryBuilder,
+        entity: PeopleEntity,
+        person: Option<String>,
+        role: Option<PersonType>,
+    ) {
+        use super::super::SqlWhereType;
+        let (_, mapping, reference) = entity.tables();
+        let (sql, value): (String, Box<dyn rusqlite::ToSql>) = match (person, role) {
+            (Some(person), Some(role)) => (
+                format!("id IN (SELECT m.{reference} FROM json_each(?) wanted
+                    JOIN {mapping} m ON m.people_ref = wanted.key
+                    WHERE EXISTS (SELECT 1 FROM json_each(m.roles) role WHERE role.value = wanted.value))"),
+                Box::new(serde_json::json!({ (person): role })),
+            ),
+            (Some(person), None) => (format!("id IN (SELECT {reference} FROM {mapping} WHERE people_ref = ?)"), Box::new(person)),
+            (None, Some(role)) => (format!("id IN (SELECT {reference} FROM {mapping}
+                WHERE EXISTS (SELECT 1 FROM json_each(roles) WHERE value = ?))"), Box::new(role)),
+            (None, None) => return,
+        };
+        query.add_where(SqlWhereType::Custom(sql, value));
+    }
+
     pub(super) fn find_person_by_ids(
         conn: &rusqlite::Connection,
         ids: &RsIds,
@@ -116,6 +142,39 @@ impl SqliteLibraryStore {
         id: &str,
         person_id: &str,
     ) -> Result<bool> {
+        self.upsert_entity_person_roles(entity, id, person_id, None)
+            .await
+    }
+
+    pub(crate) async fn upsert_entity_person_roles(
+        &self,
+        entity: PeopleEntity,
+        id: &str,
+        person_id: &str,
+        roles: Option<Vec<PersonType>>,
+    ) -> Result<bool> {
+        self.upsert_entity_person_credit(entity, id, person_id, roles, None)
+            .await
+    }
+
+    pub(crate) async fn upsert_entity_person_credit(
+        &self,
+        entity: PeopleEntity,
+        id: &str,
+        person_id: &str,
+        roles: Option<Vec<PersonType>>,
+        characters: Option<Vec<String>>,
+    ) -> Result<bool> {
+        let characters = characters.map(|mut values| {
+            values.sort();
+            values.dedup();
+            serde_json::json!(values)
+        });
+        let roles = roles.map(|mut roles| {
+            roles.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+            roles.dedup();
+            serde_json::json!(roles)
+        });
         let id = id.to_string();
         let person_id = person_id.to_string();
         Ok(self
@@ -125,12 +184,16 @@ impl SqliteLibraryStore {
                 // Existence checks also protect installations with foreign_keys disabled.
                 Ok(conn.execute(
                     &format!(
-                        "INSERT INTO {mapping} ({reference}, people_ref)
-                SELECT ?, ? WHERE EXISTS (SELECT 1 FROM {parent} WHERE id = ?)
+                        "INSERT INTO {mapping} ({reference}, people_ref, roles, characters)
+                SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM {parent} WHERE id = ?)
                 AND EXISTS (SELECT 1 FROM people WHERE id = ?)
-                ON CONFLICT ({reference}, people_ref) DO NOTHING"
+                ON CONFLICT ({reference}, people_ref) DO UPDATE SET
+                    roles = coalesce(excluded.roles, {mapping}.roles),
+                    characters = coalesce(excluded.characters, {mapping}.characters)
+                WHERE (excluded.roles IS NOT NULL AND {mapping}.roles IS NOT excluded.roles)
+                   OR (excluded.characters IS NOT NULL AND {mapping}.characters IS NOT excluded.characters)"
                     ),
-                    params![id, person_id, id, person_id],
+                    params![id, person_id, roles, characters, id, person_id],
                 )? > 0)
             })
             .await?)
@@ -140,20 +203,28 @@ impl SqliteLibraryStore {
         &self,
         entity: PeopleEntity,
         id: &str,
-    ) -> Result<Vec<Person>> {
+    ) -> Result<Vec<PersonWithRoles>> {
         let id = id.to_string();
         Ok(self
             .connection
             .call(move |conn| {
                 let (_, mapping, reference) = entity.tables();
                 let mut query = conn.prepare(&format!(
-                    "SELECT {} FROM people
+                    "SELECT {}, (SELECT roles FROM {mapping} WHERE {reference} = ? AND people_ref = people.id), (SELECT characters FROM {mapping} WHERE {reference} = ? AND people_ref = people.id) FROM people
                 WHERE id IN (SELECT people_ref FROM {mapping} WHERE {reference} = ?)
                 ORDER BY name, id",
                     Self::PEOPLE_FIELDS
                 ))?;
                 let people = query
-                    .query_map([id], Self::row_to_person)?
+                    .query_map([&id, &id, &id], |row| {
+                        let raw: Option<String> = row.get(Self::PEOPLE_FIELDS.split(',').count())?;
+                        let roles = raw.map(|raw| serde_json::from_str(&raw)).transpose()
+                            .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))?;
+                        let raw: Option<String> = row.get(Self::PEOPLE_FIELDS.split(',').count() + 1)?;
+                        let characters = raw.map(|raw| serde_json::from_str(&raw)).transpose()
+                            .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))?;
+                        Ok(PersonWithRoles { person: Self::row_to_person(row)?, roles, characters })
+                    })?
                     .collect::<rusqlite::Result<Vec<_>>>()?;
                 Ok(people)
             })
@@ -201,6 +272,378 @@ mod tests {
             })
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn relationship_roles_filter_matches_the_same_person_and_uses_index() {
+        use crate::model::{books::BookQuery, movies::MovieQuery, series::SerieQuery};
+        let store = store().await;
+        existing(&store, Some(42)).await;
+        store
+            .add_person(PersonForInsert {
+                id: "other".into(),
+                person: PersonForAdd {
+                    name: "Other".into(),
+                    ..Default::default()
+                },
+            })
+            .await
+            .unwrap();
+        store
+            .connection
+            .call(|conn| {
+                conn.execute_batch(
+                    "INSERT INTO movies(id,name) VALUES ('movie','Movie');
+                INSERT INTO series(id,name) VALUES ('serie','Show');
+                INSERT INTO books(id,name) VALUES ('book','Book');",
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        for (entity, id) in [
+            (PeopleEntity::Movie, "movie"),
+            (PeopleEntity::Serie, "serie"),
+            (PeopleEntity::Book, "book"),
+        ] {
+            store
+                .upsert_entity_person_roles(
+                    entity,
+                    id,
+                    "local-person",
+                    Some(vec![PersonType::Actor]),
+                )
+                .await
+                .unwrap();
+            store
+                .upsert_entity_person_roles(entity, id, "other", Some(vec![PersonType::Director]))
+                .await
+                .unwrap();
+        }
+        assert!(store
+            .get_movies(MovieQuery {
+                person: Some("local-person".into()),
+                role: Some(PersonType::Director),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            store
+                .get_movies(MovieQuery {
+                    person: Some("other".into()),
+                    role: Some(PersonType::Director),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            store
+                .get_series(SerieQuery {
+                    person: Some("other".into()),
+                    role: Some(PersonType::Director),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            store
+                .get_books(BookQuery {
+                    person: Some("other".into()),
+                    role: Some(PersonType::Director),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            store
+                .get_movies(MovieQuery {
+                    role: Some(PersonType::Actor),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            store
+                .get_movies(MovieQuery {
+                    person: Some("local-person".into()),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        store
+            .connection
+            .call(|conn| {
+                let mut query = super::super::super::RsQueryBuilder::new();
+                SqliteLibraryStore::add_people_filter(
+                    &mut query,
+                    PeopleEntity::Movie,
+                    Some("other".into()),
+                    Some(PersonType::Director),
+                );
+                let mut statement = conn.prepare(&format!(
+                    "EXPLAIN QUERY PLAN SELECT id FROM movies {}",
+                    query.format()
+                ))?;
+                let plan = statement
+                    .query_map(query.values(), |row| row.get::<_, String>(3))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                assert!(
+                    plan.iter().any(|line| line.contains("movie_people_person")),
+                    "{plan:?}"
+                );
+                Ok(())
+            })
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn relationship_roles_character_names_survive_partial_updates_and_merges() {
+        let store = store().await;
+        existing(&store, Some(42)).await;
+        store
+            .add_person(PersonForInsert {
+                id: "target".into(),
+                person: PersonForAdd {
+                    name: "Target".into(),
+                    ..Default::default()
+                },
+            })
+            .await
+            .unwrap();
+        store
+            .connection
+            .call(|conn| {
+                conn.execute("INSERT INTO movies(id,name) VALUES ('movie','Movie')", [])?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        store
+            .upsert_entity_person_credit(
+                PeopleEntity::Movie,
+                "movie",
+                "local-person",
+                Some(vec![PersonType::Actor]),
+                Some(vec!["B".into(), "A".into(), "A".into()]),
+            )
+            .await
+            .unwrap();
+        store
+            .upsert_entity_person_roles(
+                PeopleEntity::Movie,
+                "movie",
+                "local-person",
+                Some(vec![PersonType::Director]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .get_entity_people(PeopleEntity::Movie, "movie")
+                .await
+                .unwrap()[0]
+                .characters,
+            Some(vec!["A".into(), "B".into()])
+        );
+        store
+            .upsert_entity_person_credit(
+                PeopleEntity::Movie,
+                "movie",
+                "target",
+                None,
+                Some(vec!["C".into()]),
+            )
+            .await
+            .unwrap();
+        store
+            .transfer_faces_between_people("local-person", "target")
+            .await
+            .unwrap();
+        let credit = store
+            .get_entity_people(PeopleEntity::Movie, "movie")
+            .await
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            credit.characters,
+            Some(vec!["A".into(), "B".into(), "C".into()])
+        );
+        assert_eq!(credit.roles, Some(vec![PersonType::Director]));
+        store
+            .upsert_entity_person_credit(PeopleEntity::Movie, "movie", "target", None, Some(vec![]))
+            .await
+            .unwrap();
+        let credit = store
+            .get_entity_people(PeopleEntity::Movie, "movie")
+            .await
+            .unwrap()
+            .remove(0);
+        assert_eq!(credit.characters, Some(vec![]));
+        assert_eq!(credit.roles, Some(vec![PersonType::Director]));
+    }
+
+    #[tokio::test]
+    async fn relationship_roles_are_nullable_idempotent_and_independent_of_profile() {
+        use crate::domain::people::PersonType;
+        let store = store().await;
+        existing(&store, Some(42)).await;
+        store
+            .connection
+            .call(|conn| {
+                conn.execute_batch(
+                    "INSERT INTO movies (id,name) VALUES ('movie','Movie');
+                INSERT INTO series (id,name) VALUES ('serie','Show');
+                INSERT INTO books (id,name) VALUES ('book','Book');",
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        for (entity, id) in [
+            (PeopleEntity::Movie, "movie"),
+            (PeopleEntity::Serie, "serie"),
+            (PeopleEntity::Book, "book"),
+        ] {
+            store
+                .add_entity_person(entity, id, "local-person")
+                .await
+                .unwrap();
+            assert!(store.get_entity_people(entity, id).await.unwrap()[0]
+                .roles
+                .is_none());
+            let roles = vec![
+                PersonType::Director,
+                PersonType::Actor,
+                PersonType::Actor,
+                PersonType::Custom("custom name".into()),
+            ];
+            assert!(store
+                .upsert_entity_person_roles(entity, id, "local-person", Some(roles.clone()))
+                .await
+                .unwrap());
+            assert!(!store
+                .upsert_entity_person_roles(entity, id, "local-person", Some(roles))
+                .await
+                .unwrap());
+            assert!(!store
+                .add_entity_person(entity, id, "local-person")
+                .await
+                .unwrap());
+            let credit = store.get_entity_people(entity, id).await.unwrap().remove(0);
+            assert_eq!(
+                credit.roles.unwrap(),
+                vec![
+                    PersonType::Actor,
+                    PersonType::Director,
+                    PersonType::Custom("custom name".into())
+                ]
+            );
+            assert_eq!(credit.person.kind, None);
+            let (table, mapping, reference) = entity.tables();
+            store
+                .connection
+                .call(move |conn| {
+                    let count: i64 = conn.query_row(
+                        &format!(
+                            "SELECT count(*) FROM {mapping} WHERE people_ref = 'local-person'
+                    AND EXISTS (SELECT 1 FROM json_each(roles) WHERE value = 'Director')"
+                        ),
+                        [],
+                        |r| r.get(0),
+                    )?;
+                    assert_eq!(count, 1);
+                    conn.execute(
+                        &format!("UPDATE {table} SET modified=4000000000000 WHERE id=?"),
+                        [id],
+                    )?;
+                    conn.execute(
+                        &format!("UPDATE {mapping} SET roles=? WHERE {reference}=?"),
+                        params![serde_json::json!(["Author"]), id],
+                    )?;
+                    let modified: i64 = conn.query_row(
+                        &format!("SELECT modified FROM {table} WHERE id=?"),
+                        [id],
+                        |r| r.get(0),
+                    )?;
+                    assert!(modified > 4000000000000);
+                    Ok(())
+                })
+                .await
+                .unwrap();
+            assert!(store
+                .upsert_entity_person_roles(entity, id, "local-person", Some(vec![]))
+                .await
+                .unwrap());
+            assert_eq!(
+                store.get_entity_people(entity, id).await.unwrap()[0].roles,
+                Some(vec![])
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn relationship_roles_merge_unions_source_and_target() {
+        let store = store().await;
+        existing(&store, Some(42)).await;
+        store
+            .add_person(PersonForInsert {
+                id: "target".into(),
+                person: PersonForAdd {
+                    name: "Target".into(),
+                    ..Default::default()
+                },
+            })
+            .await
+            .unwrap();
+        store.connection.call(|conn| {
+            conn.execute_batch("INSERT INTO movies(id,name) VALUES ('movie','Movie'); INSERT INTO books(id,name) VALUES ('book','Book');")?;
+            Ok(())
+        }).await.unwrap();
+        for (entity, id) in [(PeopleEntity::Movie, "movie"), (PeopleEntity::Book, "book")] {
+            store
+                .upsert_entity_person_roles(
+                    entity,
+                    id,
+                    "local-person",
+                    Some(vec![PersonType::Director]),
+                )
+                .await
+                .unwrap();
+            store
+                .upsert_entity_person_roles(entity, id, "target", Some(vec![PersonType::Actor]))
+                .await
+                .unwrap();
+        }
+        store
+            .transfer_faces_between_people("local-person", "target")
+            .await
+            .unwrap();
+        for (entity, id) in [(PeopleEntity::Movie, "movie"), (PeopleEntity::Book, "book")] {
+            let people = store.get_entity_people(entity, id).await.unwrap();
+            assert_eq!(people.len(), 1);
+            assert_eq!(
+                people[0].roles,
+                Some(vec![PersonType::Actor, PersonType::Director])
+            );
+        }
     }
 
     #[tokio::test]
@@ -487,7 +930,7 @@ mod tests {
         ] {
             let people = store.get_entity_people(entity, id).await.unwrap();
             assert_eq!(people.len(), 1);
-            assert_eq!(people[0].id, "target");
+            assert_eq!(people[0].person.id, "target");
         }
     }
 
@@ -716,7 +1159,7 @@ mod tests {
                 .unwrap());
             let people = store.get_entity_people(kind, id).await.unwrap();
             assert_eq!(people.len(), 1);
-            assert_eq!(people[0].id, "local-person");
+            assert_eq!(people[0].person.id, "local-person");
         }
         assert!(!store
             .add_entity_person(PeopleEntity::Movie, "missing", "local-person")
@@ -771,6 +1214,9 @@ mod tests {
                 DROP TRIGGER delete_movie_people;
                 DROP TRIGGER delete_serie_people;
                 DROP TRIGGER delete_person_entities;
+                DROP TRIGGER modified_book_people_mapping_roles;
+                ALTER TABLE book_people_mapping DROP COLUMN roles;
+                ALTER TABLE book_people_mapping DROP COLUMN characters;
                 PRAGMA user_version = 54;
                 INSERT INTO series (id, name) VALUES ('show', 'Existing Show');",
                 )?;
@@ -778,7 +1224,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(store.migrate().await.unwrap(), 56);
+        assert_eq!(store.migrate().await.unwrap(), 57);
         assert_eq!(
             store
                 .get_person("local-person")

@@ -89,6 +89,7 @@ impl SqliteLibraryStore {
             .connection
             .call(move |conn| {
                 let mut where_query = RsQueryBuilder::new();
+                Self::add_people_filter(&mut where_query, crate::model::entity_people::PeopleEntity::Book, query.person, query.role);
                 if let Some(after) = query.after {
                     where_query.add_where(SqlWhereType::After("modified".to_string(), Box::new(after)));
                 }
@@ -356,7 +357,7 @@ impl SqliteLibraryStore {
         self.connection
             .call(move |conn| {
                 conn.execute(
-                    "INSERT OR REPLACE INTO book_people_mapping (book_ref, people_ref, confidence) VALUES (?, ?, ?)",
+                    "INSERT INTO book_people_mapping (book_ref, people_ref, confidence) VALUES (?, ?, ?) ON CONFLICT(book_ref, people_ref) DO UPDATE SET confidence = excluded.confidence",
                     params![book_id, person_id, confidence],
                 )?;
                 Ok(())
@@ -440,7 +441,7 @@ impl SqliteLibraryStore {
                 if let Some(add_people) = update.add_people {
                     for person in add_people {
                         let r = conn.execute(
-                            "INSERT OR REPLACE INTO book_people_mapping (book_ref, people_ref, confidence) VALUES (?, ?, ?)",
+                            "INSERT INTO book_people_mapping (book_ref, people_ref, confidence) VALUES (?, ?, ?) ON CONFLICT(book_ref, people_ref) DO UPDATE SET confidence = excluded.confidence",
                             params![book_id, person.id, person.conf],
                         );
                         if let Err(error) = r {

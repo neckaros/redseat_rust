@@ -56,6 +56,8 @@ pub enum RsBookSort {
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct BookQuery {
+    pub person: Option<String>,
+    pub role: Option<crate::domain::people::PersonType>,
     pub after: Option<i64>,
     pub name: Option<String>,
     pub serie_ref: Option<String>,
@@ -87,6 +89,177 @@ impl ModelController {
         Ok(books)
     }
 
+    async fn apply_book_credit_roles(
+        &self,
+        library_id: &str,
+        book_id: &str,
+        relations: &rs_plugin_common_interfaces::domain::Relations,
+    ) -> RsResult<bool> {
+        let store = self.store.get_library_store(library_id)?;
+        let mut pending: HashMap<String, Vec<crate::domain::people::PersonType>> = HashMap::new();
+        for credit in relations.people_details.iter().flatten() {
+            let roles = relations
+                .people_roles
+                .as_ref()
+                .and_then(|roles| roles.get(&credit.id))
+                .cloned();
+            let Some(roles) = roles else { continue };
+            let person = match store.get_person(&credit.id).await? {
+                Some(person) => Some(person),
+                None => {
+                    store
+                        .get_person_by_external_id(credit.clone().into())
+                        .await?
+                }
+            };
+            if let Some(person) = person {
+                let entry = pending.entry(person.id).or_default();
+                for role in roles {
+                    if !entry.contains(&role) {
+                        entry.push(role);
+                    }
+                }
+            }
+        }
+        for credit in relations.people.iter().flatten() {
+            if let Some(roles) = relations
+                .people_roles
+                .as_ref()
+                .and_then(|roles| roles.get(&credit.id))
+            {
+                if store.get_person(&credit.id).await?.is_some() {
+                    let entry = pending.entry(credit.id.clone()).or_default();
+                    for role in roles {
+                        if !entry.contains(role) {
+                            entry.push(role.clone());
+                        }
+                    }
+                }
+            }
+        }
+        let mut changed = false;
+        for (person, roles) in pending {
+            changed |= store
+                .upsert_entity_person_roles(
+                    super::entity_people::PeopleEntity::Book,
+                    book_id,
+                    &person,
+                    Some(roles),
+                )
+                .await?;
+        }
+        if let Some(characters) = &relations.people_characters {
+            let mut names: HashMap<String, Vec<String>> = HashMap::new();
+            for (credit_id, values) in characters {
+                let person = if let Some(person) = store.get_person(credit_id).await? {
+                    Some(person)
+                } else if let Some(credit) = relations
+                    .people_details
+                    .iter()
+                    .flatten()
+                    .find(|credit| &credit.id == credit_id)
+                {
+                    store
+                        .get_person_by_external_id(credit.clone().into())
+                        .await?
+                } else {
+                    None
+                };
+                if let Some(person) = person {
+                    let entry = names.entry(person.id).or_default();
+                    for value in values {
+                        if !entry.contains(value) {
+                            entry.push(value.clone());
+                        }
+                    }
+                }
+            }
+            for (person, values) in names {
+                changed |= store
+                    .upsert_entity_person_credit(
+                        super::entity_people::PeopleEntity::Book,
+                        book_id,
+                        &person,
+                        None,
+                        Some(values),
+                    )
+                    .await?;
+            }
+        }
+        Ok(changed)
+    }
+
+    /// Backfill credit roles from matching book metadata, reusing saved people.
+    pub async fn refresh_book_people(
+        &self,
+        library_id: &str,
+        book_id: &str,
+        user: &ConnectedUser,
+    ) -> RsResult<Vec<crate::domain::people::PersonWithRoles>> {
+        user.check_library_role(library_id, LibraryRole::Write)?;
+        let book = self.get_book(library_id, book_id.to_string(), user).await?;
+        let ids: RsIds = book.item.clone().into();
+        if !ids.as_all_external_ids().is_empty() {
+            let results = self
+                .exec_lookup_metadata_grouped(
+                    RsLookupQuery::Book(RsLookupBook {
+                        name: Some(book.item.name.clone()),
+                        ids: Some(ids.clone()),
+                        author: None,
+                        page_key: None,
+                    }),
+                    Some(library_id.to_string()),
+                    user,
+                    None,
+                    None,
+                )
+                .await?;
+            for (_, _, group) in results {
+                for result in group.results {
+                    if let RsLookupMetadataResult::Book(returned) = result.metadata {
+                        if ids.has_common_id(&returned.into()) {
+                            let Some(relations) = result.relations.filter(|relations|
+                                relations.people_roles.as_ref().is_some_and(|roles| !roles.is_empty()) ||
+                                relations.people_characters.as_ref().is_some_and(|names| !names.is_empty())
+                            ) else { continue };
+                            {
+                                if self
+                                    .apply_book_credit_roles(library_id, book_id, &relations)
+                                    .await?
+                                {
+                                    let updated = self
+                                        .get_book(library_id, book_id.to_string(), user)
+                                        .await?;
+                                    self.send_book(BooksMessage {
+                                        library: library_id.to_string(),
+                                        books: vec![BookWithAction {
+                                            action: ElementAction::Updated,
+                                            book: updated.item,
+                                        }],
+                                    });
+                                }
+                            }
+                            return self
+                                .get_entity_people(
+                                    library_id,
+                                    super::entity_people::PeopleEntity::Book,
+                                    book_id,
+                                    user,
+                                )
+                                .await;
+                        }
+                    }
+                }
+            }
+        }
+        self.get_entity_people(
+            library_id,
+            super::entity_people::PeopleEntity::Book,
+            book_id,
+            user,
+        )
+        .await
+    }
     pub async fn get_book(
         &self,
         library_id: &str,
@@ -425,6 +598,10 @@ impl ModelController {
                     }
                 }
             }
+        }
+
+        if let Some(relations) = &relations {
+            self.apply_book_credit_roles(library_id, &new_book.id, relations).await?;
         }
 
         let inserted = store

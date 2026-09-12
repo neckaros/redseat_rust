@@ -10,7 +10,7 @@ use super::{store::sql::library::SqliteLibraryStore, users::ConnectedUser, Model
 use crate::{
     domain::{
         library::LibraryRole,
-        people::{PeopleMessage, Person, PersonWithAction},
+        people::{PeopleMessage, Person, PersonType, PersonWithAction, PersonWithRoles},
         ElementAction,
     },
     error::RsResult,
@@ -21,11 +21,13 @@ use crate::{
 pub enum PeopleEntity {
     Movie,
     Serie,
+    Book,
 }
 
 impl PeopleEntity {
     pub(crate) fn tables(self) -> (&'static str, &'static str, &'static str) {
         match self {
+            Self::Book => ("books", "book_people_mapping", "book_ref"),
             Self::Movie => ("movies", "movie_people_mapping", "movie_ref"),
             Self::Serie => ("series", "serie_people_mapping", "serie_ref"),
         }
@@ -111,7 +113,7 @@ impl ModelController {
         entity: PeopleEntity,
         id: &str,
         user: &ConnectedUser,
-    ) -> RsResult<Vec<Person>> {
+    ) -> RsResult<Vec<PersonWithRoles>> {
         user.check_library_role(library_id, LibraryRole::Read)?;
         let store = self.store.get_library_store(library_id)?;
         store
@@ -126,13 +128,20 @@ impl ModelController {
         entity: PeopleEntity,
         id: &str,
         people: Vec<Person>,
+        roles: Option<std::collections::HashMap<String, Vec<PersonType>>>,
+        characters: Option<std::collections::HashMap<String, Vec<String>>>,
         user: &ConnectedUser,
     ) -> RsResult<bool> {
         user.check_library_role(library_id, LibraryRole::Write)?;
         let store = self.store.get_library_store(library_id)?;
         let mut changed = false;
+        let mut pending: std::collections::HashMap<String, Option<Vec<PersonType>>> =
+            std::collections::HashMap::new();
+        let mut names: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
         for summary in people {
             let label = summary.id.clone();
+            let credit_roles = roles.as_ref().and_then(|roles| roles.get(&label)).cloned();
             let resolved = resolve_refresh_person(&store, summary, |ids| async move {
                 self.lookup_person_metadata(library_id, ids, user).await
             })
@@ -148,7 +157,23 @@ impl ModelController {
                             }],
                         });
                     }
-                    changed |= store.add_entity_person(entity, id, &person.id).await?;
+                    if let Some(values) = characters.as_ref().and_then(|map| map.get(&label)) {
+                        let entry = names.entry(person.id.clone()).or_default();
+                        for value in values {
+                            if !entry.contains(value) {
+                                entry.push(value.clone());
+                            }
+                        }
+                    }
+                    let entry = pending.entry(person.id).or_insert(None);
+                    if let Some(values) = credit_roles {
+                        let combined = entry.get_or_insert_with(Vec::new);
+                        for role in values {
+                            if !combined.contains(&role) {
+                                combined.push(role);
+                            }
+                        }
+                    }
                 }
                 result => {
                     log_warn(
@@ -163,6 +188,17 @@ impl ModelController {
                     );
                 }
             }
+        }
+        for (person_id, roles) in pending {
+            changed |= store
+                .upsert_entity_person_credit(
+                    entity,
+                    id,
+                    &person_id,
+                    roles,
+                    names.remove(&person_id),
+                )
+                .await?;
         }
         Ok(changed)
     }
