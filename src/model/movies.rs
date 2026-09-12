@@ -159,6 +159,33 @@ impl ModelController {
         Ok(movies)
     }
 
+    /// Local movie lists share one credit query after filtering and watched hydration.
+    pub async fn get_movies_with_relations(
+        &self,
+        library_id: &str,
+        query: MovieQuery,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Vec<rs_plugin_common_interfaces::domain::ItemWithRelations<Movie>>> {
+        let movies = self.get_movies(library_id, query, requesting_user).await?;
+        let mut credits = self
+            .title_credit_snapshots(
+                library_id,
+                super::entity_people::PeopleEntity::Movie,
+                movies.iter().map(|movie| movie.id.clone()).collect(),
+            )
+            .await?;
+        Ok(movies
+            .into_iter()
+            .map(|movie| {
+                let relations = credits.remove(&movie.id);
+                rs_plugin_common_interfaces::domain::ItemWithRelations {
+                    item: movie,
+                    relations,
+                }
+            })
+            .collect())
+    }
+
     pub async fn get_movie(
         &self,
         library_id: &str,

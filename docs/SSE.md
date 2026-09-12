@@ -1025,7 +1025,8 @@ role-only searches may scan more relationship rows.
 
 ### Title credit snapshots
 
-Movie, series, and book list responses include `relations.people`,
+Movie (including `/movies/upcoming` and `/movies/ondeck`), series, and book list
+responses include `relations.people`,
 `relations.peopleRoles`, and `relations.peopleCharacters` on each flattened title.
 The `movies`, `series`, and `books` live events include the same fields inside
 `movies[].movie.relations`, `series[].serie.relations`, and `books[].book.relations`.

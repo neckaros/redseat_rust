@@ -89,12 +89,7 @@ async fn handler_list(
     user: ConnectedUser,
     Query(query): Query<MovieQuery>,
 ) -> Result<Json<Value>> {
-    let libraries = mc.get_movies(&library_id, query, &user).await?;
-    let mut credits = mc.title_credit_snapshots(&library_id, crate::model::entity_people::PeopleEntity::Movie, libraries.iter().map(|movie| movie.id.clone()).collect()).await?;
-    let libraries: Vec<_> = libraries.into_iter().map(|movie| {
-        let relations = credits.remove(&movie.id);
-        rs_plugin_common_interfaces::domain::ItemWithRelations { item: movie, relations }
-    }).collect();
+    let libraries = mc.get_movies_with_relations(&library_id, query, &user).await?;
     let body = Json(json!(libraries));
     Ok(body)
 }
@@ -115,7 +110,7 @@ async fn handler_upcoming(
     user: ConnectedUser,
 ) -> Result<Json<Value>> {
     let libraries = mc
-        .get_movies(
+        .get_movies_with_relations(
             &library_id,
             MovieQuery {
                 in_digital: Some(false),
@@ -135,7 +130,7 @@ async fn handler_ondeck(
     user: ConnectedUser,
 ) -> Result<Json<Value>> {
     let libraries = mc
-        .get_movies(
+        .get_movies_with_relations(
             &library_id,
             MovieQuery {
                 in_digital: Some(true),
