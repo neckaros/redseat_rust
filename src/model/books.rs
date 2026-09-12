@@ -200,7 +200,7 @@ impl ModelController {
         let book = self.get_book(library_id, book_id.to_string(), user).await?;
         let ids: RsIds = book.item.clone().into();
         if !ids.as_all_external_ids().is_empty() {
-            let results = self
+            let mut results = self
                 .exec_lookup_metadata_grouped(
                     RsLookupQuery::Book(RsLookupBook {
                         name: Some(book.item.name.clone()),
@@ -214,6 +214,7 @@ impl ModelController {
                     None,
                 )
                 .await?;
+            merge_result_ids(&mut results);
             for (_, _, group) in results {
                 for result in group.results {
                     if let RsLookupMetadataResult::Book(returned) = result.metadata {

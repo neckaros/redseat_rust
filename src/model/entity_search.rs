@@ -273,3 +273,79 @@ impl ModelController {
         Ok(rx)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rs_plugin_common_interfaces::{
+        domain::{book::Book, person::PersonType, Relations},
+        lookup::RsLookupMetadataResult,
+    };
+
+    #[test]
+    fn merge_book_ids_matches_bridged_credits_without_matching_unrelated_books() {
+        let saved: RsIds = Book {
+            id: "saved-book".into(),
+            isbn13: Some("9780000000001".into()),
+            ..Default::default()
+        }
+        .into();
+        let credits = Relations {
+            people_roles: Some(HashMap::from([(
+                "author-id".into(),
+                vec![PersonType::Author],
+            )])),
+            people_characters: Some(HashMap::from([(
+                "actor-id".into(),
+                vec!["Narrator".into()],
+            )])),
+            ..Default::default()
+        };
+        let mut groups: SearchResultGroups = vec![
+            (
+                "bridge".into(),
+                "Bridge provider".into(),
+                RsLookupMetadataResults {
+                    results: vec![RsLookupMetadataResultWrapper {
+                        metadata: RsLookupMetadataResult::Book(Book {
+                            id: "isbn13:9780000000001".into(),
+                            isbn13: Some("9780000000001".into()),
+                            openlibrary_work_id: Some("OL1W".into()),
+                            ..Default::default()
+                        }),
+                        relations: None,
+                        match_type: None,
+                    }],
+                    next_page_key: None,
+                },
+            ),
+            (
+                "credits".into(),
+                "Credit provider".into(),
+                RsLookupMetadataResults {
+                    results: ["OL1W", "OL2W"]
+                        .into_iter()
+                        .map(|id| RsLookupMetadataResultWrapper {
+                            metadata: RsLookupMetadataResult::Book(Book {
+                                id: format!("olwid:{id}"),
+                                openlibrary_work_id: Some(id.into()),
+                                ..Default::default()
+                            }),
+                            relations: Some(credits.clone()),
+                            match_type: None,
+                        })
+                        .collect(),
+                    next_page_key: None,
+                },
+            ),
+        ];
+        assert!(!saved.has_common_id(&groups[1].2.results[0].metadata.extract_ids().unwrap()));
+
+        merge_result_ids(&mut groups);
+
+        assert!(saved.has_common_id(&groups[1].2.results[0].metadata.extract_ids().unwrap()));
+        assert!(!saved.has_common_id(&groups[1].2.results[1].metadata.extract_ids().unwrap()));
+        assert_eq!(groups[1].2.results[0].relations.as_ref(), Some(&credits));
+        assert!(groups[0].2.results[0].relations.is_none());
+    }
+}
