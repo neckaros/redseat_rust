@@ -13,7 +13,7 @@ use super::ElementAction;
 #[serde(rename_all = "camelCase")]
 pub struct SerieWithAction {
     pub action: ElementAction,
-    pub serie: Serie,
+    pub serie: rs_plugin_common_interfaces::domain::ItemWithRelations<Serie>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

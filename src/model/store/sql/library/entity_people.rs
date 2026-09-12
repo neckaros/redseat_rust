@@ -11,6 +11,104 @@ use crate::{
 };
 
 impl SqliteLibraryStore {
+    /// One mapping query for the complete page/event, including empty snapshots.
+    pub(crate) async fn get_people_relations_batch(
+        &self,
+        entity: PeopleEntity,
+        ids: Vec<String>,
+    ) -> Result<std::collections::HashMap<String, rs_plugin_common_interfaces::domain::Relations>>
+    {
+        if ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        Ok(self
+            .connection
+            .call(move |conn| Ok(Self::load_people_relations(conn, entity, &ids)?))
+            .await?)
+    }
+
+    pub(super) fn load_people_relations(
+        conn: &rusqlite::Connection,
+        entity: PeopleEntity,
+        ids: &[String],
+    ) -> rusqlite::Result<
+        std::collections::HashMap<String, rs_plugin_common_interfaces::domain::Relations>,
+    > {
+        use rs_plugin_common_interfaces::domain::{media::MediaItemReference, Relations};
+        use std::collections::HashMap;
+        let mut snapshots: HashMap<String, Relations> = ids
+            .iter()
+            .map(|id| {
+                (
+                    id.clone(),
+                    Relations {
+                        people: Some(Vec::new()),
+                        people_roles: Some(HashMap::new()),
+                        people_characters: Some(HashMap::new()),
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect();
+        let mut query = conn.prepare(&Self::people_relations_sql(entity))?;
+        let mut rows = query.query([serde_json::json!(ids)])?;
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
+            let person: String = row.get(1)?;
+            let roles: Option<String> = row.get(2)?;
+            let characters: Option<String> = row.get(3)?;
+            let parse_error = |error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            };
+            let roles = roles
+                .map(|raw| serde_json::from_str::<Vec<PersonType>>(&raw))
+                .transpose()
+                .map_err(parse_error)?
+                .unwrap_or_default();
+            let characters = characters
+                .map(|raw| serde_json::from_str::<Vec<String>>(&raw))
+                .transpose()
+                .map_err(parse_error)?
+                .unwrap_or_default();
+            if let Some(relations) = snapshots.get_mut(&id) {
+                relations
+                    .people
+                    .get_or_insert_default()
+                    .push(MediaItemReference {
+                        id: person.clone(),
+                        conf: row.get(4)?,
+                    });
+                relations
+                    .people_roles
+                    .get_or_insert_default()
+                    .insert(person.clone(), roles);
+                relations
+                    .people_characters
+                    .get_or_insert_default()
+                    .insert(person, characters);
+            }
+        }
+        Ok(snapshots)
+    }
+
+    fn people_relations_sql(entity: PeopleEntity) -> String {
+        let (_, mapping, reference) = entity.tables();
+        let confidence = if matches!(entity, PeopleEntity::Book) {
+            "m.confidence"
+        } else {
+            "NULL"
+        };
+        format!(
+            "SELECT m.{reference}, m.people_ref, m.roles, m.characters, {confidence}
+            FROM json_each(?) requested JOIN {mapping} m ON m.{reference} = requested.value
+            ORDER BY m.{reference}, m.people_ref"
+        )
+    }
+
     pub(super) fn add_people_filter(
         query: &mut super::super::RsQueryBuilder,
         entity: PeopleEntity,
@@ -272,6 +370,229 @@ mod tests {
             })
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn credit_snapshots_clear_removed_links_and_advance_sync_for_all_titles() {
+        use crate::model::{books::BookQuery, movies::MovieQuery, series::SerieQuery};
+        let store = store().await;
+        existing(&store, Some(42)).await;
+        store
+            .connection
+            .call(|conn| {
+                conn.execute_batch(
+                    "INSERT INTO movies(id,name) VALUES ('title','Movie'), ('empty','Empty');
+                INSERT INTO series(id,name) VALUES ('title','Show'), ('empty','Empty');
+                INSERT INTO books(id,name) VALUES ('title','Book'), ('empty','Empty');",
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        for entity in [PeopleEntity::Movie, PeopleEntity::Serie, PeopleEntity::Book] {
+            store
+                .connection
+                .call(move |conn| {
+                    let mut query = conn.prepare(&format!(
+                        "EXPLAIN QUERY PLAN {}",
+                        SqliteLibraryStore::people_relations_sql(entity)
+                    ))?;
+                    let plan = query
+                        .query_map([serde_json::json!(["title", "empty"])], |row| {
+                            row.get::<_, String>(3)
+                        })?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    let (_, _, reference) = entity.tables();
+                    assert!(
+                        plan.iter().any(|step| step.contains("SEARCH m USING")
+                            && step.contains(&format!("{reference}=?"))),
+                        "{plan:?}"
+                    );
+                    assert!(
+                        !plan.iter().any(|step| step.starts_with("SCAN m")),
+                        "{plan:?}"
+                    );
+                    Ok(())
+                })
+                .await
+                .unwrap();
+
+            store
+                .upsert_entity_person_credit(
+                    entity,
+                    "title",
+                    "local-person",
+                    Some(vec![PersonType::Actor, PersonType::Custom("Guest".into())]),
+                    Some(vec!["Narrator".into()]),
+                )
+                .await
+                .unwrap();
+            let snapshot = store
+                .get_people_relations_batch(entity, vec!["title".into(), "empty".into()])
+                .await
+                .unwrap();
+            let title = serde_json::to_value(&snapshot["title"]).unwrap();
+            assert_eq!(title["people"][0]["id"], "local-person");
+            assert_eq!(
+                title["peopleRoles"]["local-person"],
+                serde_json::json!(["Actor", "Guest"])
+            );
+            assert_eq!(
+                title["peopleCharacters"]["local-person"],
+                serde_json::json!(["Narrator"])
+            );
+            assert_eq!(
+                serde_json::to_value(&snapshot["empty"]).unwrap(),
+                serde_json::json!({"people":[], "peopleRoles":{}, "peopleCharacters":{}})
+            );
+            // Live event title objects keep flat metadata and embed the same snapshot.
+            let event = match entity {
+                PeopleEntity::Movie => serde_json::to_value(crate::domain::movie::MoviesMessage {
+                    library: "library".into(),
+                    movies: vec![crate::domain::movie::MovieWithAction {
+                        action: ElementAction::Updated,
+                        movie: rs_plugin_common_interfaces::domain::ItemWithRelations {
+                            item: crate::domain::movie::Movie {
+                                id: "title".into(),
+                                ..Default::default()
+                            },
+                            relations: Some(snapshot["title"].clone()),
+                        },
+                    }],
+                })
+                .unwrap(),
+                PeopleEntity::Serie => serde_json::to_value(crate::domain::serie::SeriesMessage {
+                    library: "library".into(),
+                    series: vec![crate::domain::serie::SerieWithAction {
+                        action: ElementAction::Updated,
+                        serie: rs_plugin_common_interfaces::domain::ItemWithRelations {
+                            item: crate::domain::serie::Serie {
+                                id: "title".into(),
+                                ..Default::default()
+                            },
+                            relations: Some(snapshot["title"].clone()),
+                        },
+                    }],
+                })
+                .unwrap(),
+                PeopleEntity::Book => serde_json::to_value(crate::domain::book::BooksMessage {
+                    library: "library".into(),
+                    books: vec![crate::domain::book::BookWithAction {
+                        action: ElementAction::Updated,
+                        book: rs_plugin_common_interfaces::domain::ItemWithRelations {
+                            item: crate::domain::book::Book {
+                                id: "title".into(),
+                                ..Default::default()
+                            },
+                            relations: Some(snapshot["title"].clone()),
+                        },
+                    }],
+                })
+                .unwrap(),
+            };
+            let (plural, singular) = match entity {
+                PeopleEntity::Movie => ("movies", "movie"),
+                PeopleEntity::Serie => ("series", "serie"),
+                PeopleEntity::Book => ("books", "book"),
+            };
+            assert_eq!(event[plural][0][singular]["id"], "title");
+            assert_eq!(event[plural][0][singular]["relations"], title);
+            assert!(event[plural][0][singular].get("item").is_none());
+            // Force a future cursor: even changes in the same millisecond must advance it.
+            let cursor = 4_000_000_000_000_i64;
+            store
+                .connection
+                .call(move |conn| {
+                    let (table, _, _) = entity.tables();
+                    conn.execute(
+                        &format!("UPDATE {table} SET modified = ? WHERE id = 'title'"),
+                        [cursor],
+                    )?;
+                    Ok(())
+                })
+                .await
+                .unwrap();
+            store
+                .upsert_entity_person_credit(
+                    entity,
+                    "title",
+                    "local-person",
+                    Some(vec![]),
+                    Some(vec![]),
+                )
+                .await
+                .unwrap();
+            let cleared = store
+                .get_people_relations_batch(entity, vec!["title".into()])
+                .await
+                .unwrap();
+            assert_eq!(
+                cleared["title"].people_roles.as_ref().unwrap()["local-person"],
+                vec![]
+            );
+            assert_eq!(
+                cleared["title"].people_characters.as_ref().unwrap()["local-person"],
+                Vec::<String>::new()
+            );
+            let count = match entity {
+                PeopleEntity::Movie => store
+                    .get_movies(MovieQuery {
+                        after: Some(cursor),
+                        ..Default::default()
+                    })
+                    .await
+                    .unwrap()
+                    .len(),
+                PeopleEntity::Serie => store
+                    .get_series(SerieQuery {
+                        after: Some(cursor),
+                        ..Default::default()
+                    })
+                    .await
+                    .unwrap()
+                    .len(),
+                PeopleEntity::Book => store
+                    .get_books(BookQuery {
+                        after: Some(cursor),
+                        ..Default::default()
+                    })
+                    .await
+                    .unwrap()
+                    .len(),
+            };
+            assert_eq!(count, 1);
+            store
+                .connection
+                .call(move |conn| {
+                    let (table, mapping, reference) = entity.tables();
+                    let before: i64 = conn.query_row(
+                        &format!("SELECT modified FROM {table} WHERE id = 'title'"),
+                        [],
+                        |r| r.get(0),
+                    )?;
+                    conn.execute(
+                        &format!("DELETE FROM {mapping} WHERE {reference} = 'title'"),
+                        [],
+                    )?;
+                    let after: i64 = conn.query_row(
+                        &format!("SELECT modified FROM {table} WHERE id = 'title'"),
+                        [],
+                        |r| r.get(0),
+                    )?;
+                    assert!(after > before);
+                    Ok(())
+                })
+                .await
+                .unwrap();
+            let removed = store
+                .get_people_relations_batch(entity, vec!["title".into()])
+                .await
+                .unwrap();
+            assert_eq!(
+                serde_json::to_value(&removed["title"]).unwrap(),
+                serde_json::json!({"people":[], "peopleRoles":{}, "peopleCharacters":{}})
+            );
+        }
     }
 
     #[tokio::test]

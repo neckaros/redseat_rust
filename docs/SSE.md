@@ -1022,3 +1022,25 @@ match both on the same relationship. For example:
 `GET /libraries/:libraryId/movies?person=:nolanId&role=Director`.
 Filtering by person uses the mapping index before checking the small JSON lists;
 role-only searches may scan more relationship rows.
+
+### Title credit snapshots
+
+Movie, series, and book list responses include `relations.people`,
+`relations.peopleRoles`, and `relations.peopleCharacters` on each flattened title.
+The `movies`, `series`, and `books` live events include the same fields inside
+`movies[].movie.relations`, `series[].serie.relations`, and `books[].book.relations`.
+References and map keys use local library person IDs; no full person profiles are
+loaded. Relationship loading uses one mapping query per page or event batch.
+
+```json
+{"people":[{"id":"person-id"}],"peopleRoles":{"person-id":["Actor"]},"peopleCharacters":{"person-id":["Ken"]}}
+```
+
+Each supplied field replaces its cached counterpart. A per-person `[]` clears
+roles or character names. `people: []`, `peopleRoles: {}`, and
+`peopleCharacters: {}` clear all credits. Missing fields mean unchanged, including
+older payloads and events whose credit hydration failed (logged by the server).
+Persisted NULL role/name arrays are returned as empty arrays in these snapshots.
+Other relation fields retain their existing behavior. Credit insertion, updates,
+and deletion advance the parent title's modified timestamp, including deleting
+the final link, so strict `?after` queries return the new snapshot.

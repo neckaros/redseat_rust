@@ -8,7 +8,7 @@ use serde_json::Value;
 #[serde(rename_all = "camelCase")]
 pub struct BookWithAction {
     pub action: ElementAction,
-    pub book: Book,
+    pub book: rs_plugin_common_interfaces::domain::ItemWithRelations<Book>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

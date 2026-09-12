@@ -103,9 +103,18 @@ impl SqliteLibraryStore {
                     pagination
                 ))?;
                 let rows = query.query_map(where_query.values(), Self::row_to_serie)?;
-                let backups: Vec<ItemWithRelations<Serie>> = rows
+                let mut backups: Vec<ItemWithRelations<Serie>> = rows
                     .collect::<std::result::Result<Vec<ItemWithRelations<Serie>>, rusqlite::Error>>(
                     )?;
+                let mut credits = Self::load_people_relations(conn, crate::model::entity_people::PeopleEntity::Serie, &backups.iter().map(|item| item.item.id.clone()).collect::<Vec<_>>())?;
+                for item in &mut backups {
+                    if let Some(snapshot) = credits.remove(&item.item.id) {
+                        let relations = item.relations.get_or_insert_default();
+                        relations.people = snapshot.people;
+                        relations.people_roles = snapshot.people_roles;
+                        relations.people_characters = snapshot.people_characters;
+                    }
+                }
                 Ok(backups)
             })
             .await?;
