@@ -90,102 +90,34 @@ impl ModelController {
         Ok(books)
     }
 
-    async fn apply_book_credit_roles(
+    async fn apply_book_credits(
         &self,
         library_id: &str,
         book_id: &str,
         relations: &rs_plugin_common_interfaces::domain::Relations,
     ) -> RsResult<bool> {
         let store = self.store.get_library_store(library_id)?;
-        let mut pending: HashMap<String, Vec<crate::domain::people::PersonType>> = HashMap::new();
-        for credit in relations.people_details.iter().flatten() {
-            let roles = relations
-                .people_roles
-                .as_ref()
-                .and_then(|roles| roles.get(&credit.id))
-                .cloned();
-            let Some(roles) = roles else { continue };
-            let person = match store.get_person(&credit.id).await? {
+        let mut pending = HashMap::new();
+        for mut credit in relations.people_details.clone().unwrap_or_default() {
+            let person = match store.get_person(&credit.person.id).await? {
                 Some(person) => Some(person),
-                None => {
-                    store
-                        .get_person_by_external_id(credit.clone().into())
-                        .await?
-                }
+                None => store.get_person_by_external_id(credit.person.clone().into()).await?,
             };
             if let Some(person) = person {
-                let entry = pending.entry(person.id).or_default();
-                for role in roles {
-                    if !entry.contains(&role) {
-                        entry.push(role);
-                    }
-                }
-            }
-        }
-        for credit in relations.people.iter().flatten() {
-            if let Some(roles) = relations
-                .people_roles
-                .as_ref()
-                .and_then(|roles| roles.get(&credit.id))
-            {
-                if store.get_person(&credit.id).await?.is_some() {
-                    let entry = pending.entry(credit.id.clone()).or_default();
-                    for role in roles {
-                        if !entry.contains(role) {
-                            entry.push(role.clone());
-                        }
-                    }
-                }
+                credit.person = person;
+                super::entity_people::merge_credit(&mut pending, credit);
             }
         }
         let mut changed = false;
-        for (person, roles) in pending {
-            changed |= store
-                .upsert_entity_person_roles(
-                    super::entity_people::PeopleEntity::Book,
-                    book_id,
-                    &person,
-                    Some(roles),
-                )
-                .await?;
-        }
-        if let Some(characters) = &relations.people_characters {
-            let mut names: HashMap<String, Vec<String>> = HashMap::new();
-            for (credit_id, values) in characters {
-                let person = if let Some(person) = store.get_person(credit_id).await? {
-                    Some(person)
-                } else if let Some(credit) = relations
-                    .people_details
-                    .iter()
-                    .flatten()
-                    .find(|credit| &credit.id == credit_id)
-                {
-                    store
-                        .get_person_by_external_id(credit.clone().into())
-                        .await?
-                } else {
-                    None
-                };
-                if let Some(person) = person {
-                    let entry = names.entry(person.id).or_default();
-                    for value in values {
-                        if !entry.contains(value) {
-                            entry.push(value.clone());
-                        }
-                    }
-                }
-            }
-            for (person, values) in names {
-                changed |= store
-                    .upsert_entity_person_credit(
-                        super::entity_people::PeopleEntity::Book,
-                        book_id,
-                        &person,
-                        None,
-                        Some(values),
-                    )
-                    .await?;
-            }
+        for (person_id, credit) in pending {
+            changed |= store.upsert_entity_person_ranked_credit(
+                super::entity_people::PeopleEntity::Book,
+                book_id,
+                &person_id,
+                credit.roles,
+                credit.characters,
+                credit.rank,
+            ).await?;
         }
         Ok(changed)
     }
@@ -221,12 +153,12 @@ impl ModelController {
                     if let RsLookupMetadataResult::Book(returned) = result.metadata {
                         if ids.has_common_id(&returned.into()) {
                             let Some(relations) = result.relations.filter(|relations|
-                                relations.people_roles.as_ref().is_some_and(|roles| !roles.is_empty()) ||
-                                relations.people_characters.as_ref().is_some_and(|names| !names.is_empty())
+                                relations.people_details.clone().unwrap_or_default().iter().any(|credit|
+                                    credit.roles.is_some() || credit.characters.is_some() || credit.rank.is_some())
                             ) else { continue };
                             {
                                 if self
-                                    .apply_book_credit_roles(library_id, book_id, &relations)
+                                    .apply_book_credits(library_id, book_id, &relations)
                                     .await?
                                 {
                                     let updated = self
@@ -551,7 +483,8 @@ impl ModelController {
 
             // Wire up people_details with upsert logic
             if let Some(people_details) = &rel.people_details {
-                for person in people_details {
+                for credit in people_details {
+                    let person = &credit.person;
                     let person_ids: RsIds = person.clone().into();
                     let external_ids = person_ids.as_all_external_ids();
                     if let Some(_existing_person) = store.get_person(&person.id).await? {
@@ -603,7 +536,7 @@ impl ModelController {
         }
 
         if let Some(relations) = &relations {
-            self.apply_book_credit_roles(library_id, &new_book.id, relations).await?;
+            self.apply_book_credits(library_id, &new_book.id, relations).await?;
         }
 
         let inserted = store

@@ -820,8 +820,6 @@ impl ModelController {
                     super::entity_people::PeopleEntity::Serie,
                     serie_id,
                     relations.people_details.unwrap_or_default(),
-                    relations.people_roles,
-                    relations.people_characters,
                     requesting_user,
                 )
                 .await?

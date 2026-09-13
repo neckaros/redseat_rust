@@ -10,7 +10,7 @@ use super::{store::sql::library::SqliteLibraryStore, users::ConnectedUser, Model
 use crate::{
     domain::{
         library::LibraryRole,
-        people::{PeopleMessage, Person, PersonType, PersonWithAction, PersonWithRoles},
+        people::{PeopleMessage, Person, PersonWithAction, PersonWithRoles},
         ElementAction,
     },
     error::RsResult,
@@ -66,6 +66,37 @@ where
     details.kind = details.kind.or(summary_kind);
     // Recheck and create/update in one transaction, including concurrent refreshes.
     Ok(Some(store.persist_refresh_person(details).await?))
+}
+
+/// Combine duplicate provider credits after resolving them to one local person.
+pub(crate) fn merge_credit(
+    pending: &mut std::collections::HashMap<String, PersonWithRoles>,
+    credit: PersonWithRoles,
+) {
+    use std::collections::hash_map::Entry;
+    match pending.entry(credit.person.id.clone()) {
+        Entry::Vacant(entry) => { entry.insert(credit); }
+        Entry::Occupied(mut entry) => {
+            let existing = entry.get_mut();
+            merge_credit_values(&mut existing.roles, credit.roles);
+            merge_credit_values(&mut existing.characters, credit.characters);
+            existing.rank = match (existing.rank, credit.rank) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+        }
+    }
+}
+
+fn merge_credit_values<T: PartialEq>(existing: &mut Option<Vec<T>>, incoming: Option<Vec<T>>) {
+    if let Some(incoming) = incoming {
+        let values = existing.get_or_insert_default();
+        for value in incoming {
+            if !values.contains(&value) {
+                values.push(value);
+            }
+        }
+    }
 }
 
 impl ModelController {
@@ -142,22 +173,16 @@ impl ModelController {
         library_id: &str,
         entity: PeopleEntity,
         id: &str,
-        people: Vec<Person>,
-        roles: Option<std::collections::HashMap<String, Vec<PersonType>>>,
-        characters: Option<std::collections::HashMap<String, Vec<String>>>,
+        credits: Vec<PersonWithRoles>,
         user: &ConnectedUser,
     ) -> RsResult<bool> {
         user.check_library_role(library_id, LibraryRole::Write)?;
         let store = self.store.get_library_store(library_id)?;
         let mut changed = false;
-        let mut pending: std::collections::HashMap<String, Option<Vec<PersonType>>> =
-            std::collections::HashMap::new();
-        let mut names: std::collections::HashMap<String, Vec<String>> =
-            std::collections::HashMap::new();
-        for summary in people {
-            let label = summary.id.clone();
-            let credit_roles = roles.as_ref().and_then(|roles| roles.get(&label)).cloned();
-            let resolved = resolve_refresh_person(&store, summary, |ids| async move {
+        let mut pending = std::collections::HashMap::new();
+        for mut credit in credits {
+            let label = credit.person.id.clone();
+            let resolved = resolve_refresh_person(&store, credit.person, |ids| async move {
                 self.lookup_person_metadata(library_id, ids, user).await
             })
             .await;
@@ -172,23 +197,8 @@ impl ModelController {
                             }],
                         });
                     }
-                    if let Some(values) = characters.as_ref().and_then(|map| map.get(&label)) {
-                        let entry = names.entry(person.id.clone()).or_default();
-                        for value in values {
-                            if !entry.contains(value) {
-                                entry.push(value.clone());
-                            }
-                        }
-                    }
-                    let entry = pending.entry(person.id).or_insert(None);
-                    if let Some(values) = credit_roles {
-                        let combined = entry.get_or_insert_with(Vec::new);
-                        for role in values {
-                            if !combined.contains(&role) {
-                                combined.push(role);
-                            }
-                        }
-                    }
+                    credit.person = person;
+                    merge_credit(&mut pending, credit);
                 }
                 result => {
                     log_warn(
@@ -204,17 +214,67 @@ impl ModelController {
                 }
             }
         }
-        for (person_id, roles) in pending {
+        for (person_id, credit) in pending {
             changed |= store
-                .upsert_entity_person_credit(
+                .upsert_entity_person_ranked_credit(
                     entity,
                     id,
                     &person_id,
-                    roles,
-                    names.remove(&person_id),
+                    credit.roles,
+                    credit.characters,
+                    credit.rank,
                 )
                 .await?;
         }
         Ok(changed)
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::people::PersonType;
+
+    #[test]
+    fn credit_merge_combines_context_without_replacing_person_profile() {
+        let person = Person { id: "local".into(), name: "Saved name".into(), ..Default::default() };
+        let mut pending = std::collections::HashMap::new();
+        merge_credit(&mut pending, PersonWithRoles {
+            person: person.clone(),
+            roles: Some(vec![PersonType::Actor]),
+            characters: Some(vec!["A".into()]),
+            rank: Some(4),
+            conf: None,
+        });
+        merge_credit(&mut pending, PersonWithRoles {
+            person: Person { name: "Other name".into(), ..person.clone() },
+            roles: Some(vec![PersonType::Actor, PersonType::Director]),
+            characters: Some(vec!["A".into(), "B".into()]),
+            rank: Some(0),
+            conf: None,
+        });
+        merge_credit(&mut pending, person.clone().into());
+        assert_eq!(pending.len(), 1);
+        let credit = &pending["local"];
+        assert_eq!(credit.person, person);
+        assert_eq!(credit.roles, Some(vec![PersonType::Actor, PersonType::Director]));
+        assert_eq!(credit.characters, Some(vec!["A".into(), "B".into()]));
+        assert_eq!(credit.rank, Some(0));
+    }
+
+    #[test]
+    fn credit_merge_preserves_explicit_empty_and_unknown_fields() {
+        let person = Person { id: "local".into(), ..Default::default() };
+        let mut pending = std::collections::HashMap::new();
+        merge_credit(&mut pending, person.clone().into());
+        merge_credit(&mut pending, PersonWithRoles {
+            person,
+            roles: Some(vec![]),
+            ..Default::default()
+        });
+        assert_eq!(pending["local"].roles, Some(vec![]));
+        assert_eq!(pending["local"].characters, None);
+        assert_eq!(pending["local"].rank, None);
     }
 }
