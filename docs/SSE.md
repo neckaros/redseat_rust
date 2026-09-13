@@ -229,7 +229,7 @@ interface MediaWithAction {
 
 interface Relations {
   people?: MediaItemReference[];
-  peopleDetails?: Person[];
+  peopleDetails?: (Person & { roles?: string[]; characters?: string[]; rank?: number; conf?: number })[];
   tags?: MediaItemReference[];
   tagsDetails?: Tag[];
   series?: FileEpisode[];
@@ -991,9 +991,9 @@ person fields plus optional `roles: ["Actor", "Director"]`. Missing roles mean
 unknown; empty lists explicitly clear roles. Canonical and custom strings use
 PersonType; role lists are deduplicated and order does not signify priority.
 
-Plugin `relations.peopleRoles` maps credit IDs to role lists. Neither summary
+Plugin `relations.peopleDetails[]` carries optional `roles` on each person object. Neither summary
 nor full-profile `type` is used as a substitute for explicit relationship roles.
-Legacy plugins without this map leave roles unchanged/unknown; omitted entries
+Legacy plugins without credit roles leave them unchanged/unknown; omitted fields
 preserve stored roles. Refresh combines multiple
 credits resolving to the same person before saving.
 
@@ -1010,7 +1010,7 @@ people list. Merges union roles across shared links and preserve unknown values.
 The people_ref index narrows person-specific JSON role queries to their credits.
 
 Character names are stored independently in nullable `characters` JSON arrays.
-Plugin `peopleCharacters` uses the same credit IDs as `peopleRoles`. Missing
+Plugin `relations.peopleDetails[]` carries optional `characters` alongside `roles`. Missing
 names preserve stored values; empty arrays clear names; merges union both lists.
 People endpoints expose `characters` alongside `roles`, without modifying
 the general profile. Existing links acquire names on refresh when the plugin
@@ -1026,22 +1026,41 @@ role-only searches may scan more relationship rows.
 ### Title credit snapshots
 
 Movie (including `/movies/upcoming` and `/movies/ondeck`), series, and book list
-responses include `relations.people`,
-`relations.peopleRoles`, and `relations.peopleCharacters` on each flattened title.
-The `movies`, `series`, and `books` live events include the same fields inside
+responses include one `relations.peopleDetails` array on each flattened title.
+The `movies`, `series`, and `books` live events include the same field inside
 `movies[].movie.relations`, `series[].serie.relations`, and `books[].book.relations`.
-References and map keys use local library person IDs; no full person profiles are
-loaded. Relationship loading uses one mapping query per page or event batch.
+Each entry contains the local person profile and optional relationship `roles`,
+`characters`, `rank`, and stored match confidence (`conf`). One joined query
+loads the credits for the complete page/event batch.
 
 ```json
-{"people":[{"id":"person-id"}],"peopleRoles":{"person-id":["Actor"]},"peopleCharacters":{"person-id":["Ken"]}}
+{"peopleDetails":[{"id":"person-id","name":"Actor","modified":0,"added":0,"generated":false,"roles":["Actor"],"characters":["Ken"],"rank":0}]}
 ```
 
-Each supplied field replaces its cached counterpart. A per-person `[]` clears
-roles or character names. `people: []`, `peopleRoles: {}`, and
-`peopleCharacters: {}` clear all credits. Missing fields mean unchanged, including
-older payloads and events whose credit hydration failed (logged by the server).
-Persisted NULL role/name arrays are returned as empty arrays in these snapshots.
-Other relation fields retain their existing behavior. Credit insertion, updates,
-and deletion advance the parent title's modified timestamp, including deleting
-the final link, so strict `?after` queries return the new snapshot.
+A supplied `peopleDetails` array replaces the cached title credits; `[]` clears
+all credits. A missing array means unchanged, including events whose credit
+hydration failed (logged by the server). Nullable fields stay omitted inside a
+credit object; explicit empty role/name lists remain empty. Credit insertion,
+updates, and deletion advance the parent title timestamp, including removing its
+last credit. Generic `people` references and other relation fields keep their
+media-linking behavior; title snapshots emit only `peopleDetails` for credits.
+
+### Optional credit rank and plugin format
+
+Movie/show/book people endpoints return the same flat credit objects. Ranks are
+optional unsigned 32-bit integers scoped to the title/person relationship. Lower
+values come first; zero is first. Movie/show credits list cast before crew, with
+ranked credits before unranked credits in each group and name/ID as tie breakers.
+A rank can prioritize a credit without role data. Book credits use rank then
+name/ID without cast grouping.
+
+Plugin results must carry credit metadata on `relations.peopleDetails[]` objects.
+The server resolves each object to a local person once and saves its roles,
+characters, and rank together. Missing fields preserve stored values. Duplicate
+summaries combine role/name lists and keep the lowest known rank.
+
+The map-based credit fields (`peopleRoles`, `peopleCharacters`, `peopleRanks`)
+and their fallback adapter are removed. This is a coordinated format change:
+update credit-producing plugins and the server together. Existing libraries gain
+nullable ranks through migration 58; refresh metadata to populate TMDB ranks.
+No new event names are introduced.
