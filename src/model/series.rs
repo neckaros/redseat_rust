@@ -819,7 +819,7 @@ impl ModelController {
                     library_id,
                     super::entity_people::PeopleEntity::Serie,
                     serie_id,
-                    relations.people_credits(),
+                    relations.people_details.unwrap_or_default(),
                     requesting_user,
                 )
                 .await?

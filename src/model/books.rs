@@ -98,7 +98,7 @@ impl ModelController {
     ) -> RsResult<bool> {
         let store = self.store.get_library_store(library_id)?;
         let mut pending = HashMap::new();
-        for mut credit in relations.people_credits() {
+        for mut credit in relations.people_details.clone().unwrap_or_default() {
             let person = match store.get_person(&credit.person.id).await? {
                 Some(person) => Some(person),
                 None => store.get_person_by_external_id(credit.person.clone().into()).await?,
@@ -153,7 +153,7 @@ impl ModelController {
                     if let RsLookupMetadataResult::Book(returned) = result.metadata {
                         if ids.has_common_id(&returned.into()) {
                             let Some(relations) = result.relations.filter(|relations|
-                                relations.people_credits().iter().any(|credit|
+                                relations.people_details.clone().unwrap_or_default().iter().any(|credit|
                                     credit.roles.is_some() || credit.characters.is_some() || credit.rank.is_some())
                             ) else { continue };
                             {

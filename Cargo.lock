@@ -5182,7 +5182,7 @@ dependencies = [
 [[package]]
 name = "rs-plugin-common-interfaces"
 version = "0.40.0"
-source = "git+https://github.com/neckaros/rs-plugin-common-interfaces?rev=0ee402a1b702ff47e9bd11dcd248fd03c375f770#0ee402a1b702ff47e9bd11dcd248fd03c375f770"
+source = "git+https://github.com/neckaros/rs-plugin-common-interfaces?rev=9d85ee9ae32188063c5c7b018b0d25cae37ee81b#9d85ee9ae32188063c5c7b018b0d25cae37ee81b"
 dependencies = [
  "base64 0.22.1",
  "regex",

@@ -110,10 +110,8 @@ impl SqliteLibraryStore {
                 for item in &mut backups {
                     if let Some(snapshot) = credits.remove(&item.item.id) {
                         let relations = item.relations.get_or_insert_default();
-                        relations.people = snapshot.people;
-                        relations.people_roles = snapshot.people_roles;
-                        relations.people_characters = snapshot.people_characters;
-                        relations.people_ranks = snapshot.people_ranks;
+                        relations.people = None;
+                        relations.people_details = snapshot.people_details;
                     }
                 }
                 Ok(backups)

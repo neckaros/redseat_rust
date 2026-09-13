@@ -245,12 +245,14 @@ mod tests {
             roles: Some(vec![PersonType::Actor]),
             characters: Some(vec!["A".into()]),
             rank: Some(4),
+            conf: None,
         });
         merge_credit(&mut pending, PersonWithRoles {
             person: Person { name: "Other name".into(), ..person.clone() },
             roles: Some(vec![PersonType::Actor, PersonType::Director]),
             characters: Some(vec!["A".into(), "B".into()]),
             rank: Some(0),
+            conf: None,
         });
         merge_credit(&mut pending, person.clone().into());
         assert_eq!(pending.len(), 1);
