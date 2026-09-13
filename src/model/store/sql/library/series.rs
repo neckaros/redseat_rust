@@ -113,6 +113,7 @@ impl SqliteLibraryStore {
                         relations.people = snapshot.people;
                         relations.people_roles = snapshot.people_roles;
                         relations.people_characters = snapshot.people_characters;
+                        relations.people_ranks = snapshot.people_ranks;
                     }
                 }
                 Ok(backups)

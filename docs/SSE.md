@@ -1027,21 +1027,41 @@ role-only searches may scan more relationship rows.
 
 Movie (including `/movies/upcoming` and `/movies/ondeck`), series, and book list
 responses include `relations.people`,
-`relations.peopleRoles`, and `relations.peopleCharacters` on each flattened title.
+`relations.peopleRoles`, `relations.peopleCharacters`, and `relations.peopleRanks` on each flattened title.
 The `movies`, `series`, and `books` live events include the same fields inside
 `movies[].movie.relations`, `series[].serie.relations`, and `books[].book.relations`.
 References and map keys use local library person IDs; no full person profiles are
 loaded. Relationship loading uses one mapping query per page or event batch.
 
 ```json
-{"people":[{"id":"person-id"}],"peopleRoles":{"person-id":["Actor"]},"peopleCharacters":{"person-id":["Ken"]}}
+{"people":[{"id":"person-id"}],"peopleRoles":{"person-id":["Actor"]},"peopleCharacters":{"person-id":["Ken"]},"peopleRanks":{"person-id":0}}
 ```
 
 Each supplied field replaces its cached counterpart. A per-person `[]` clears
 roles or character names. `people: []`, `peopleRoles: {}`, and
-`peopleCharacters: {}` clear all credits. Missing fields mean unchanged, including
+`peopleCharacters: {}`, and `peopleRanks: {}` clear all credits. Missing fields mean unchanged, including
 older payloads and events whose credit hydration failed (logged by the server).
 Persisted NULL role/name arrays are returned as empty arrays in these snapshots.
 Other relation fields retain their existing behavior. Credit insertion, updates,
 and deletion advance the parent title's modified timestamp, including deleting
 the final link, so strict `?after` queries return the new snapshot.
+
+### Optional credit rank
+
+`GET` movie/show/book people responses include optional `rank` on each credit.
+`relations.peopleRanks` in title list/event snapshots maps local person IDs to
+known ranks; an empty map clears cached ranks. Lower values come first (zero is
+first). Ranks are unsigned 32-bit integers scoped to the title/person relationship.
+Unknown ranks are omitted from the map and individual credit responses.
+Movie/show credits list cast first, then crew; ranked credits precede unranked
+credits within each group, with name and ID as stable tie breakers. A supplied
+rank identifies a prioritized credit even when legacy role data is absent.
+Book credits use rank then name/ID without cast grouping. `relations.people`
+uses the same ordering as the dedicated people endpoint.
+
+Plugin refresh accepts optional `relations.peopleRanks` keyed by plugin person
+IDs and translates them to local IDs. Missing maps/entries preserve stored ranks.
+Duplicate summaries and merged people keep the lowest known rank. Rank-only
+updates advance the title's modified timestamp and emit the usual hydrated title
+event. Existing libraries gain nullable ranks through migration 58; refresh
+metadata to populate them from TMDB. No new event names are introduced.

@@ -145,6 +145,7 @@ impl ModelController {
         people: Vec<Person>,
         roles: Option<std::collections::HashMap<String, Vec<PersonType>>>,
         characters: Option<std::collections::HashMap<String, Vec<String>>>,
+        ranks: Option<std::collections::HashMap<String, u32>>,
         user: &ConnectedUser,
     ) -> RsResult<bool> {
         user.check_library_role(library_id, LibraryRole::Write)?;
@@ -154,6 +155,7 @@ impl ModelController {
             std::collections::HashMap::new();
         let mut names: std::collections::HashMap<String, Vec<String>> =
             std::collections::HashMap::new();
+        let mut resolved_ranks: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
         for summary in people {
             let label = summary.id.clone();
             let credit_roles = roles.as_ref().and_then(|roles| roles.get(&label)).cloned();
@@ -179,6 +181,10 @@ impl ModelController {
                                 entry.push(value.clone());
                             }
                         }
+                    }
+                    if let Some(rank) = ranks.as_ref().and_then(|map| map.get(&label)) {
+                        let entry = resolved_ranks.entry(person.id.clone()).or_insert(*rank);
+                        *entry = (*entry).min(*rank);
                     }
                     let entry = pending.entry(person.id).or_insert(None);
                     if let Some(values) = credit_roles {
@@ -206,12 +212,13 @@ impl ModelController {
         }
         for (person_id, roles) in pending {
             changed |= store
-                .upsert_entity_person_credit(
+                .upsert_entity_person_ranked_credit(
                     entity,
                     id,
                     &person_id,
                     roles,
                     names.remove(&person_id),
+                    resolved_ranks.remove(&person_id),
                 )
                 .await?;
         }

@@ -1122,8 +1122,8 @@ else 0 end) as score", q, q, q, q, q, q);
                 ] {
                     let confidence = if mapping == "book_people_mapping" { ", confidence" } else { "" };
                     tx.execute(
-                        &format!("INSERT INTO {mapping} ({reference}, people_ref, roles, characters{confidence})
-                            SELECT {reference}, ?, roles, characters{confidence} FROM {mapping} WHERE people_ref = ?
+                        &format!("INSERT INTO {mapping} ({reference}, people_ref, roles, characters, rank{confidence})
+                            SELECT {reference}, ?, roles, characters, rank{confidence} FROM {mapping} WHERE people_ref = ?
                             ON CONFLICT({reference}, people_ref) DO UPDATE SET roles =
                             CASE WHEN {mapping}.roles IS NULL AND excluded.roles IS NULL THEN NULL
                             ELSE (SELECT json_group_array(value) FROM (
@@ -1134,7 +1134,10 @@ else 0 end) as score", q, q, q, q, q, q);
                             ELSE (SELECT json_group_array(value) FROM (
                                 SELECT value FROM json_each({mapping}.characters)
                                 UNION SELECT value FROM json_each(excluded.characters) ORDER BY value
-                            )) END"),
+                            )) END,
+                            rank = CASE WHEN {mapping}.rank IS NULL THEN excluded.rank
+                                WHEN excluded.rank IS NULL THEN {mapping}.rank
+                                ELSE min({mapping}.rank, excluded.rank) END"),
                         params![target_id, source_id],
                     )?;
                     tx.execute(

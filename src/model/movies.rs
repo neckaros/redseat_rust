@@ -759,6 +759,7 @@ impl ModelController {
                     relations.people_details.unwrap_or_default(),
                     relations.people_roles,
                     relations.people_characters,
+                    relations.people_ranks,
                     requesting_user,
                 )
                 .await?

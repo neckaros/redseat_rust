@@ -45,6 +45,7 @@ impl SqliteLibraryStore {
                         people: Some(Vec::new()),
                         people_roles: Some(HashMap::new()),
                         people_characters: Some(HashMap::new()),
+                        people_ranks: Some(HashMap::new()),
                         ..Default::default()
                     },
                 )
@@ -89,7 +90,10 @@ impl SqliteLibraryStore {
                 relations
                     .people_characters
                     .get_or_insert_default()
-                    .insert(person, characters);
+                    .insert(person.clone(), characters);
+                if let Some(rank) = row.get::<_, Option<u32>>(5)? {
+                    relations.people_ranks.get_or_insert_default().insert(person, rank);
+                }
             }
         }
         Ok(snapshots)
@@ -102,11 +106,23 @@ impl SqliteLibraryStore {
         } else {
             "NULL"
         };
+        let ordering = Self::credit_order_sql(entity, "m.roles", "m.rank");
         format!(
-            "SELECT m.{reference}, m.people_ref, m.roles, m.characters, {confidence}
+            "SELECT m.{reference}, m.people_ref, m.roles, m.characters, {confidence}, m.rank
             FROM json_each(?) requested JOIN {mapping} m ON m.{reference} = requested.value
-            ORDER BY m.{reference}, m.people_ref"
+            JOIN people p ON p.id = m.people_ref
+            ORDER BY m.{reference}, {ordering}, p.name, m.people_ref"
         )
+    }
+
+    /// Cast precedes crew on screen titles; unknown ranks sort last within each group.
+    fn credit_order_sql(entity: PeopleEntity, roles: &str, rank: &str) -> String {
+        let cast = if matches!(entity, PeopleEntity::Book) {
+            String::new()
+        } else {
+            format!("CASE WHEN ({rank} IS NOT NULL AND {roles} IS NULL) OR EXISTS (SELECT 1 FROM json_each({roles}) role WHERE role.value = 'Actor') THEN 0 ELSE 1 END, ")
+        };
+        format!("{cast}{rank} IS NULL, {rank}")
     }
 
     pub(super) fn add_people_filter(
@@ -263,6 +279,18 @@ impl SqliteLibraryStore {
         roles: Option<Vec<PersonType>>,
         characters: Option<Vec<String>>,
     ) -> Result<bool> {
+        self.upsert_entity_person_ranked_credit(entity, id, person_id, roles, characters, None).await
+    }
+
+    pub(crate) async fn upsert_entity_person_ranked_credit(
+        &self,
+        entity: PeopleEntity,
+        id: &str,
+        person_id: &str,
+        roles: Option<Vec<PersonType>>,
+        characters: Option<Vec<String>>,
+        rank: Option<u32>,
+    ) -> Result<bool> {
         let characters = characters.map(|mut values| {
             values.sort();
             values.dedup();
@@ -282,16 +310,18 @@ impl SqliteLibraryStore {
                 // Existence checks also protect installations with foreign_keys disabled.
                 Ok(conn.execute(
                     &format!(
-                        "INSERT INTO {mapping} ({reference}, people_ref, roles, characters)
-                SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM {parent} WHERE id = ?)
+                        "INSERT INTO {mapping} ({reference}, people_ref, roles, characters, rank)
+                SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM {parent} WHERE id = ?)
                 AND EXISTS (SELECT 1 FROM people WHERE id = ?)
                 ON CONFLICT ({reference}, people_ref) DO UPDATE SET
                     roles = coalesce(excluded.roles, {mapping}.roles),
-                    characters = coalesce(excluded.characters, {mapping}.characters)
+                    characters = coalesce(excluded.characters, {mapping}.characters),
+                    rank = coalesce(excluded.rank, {mapping}.rank)
                 WHERE (excluded.roles IS NOT NULL AND {mapping}.roles IS NOT excluded.roles)
-                   OR (excluded.characters IS NOT NULL AND {mapping}.characters IS NOT excluded.characters)"
+                   OR (excluded.characters IS NOT NULL AND {mapping}.characters IS NOT excluded.characters)
+                   OR (excluded.rank IS NOT NULL AND {mapping}.rank IS NOT excluded.rank)"
                     ),
-                    params![id, person_id, roles, characters, id, person_id],
+                    params![id, person_id, roles, characters, rank, id, person_id],
                 )? > 0)
             })
             .await?)
@@ -307,21 +337,22 @@ impl SqliteLibraryStore {
             .connection
             .call(move |conn| {
                 let (_, mapping, reference) = entity.tables();
+                let ordering = Self::credit_order_sql(entity, "credit_roles", "credit_rank");
                 let mut query = conn.prepare(&format!(
-                    "SELECT {}, (SELECT roles FROM {mapping} WHERE {reference} = ? AND people_ref = people.id), (SELECT characters FROM {mapping} WHERE {reference} = ? AND people_ref = people.id) FROM people
+                    "SELECT {}, (SELECT roles FROM {mapping} WHERE {reference} = ? AND people_ref = people.id) AS credit_roles, (SELECT characters FROM {mapping} WHERE {reference} = ? AND people_ref = people.id), (SELECT rank FROM {mapping} WHERE {reference} = ? AND people_ref = people.id) AS credit_rank FROM people
                 WHERE id IN (SELECT people_ref FROM {mapping} WHERE {reference} = ?)
-                ORDER BY name, id",
+                ORDER BY {ordering}, name, id",
                     Self::PEOPLE_FIELDS
                 ))?;
                 let people = query
-                    .query_map([&id, &id, &id], |row| {
+                    .query_map([&id, &id, &id, &id], |row| {
                         let raw: Option<String> = row.get(Self::PEOPLE_FIELDS.split(',').count())?;
                         let roles = raw.map(|raw| serde_json::from_str(&raw)).transpose()
                             .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))?;
                         let raw: Option<String> = row.get(Self::PEOPLE_FIELDS.split(',').count() + 1)?;
                         let characters = raw.map(|raw| serde_json::from_str(&raw)).transpose()
                             .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))?;
-                        Ok(PersonWithRoles { person: Self::row_to_person(row)?, roles, characters })
+                        Ok(PersonWithRoles { person: Self::row_to_person(row)?, roles, characters, rank: row.get(Self::PEOPLE_FIELDS.split(',').count() + 2)? })
                     })?
                     .collect::<rusqlite::Result<Vec<_>>>()?;
                 Ok(people)
@@ -370,6 +401,112 @@ mod tests {
             })
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn credit_ranks_order_snapshots_preserve_unknowns_and_advance_sync() {
+        let store = store().await;
+        store.connection.call(|conn| {
+            conn.execute_batch("INSERT INTO movies(id,name) VALUES ('title','Title');
+                INSERT INTO series(id,name) VALUES ('title','Title');
+                INSERT INTO books(id,name) VALUES ('title','Title');")?;
+            Ok(())
+        }).await.unwrap();
+        for (id, name) in [("lead", "Z Lead"), ("tie-b", "B Tie"), ("tie-a", "B Tie"),
+            ("unknown", "A Actor"), ("crew", "A Director")] {
+            store.add_person(PersonForInsert { id: id.into(), person: PersonForAdd {
+                name: name.into(), ..Default::default()
+            }}).await.unwrap();
+        }
+        for entity in [PeopleEntity::Movie, PeopleEntity::Serie, PeopleEntity::Book] {
+            for (person, rank, role) in [("crew", None, PersonType::Director),
+                ("unknown", None, PersonType::Actor), ("tie-b", Some(2), PersonType::Actor),
+                ("tie-a", Some(2), PersonType::Actor), ("lead", Some(0), PersonType::Actor)] {
+                assert!(store.upsert_entity_person_ranked_credit(entity, "title", person,
+                    Some(vec![role]), None, rank).await.unwrap());
+            }
+            let credits = store.get_entity_people(entity, "title").await.unwrap();
+            assert_eq!(credits.iter().map(|credit| credit.person.id.as_str()).collect::<Vec<_>>(),
+                vec!["lead", "tie-a", "tie-b", "unknown", "crew"]);
+            assert_eq!(credits[0].rank, Some(0));
+            assert!(serde_json::to_value(&credits[3]).unwrap().get("rank").is_none());
+            let snapshots = store.get_people_relations_batch(entity, vec!["title".into()]).await.unwrap();
+            let snapshot = &snapshots["title"];
+            assert_eq!(snapshot.people.as_ref().unwrap().iter().map(|person| person.id.as_str()).collect::<Vec<_>>(),
+                vec!["lead", "tie-a", "tie-b", "unknown", "crew"]);
+            assert_eq!(snapshot.people_ranks.as_ref().unwrap().len(), 3);
+            assert_eq!(snapshot.people_ranks.as_ref().unwrap()["lead"], 0);
+            assert!(!store.upsert_entity_person_ranked_credit(entity, "title", "lead", None, None, None).await.unwrap());
+            assert!(!store.upsert_entity_person_ranked_credit(entity, "title", "lead", None, None, Some(0)).await.unwrap());
+            let parent = entity.tables().0;
+            let before: i64 = store.connection.call(move |conn| Ok(conn.query_row(
+                &format!("SELECT modified FROM {parent} WHERE id = 'title'"), [], |row| row.get(0))?
+            )).await.unwrap();
+            assert!(store.upsert_entity_person_ranked_credit(entity, "title", "lead", None, None, Some(9)).await.unwrap());
+            store.connection.call(move |conn| {
+                let after: i64 = conn.query_row(&format!("SELECT modified FROM {parent} WHERE id = 'title'"), [], |row| row.get(0))?;
+                assert!(after > before);
+                Ok(())
+            }).await.unwrap();
+            let credits = store.get_entity_people(entity, "title").await.unwrap();
+            assert_eq!(credits[0].person.id, "tie-a");
+        }
+    }
+
+    #[tokio::test]
+    async fn credit_ranks_survive_person_merges() {
+        let store = store().await;
+        for id in ["source", "target"] {
+            store.add_person(PersonForInsert { id: id.into(), person: PersonForAdd {
+                name: id.into(), ..Default::default()
+            }}).await.unwrap();
+        }
+        store.connection.call(|conn| {
+            conn.execute_batch("INSERT INTO movies(id,name) VALUES ('title','Title');
+                INSERT INTO series(id,name) VALUES ('title','Title');
+                INSERT INTO books(id,name) VALUES ('title','Title');")?;
+            Ok(())
+        }).await.unwrap();
+        for (entity, source, target) in [(PeopleEntity::Movie, Some(0), Some(7)),
+            (PeopleEntity::Serie, Some(4), None), (PeopleEntity::Book, None, Some(2))] {
+            store.upsert_entity_person_ranked_credit(entity, "title", "source", None, None, source).await.unwrap();
+            store.upsert_entity_person_ranked_credit(entity, "title", "target", None, None, target).await.unwrap();
+        }
+        store.transfer_faces_between_people("source", "target").await.unwrap();
+        for (entity, rank) in [(PeopleEntity::Movie, 0), (PeopleEntity::Serie, 4), (PeopleEntity::Book, 2)] {
+            let credits = store.get_entity_people(entity, "title").await.unwrap();
+            assert_eq!(credits.len(), 1);
+            assert_eq!(credits[0].person.id, "target");
+            assert_eq!(credits[0].rank, Some(rank));
+        }
+    }
+
+    #[tokio::test]
+    async fn credit_ranks_migration_keeps_legacy_credits_unranked() {
+        let store = store().await;
+        existing(&store, Some(42)).await;
+        store.connection.call(|conn| {
+            conn.execute_batch("INSERT INTO movies(id,name) VALUES ('title','Title');
+                INSERT INTO series(id,name) VALUES ('title','Title');
+                INSERT INTO books(id,name) VALUES ('title','Title');")?;
+            for (mapping, reference) in [("movie_people_mapping", "movie_ref"),
+                ("serie_people_mapping", "serie_ref"), ("book_people_mapping", "book_ref")] {
+                conn.execute_batch(&format!("DROP TRIGGER modified_{mapping}_rank;
+                    ALTER TABLE {mapping} DROP COLUMN rank;
+                    INSERT INTO {mapping}({reference},people_ref,roles,characters)
+                    VALUES ('title','local-person','[\"Actor\"]','[\"Character\"]');"))?;
+            }
+            conn.execute_batch("PRAGMA user_version = 57;")?;
+            Ok(())
+        }).await.unwrap();
+        assert_eq!(store.migrate().await.unwrap(), 58);
+        assert_eq!(store.migrate().await.unwrap(), 58);
+        for entity in [PeopleEntity::Movie, PeopleEntity::Serie, PeopleEntity::Book] {
+            let credit = store.get_entity_people(entity, "title").await.unwrap().remove(0);
+            assert_eq!(credit.rank, None);
+            assert_eq!(credit.characters, Some(vec!["Character".into()]));
+            assert_eq!(credit.roles, Some(vec![PersonType::Actor]));
+        }
     }
 
     #[tokio::test]
@@ -443,7 +580,7 @@ mod tests {
             );
             assert_eq!(
                 serde_json::to_value(&snapshot["empty"]).unwrap(),
-                serde_json::json!({"people":[], "peopleRoles":{}, "peopleCharacters":{}})
+                serde_json::json!({"people":[], "peopleRoles":{}, "peopleCharacters":{}, "peopleRanks":{}})
             );
             // Live event title objects keep flat metadata and embed the same snapshot.
             let event = match entity {
@@ -590,7 +727,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 serde_json::to_value(&removed["title"]).unwrap(),
-                serde_json::json!({"people":[], "peopleRoles":{}, "peopleCharacters":{}})
+                serde_json::json!({"people":[], "peopleRoles":{}, "peopleCharacters":{}, "peopleRanks":{}})
             );
         }
     }
@@ -1536,6 +1673,8 @@ mod tests {
                 DROP TRIGGER delete_serie_people;
                 DROP TRIGGER delete_person_entities;
                 DROP TRIGGER modified_book_people_mapping_roles;
+                DROP TRIGGER modified_book_people_mapping_rank;
+                ALTER TABLE book_people_mapping DROP COLUMN rank;
                 ALTER TABLE book_people_mapping DROP COLUMN roles;
                 ALTER TABLE book_people_mapping DROP COLUMN characters;
                 PRAGMA user_version = 54;
@@ -1545,7 +1684,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(store.migrate().await.unwrap(), 57);
+        assert_eq!(store.migrate().await.unwrap(), 58);
         assert_eq!(
             store
                 .get_person("local-person")

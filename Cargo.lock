@@ -5181,8 +5181,8 @@ dependencies = [
 
 [[package]]
 name = "rs-plugin-common-interfaces"
-version = "0.39.0"
-source = "git+https://github.com/neckaros/rs-plugin-common-interfaces?rev=d48d51027777d7c2679ff2d26491bffe330e4b14#d48d51027777d7c2679ff2d26491bffe330e4b14"
+version = "0.40.0"
+source = "git+https://github.com/neckaros/rs-plugin-common-interfaces?rev=67fb91223860a7e2086d9d2e309584a0e168eaa8#67fb91223860a7e2086d9d2e309584a0e168eaa8"
 dependencies = [
  "base64 0.22.1",
  "regex",

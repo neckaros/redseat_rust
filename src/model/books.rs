@@ -187,6 +187,30 @@ impl ModelController {
                     .await?;
             }
         }
+        if let Some(ranks) = &relations.people_ranks {
+            let mut resolved: HashMap<String, u32> = HashMap::new();
+            for (credit_id, rank) in ranks {
+                let person = if let Some(person) = store.get_person(credit_id).await? {
+                    Some(person)
+                } else if let Some(credit) = relations.people_details.iter().flatten()
+                    .find(|credit| &credit.id == credit_id)
+                {
+                    store.get_person_by_external_id(credit.clone().into()).await?
+                } else {
+                    None
+                };
+                if let Some(person) = person {
+                    let entry = resolved.entry(person.id).or_insert(*rank);
+                    *entry = (*entry).min(*rank);
+                }
+            }
+            for (person, rank) in resolved {
+                changed |= store.upsert_entity_person_ranked_credit(
+                    super::entity_people::PeopleEntity::Book, book_id, &person,
+                    None, None, Some(rank),
+                ).await?;
+            }
+        }
         Ok(changed)
     }
 
@@ -222,7 +246,8 @@ impl ModelController {
                         if ids.has_common_id(&returned.into()) {
                             let Some(relations) = result.relations.filter(|relations|
                                 relations.people_roles.as_ref().is_some_and(|roles| !roles.is_empty()) ||
-                                relations.people_characters.as_ref().is_some_and(|names| !names.is_empty())
+                                relations.people_characters.as_ref().is_some_and(|names| !names.is_empty()) ||
+                                relations.people_ranks.as_ref().is_some_and(|ranks| !ranks.is_empty())
                             ) else { continue };
                             {
                                 if self
