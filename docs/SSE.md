@@ -229,7 +229,7 @@ interface MediaWithAction {
 
 interface Relations {
   people?: MediaItemReference[];
-  peopleDetails?: Person[];
+  peopleDetails?: (Person & { roles?: string[]; characters?: string[]; rank?: number })[];
   tags?: MediaItemReference[];
   tagsDetails?: Tag[];
   series?: FileEpisode[];
@@ -991,9 +991,9 @@ person fields plus optional `roles: ["Actor", "Director"]`. Missing roles mean
 unknown; empty lists explicitly clear roles. Canonical and custom strings use
 PersonType; role lists are deduplicated and order does not signify priority.
 
-Plugin `relations.peopleRoles` maps credit IDs to role lists. Neither summary
+Plugin `relations.peopleDetails[]` carries optional `roles` on each person object. Neither summary
 nor full-profile `type` is used as a substitute for explicit relationship roles.
-Legacy plugins without this map leave roles unchanged/unknown; omitted entries
+Legacy plugins without credit roles leave them unchanged/unknown; omitted fields
 preserve stored roles. Refresh combines multiple
 credits resolving to the same person before saving.
 
@@ -1010,7 +1010,7 @@ people list. Merges union roles across shared links and preserve unknown values.
 The people_ref index narrows person-specific JSON role queries to their credits.
 
 Character names are stored independently in nullable `characters` JSON arrays.
-Plugin `peopleCharacters` uses the same credit IDs as `peopleRoles`. Missing
+Plugin `relations.peopleDetails[]` carries optional `characters` alongside `roles`. Missing
 names preserve stored values; empty arrays clear names; merges union both lists.
 People endpoints expose `characters` alongside `roles`, without modifying
 the general profile. Existing links acquire names on refresh when the plugin
@@ -1059,9 +1059,15 @@ rank identifies a prioritized credit even when legacy role data is absent.
 Book credits use rank then name/ID without cast grouping. `relations.people`
 uses the same ordering as the dedicated people endpoint.
 
-Plugin refresh accepts optional `relations.peopleRanks` keyed by plugin person
-IDs and translates them to local IDs. Missing maps/entries preserve stored ranks.
-Duplicate summaries and merged people keep the lowest known rank. Rank-only
-updates advance the title's modified timestamp and emit the usual hydrated title
-event. Existing libraries gain nullable ranks through migration 58; refresh
-metadata to populate them from TMDB. No new event names are introduced.
+Plugin refresh reads `relations.peopleDetails[]` as person objects with optional
+`roles`, `characters`, and integer `rank` fields. Each object is resolved to a
+local person once, then all credit fields are persisted together. Missing fields
+preserve stored values. Duplicate summaries and merged people keep the lowest
+known rank and combine role/name lists.
+
+Older plugin maps are accepted through one compatibility helper; inline fields
+win, including empty arrays and rank zero. Compact list/event snapshot maps above
+remain unchanged. Rank-only updates advance the title's modified timestamp and
+emit the usual hydrated title event. Existing libraries gain nullable ranks
+through migration 58; refresh metadata to populate them from TMDB. Deploy the
+server before the new plugin. No new event names are introduced.

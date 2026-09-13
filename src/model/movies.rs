@@ -756,10 +756,7 @@ impl ModelController {
                     library_id,
                     super::entity_people::PeopleEntity::Movie,
                     movie_id,
-                    relations.people_details.unwrap_or_default(),
-                    relations.people_roles,
-                    relations.people_characters,
-                    relations.people_ranks,
+                    relations.people_credits(),
                     requesting_user,
                 )
                 .await?
