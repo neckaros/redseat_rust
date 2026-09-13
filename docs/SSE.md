@@ -1034,7 +1034,7 @@ Each entry contains the local person profile and optional relationship `roles`,
 loads the credits for the complete page/event batch.
 
 ```json
-{"peopleDetails":[{"id":"person-id","name":"Actor","modified":0,"added":0,"generated":false,"roles":["Actor"],"characters":["Ken"],"rank":0}]}
+{"peopleDetails":[{"id":"person-id","name":"Actor","modified":0,"added":0,"posterv":0,"generated":false,"roles":["Actor"],"characters":["Ken"],"rank":0}]}
 ```
 
 A supplied `peopleDetails` array replaces the cached title credits; `[]` clears
