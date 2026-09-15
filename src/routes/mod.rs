@@ -1,6 +1,9 @@
 use rs_plugin_common_interfaces::{
     domain::media::FileEpisode,
-    lookup::{RsLookupMatchType, RsLookupMetadataResults},
+    lookup::{
+        RsLookupBook, RsLookupMatchType, RsLookupMetadataResults, RsLookupMovie,
+        RsLookupPersonFilter, RsLookupSerieFilter, RsLookupTagFilter,
+    },
     request::{RsGroupDownload, RsRequest},
     ImageType,
 };
@@ -55,12 +58,55 @@ pub struct SearchQuery<T> {
     #[serde(flatten)]
     pub lookup: T,
     pub source: Option<String>,
+    /// URL-encoded JSON containing optional `people`, `series`, and `tags` arrays.
+    pub filters: Option<String>,
 }
 
 impl<T> SearchQuery<T> {
     pub fn sources(&self) -> Option<Vec<String>> {
         parse_sources(self.source.as_deref())
     }
+
+    pub fn filters(&self) -> crate::Result<Option<LookupRelationFilters>> {
+        parse_lookup_filters(self.filters.as_deref())
+    }
+}
+
+#[derive(Debug, Deserialize, Default, Clone, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LookupRelationFilters {
+    pub people: Option<Vec<RsLookupPersonFilter>>,
+    pub series: Option<Vec<RsLookupSerieFilter>>,
+    pub tags: Option<Vec<RsLookupTagFilter>>,
+}
+
+impl LookupRelationFilters {
+    pub fn is_empty(&self) -> bool {
+        self.people.as_ref().is_none_or(Vec::is_empty)
+            && self.series.as_ref().is_none_or(Vec::is_empty)
+            && self.tags.as_ref().is_none_or(Vec::is_empty)
+    }
+
+    pub fn apply_to_book(&self, lookup: &mut RsLookupBook) {
+        lookup.people.clone_from(&self.people);
+        lookup.series.clone_from(&self.series);
+        lookup.tags.clone_from(&self.tags);
+    }
+
+    pub fn apply_to_movie(&self, lookup: &mut RsLookupMovie) {
+        lookup.people.clone_from(&self.people);
+        lookup.series.clone_from(&self.series);
+        lookup.tags.clone_from(&self.tags);
+    }
+}
+
+pub fn parse_lookup_filters(value: Option<&str>) -> crate::Result<Option<LookupRelationFilters>> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    serde_json::from_str(value).map(Some).map_err(|error| {
+        crate::Error::InvalidParams(format!("Invalid plugin search filters: {error}"))
+    })
 }
 
 /// Provider-specific pagination options for media/download lookups.
@@ -212,9 +258,10 @@ pub fn bind_downloads_to_series(
 #[cfg(test)]
 mod tests {
     use super::{
-        bind_downloads_to_movie, bind_downloads_to_series, LookupPagination, SseLookupSearchEvent,
-        SseLookupSearchResult,
+        bind_downloads_to_movie, bind_downloads_to_series, parse_lookup_filters,
+        LookupPagination, SseLookupSearchEvent, SseLookupSearchResult,
     };
+    use rs_plugin_common_interfaces::domain::person::PersonType;
     use rs_plugin_common_interfaces::request::{RsGroupDownload, RsRequest};
 
     #[test]
@@ -260,6 +307,38 @@ mod tests {
                 Err(crate::Error::InvalidParams(_))
             ));
         }
+    }
+
+    #[test]
+    fn plugin_search_filters_parse_structured_relations() {
+        let filters = parse_lookup_filters(Some(
+            r#"{"people":[{"name":"Ursula Le Guin"},{"name":"Greta Gerwig","role":"Director"}],"series":[{"ids":{"openlibrary":"OL1L"}}],"tags":[{"name":"Fantasy"},{"ids":{"openlib-tag":"science_fiction"}}]}"#,
+        ))
+        .expect("parse filters")
+        .expect("filters");
+
+        let people = filters.people.expect("people");
+        assert_eq!(people[0].role, None);
+        assert_eq!(people[1].role, Some(PersonType::Director));
+        assert_eq!(
+            filters.series.expect("series")[0]
+                .ids
+                .as_ref()
+                .and_then(|ids| ids.get("openlibrary")),
+            Some("OL1L")
+        );
+        assert_eq!(filters.tags.expect("tags")[0].name.as_deref(), Some("Fantasy"));
+    }
+
+    #[test]
+    fn plugin_search_filters_reject_invalid_json_and_unknown_fields() {
+        for value in ["not-json", r#"{"actor":"Someone"}"#] {
+            assert!(matches!(
+                parse_lookup_filters(Some(value)),
+                Err(crate::Error::InvalidParams(_))
+            ));
+        }
+        assert_eq!(parse_lookup_filters(Some("   ")).unwrap(), None);
     }
 
     #[test]

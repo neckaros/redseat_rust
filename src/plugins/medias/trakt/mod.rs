@@ -591,6 +591,7 @@ mod tests {
                 name: Some("jessica alba".to_string()),
                 ids: None,
                 page_key: None,
+                ..Default::default()
             })
             .await?;
 

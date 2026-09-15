@@ -207,6 +207,7 @@ impl ModelController {
                     name: None,
                     ids: Some(id.clone()),
                     page_key: None,
+                    ..Default::default()
                 };
                 if let Some(mut movie) = self
                     .lookup_movie_metadata(library_id, lookup_query, requesting_user)
@@ -564,6 +565,7 @@ impl ModelController {
             name: None,
             ids: Some(ids.clone()),
             page_key: None,
+            ..Default::default()
         });
         let mut groups = self
             .exec_lookup_metadata_grouped(
@@ -685,6 +687,7 @@ impl ModelController {
                     name: None,
                     ids: Some(ids.clone()),
                     page_key: None,
+                    ..Default::default()
                 };
                 let new_movie = if let Some(movie) = self
                     .lookup_movie_metadata(library_id, lookup_query, requesting_user)
@@ -726,6 +729,7 @@ impl ModelController {
             name: Some(movie.name.clone()),
             ids: Some(ids.clone()),
             page_key: None,
+            ..Default::default()
         };
         let (mut new_movie, relations) = if let Some(movie) = self
             .lookup_movie_metadata_with_relations(library_id, lookup_query, requesting_user)
@@ -811,6 +815,7 @@ impl ModelController {
                 name: None,
                 ids: Some(movie_ids.clone()),
                 page_key: None,
+                ..Default::default()
             });
             let raw_result = self
                 .serve_cached_entity_image(
@@ -849,6 +854,7 @@ impl ModelController {
                 name: Some(movie.name.clone()),
                 ids: Some(movie.into()),
                 page_key: None,
+                ..Default::default()
             });
             self.serve_cached_entity_image(
                 library_id,
@@ -898,6 +904,7 @@ impl ModelController {
             name: Some(movie.name.clone()),
             ids: Some(ids),
             page_key: None,
+            ..Default::default()
         });
         let reader = self
             .download_entity_image(
