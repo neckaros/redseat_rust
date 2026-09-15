@@ -34,9 +34,9 @@ use crate::{
         ModelController,
     },
     routes::{
-        bind_downloads_to_book, ImageRequestOptions, ImageUploadOptions, LookupPagination,
-        RatingUpdateBody, SearchResultGroup, SseLookupSearchEvent, SseLookupSearchResult,
-        SseSearchEvent,
+        bind_downloads_to_book, parse_lookup_filters, ImageRequestOptions, ImageUploadOptions,
+        LookupPagination, RatingUpdateBody, SearchResultGroup, SseLookupSearchEvent,
+        SseLookupSearchResult, SseSearchEvent,
     },
     Error, Result,
 };
@@ -115,6 +115,7 @@ struct BookMetadataSearchQuery {
     isbn13: Option<String>,
     page_key: Option<String>,
     source: Option<String>,
+    filters: Option<String>,
 }
 
 impl BookMetadataSearchQuery {
@@ -130,6 +131,7 @@ impl BookMetadataSearchQuery {
     }
 
     fn into_lookup(self) -> Result<RsLookupBook> {
+        let filters = parse_lookup_filters(self.filters.as_deref())?;
         let name = self.name.and_then(non_empty_value);
         let author = self.author.and_then(non_empty_value);
         let ids = self.isbn13.and_then(|isbn13| {
@@ -142,18 +144,27 @@ impl BookMetadataSearchQuery {
             Some(ids)
         });
 
-        if name.is_none() && author.is_none() && ids.is_none() {
+        if name.is_none()
+            && author.is_none()
+            && ids.is_none()
+            && filters.as_ref().is_none_or(|filters| filters.is_empty())
+        {
             return Err(Error::InvalidParams(
-                "At least one of name, author, or isbn13 is required".to_string(),
+                "At least one of name, author, isbn13, or filters is required".to_string(),
             ));
         }
 
-        Ok(RsLookupBook {
+        let mut lookup = RsLookupBook {
             name,
             author,
             ids,
             page_key: self.page_key.and_then(non_empty_value),
-        })
+            ..Default::default()
+        };
+        if let Some(filters) = filters {
+            filters.apply_to_book(&mut lookup);
+        }
+        Ok(lookup)
     }
 }
 
@@ -371,6 +382,7 @@ async fn handler_lookup(
         author,
         ids: Some(ids),
         page_key,
+        ..Default::default()
     });
     log_info(
         LogServiceType::Source,
@@ -398,6 +410,7 @@ async fn handler_lookup_stream(
         author,
         ids: Some(ids),
         page_key,
+        ..Default::default()
     });
     let mut rx = mc
         .exec_lookup_stream_grouped(query, Some(library_id), &user, None, sources.as_deref())
@@ -510,6 +523,7 @@ async fn handler_image_search(
         author: None,
         ids: Some(ids),
         page_key: None,
+        ..Default::default()
     };
     let result = mc.get_book_images(query, Some(library_id), &user).await?;
 
@@ -586,6 +600,7 @@ mod tests {
             isbn13: Some(" 9781402894626 ".to_string()),
             page_key: None,
             source: None,
+            filters: None,
         }
         .into_lookup()
         .unwrap();
@@ -606,12 +621,38 @@ mod tests {
             isbn13: Some(" ".to_string()),
             page_key: None,
             source: Some("openlibrary".to_string()),
+            filters: None,
         }
         .into_lookup();
 
         let error = result.unwrap_err();
         assert!(matches!(&error, Error::InvalidParams(_)));
         assert_eq!(error.client_status_and_error().0, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn book_metadata_search_accepts_relation_filters_without_a_title() {
+        let lookup = BookMetadataSearchQuery {
+            filters: Some(
+                r#"{"people":[{"name":"Octavia Butler"}],"tags":[{"ids":{"openlib-tag":"science_fiction"}}]}"#
+                    .to_string(),
+            ),
+            ..Default::default()
+        }
+        .into_lookup()
+        .unwrap();
+
+        assert_eq!(
+            lookup.people.as_deref().unwrap()[0].name.as_deref(),
+            Some("Octavia Butler")
+        );
+        assert_eq!(
+            lookup.tags.as_deref().unwrap()[0]
+                .ids
+                .as_ref()
+                .and_then(|ids| ids.get("openlib-tag")),
+            Some("science_fiction")
+        );
     }
 }
 

@@ -679,10 +679,28 @@ Search endpoints support SSE streaming so clients receive results progressively 
 
 | Endpoint | Query Parameters | Description |
 |----------|-----------------|-------------|
-| `GET /libraries/:libraryId/series/searchstream` | `name` (required), `ids`, `source`, `pageKey` (optional) | Stream series search results |
-| `GET /libraries/:libraryId/movies/searchstream` | `name` (required), `ids`, `source`, `pageKey` (optional) | Stream movie search results |
-| `GET /libraries/:libraryId/books/searchstream` | `name`, `author`, `isbn13` (at least one required); `source`, `pageKey` (optional) | Stream book search results; supplied fields are passed to plugins together |
+| `GET /libraries/:libraryId/series/searchstream` | `name`, `ids`, `filters`, `source`, `pageKey` (optional) | Stream series search results |
+| `GET /libraries/:libraryId/movies/searchstream` | `name`, `ids`, `filters`, `source`, `pageKey` (optional) | Stream movie search results |
+| `GET /libraries/:libraryId/books/searchstream` | `name`, `author`, `isbn13`, `filters` (at least one search field required); `source`, `pageKey` (optional) | Stream book search results; supplied fields are passed to plugins together |
 | `GET /libraries/:libraryId/people/searchstream` | `name` (required), `ids`, `source`, `pageKey` (optional) | Stream people search results |
+
+`filters` is a URL-encoded JSON object containing optional `people`, `series`,
+and `tags` arrays. People accept `name`, `ids`, and `role`; omitting `role`
+requests a broad match across any role. Series and tags accept `name` and
+`ids`, so plugins can use provider-specific external identifiers when they are
+available. For example:
+
+```json
+{
+  "people": [{ "name": "Ursula K. Le Guin" }],
+  "series": [{ "name": "Hainish Cycle" }],
+  "tags": [{ "ids": { "openlib-tag": "science_fiction" } }]
+}
+```
+
+The same `filters` parameter is available on the corresponding non-streaming
+search endpoints. Filters are forwarded to every selected plugin; provider
+support depends on the metadata exposed by that source.
 
 ### How It Works
 

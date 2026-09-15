@@ -140,6 +140,7 @@ impl ModelController {
                         ids: Some(ids.clone()),
                         author: None,
                         page_key: None,
+                        ..Default::default()
                     }),
                     Some(library_id.to_string()),
                     user,
@@ -225,6 +226,7 @@ impl ModelController {
                     ids: Some(ids.clone()),
                     author: None,
                     page_key: None,
+                    ..Default::default()
                 });
                 let plugin_results = self
                     .exec_lookup_metadata_grouped(
@@ -588,6 +590,7 @@ impl ModelController {
             author: None,
             ids: Some(ids.clone()),
             page_key: None,
+            ..Default::default()
         });
         let mut groups = self
             .exec_lookup_metadata_grouped(
@@ -787,6 +790,7 @@ impl ModelController {
                 author: None,
                 ids: Some(book_ids.clone()),
                 page_key: None,
+                ..Default::default()
             });
             let raw_result = self
                 .serve_cached_entity_image(
@@ -826,6 +830,7 @@ impl ModelController {
                 author: None,
                 ids: Some(book.item.into()),
                 page_key: None,
+                ..Default::default()
             });
             self.serve_cached_entity_image(
                 library_id,
@@ -913,6 +918,7 @@ impl ModelController {
             author: None,
             ids: Some(ids),
             page_key: None,
+            ..Default::default()
         });
         let reader = self
             .download_entity_image(

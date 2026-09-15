@@ -316,6 +316,7 @@ impl ModelController {
                     name: None,
                     ids: Some(id.clone()),
                     page_key: None,
+                    ..Default::default()
                 };
                 if let Some(mut serie) = self
                     .lookup_serie_metadata(library_id, lookup_query, requesting_user)
@@ -429,6 +430,9 @@ impl ModelController {
         let lookup_query = RsLookupQuery::Serie(RsLookupSerie {
             name: query.name,
             ids: query.ids,
+            people: query.people,
+            series: query.series,
+            tags: query.tags,
             page_key: query.page_key,
         });
         self.search_entity(
@@ -452,6 +456,9 @@ impl ModelController {
         let lookup_query = RsLookupQuery::Serie(RsLookupSerie {
             name: query.name,
             ids: query.ids,
+            people: query.people,
+            series: query.series,
+            tags: query.tags,
             page_key: query.page_key,
         });
         self.search_entity_stream(
@@ -632,6 +639,7 @@ impl ModelController {
             name: None,
             ids: Some(ids.clone()),
             page_key: None,
+            ..Default::default()
         });
         let mut groups = self
             .exec_lookup_metadata_grouped(
@@ -789,6 +797,7 @@ impl ModelController {
             name: Some(serie.name.clone()),
             ids: Some(ids.clone()),
             page_key: None,
+            ..Default::default()
         };
         let (new_serie, relations) = if let Some(serie) = self
             .lookup_serie_metadata_with_relations(library_id, lookup_query, requesting_user)
@@ -923,6 +932,7 @@ impl ModelController {
                     name: None,
                     ids: Some(ids.clone()),
                     page_key: None,
+                    ..Default::default()
                 };
                 let mut new_serie = if let Some(serie) = self
                     .lookup_serie_metadata(library_id, lookup_query, requesting_user)
@@ -981,6 +991,7 @@ impl ModelController {
                 name: None,
                 ids: Some(serie_ids.clone()),
                 page_key: None,
+                ..Default::default()
             });
             let raw_result = self
                 .serve_cached_entity_image(
@@ -1016,6 +1027,7 @@ impl ModelController {
                         name: Some(name),
                         ids: Some(ids),
                         page_key: None,
+                        ..Default::default()
                     });
                     self.serve_cached_entity_image(
                         library_id,
@@ -1063,6 +1075,7 @@ impl ModelController {
             name: Some(serie_name),
             ids: Some(ids),
             page_key: None,
+            ..Default::default()
         });
         let reader = self
             .download_entity_image(

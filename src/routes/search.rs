@@ -30,23 +30,34 @@ async fn handler_search_global(
     Query(query): Query<SearchQuery<RsLookupBook>>,
 ) -> Result<Json<Value>> {
     let sources = query.sources();
+    let filters = query.filters()?;
+    let mut book_lookup = query.lookup;
+    if let Some(filters) = &filters {
+        filters.apply_to_book(&mut book_lookup);
+    }
 
-    let movie_lookup = RsLookupMovie {
-        name: query.lookup.name.clone(),
-        ids: query.lookup.ids.clone(),
-        page_key: query.lookup.page_key.clone(),
+    let mut movie_lookup = RsLookupMovie {
+        name: book_lookup.name.clone(),
+        ids: book_lookup.ids.clone(),
+        page_key: book_lookup.page_key.clone(),
+        ..Default::default()
     };
-    let serie_lookup = RsLookupMovie {
-        name: query.lookup.name.clone(),
-        ids: query.lookup.ids.clone(),
-        page_key: query.lookup.page_key.clone(),
+    let mut serie_lookup = RsLookupMovie {
+        name: book_lookup.name.clone(),
+        ids: book_lookup.ids.clone(),
+        page_key: book_lookup.page_key.clone(),
+        ..Default::default()
     };
+    if let Some(filters) = &filters {
+        filters.apply_to_movie(&mut movie_lookup);
+        filters.apply_to_movie(&mut serie_lookup);
+    }
 
     let (movie_results, serie_results, book_results) = tokio::try_join!(
         mc.search_movie(&library_id, movie_lookup, sources.clone(), &user),
         mc.search_serie(&library_id, serie_lookup, sources.clone(), &user),
         mc.exec_lookup_metadata_grouped(
-            RsLookupQuery::Book(query.lookup),
+            RsLookupQuery::Book(book_lookup),
             Some(library_id.clone()),
             &user,
             None,
@@ -77,17 +88,28 @@ async fn handler_search_global_stream(
     Query(query): Query<SearchQuery<RsLookupBook>>,
 ) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>> {
     let sources = query.sources();
+    let filters = query.filters()?;
+    let mut book_lookup = query.lookup;
+    if let Some(filters) = &filters {
+        filters.apply_to_book(&mut book_lookup);
+    }
 
-    let movie_lookup = RsLookupMovie {
-        name: query.lookup.name.clone(),
-        ids: query.lookup.ids.clone(),
-        page_key: query.lookup.page_key.clone(),
+    let mut movie_lookup = RsLookupMovie {
+        name: book_lookup.name.clone(),
+        ids: book_lookup.ids.clone(),
+        page_key: book_lookup.page_key.clone(),
+        ..Default::default()
     };
-    let serie_lookup = RsLookupMovie {
-        name: query.lookup.name.clone(),
-        ids: query.lookup.ids.clone(),
-        page_key: query.lookup.page_key.clone(),
+    let mut serie_lookup = RsLookupMovie {
+        name: book_lookup.name.clone(),
+        ids: book_lookup.ids.clone(),
+        page_key: book_lookup.page_key.clone(),
+        ..Default::default()
     };
+    if let Some(filters) = &filters {
+        filters.apply_to_movie(&mut movie_lookup);
+        filters.apply_to_movie(&mut serie_lookup);
+    }
 
     let mut movie_rx = mc
         .search_movie_stream(&library_id, movie_lookup, sources.clone(), &user)
@@ -97,7 +119,7 @@ async fn handler_search_global_stream(
         .await?;
     let mut book_rx = mc
         .exec_lookup_metadata_stream_grouped(
-            RsLookupQuery::Book(query.lookup),
+            RsLookupQuery::Book(book_lookup),
             Some(library_id.clone()),
             &user,
             None,

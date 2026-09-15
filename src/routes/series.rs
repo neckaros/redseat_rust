@@ -137,8 +137,13 @@ async fn handler_seach_series(
     Query(query): Query<SearchQuery<RsLookupMovie>>,
 ) -> Result<Json<Value>> {
     let sources = query.sources();
+    let filters = query.filters()?;
+    let mut lookup = query.lookup;
+    if let Some(filters) = filters {
+        filters.apply_to_movie(&mut lookup);
+    }
     let groups = mc
-        .search_serie(&library_id, query.lookup, sources, &user)
+        .search_serie(&library_id, lookup, sources, &user)
         .await?;
     let body: Vec<SearchResultGroup> = groups
         .into_iter()
@@ -158,8 +163,13 @@ async fn handler_search_series_stream(
     Query(query): Query<SearchQuery<RsLookupMovie>>,
 ) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>> {
     let sources = query.sources();
+    let filters = query.filters()?;
+    let mut lookup = query.lookup;
+    if let Some(filters) = filters {
+        filters.apply_to_movie(&mut lookup);
+    }
     let mut rx = mc
-        .search_serie_stream(&library_id, query.lookup, sources, &user)
+        .search_serie_stream(&library_id, lookup, sources, &user)
         .await?;
 
     let stream = async_stream::stream! {
@@ -359,6 +369,7 @@ async fn handler_image_search(
         name: Some(name),
         ids: Some(ids.clone()),
         page_key: None,
+        ..Default::default()
     };
     let result = mc
         .get_serie_images(lookup_query, Some(library_id), &user)
@@ -390,6 +401,7 @@ async fn handler_lookup(
         name: Some(name),
         ids: Some(ids),
         page_key,
+        ..Default::default()
     });
     let results = mc
         .exec_lookup(query, Some(library_id), &user, None, sources.as_deref())
