@@ -105,7 +105,7 @@ pub enum Error {
     LibraryIdNeededForMediaBackup,
 
     // -- Servers errors.
-    HlsStreamUnavailable(String),
+    ChannelStreamUnavailable(String),
     ServerNoServerId,
     ServerMalformatedConfigFile,
     ServerUnableToAccessServerLocalFolder,
@@ -269,7 +269,7 @@ impl Error {
             | Self::AuthFailNotForThisServer => (StatusCode::UNAUTHORIZED, ClientError::NO_AUTH),
             Self::AuthFailExpiredToken => (StatusCode::UNAUTHORIZED, ClientError::TOKEN_EXPIRED),
 
-            Self::HlsStreamUnavailable(message) => (
+            Self::ChannelStreamUnavailable(message) => (
                 StatusCode::BAD_GATEWAY,
                 ClientError::Custom {
                     message: message.clone(),
@@ -306,9 +306,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hls_unavailable_is_reported_as_bad_gateway() {
+    fn channel_stream_unavailable_is_reported_as_bad_gateway() {
         let (status, client_error) =
-            Error::HlsStreamUnavailable("source failed".to_string()).client_status_and_error();
+            Error::ChannelStreamUnavailable("source failed".to_string()).client_status_and_error();
 
         assert_eq!(status, StatusCode::BAD_GATEWAY);
         assert!(matches!(
