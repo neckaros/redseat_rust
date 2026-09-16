@@ -339,18 +339,35 @@ pub async fn create_session(
 
     let cancel_token = CancellationToken::new();
     let last_active = Arc::new(AtomicU64::new(get_time().as_secs()));
+    let (start_tx, start_rx) = tokio::sync::oneshot::channel();
+    let supervisor_key = key.clone();
+    let supervisor_library_id = library_id.clone();
+    let supervisor_channel_id = channel_id.clone();
+    let supervisor_output_dir = output_dir.clone();
+    let supervisor_playlist_path = playlist_path.clone();
+    let supervisor_cancel_token = cancel_token.clone();
+    let supervisor_sessions = hls_sessions.clone();
 
-    let supervisor_handle = tokio::spawn(supervisor_loop(
-        key.clone(),
-        library_id.clone(),
-        channel_id.clone(),
-        stream_url.clone(),
-        output_dir.clone(),
-        playlist_path.clone(),
-        cancel_token.clone(),
-        hls_sessions.clone(),
-        mc,
-    ));
+    // Do not let an immediately failing FFmpeg process clean itself up before
+    // its session has been inserted. The playlist route uses the map entry as
+    // the source of truth for whether startup is still in progress.
+    let supervisor_handle = tokio::spawn(async move {
+        if start_rx.await.is_err() {
+            return;
+        }
+        supervisor_loop(
+            supervisor_key,
+            supervisor_library_id,
+            supervisor_channel_id,
+            stream_url,
+            supervisor_output_dir,
+            supervisor_playlist_path,
+            supervisor_cancel_token,
+            supervisor_sessions,
+            mc,
+        )
+        .await;
+    });
 
     let session = HlsSession {
         key: key.clone(),
@@ -367,6 +384,7 @@ pub async fn create_session(
         let mut sessions = hls_sessions.write().await;
         sessions.insert(key, session);
     }
+    let _ = start_tx.send(());
 
     Ok((output_dir, playlist_path))
 }

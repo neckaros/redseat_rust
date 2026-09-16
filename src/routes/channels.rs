@@ -230,6 +230,8 @@ async fn handler_hls_playlist(
     user: ConnectedUser,
     Query(query): Query<HlsQuery>,
 ) -> Result<Response> {
+    let quality_key = query.quality.as_deref().unwrap_or("best");
+    let session_key = format!("{}:{}:{}", library_id, channel_id, quality_key);
     let (_output_dir, playlist_path) = mc
         .get_or_create_hls_session(&library_id, &channel_id, query.quality.clone(), &user)
         .await?;
@@ -244,9 +246,16 @@ async fn handler_hls_playlist(
                 break;
             }
         }
+        let session_is_running = mc.hls_sessions.read().await.contains_key(&session_key);
+        if !session_is_running {
+            return Err(Error::HlsStreamUnavailable(
+                "The channel source stopped before producing a playable stream.".to_string(),
+            ));
+        }
         if tokio::time::Instant::now() >= deadline {
-            return Err(Error::Error(
-                "Timed out waiting for HLS playlist to be ready".to_string(),
+            return Err(Error::HlsStreamUnavailable(
+                "Timed out waiting for the channel source to produce a playable stream."
+                    .to_string(),
             ));
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
