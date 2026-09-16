@@ -143,6 +143,8 @@ async fn handler_remove_tag(
 
 const MAX_UPSTREAM_RECONNECT_ATTEMPTS: u32 = 8;
 const STABLE_UPSTREAM_BYTES: usize = 512 * 1024;
+const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const UPSTREAM_READ_TIMEOUT: Duration = Duration::from_secs(15);
 
 fn upstream_error(error: &reqwest::Error) -> io::Error {
     let message = if error.is_timeout() {
@@ -219,7 +221,19 @@ async fn handler_stream(
     };
 
     // Proxy the stream through our server
-    let client = reqwest::Client::new();
+    let client = match reqwest::Client::builder()
+        .connect_timeout(UPSTREAM_CONNECT_TIMEOUT)
+        .read_timeout(UPSTREAM_READ_TIMEOUT)
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => {
+            mc.release_stream_slot(&library_id, &channel_id).await;
+            return Err(Error::ChannelStreamUnavailable(
+                "Unable to initialize the channel source connection.".to_string(),
+            ));
+        }
+    };
     let upstream = match connect_channel_upstream(&client, &stream_url).await {
         Ok(resp) => resp,
         Err(error) => {
