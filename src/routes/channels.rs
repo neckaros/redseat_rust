@@ -9,6 +9,7 @@ use futures::StreamExt;
 use http::header::{CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, TRANSFER_ENCODING};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::{io, time::Duration};
 use tokio_util::io::ReaderStream;
 
 use crate::{
@@ -18,7 +19,10 @@ use crate::{
         users::ConnectedUser,
         ModelController,
     },
-    tools::hls_session::PLAYLIST_READY_TIMEOUT_MS,
+    tools::{
+        hls_session::PLAYLIST_READY_TIMEOUT_MS,
+        log::{log_info, LogServiceType},
+    },
     Error, Result,
 };
 
@@ -137,6 +141,47 @@ async fn handler_remove_tag(
 
 // -- MPEG2-TS stream proxy with concurrency guard --
 
+const MAX_UPSTREAM_RECONNECT_ATTEMPTS: u32 = 8;
+const STABLE_UPSTREAM_BYTES: usize = 512 * 1024;
+const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const UPSTREAM_READ_TIMEOUT: Duration = Duration::from_secs(15);
+
+fn upstream_error(error: &reqwest::Error) -> io::Error {
+    let message = if error.is_timeout() {
+        "The channel source timed out."
+    } else if error.is_connect() {
+        "The channel source connection failed."
+    } else {
+        "The channel source stopped unexpectedly."
+    };
+    io::Error::other(message)
+}
+
+async fn connect_channel_upstream(
+    client: &reqwest::Client,
+    stream_url: &str,
+) -> io::Result<reqwest::Response> {
+    let response = client
+        .get(stream_url)
+        .send()
+        .await
+        .map_err(|error| upstream_error(&error))?;
+
+    if !response.status().is_success() {
+        return Err(io::Error::other(format!(
+            "The channel source returned HTTP {}.",
+            response.status().as_u16()
+        )));
+    }
+
+    Ok(response)
+}
+
+fn upstream_reconnect_delay(attempt: u32) -> Duration {
+    let exponent = attempt.saturating_sub(1).min(3);
+    Duration::from_millis(500 * (1_u64 << exponent))
+}
+
 /// Guard that releases the stream slot when the response body is dropped
 struct StreamGuard {
     mc: ModelController,
@@ -176,12 +221,24 @@ async fn handler_stream(
     };
 
     // Proxy the stream through our server
-    let client = reqwest::Client::new();
-    let upstream = match client.get(&stream_url).send().await {
-        Ok(resp) => resp,
-        Err(e) => {
+    let client = match reqwest::Client::builder()
+        .connect_timeout(UPSTREAM_CONNECT_TIMEOUT)
+        .read_timeout(UPSTREAM_READ_TIMEOUT)
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => {
             mc.release_stream_slot(&library_id, &channel_id).await;
-            return Err(Error::Error(format!("Failed to connect to stream: {}", e)));
+            return Err(Error::ChannelStreamUnavailable(
+                "Unable to initialize the channel source connection.".to_string(),
+            ));
+        }
+    };
+    let upstream = match connect_channel_upstream(&client, &stream_url).await {
+        Ok(resp) => resp,
+        Err(error) => {
+            mc.release_stream_slot(&library_id, &channel_id).await;
+            return Err(Error::ChannelStreamUnavailable(error.to_string()));
         }
     };
 
@@ -199,12 +256,65 @@ async fn handler_stream(
         channel_id,
     };
 
-    let byte_stream = upstream.bytes_stream();
-    // Map the stream to move the guard's lifetime with it
-    let guarded_stream = byte_stream.map(move |chunk| {
-        let _guard = &guard;
-        chunk.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-    });
+    let reconnect_library_id = guard.library_id.clone();
+    let reconnect_channel_id = guard.channel_id.clone();
+    let guarded_stream = async_stream::try_stream! {
+        let _guard = guard;
+        let mut next_upstream = Some(upstream);
+        let mut reconnect_attempts = 0_u32;
+
+        loop {
+            let response = if let Some(response) = next_upstream.take() {
+                response
+            } else {
+                match connect_channel_upstream(&client, &stream_url).await {
+                    Ok(response) => response,
+                    Err(error) => {
+                        reconnect_attempts += 1;
+                        if reconnect_attempts > MAX_UPSTREAM_RECONNECT_ATTEMPTS {
+                            Err::<(), io::Error>(error)?;
+                        }
+                        tokio::time::sleep(upstream_reconnect_delay(reconnect_attempts)).await;
+                        continue;
+                    }
+                }
+            };
+
+            let mut received_bytes = 0_usize;
+            let mut byte_stream = response.bytes_stream();
+            while let Some(chunk) = byte_stream.next().await {
+                match chunk {
+                    Ok(chunk) => {
+                        received_bytes = received_bytes.saturating_add(chunk.len());
+                        if received_bytes >= STABLE_UPSTREAM_BYTES {
+                            reconnect_attempts = 0;
+                        }
+                        yield chunk;
+                    }
+                    Err(_) => break,
+                }
+            }
+
+            reconnect_attempts += 1;
+            if reconnect_attempts > MAX_UPSTREAM_RECONNECT_ATTEMPTS {
+                Err::<(), io::Error>(io::Error::other(
+                    "The channel source could not be restored after repeated attempts.",
+                ))?;
+            }
+
+            log_info(
+                LogServiceType::Source,
+                format!(
+                    "IPTV source disconnected for library {}, channel {}; reconnecting ({}/{})",
+                    reconnect_library_id,
+                    reconnect_channel_id,
+                    reconnect_attempts,
+                    MAX_UPSTREAM_RECONNECT_ATTEMPTS
+                ),
+            );
+            tokio::time::sleep(upstream_reconnect_delay(reconnect_attempts)).await;
+        }
+    };
     let body = Body::from_stream(guarded_stream);
 
     let response = Response::builder()
@@ -230,6 +340,8 @@ async fn handler_hls_playlist(
     user: ConnectedUser,
     Query(query): Query<HlsQuery>,
 ) -> Result<Response> {
+    let quality_key = query.quality.as_deref().unwrap_or("best");
+    let session_key = format!("{}:{}:{}", library_id, channel_id, quality_key);
     let (_output_dir, playlist_path) = mc
         .get_or_create_hls_session(&library_id, &channel_id, query.quality.clone(), &user)
         .await?;
@@ -244,9 +356,16 @@ async fn handler_hls_playlist(
                 break;
             }
         }
+        let session_is_running = mc.hls_sessions.read().await.contains_key(&session_key);
+        if !session_is_running {
+            return Err(Error::ChannelStreamUnavailable(
+                "The channel source stopped before producing a playable stream.".to_string(),
+            ));
+        }
         if tokio::time::Instant::now() >= deadline {
-            return Err(Error::Error(
-                "Timed out waiting for HLS playlist to be ready".to_string(),
+            return Err(Error::ChannelStreamUnavailable(
+                "Timed out waiting for the channel source to produce a playable stream."
+                    .to_string(),
             ));
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -356,4 +475,18 @@ async fn handler_hls_stop(
     user.check_library_role(&library_id, crate::domain::library::LibraryRole::Read)?;
     mc.stop_hls_session(&library_id, &channel_id).await?;
     Ok(Json(json!({"status": "ok"})))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upstream_reconnect_backoff_is_bounded() {
+        assert_eq!(upstream_reconnect_delay(1), Duration::from_millis(500));
+        assert_eq!(upstream_reconnect_delay(2), Duration::from_secs(1));
+        assert_eq!(upstream_reconnect_delay(3), Duration::from_secs(2));
+        assert_eq!(upstream_reconnect_delay(4), Duration::from_secs(4));
+        assert_eq!(upstream_reconnect_delay(20), Duration::from_secs(4));
+    }
 }

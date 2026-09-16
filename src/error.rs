@@ -105,6 +105,7 @@ pub enum Error {
     LibraryIdNeededForMediaBackup,
 
     // -- Servers errors.
+    ChannelStreamUnavailable(String),
     ServerNoServerId,
     ServerMalformatedConfigFile,
     ServerUnableToAccessServerLocalFolder,
@@ -268,6 +269,13 @@ impl Error {
             | Self::AuthFailNotForThisServer => (StatusCode::UNAUTHORIZED, ClientError::NO_AUTH),
             Self::AuthFailExpiredToken => (StatusCode::UNAUTHORIZED, ClientError::TOKEN_EXPIRED),
 
+            Self::ChannelStreamUnavailable(message) => (
+                StatusCode::BAD_GATEWAY,
+                ClientError::Custom {
+                    message: message.clone(),
+                },
+            ),
+
             // -- Model.
             Self::TicketDeleteFailIdNotFound { .. } => {
                 (StatusCode::BAD_REQUEST, ClientError::INVALID_PARAMS)
@@ -290,6 +298,23 @@ impl Error {
                 ClientError::SERVICE_ERROR,
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn channel_stream_unavailable_is_reported_as_bad_gateway() {
+        let (status, client_error) =
+            Error::ChannelStreamUnavailable("source failed".to_string()).client_status_and_error();
+
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert!(matches!(
+            client_error,
+            ClientError::Custom { message } if message == "source failed"
+        ));
     }
 }
 
