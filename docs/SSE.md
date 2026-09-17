@@ -23,6 +23,22 @@ Both SSE and Socket.IO broadcast the same events. Choose SSE when you need:
 
 Example: `/sse?libraries=lib1,lib2` will only receive events for those libraries.
 
+## Book, movie, and show deletion
+
+`DELETE /libraries/{libraryId}/books/{bookId}`,
+`DELETE /libraries/{libraryId}/movies/{movieId}`, and
+`DELETE /libraries/{libraryId}/series/{serieId}` accept `?deleteMedias=true`.
+The default is `false`: media entries and files are kept, with links to the
+removed book, movie, or show detached. Show deletion also removes its episode records.
+
+With `deleteMedias=true`, library admin permission is required. All directly
+associated media entries are deleted through the normal media lifecycle, emitting
+one `medias` event with action `deleted` per item before the final `books`, `movies`, or
+`series` deletion event. Non-virtual libraries also delete the source files;
+virtual libraries keep external files untouched. File deletion failures stop the
+operation; previously deleted media remain deleted and the title can be retried.
+Missing files do not prevent entry deletion. Event payloads are unchanged.
+
 ## Event Types
 
 | Event Name | Description | Required Permission |

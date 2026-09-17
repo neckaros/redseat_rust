@@ -216,8 +216,9 @@ async fn handler_delete(
     Path((library_id, book_id)): Path<(String, String)>,
     State(mc): State<ModelController>,
     user: ConnectedUser,
+    Query(options): Query<super::DeleteWithMediasQuery>,
 ) -> Result<Json<Value>> {
-    let deleted = mc.remove_book(&library_id, &book_id, &user).await?;
+    let deleted = mc.remove_book(&library_id, &book_id, options.delete_medias, &user).await?;
     Ok(Json(json!(deleted)))
 }
 

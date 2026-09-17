@@ -741,20 +741,15 @@ impl ModelController {
             .item;
 
         if delete_medias {
-            let medias = self
-                .get_medias(
-                    library_id,
-                    MediaQuery {
-                        series: vec![existing.id.clone()],
-                        ..Default::default()
-                    },
-                    requesting_user,
-                )
-                .await?;
-            for media in medias {
-                self.remove_media(library_id, &media.item.id, requesting_user)
-                    .await?;
-            }
+            self.remove_matching_medias(
+                library_id,
+                MediaQuery {
+                    series: vec![existing.id.clone()],
+                    ..Default::default()
+                },
+                requesting_user,
+            )
+            .await?;
         }
 
         store.remove_serie(serie_id.to_string()).await?;
