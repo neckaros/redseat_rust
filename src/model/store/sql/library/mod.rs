@@ -495,6 +495,10 @@ mod tests {
                     "INSERT INTO medias (id, name, type, mimetype, movie) VALUES ('m2', 'media-2', 'video', 'video/mp4', 'movie-1')",
                     [],
                 )?;
+                conn.execute(
+                    "UPDATE medias SET modified = 4000000000000 WHERE id IN ('m1', 'm2')",
+                    [],
+                )?;
                 Ok(())
             })
             .await
@@ -507,12 +511,32 @@ mod tests {
         // Keeping book media must preserve the entry and detach the deleted book.
         store.remove_book("book-1".to_string()).await.unwrap();
         let media = store.get_media("m1", None).await.unwrap().unwrap();
-        assert!(media.relations.and_then(|relations| relations.books).is_none(), "kept media must be detached");
+        assert!(
+            media
+                .relations
+                .and_then(|relations| relations.books)
+                .is_none(),
+            "kept media must be detached"
+        );
+        assert!(
+            media.item.modified.unwrap() > 4_000_000_000_000,
+            "book detachment must advance a future sync timestamp"
+        );
 
         // Keeping movie media must preserve the entry and detach the deleted movie.
         store.remove_movie("movie-1".to_string()).await.unwrap();
         let media = store.get_media("m2", None).await.unwrap().unwrap();
-        assert!(media.relations.and_then(|relations| relations.movies).is_none(), "kept media must be detached");
+        assert!(
+            media
+                .relations
+                .and_then(|relations| relations.movies)
+                .is_none(),
+            "kept media must be detached"
+        );
+        assert!(
+            media.item.modified.unwrap() > 4_000_000_000_000,
+            "movie detachment must advance a future sync timestamp"
+        );
     }
 
     #[tokio::test]

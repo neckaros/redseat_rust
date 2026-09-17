@@ -905,6 +905,34 @@ impl ModelController {
         }
     }
 
+    pub(super) async fn send_updated_medias(
+        &self,
+        library_id: &str,
+        media_ids: Vec<String>,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<()> {
+        let store = self.store.get_library_store(library_id)?;
+        let mut medias = Vec::with_capacity(media_ids.len());
+        for media_id in media_ids {
+            if let Some(media) = store
+                .get_media(&media_id, requesting_user.user_id().ok())
+                .await?
+            {
+                medias.push(MediaWithAction {
+                    media,
+                    action: ElementAction::Updated,
+                });
+            }
+        }
+        if !medias.is_empty() {
+            self.send_media(MediasMessage {
+                library: library_id.to_string(),
+                medias,
+            });
+        }
+        Ok(())
+    }
+
     pub async fn remove_media(
         &self,
         library_id: &str,
@@ -4733,19 +4761,25 @@ impl ModelController {
         };
 
         if let Some(existing) = existing {
-            let m = self.source_for_library_unchecked(&library_id).await?;
-            // Virtual providers leave external files untouched. For other providers,
-            // retain the entry on failure so deletion can be retried.
-            match m.remove(&existing.source).await {
-                Ok(()) => {}
-                Err(crate::Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(crate::Error::Source(SourcesError::NotFound(_))) => {}
-                Err(error) => return Err(error),
+            let shared_source = store
+                .media_source_has_other_references(media_id, &existing.source)
+                .await?;
+            if !shared_source {
+                let m = self.source_for_library_unchecked(&library_id).await?;
+                // Virtual providers leave external files untouched. For other providers,
+                // retain the entry on failure so deletion can be retried.
+                match m.remove(&existing.source).await {
+                    Ok(()) => {}
+                    Err(crate::Error::Io(error))
+                        if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(crate::Error::Source(SourcesError::NotFound(_))) => {}
+                    Err(error) => return Err(error),
+                }
+                log_info(
+                    crate::tools::log::LogServiceType::Source,
+                    format!("Removed media source {}", existing.source),
+                );
             }
-            log_info(
-                crate::tools::log::LogServiceType::Source,
-                format!("Removed media source {}", existing.source),
-            );
             store.remove_media(media_id.to_string()).await?;
         }
         self.remove_library_image_files(library_id, ".thumbs", media_id, &None, &None)

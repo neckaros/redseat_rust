@@ -653,6 +653,12 @@ impl ModelController {
                 "update_movie".to_string(),
             ))?;
 
+        let detached_media_ids = if delete_medias {
+            Vec::new()
+        } else {
+            store.get_media_ids_for_movie(movie_id).await?
+        };
+
         if delete_medias {
             self.remove_matching_medias(
                 library_id,
@@ -665,6 +671,8 @@ impl ModelController {
             .await?;
         }
         store.remove_movie(movie_id.to_string()).await?;
+        self.send_updated_medias(library_id, detached_media_ids, requesting_user)
+            .await?;
         self.add_deleted(
             library_id,
             RsDeleted::movie(movie_id.to_owned()),

@@ -714,6 +714,11 @@ impl ModelController {
                 "remove_book".to_string(),
             ))?
             .item;
+        let detached_media_ids = if delete_medias {
+            Vec::new()
+        } else {
+            store.get_media_ids_for_book(book_id).await?
+        };
         if delete_medias {
             self.remove_matching_medias(
                 library_id,
@@ -726,6 +731,8 @@ impl ModelController {
             .await?;
         }
         store.remove_book(book_id.to_string()).await?;
+        self.send_updated_medias(library_id, detached_media_ids, requesting_user)
+            .await?;
         self.add_deleted(
             library_id,
             RsDeleted::book(book_id.to_owned()),

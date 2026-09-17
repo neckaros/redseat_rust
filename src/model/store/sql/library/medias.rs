@@ -703,6 +703,53 @@ impl SqliteLibraryStore {
         Ok(row)
     }
 
+    pub async fn media_source_has_other_references(
+        &self,
+        media_id: &str,
+        source: &str,
+    ) -> Result<bool> {
+        let media_id = media_id.to_string();
+        let source = source.to_string();
+        Ok(self
+            .connection
+            .call(move |conn| {
+                Ok(conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM medias WHERE source = ?1 AND id != ?2)",
+                    params![source, media_id],
+                    |row| row.get(0),
+                )?)
+            })
+            .await?)
+    }
+
+    pub async fn get_media_ids_for_book(&self, book_id: &str) -> Result<Vec<String>> {
+        let book_id = book_id.to_string();
+        Ok(self
+            .connection
+            .call(move |conn| {
+                let mut query = conn.prepare("SELECT id FROM medias WHERE book = ? ORDER BY id")?;
+                let rows = query.query_map([book_id], |row| row.get(0))?;
+                Ok(
+                    rows.collect::<std::result::Result<Vec<String>, rusqlite::Error>>()?,
+                )
+            })
+            .await?)
+    }
+
+    pub async fn get_media_ids_for_movie(&self, movie_id: &str) -> Result<Vec<String>> {
+        let movie_id = movie_id.to_string();
+        Ok(self
+            .connection
+            .call(move |conn| {
+                let mut query = conn.prepare("SELECT id FROM medias WHERE movie = ? ORDER BY id")?;
+                let rows = query.query_map([movie_id], |row| row.get(0))?;
+                Ok(
+                    rows.collect::<std::result::Result<Vec<String>, rusqlite::Error>>()?,
+                )
+            })
+            .await?)
+    }
+
     pub async fn get_all_sources(&self) -> Result<Vec<String>> {
         let rows = self
             .connection
@@ -1474,5 +1521,36 @@ mod tests {
                 "staged/source.jpg"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn shared_source_detection_excludes_the_media_being_removed() {
+        let connection = tokio_rusqlite::Connection::open_in_memory().await.unwrap();
+        let store = SqliteLibraryStore::new(connection).await.unwrap();
+        for id in ["first", "second"] {
+            store
+                .add_media(
+                    MediaForAdd {
+                        source: Some("shared/source.jpg".to_string()),
+                        name: id.to_string(),
+                        kind: FileType::Photo,
+                        mimetype: "image/jpeg".to_string(),
+                        ..Default::default()
+                    }
+                    .into_insert_with_id(id.to_string()),
+                )
+                .await
+                .unwrap();
+        }
+
+        assert!(store
+            .media_source_has_other_references("first", "shared/source.jpg")
+            .await
+            .unwrap());
+        store.remove_media("second".to_string()).await.unwrap();
+        assert!(!store
+            .media_source_has_other_references("first", "shared/source.jpg")
+            .await
+            .unwrap());
     }
 }

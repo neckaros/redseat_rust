@@ -29,7 +29,9 @@ Example: `/sse?libraries=lib1,lib2` will only receive events for those libraries
 `DELETE /libraries/{libraryId}/movies/{movieId}`, and
 `DELETE /libraries/{libraryId}/series/{serieId}` accept `?deleteMedias=true`.
 The default is `false`: media entries and files are kept, with links to the
-removed book, movie, or show detached. Show deletion also removes its episode records.
+removed book, movie, or show detached. Book and movie deletion emits a `medias`
+event with action `updated` for the detached entries before the title deletion
+event. Show deletion also removes its episode records.
 
 With `deleteMedias=true`, library admin permission is required. All directly
 associated media entries are deleted through the normal media lifecycle, emitting
