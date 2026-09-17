@@ -16,7 +16,7 @@ use serde_json::json;
 use crate::{
     domain::{plugin::PluginWithCredential, progress::RsProgressCallback},
     error::RsResult,
-    plugins::sources::{AsyncReadPinBox, FileStreamResult},
+    plugins::sources::{error::SourcesError, AsyncReadPinBox, FileStreamResult},
     tools::{
         array_tools::AddOrSetArray,
         file_tools::{filename_from_path, get_mime_from_filename},
@@ -204,6 +204,7 @@ impl PluginManager {
         path: RsProviderPath,
         plugin_with_creds: &PluginWithCredential,
     ) -> RsResult<()> {
+        let source = path.source.clone();
         if let Some(plugin) = self
             .plugins
             .read()
@@ -230,7 +231,9 @@ impl PluginManager {
                 match res {
                     Ok(()) => Ok(()),
                     Err((error, code)) => {
-                        if code != 404 {
+                        if code == 404 {
+                            Err(SourcesError::NotFound(Some(source)).into())
+                        } else {
                             log_error(
                                 crate::tools::log::LogServiceType::Plugin,
                                 format!("Error request get gile: {} {:?}", code, error),
@@ -238,8 +241,6 @@ impl PluginManager {
                             Err(Error::NotFound(
                                 "Unable to get provider file remove".to_string(),
                             ))
-                        } else {
-                            Err(Error::Error(format!("Provider plugin error: {}", code)))
                         }
                     }
                 }

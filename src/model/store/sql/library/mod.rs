@@ -401,6 +401,20 @@ impl SqliteLibraryStore {
                     log_info(LogServiceType::Database, format!("Update Library Database to version: {}", version));
                 }
 
+                if version < 59 {
+                    conn.execute_batch(&String::from_utf8_lossy(include_bytes!("059 - OPTIONAL BOOK MEDIA DELETE.sql")))?;
+                    version = 59;
+                    conn.pragma_update(None, "user_version", version)?;
+                    log_info(LogServiceType::Database, format!("Update Library Database to version: {}", version));
+                }
+
+                if version < 60 {
+                    conn.execute_batch(&String::from_utf8_lossy(include_bytes!("060 - OPTIONAL MOVIE MEDIA DELETE.sql")))?;
+                    version = 60;
+                    conn.pragma_update(None, "user_version", version)?;
+                    log_info(LogServiceType::Database, format!("Update Library Database to version: {}", version));
+                }
+
                 // VACUUM is expensive on large media libraries; schema startup
                 // should be read-only once the database is current.
                 if initial_version != version {
@@ -458,7 +472,7 @@ mod tests {
         let connection = tokio_rusqlite::Connection::open_in_memory().await.unwrap();
         let store = SqliteLibraryStore::new(connection).await.unwrap();
         let version = store.migrate().await.unwrap();
-        assert_eq!(version, 58);
+        assert_eq!(version, 60);
 
         // Set up: insert a book and a media attached to it
         store
@@ -481,6 +495,10 @@ mod tests {
                     "INSERT INTO medias (id, name, type, mimetype, movie) VALUES ('m2', 'media-2', 'video', 'video/mp4', 'movie-1')",
                     [],
                 )?;
+                conn.execute(
+                    "UPDATE medias SET modified = 4000000000000 WHERE id IN ('m1', 'm2')",
+                    [],
+                )?;
                 Ok(())
             })
             .await
@@ -490,19 +508,58 @@ mod tests {
         assert!(store.get_media("m1", None).await.unwrap().is_some());
         assert!(store.get_media("m2", None).await.unwrap().is_some());
 
-        // Cascade delete: deleting book-1 should delete m1
+        // Keeping book media must preserve the entry and detach the deleted book.
         store.remove_book("book-1".to_string()).await.unwrap();
+        let media = store.get_media("m1", None).await.unwrap().unwrap();
         assert!(
-            store.get_media("m1", None).await.unwrap().is_none(),
-            "media should be cascade deleted when book is deleted"
+            media
+                .relations
+                .and_then(|relations| relations.books)
+                .is_none(),
+            "kept media must be detached"
+        );
+        assert!(
+            media.item.modified.unwrap() > 4_000_000_000_000,
+            "book detachment must advance a future sync timestamp"
         );
 
-        // Cascade delete: deleting movie-1 should delete m2
+        // Keeping movie media must preserve the entry and detach the deleted movie.
         store.remove_movie("movie-1".to_string()).await.unwrap();
+        let media = store.get_media("m2", None).await.unwrap().unwrap();
         assert!(
-            store.get_media("m2", None).await.unwrap().is_none(),
-            "media should be cascade deleted when movie is deleted"
+            media
+                .relations
+                .and_then(|relations| relations.movies)
+                .is_none(),
+            "kept media must be detached"
         );
+        assert!(
+            media.item.modified.unwrap() > 4_000_000_000_000,
+            "movie detachment must advance a future sync timestamp"
+        );
+    }
+
+    #[tokio::test]
+    async fn cascade_delete_series_keeps_media() {
+        let connection = tokio_rusqlite::Connection::open_in_memory().await.unwrap();
+        let store = SqliteLibraryStore::new(connection).await.unwrap();
+        store.connection.call(|conn| {
+            conn.execute("INSERT INTO series (id, name) VALUES ('show', 'Show')", [])?;
+            conn.execute("INSERT INTO episodes (serie_ref, season, number) VALUES ('show', 1, 1)", [])?;
+            conn.execute("INSERT INTO medias (id, name, type, mimetype) VALUES ('episode-media', 'Episode', 'video', 'video/mp4')", [])?;
+            conn.execute("INSERT INTO media_serie_mapping (media_ref, serie_ref, season, episode) VALUES ('episode-media', 'show', 1, 1)", [])?;
+            Ok(())
+        }).await.unwrap();
+
+        store.remove_serie("show".to_string()).await.unwrap();
+        assert!(store.get_media("episode-media", None).await.unwrap().is_some());
+        store.connection.call(|conn| {
+            let episodes: i64 = conn.query_row("SELECT count(*) FROM episodes WHERE serie_ref = 'show'", [], |row| row.get(0))?;
+            let mappings: i64 = conn.query_row("SELECT count(*) FROM media_serie_mapping WHERE serie_ref = 'show'", [], |row| row.get(0))?;
+            assert_eq!(episodes, 0);
+            assert_eq!(mappings, 0);
+            Ok(())
+        }).await.unwrap();
     }
 
     #[tokio::test]

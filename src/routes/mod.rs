@@ -34,6 +34,14 @@ pub mod search;
 pub mod series;
 pub mod tags;
 
+/// Options shared by book, movie, and series deletion endpoints.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteWithMediasQuery {
+    #[serde(default)]
+    pub delete_medias: bool,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SseSearchEvent<'a> {
