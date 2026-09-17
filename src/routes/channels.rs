@@ -315,6 +315,8 @@ async fn handler_stream(
             tokio::time::sleep(upstream_reconnect_delay(reconnect_attempts)).await;
         }
     };
+    // `try_stream!` cannot infer its error type from the diverging reconnect loop.
+    let guarded_stream = guarded_stream.map(|item: std::result::Result<_, io::Error>| item);
     let body = Body::from_stream(guarded_stream);
 
     let response = Response::builder()
