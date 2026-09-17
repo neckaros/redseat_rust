@@ -38,7 +38,7 @@ use tools::{
     image_tools::has_image_magick,
     log::{log_error, LogServiceType},
     prediction,
-    video_tools::VideoCommandBuilder,
+    video_tools::{ytdl::YydlContext, VideoCommandBuilder},
 };
 use tower::ServiceBuilder;
 use tower_http::{
@@ -124,6 +124,15 @@ async fn main() -> Result<()> {
     }
 
     let config = server::initialize_config().await;
+
+    tokio::spawn(async {
+        if let Err(error) = YydlContext::initialize().await {
+            log_error(
+                tools::log::LogServiceType::Register,
+                format!("We were not able to prepare YT-DLP: {}", error),
+            );
+        }
+    });
 
     if !config.imagesUseIm {
         log_info(
