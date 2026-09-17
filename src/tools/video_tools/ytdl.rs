@@ -9,15 +9,19 @@ use std::{
     process::Stdio,
     str::from_utf8,
     sync::Arc,
+    time::{Duration, Instant, SystemTime},
 };
 use stream_map_any::StreamMapAny;
 
+use lazy_static::lazy_static;
 use nanoid::nanoid;
 use rs_plugin_common_interfaces::request::{RsCookie, RsRequest};
 use tokio::{
-    fs::{remove_file, File},
+    fs::{self, remove_file, File},
     io::{AsyncWrite, AsyncWriteExt, BufReader},
     process::{Child, ChildStderr, ChildStdout, Command},
+    sync::{Mutex, RwLock},
+    time::timeout,
 };
 use tokio_stream::StreamExt;
 use tokio_util::io::{ReaderStream, StreamReader};
@@ -31,7 +35,7 @@ use crate::{
     plugins::sources::{
         error::SourcesError, AsyncReadPinBox, CleanupFiles, FileStreamResult, SourceRead,
     },
-    server::{get_server_folder_path_array, get_server_temp_file_path},
+    server::{get_server_file_path_array, get_server_folder_path_array, get_server_temp_file_path},
     tools::{
         file_tools::get_mime_from_filename,
         log::{log_error, log_info},
@@ -48,46 +52,217 @@ const FILE_NAME: &str = if cfg!(target_os = "windows") {
     "yt-dlp"
 };
 
-#[derive(Debug, Clone, Default)]
+const UPDATE_INTERVAL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+const UPDATE_RETRY_INTERVAL: Duration = Duration::from_secs(15 * 60);
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(2 * 60);
+
+lazy_static! {
+    static ref YTDL_EXECUTION_LOCK: Arc<RwLock<()>> = Arc::new(RwLock::new(()));
+    static ref YTDL_UPDATE_STATE: Mutex<YtdlUpdateState> = Mutex::new(YtdlUpdateState::default());
+}
+
+#[derive(Debug, Default)]
+struct YtdlUpdateState {
+    last_attempt: Option<Instant>,
+    last_error: Option<String>,
+}
+
+impl YtdlUpdateState {
+    fn attempted_recently(&self, now: Instant) -> bool {
+        self.last_attempt
+            .and_then(|attempt| now.checked_duration_since(attempt))
+            .is_some_and(|elapsed| elapsed < UPDATE_RETRY_INTERVAL)
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct YydlContext {
-    update_checked: bool,
+    binary_path: PathBuf,
 }
 
 impl YydlContext {
-    pub async fn new() -> RsResult<Self> {
-        if !Self::has_binary() {
-            log_info(
-                crate::tools::log::LogServiceType::Other,
-                "Downloading YT-DLP".to_owned(),
-            );
-            let yt_dlp_path = download_yt_dlp(".").await?;
+    /// Prepare the managed yt-dlp binary without constructing a request context.
+    /// Used at server startup so normal requests rarely need to wait for an update.
+    pub async fn initialize() -> RsResult<()> {
+        Self::ensure_binary().await.map(|_| ())
+    }
 
-            log_info(
-                crate::tools::log::LogServiceType::Other,
-                format!("downloaded YT-DLP at {:?}", yt_dlp_path),
-            );
-        }
-        Ok(YydlContext {
-            update_checked: false,
+    pub async fn new() -> RsResult<Self> {
+        Ok(Self {
+            binary_path: Self::ensure_binary().await?,
         })
     }
 
-    pub async fn update_binary() -> RsResult<()> {
-        log_info(
-            crate::tools::log::LogServiceType::Other,
-            "Downloading YT-DLP".to_owned(),
-        );
-        let yt_dlp_path = download_yt_dlp(".").await?;
+    async fn managed_binary_path() -> RsResult<PathBuf> {
+        get_server_file_path_array(vec!["tools", FILE_NAME]).await
+    }
 
+    fn should_update(modified: Option<SystemTime>, now: SystemTime) -> bool {
+        match modified {
+            Some(modified) => now
+                .duration_since(modified)
+                .map(|age| age >= UPDATE_INTERVAL)
+                // A future timestamp can happen after a clock correction. Treat it as fresh.
+                .unwrap_or(false),
+            None => true,
+        }
+    }
+
+    async fn binary_needs_update(path: &Path) -> bool {
+        let modified = match fs::metadata(path).await {
+            Ok(metadata) => metadata.modified().ok(),
+            Err(_) => None,
+        };
+        Self::should_update(modified, SystemTime::now())
+    }
+
+    async fn ensure_binary() -> RsResult<PathBuf> {
+        let target = Self::managed_binary_path().await?;
+        let mut update_state = YTDL_UPDATE_STATE.lock().await;
+
+        #[cfg(windows)]
+        Self::restore_windows_backup(&target).await?;
+
+        let target_exists = fs::metadata(&target).await.is_ok();
+        if update_state.attempted_recently(Instant::now()) {
+            if target_exists {
+                return Ok(target);
+            }
+            if let Some(error) = &update_state.last_error {
+                return Err(Error::Error(format!(
+                    "YT-DLP update is temporarily throttled after a previous failure: {}",
+                    error
+                )));
+            }
+        }
+        if !Self::binary_needs_update(&target).await {
+            return Ok(target);
+        }
+
+        // Wait for active yt-dlp processes before replacing the executable.
+        let _execution_lock = YTDL_EXECUTION_LOCK.write().await;
+        if !Self::binary_needs_update(&target).await {
+            return Ok(target);
+        }
+
+        update_state.last_attempt = Some(Instant::now());
+        update_state.last_error = None;
         log_info(
             crate::tools::log::LogServiceType::Other,
-            format!("downloaded YT-DLP at {:?}", yt_dlp_path),
+            format!("Updating YT-DLP at {:?}", target),
         );
+
+        match Self::download_binary(&target).await {
+            Ok(()) => {
+                log_info(
+                    crate::tools::log::LogServiceType::Other,
+                    format!("Updated YT-DLP at {:?}", target),
+                );
+                Ok(target)
+            }
+            Err(error) => {
+                update_state.last_error = Some(error.to_string());
+                if fs::metadata(&target).await.is_ok() {
+                    log_error(
+                        crate::tools::log::LogServiceType::Other,
+                        format!(
+                            "Unable to update YT-DLP; continuing with {:?}: {}",
+                            target, error
+                        ),
+                    );
+                    Ok(target)
+                } else {
+                    Err(error)
+                }
+            }
+        }
+    }
+
+    async fn download_binary(target: &Path) -> RsResult<()> {
+        let temporary_name = format!(".{}.{}.download", FILE_NAME, nanoid!());
+        let temporary_directory = target.with_file_name(temporary_name);
+        fs::create_dir(&temporary_directory).await?;
+
+        let result: RsResult<()> = async {
+            let downloaded_path =
+                match timeout(DOWNLOAD_TIMEOUT, download_yt_dlp(&temporary_directory)).await {
+                    Ok(result) => result?,
+                    Err(_) => {
+                        return Err(Error::Error(format!(
+                            "YT-DLP download timed out after {} seconds",
+                            DOWNLOAD_TIMEOUT.as_secs()
+                        )));
+                    }
+                };
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+
+                let mut permissions = fs::metadata(&downloaded_path).await?.permissions();
+                permissions.set_mode(0o755);
+                fs::set_permissions(&downloaded_path, permissions).await?;
+            }
+
+            Self::install_downloaded_binary(&downloaded_path, target).await?;
+            Ok(())
+        }
+        .await;
+
+        let _ = fs::remove_dir_all(&temporary_directory).await;
+        result
+    }
+
+    #[cfg(not(windows))]
+    async fn install_downloaded_binary(downloaded_path: &Path, target: &Path) -> RsResult<()> {
+        fs::rename(downloaded_path, target).await?;
         Ok(())
     }
 
-    pub fn has_binary() -> bool {
-        Path::new(FILE_NAME).exists()
+    #[cfg(windows)]
+    fn windows_backup_path(target: &Path) -> PathBuf {
+        target.with_file_name(format!("{}.backup", FILE_NAME))
+    }
+
+    #[cfg(windows)]
+    async fn restore_windows_backup(target: &Path) -> RsResult<()> {
+        let backup = Self::windows_backup_path(target);
+        if fs::metadata(target).await.is_err() && fs::metadata(&backup).await.is_ok() {
+            fs::rename(backup, target).await?;
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    async fn install_downloaded_binary(downloaded_path: &Path, target: &Path) -> RsResult<()> {
+        let backup = Self::windows_backup_path(target);
+        if fs::metadata(&backup).await.is_ok() {
+            remove_file(&backup).await?;
+        }
+
+        if fs::metadata(target).await.is_err() {
+            fs::rename(downloaded_path, target).await?;
+            return Ok(());
+        }
+
+        fs::rename(target, &backup).await?;
+        if let Err(install_error) = fs::rename(downloaded_path, target).await {
+            if let Err(rollback_error) = fs::rename(&backup, target).await {
+                return Err(Error::Error(format!(
+                    "Unable to install YT-DLP ({}) or restore backup {:?} ({}); backup retained",
+                    install_error, backup, rollback_error
+                )));
+            }
+            return Err(install_error.into());
+        }
+
+        if let Err(error) = remove_file(&backup).await {
+            log_error(
+                crate::tools::log::LogServiceType::Other,
+                format!("Unable to remove old YT-DLP backup {:?}: {}", backup, error),
+            );
+        }
+        Ok(())
     }
 
     pub async fn request(
@@ -95,7 +270,7 @@ impl YydlContext {
         request: &RsRequest,
         progress: RsProgressCallback,
     ) -> RsResult<SourceRead> {
-        let mut command = YtDlCommandBuilder::new(&request.url);
+        let mut command = YtDlCommandBuilder::new(&request.url, &self.binary_path);
         //let mut process = YoutubeDl::new(request.url.to_owned());
         //process.socket_timeout("15");
         command.set_request(request).await?;
@@ -106,7 +281,7 @@ impl YydlContext {
     }
 
     pub async fn request_infos(&self, request: &RsRequest) -> RsResult<Option<SingleVideo>> {
-        let mut command = YtDlCommandBuilder::new(&request.url);
+        let mut command = YtDlCommandBuilder::new(&request.url, &self.binary_path);
         //let mut process = YoutubeDl::new(request.url.to_owned());
         //process.socket_timeout("15");
 
@@ -129,7 +304,9 @@ impl YydlContext {
     }
 
     pub async fn download_to(&self, request: &RsRequest) -> RsResult<PathBuf> {
+        let _execution_lock = YTDL_EXECUTION_LOCK.read().await;
         let mut process = YoutubeDl::new(request.url.to_owned());
+        process.youtube_dl_path(&self.binary_path);
         process.socket_timeout("15");
 
         let download_path = get_server_folder_path_array(vec![".cache"]).await?;
@@ -203,8 +380,8 @@ pub struct YtDlCommandBuilder {
 }
 
 impl YtDlCommandBuilder {
-    pub fn new(path: &str) -> Self {
-        let mut cmd = Command::new("yt-dlp");
+    pub fn new(path: &str, binary_path: &Path) -> Self {
+        let mut cmd = Command::new(binary_path);
         cmd.arg(path);
         Self {
             cmd,
@@ -260,6 +437,7 @@ impl YtDlCommandBuilder {
         &mut self,
         progress: RsProgressCallback,
     ) -> RsResult<FileStreamResult<AsyncReadPinBox>> {
+        let _execution_lock = YTDL_EXECUTION_LOCK.read().await;
         let temp_path = get_server_temp_file_path().await?;
         let fileroot = nanoid!();
         self.cmd
@@ -352,6 +530,7 @@ impl YtDlCommandBuilder {
     }
 
     pub async fn infos(&mut self) -> RsResult<Option<SingleVideo>> {
+        let _execution_lock = YTDL_EXECUTION_LOCK.read().await;
         self.cmd.arg("-J");
         //.stderr(Stdio::piped());
         let output = self.cmd.output().await?;
@@ -381,6 +560,7 @@ impl YtDlCommandBuilder {
     pub async fn run(
         &mut self,
     ) -> Result<Pin<Box<dyn Stream<Item = ProgressStreamItem> + Send>>, Error> {
+        let execution_lock = YTDL_EXECUTION_LOCK.clone().read_owned().await;
         self.cmd
             .arg("-f")
             //.arg("best/bestvideo+bestaudio")
@@ -412,6 +592,7 @@ impl YtDlCommandBuilder {
 
         let cookies_path = self.cookies_path.clone();
         tokio::spawn(async move {
+            let _execution_lock = execution_lock;
             let r = child.wait().await;
             if let Err(error) = r {
                 log_error(
@@ -446,9 +627,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_stream2() -> RsResult<()> {
-        let mut reader = YtDlCommandBuilder::new("https://www.youtube.com/watch?v=8kGIlALKO-s")
-            .run()
-            .await?;
+        let mut reader = YtDlCommandBuilder::new(
+            "https://www.youtube.com/watch?v=8kGIlALKO-s",
+            Path::new(FILE_NAME),
+        )
+        .run()
+        .await?;
         let mut file: File = File::create(std::env::temp_dir().join("test1.webm")).await?;
 
         while let Some(data) = reader.next().await {
@@ -475,9 +659,12 @@ mod tests {
             println!("Finished progress");
         });
 
-        let path = YtDlCommandBuilder::new("https://www.youtube.com/watch?v=8kGIlALKO-s")
-            .run_with_cache(Some(tx_progress))
-            .await?;
+        let path = YtDlCommandBuilder::new(
+            "https://www.youtube.com/watch?v=8kGIlALKO-s",
+            Path::new(FILE_NAME),
+        )
+        .run_with_cache(Some(tx_progress))
+        .await?;
 
         println!("PATH: {:?}", path.mime);
 
@@ -487,13 +674,93 @@ mod tests {
     #[tokio::test]
     #[ignore] // requires network + yt-dlp binary
     async fn test_run_infos() -> RsResult<()> {
-        let path = YtDlCommandBuilder::new("https://www.youtube.com/watch?v=-t7Aa6Dr4pI")
-            .infos()
-            .await?;
+        let path = YtDlCommandBuilder::new(
+            "https://www.youtube.com/watch?v=-t7Aa6Dr4pI",
+            Path::new(FILE_NAME),
+        )
+        .infos()
+        .await?;
 
         println!("TAGS: {:?}", path.as_ref().and_then(|r| r.tags.clone()));
         assert!(path.unwrap().tags.unwrap().contains(&"axum".to_owned()));
 
         Ok(())
+    }
+
+    #[test]
+    fn refreshes_missing_and_expired_binaries() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(30 * 24 * 60 * 60);
+
+        assert!(YydlContext::should_update(None, now));
+        assert!(!YydlContext::should_update(
+            Some(now - UPDATE_INTERVAL + Duration::from_secs(1)),
+            now
+        ));
+        assert!(YydlContext::should_update(Some(now - UPDATE_INTERVAL), now));
+    }
+
+    #[test]
+    fn recognizes_recent_failed_update_attempts() {
+        let now = Instant::now();
+        let state = YtdlUpdateState {
+            last_attempt: Some(now),
+            last_error: Some("offline".to_string()),
+        };
+
+        assert!(state.attempted_recently(now));
+        assert_eq!(state.last_error.as_deref(), Some("offline"));
+        assert!(!state.attempted_recently(now + UPDATE_RETRY_INTERVAL));
+    }
+
+    #[test]
+    fn command_uses_the_managed_binary_path() {
+        let binary_path = Path::new("managed-tools").join(FILE_NAME);
+        let command = YtDlCommandBuilder::new("https://example.com/video", &binary_path);
+
+        assert_eq!(command.cmd.as_std().get_program(), binary_path.as_os_str());
+    }
+
+    #[tokio::test]
+    async fn installs_downloaded_binary_over_existing_target() {
+        let directory = std::env::temp_dir().join(format!("redseat-ytdlp-{}", nanoid!()));
+        fs::create_dir(&directory).await.unwrap();
+        let target = directory.join(FILE_NAME);
+        let downloaded = directory.join("downloaded-ytdlp");
+        fs::write(&target, b"old").await.unwrap();
+        fs::write(&downloaded, b"new").await.unwrap();
+
+        YydlContext::install_downloaded_binary(&downloaded, &target)
+            .await
+            .unwrap();
+
+        assert_eq!(fs::read(&target).await.unwrap(), b"new");
+        assert!(fs::metadata(&downloaded).await.is_err());
+        #[cfg(windows)]
+        assert!(fs::metadata(YydlContext::windows_backup_path(&target))
+            .await
+            .is_err());
+        fs::remove_dir_all(directory).await.unwrap();
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn restores_windows_target_when_installation_fails() {
+        let directory = std::env::temp_dir().join(format!("redseat-ytdlp-{}", nanoid!()));
+        fs::create_dir(&directory).await.unwrap();
+        let target = directory.join(FILE_NAME);
+        let missing_download = directory.join("missing-ytdlp");
+        fs::write(&target, b"old").await.unwrap();
+
+        assert!(
+            YydlContext::install_downloaded_binary(&missing_download, &target)
+                .await
+                .is_err()
+        );
+
+        assert_eq!(fs::read(&target).await.unwrap(), b"old");
+        assert!(fs::metadata(YydlContext::windows_backup_path(&target))
+            .await
+            .is_err());
+        fs::remove_dir_all(directory).await.unwrap();
     }
 }
