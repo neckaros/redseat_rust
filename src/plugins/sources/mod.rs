@@ -53,6 +53,15 @@ pub mod virtual_provider;
 pub type AsyncReadPinBox = Pin<Box<dyn AsyncRead + Send + Sync>>;
 
 const STREAM_BUFFER_SIZE: usize = 4 * 1024 * 1024;
+// This is an idle timeout, not a limit on the total duration of a large transfer.
+pub(super) const TRANSFER_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+
+pub(super) fn streaming_http_client() -> reqwest::Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(30))
+        .read_timeout(TRANSFER_IDLE_TIMEOUT)
+        .build()
+}
 
 pub trait AsyncSeekableWrite: AsyncWrite + AsyncSeek + Send {}
 
@@ -371,7 +380,7 @@ impl SourceRead {
                         }
                     }
                     RsRequestStatus::FinalPrivate | RsRequestStatus::FinalPublic => {
-                        let client = reqwest::Client::new();
+                        let client = streaming_http_client()?;
                         let r = client
                             .get(request.url.clone())
                             .add_request_headers(&request, &range)?
@@ -550,7 +559,7 @@ impl SourceRead {
                         headers.insert(key, val);
                     }
 
-                    let client = reqwest::Client::new();
+                    let client = streaming_http_client()?;
                     let r = client.get(request.url).headers(headers).send().await?;
 
                     let result_headers: &reqwest::header::HeaderMap = r.headers();

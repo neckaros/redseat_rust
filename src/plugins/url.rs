@@ -35,6 +35,7 @@ use crate::{
 };
 
 use super::{
+    plugin_call_error,
     sources::{RsRequestHeader, SourceRead},
     PluginManager,
 };
@@ -267,10 +268,12 @@ impl PluginManager {
                 .await
                 .iter()
                 .find(|p| p.filename == plugin_with_cred.plugin.path)
+                .cloned()
             {
-                let mut plugin_m = plugin.plugin.lock().unwrap();
                 if plugin.infos.capabilities.contains(&PluginType::UrlParser) {
-                    let res = plugin_m.call_get_error_code::<&str, Json<RsLink>>("parse", &url);
+                    let res = plugin
+                        .call_get_error_code::<String, Json<RsLink>>("parse", url.clone())
+                        .await;
                     if let Ok(Json(res)) = res {
                         return Some(res);
                     } else if let Err((error, code)) = res {
@@ -299,13 +302,14 @@ impl PluginManager {
                 .await
                 .iter()
                 .find(|p| p.filename == plugin_with_cred.plugin.path)
+                .cloned()
             {
-                let mut plugin_m = plugin.plugin.lock().unwrap();
                 if plugin.infos.capabilities.contains(&PluginType::UrlParser) {
-                    let res = plugin_m
-                        .call_get_error_code::<Json<RsLink>, &str>("expand", Json(link.clone()));
+                    let res = plugin
+                        .call_get_error_code::<Json<RsLink>, String>("expand", Json(link.clone()))
+                        .await;
                     if let Ok(res) = res {
-                        return Some(res.to_string());
+                        return Some(res);
                     } else if let Err((error, code)) = res {
                         if code != 404 {
                             log_error(
@@ -334,13 +338,14 @@ impl PluginManager {
             .await
             .iter()
             .find(|p| p.filename == plugin_with_cred.plugin.path)
+            .cloned()
         {
-            let mut plugin_m = plugin.plugin.lock().unwrap();
-            let Json(res) = plugin_m
+            let Json(res) = plugin
                 .call::<Json<Option<PluginCredential>>, Json<PluginCredential>>(
                     "renew_crendentials",
                     Json(plugin_with_cred.credential.map(PluginCredential::from)),
-                )?;
+                )
+                .await?;
             Ok(res)
         } else {
             Err(crate::Error::Error(format!(
@@ -415,9 +420,8 @@ impl PluginManager {
                 .await
                 .iter()
                 .find(|p| p.filename == plugin_with_cred.plugin.path)
+                .cloned()
             {
-                let mut plugin_m = plugin.plugin.lock().unwrap();
-
                 if plugin.infos.capabilities.contains(&PluginType::Request) {
                     let req = RsRequestPluginRequest {
                         request: request.clone(),
@@ -429,11 +433,12 @@ impl PluginManager {
                     };
 
                     //println!("call plugin request {:?}: {}", plugin.path, request.url);
-                    let res = plugin_m
+                    let res = plugin
                         .call_get_error_code::<Json<RsRequestPluginRequest>, Json<RsRequest>>(
                             "process",
                             Json(req),
-                        );
+                        )
+                        .await;
                     //println!("called plugin request {:?}", plugin.path);
                     if let Ok(Json(mut res)) = res {
                         log_info(
@@ -515,8 +520,8 @@ impl PluginManager {
                     .await
                     .iter()
                     .find(|p| p.filename == plugin_with_cred.plugin.path)
+                    .cloned()
                 {
-                    let mut plugin_m = plugin.plugin.lock().unwrap();
                     if plugin.infos.capabilities.contains(&PluginType::Request) {
                         let req = RsRequestPluginRequest {
                             request: request.clone(),
@@ -530,11 +535,12 @@ impl PluginManager {
                             crate::tools::log::LogServiceType::Plugin,
                             format!("call plugin request permanent  {:?}", plugin.infos.name),
                         );
-                        let res = plugin_m
+                        let res = plugin
                             .call_get_error_code::<Json<RsRequestPluginRequest>, Json<RsRequest>>(
                                 "request_permanent",
                                 Json(req),
-                            );
+                            )
+                            .await;
                         if let Ok(Json(mut res)) = res {
                             log_info(
                                 crate::tools::log::LogServiceType::Plugin,
@@ -582,7 +588,7 @@ impl PluginManager {
                         .find(|p| p.filename == plugin_with_cred.plugin.path)
                         .filter(|p| p.infos.capabilities.contains(&PluginType::Lookup))
                         .map(|p| {
-                            let plugin_arc = p.plugin.clone();
+                            let plugin_runtime = p.clone();
                             let plugin_id = plugin_with_cred.plugin.id.clone();
                             let plugin_name = plugin_with_cred.plugin.name.clone();
                             let wrapped_query = RsLookupWrapper {
@@ -593,7 +599,7 @@ impl PluginManager {
                                     .map(PluginCredential::from),
                                 params: build_plugin_params(&plugin_with_cred),
                             };
-                            (plugin_arc, plugin_id, plugin_name, wrapped_query)
+                            (plugin_runtime, plugin_id, plugin_name, wrapped_query)
                         })
                 })
                 .collect()
@@ -601,18 +607,18 @@ impl PluginManager {
 
         let handles: Vec<_> = tasks
             .into_iter()
-            .map(|(plugin_arc, plugin_id, plugin_name, wrapped_query)| {
-                tokio::task::spawn_blocking(move || {
-                    let mut plugin_m = plugin_arc.lock().unwrap();
+            .map(|(plugin_runtime, plugin_id, plugin_name, wrapped_query)| {
+                tokio::spawn(async move {
                     println!(
                         "Executing lookup for plugin {} lookup results... ",
                         plugin_name
                     );
-                    let res = plugin_m
+                    let res = plugin_runtime
                         .call_get_error_code::<Json<RsLookupWrapper>, Json<LookupPluginResult>>(
                             "lookup",
                             Json(wrapped_query),
-                        );
+                        )
+                        .await;
                     (plugin_id, plugin_name, res)
                 })
             })
@@ -671,7 +677,7 @@ impl PluginManager {
                         .find(|p| p.filename == plugin_with_cred.plugin.path)
                         .filter(|p| p.infos.capabilities.contains(&PluginType::Lookup))
                         .map(|p| {
-                            let plugin_arc = p.plugin.clone();
+                            let plugin_runtime = p.clone();
                             let plugin_id = plugin_with_cred.plugin.id.clone();
                             let plugin_name = plugin_with_cred.plugin.name.clone();
                             let wrapped_query = RsLookupWrapper {
@@ -682,7 +688,7 @@ impl PluginManager {
                                     .map(PluginCredential::from),
                                 params: build_plugin_params(&plugin_with_cred),
                             };
-                            (plugin_arc, plugin_id, plugin_name, wrapped_query)
+                            (plugin_runtime, plugin_id, plugin_name, wrapped_query)
                         })
                 })
                 .collect()
@@ -691,15 +697,15 @@ impl PluginManager {
         tokio::spawn(async move {
             let mut pending: futures::stream::FuturesUnordered<_> = tasks
                 .into_iter()
-                .map(|(plugin_arc, plugin_id, plugin_name, wrapped_query)| {
-                    tokio::task::spawn_blocking(move || {
-                        let mut plugin_m = plugin_arc.lock().unwrap();
+                .map(|(plugin_runtime, plugin_id, plugin_name, wrapped_query)| {
+                    tokio::spawn(async move {
                         println!("Executing lookup stream for plugin {} ...", plugin_name);
-                        let res = plugin_m
+                        let res = plugin_runtime
                             .call_get_error_code::<Json<RsLookupWrapper>, Json<LookupPluginResult>>(
                                 "lookup",
                                 Json(wrapped_query),
-                            );
+                            )
+                            .await;
                         (plugin_id, plugin_name, res)
                     })
                 })
@@ -758,7 +764,7 @@ impl PluginManager {
                         .find(|p| p.filename == plugin_with_cred.plugin.path)
                         .filter(|p| p.infos.capabilities.contains(&PluginType::LookupMetadata))
                         .map(|p| {
-                            let plugin_arc = p.plugin.clone();
+                            let plugin_runtime = p.clone();
                             let plugin_name = plugin_with_cred.plugin.name.clone();
                             let wrapped_query = RsLookupWrapper {
                                 query: query.clone(),
@@ -768,16 +774,15 @@ impl PluginManager {
                                     .map(PluginCredential::from),
                                 params: build_plugin_params(&plugin_with_cred),
                             };
-                            (plugin_arc, plugin_name, wrapped_query)
+                            (plugin_runtime, plugin_name, wrapped_query)
                         })
                 })
                 .collect()
         };
 
-        let handles: Vec<_> = tasks.into_iter().map(|(plugin_arc, plugin_name, wrapped_query)| {
-            tokio::task::spawn_blocking(move || {
-                let mut plugin_m = plugin_arc.lock().unwrap();
-                let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<RsLookupMetadataResults>>("lookup_metadata", Json(wrapped_query));
+        let handles: Vec<_> = tasks.into_iter().map(|(plugin_runtime, plugin_name, wrapped_query)| {
+            tokio::spawn(async move {
+                let res = plugin_runtime.call_get_error_code::<Json<RsLookupWrapper>, Json<RsLookupMetadataResults>>("lookup_metadata", Json(wrapped_query)).await;
                 (plugin_name, res)
             })
         }).collect();
@@ -832,7 +837,7 @@ impl PluginManager {
                         .find(|p| p.filename == plugin_with_cred.plugin.path)
                         .filter(|p| p.infos.capabilities.contains(&PluginType::LookupMetadata))
                         .map(|p| {
-                            let plugin_arc = p.plugin.clone();
+                            let plugin_runtime = p.clone();
                             let plugin_id = plugin_with_cred.plugin.path.clone();
                             let plugin_name = plugin_with_cred.plugin.name.clone();
                             let wrapped_query = RsLookupWrapper {
@@ -843,16 +848,15 @@ impl PluginManager {
                                     .map(PluginCredential::from),
                                 params: build_plugin_params(&plugin_with_cred),
                             };
-                            (plugin_arc, plugin_id, plugin_name, wrapped_query)
+                            (plugin_runtime, plugin_id, plugin_name, wrapped_query)
                         })
                 })
                 .collect()
         };
 
-        let handles: Vec<_> = tasks.into_iter().map(|(plugin_arc, plugin_id, plugin_name, wrapped_query)| {
-            tokio::task::spawn_blocking(move || {
-                let mut plugin_m = plugin_arc.lock().unwrap();
-                let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<RsLookupMetadataResults>>("lookup_metadata", Json(wrapped_query));
+        let handles: Vec<_> = tasks.into_iter().map(|(plugin_runtime, plugin_id, plugin_name, wrapped_query)| {
+            tokio::spawn(async move {
+                let res = plugin_runtime.call_get_error_code::<Json<RsLookupWrapper>, Json<RsLookupMetadataResults>>("lookup_metadata", Json(wrapped_query)).await;
                 (plugin_id, plugin_name, res)
             })
         }).collect();
@@ -905,7 +909,7 @@ impl PluginManager {
                         .find(|p| p.filename == plugin_with_cred.plugin.path)
                         .filter(|p| p.infos.capabilities.contains(&PluginType::LookupMetadata))
                         .map(|p| {
-                            let plugin_arc = p.plugin.clone();
+                            let plugin_runtime = p.clone();
                             let plugin_name = plugin_with_cred.plugin.name.clone();
                             let wrapped_query = RsLookupWrapper {
                                 query: query.clone(),
@@ -915,17 +919,16 @@ impl PluginManager {
                                     .map(PluginCredential::from),
                                 params: build_plugin_params(&plugin_with_cred),
                             };
-                            (plugin_arc, plugin_name, wrapped_query)
+                            (plugin_runtime, plugin_name, wrapped_query)
                         })
                 })
                 .collect()
         };
 
         tokio::spawn(async move {
-            let mut pending: futures::stream::FuturesUnordered<_> = tasks.into_iter().map(|(plugin_arc, plugin_name, wrapped_query)| {
-                tokio::task::spawn_blocking(move || {
-                    let mut plugin_m = plugin_arc.lock().unwrap();
-                    let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<RsLookupMetadataResults>>("lookup_metadata", Json(wrapped_query));
+            let mut pending: futures::stream::FuturesUnordered<_> = tasks.into_iter().map(|(plugin_runtime, plugin_name, wrapped_query)| {
+                tokio::spawn(async move {
+                    let res = plugin_runtime.call_get_error_code::<Json<RsLookupWrapper>, Json<RsLookupMetadataResults>>("lookup_metadata", Json(wrapped_query)).await;
                     (plugin_name, res)
                 })
             }).collect();
@@ -980,7 +983,7 @@ impl PluginManager {
                         .find(|p| p.filename == plugin_with_cred.plugin.path)
                         .filter(|p| p.infos.capabilities.contains(&PluginType::LookupMetadata))
                         .map(|p| {
-                            let plugin_arc = p.plugin.clone();
+                            let plugin_runtime = p.clone();
                             let plugin_id = plugin_with_cred.plugin.path.clone();
                             let plugin_name = plugin_with_cred.plugin.name.clone();
                             let wrapped_query = RsLookupWrapper {
@@ -991,17 +994,16 @@ impl PluginManager {
                                     .map(PluginCredential::from),
                                 params: build_plugin_params(&plugin_with_cred),
                             };
-                            (plugin_arc, plugin_id, plugin_name, wrapped_query)
+                            (plugin_runtime, plugin_id, plugin_name, wrapped_query)
                         })
                 })
                 .collect()
         };
 
         tokio::spawn(async move {
-            let mut pending: futures::stream::FuturesUnordered<_> = tasks.into_iter().map(|(plugin_arc, plugin_id, plugin_name, wrapped_query)| {
-                tokio::task::spawn_blocking(move || {
-                    let mut plugin_m = plugin_arc.lock().unwrap();
-                    let res = plugin_m.call_get_error_code::<Json<RsLookupWrapper>, Json<RsLookupMetadataResults>>("lookup_metadata", Json(wrapped_query));
+            let mut pending: futures::stream::FuturesUnordered<_> = tasks.into_iter().map(|(plugin_runtime, plugin_id, plugin_name, wrapped_query)| {
+                tokio::spawn(async move {
+                    let res = plugin_runtime.call_get_error_code::<Json<RsLookupWrapper>, Json<RsLookupMetadataResults>>("lookup_metadata", Json(wrapped_query)).await;
                     (plugin_id, plugin_name, res)
                 })
             }).collect();
@@ -1055,7 +1057,7 @@ impl PluginManager {
                         .find(|p| p.filename == plugin_with_cred.plugin.path)
                         .filter(|p| p.infos.capabilities.contains(&PluginType::LookupMetadata))
                         .map(|p| {
-                            let plugin_arc = p.plugin.clone();
+                            let plugin_runtime = p.clone();
                             let plugin_name = plugin_with_cred.plugin.name.clone();
                             let wrapped_query = RsLookupWrapper {
                                 query: query.clone(),
@@ -1065,7 +1067,7 @@ impl PluginManager {
                                     .map(PluginCredential::from),
                                 params: build_plugin_params(&plugin_with_cred),
                             };
-                            (plugin_arc, plugin_name, wrapped_query)
+                            (plugin_runtime, plugin_name, wrapped_query)
                         })
                 })
                 .collect()
@@ -1073,14 +1075,14 @@ impl PluginManager {
 
         let handles: Vec<_> = tasks
             .into_iter()
-            .map(|(plugin_arc, plugin_name, wrapped_query)| {
-                tokio::task::spawn_blocking(move || {
-                    let mut plugin_m = plugin_arc.lock().unwrap();
-                    let res = plugin_m
+            .map(|(plugin_runtime, plugin_name, wrapped_query)| {
+                tokio::spawn(async move {
+                    let res = plugin_runtime
                         .call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<ExternalImage>>>(
                             "lookup_metadata_images",
                             Json(wrapped_query),
-                        );
+                        )
+                        .await;
                     (plugin_name, res)
                 })
             })
@@ -1133,7 +1135,7 @@ impl PluginManager {
                         .find(|p| p.filename == plugin_with_cred.plugin.path)
                         .filter(|p| p.infos.capabilities.contains(&PluginType::LookupMetadata))
                         .map(|p| {
-                            let plugin_arc = p.plugin.clone();
+                            let plugin_runtime = p.clone();
                             let plugin_name = plugin_with_cred.plugin.name.clone();
                             let wrapped_query = RsLookupWrapper {
                                 query: query.clone(),
@@ -1143,7 +1145,7 @@ impl PluginManager {
                                     .map(PluginCredential::from),
                                 params: build_plugin_params(&plugin_with_cred),
                             };
-                            (plugin_arc, plugin_name, wrapped_query)
+                            (plugin_runtime, plugin_name, wrapped_query)
                         })
                 })
                 .collect()
@@ -1151,14 +1153,14 @@ impl PluginManager {
 
         let handles: Vec<_> = tasks
             .into_iter()
-            .map(|(plugin_arc, plugin_name, wrapped_query)| {
-                tokio::task::spawn_blocking(move || {
-                    let mut plugin_m = plugin_arc.lock().unwrap();
-                    let res = plugin_m
+            .map(|(plugin_runtime, plugin_name, wrapped_query)| {
+                tokio::spawn(async move {
+                    let res = plugin_runtime
                         .call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<ExternalImage>>>(
                             "lookup_metadata_images",
                             Json(wrapped_query),
-                        );
+                        )
+                        .await;
                     (plugin_name, res)
                 })
             })
@@ -1212,7 +1214,7 @@ impl PluginManager {
                         .find(|p| p.filename == plugin_with_cred.plugin.path)
                         .filter(|p| p.infos.capabilities.contains(&PluginType::LookupMetadata))
                         .map(|p| {
-                            let plugin_arc = p.plugin.clone();
+                            let plugin_runtime = p.clone();
                             let plugin_name = plugin_with_cred.plugin.name.clone();
                             let wrapped_query = RsLookupWrapper {
                                 query: query.clone(),
@@ -1222,7 +1224,7 @@ impl PluginManager {
                                     .map(PluginCredential::from),
                                 params: build_plugin_params(&plugin_with_cred),
                             };
-                            (plugin_arc, plugin_name, wrapped_query)
+                            (plugin_runtime, plugin_name, wrapped_query)
                         })
                 })
                 .collect()
@@ -1231,14 +1233,14 @@ impl PluginManager {
         tokio::spawn(async move {
             let mut pending: futures::stream::FuturesUnordered<_> = tasks
                 .into_iter()
-                .map(|(plugin_arc, plugin_name, wrapped_query)| {
-                    tokio::task::spawn_blocking(move || {
-                        let mut plugin_m = plugin_arc.lock().unwrap();
-                        let res = plugin_m
+                .map(|(plugin_runtime, plugin_name, wrapped_query)| {
+                    tokio::spawn(async move {
+                        let res = plugin_runtime
                             .call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<ExternalImage>>>(
                                 "lookup_metadata_images",
                                 Json(wrapped_query),
-                            );
+                            )
+                            .await;
                         (plugin_name, res)
                     })
                 })
@@ -1300,7 +1302,7 @@ impl PluginManager {
                         .find(|p| p.filename == plugin_with_cred.plugin.path)
                         .filter(|p| p.infos.capabilities.contains(&PluginType::LookupMetadata))
                         .map(|p| {
-                            let plugin_arc = p.plugin.clone();
+                            let plugin_runtime = p.clone();
                             let plugin_name = plugin_with_cred.plugin.name.clone();
                             let wrapped_query = RsLookupWrapper {
                                 query: query.clone(),
@@ -1310,7 +1312,7 @@ impl PluginManager {
                                     .map(PluginCredential::from),
                                 params: build_plugin_params(&plugin_with_cred),
                             };
-                            (plugin_arc, plugin_name, wrapped_query)
+                            (plugin_runtime, plugin_name, wrapped_query)
                         })
                 })
                 .collect()
@@ -1319,14 +1321,14 @@ impl PluginManager {
         tokio::spawn(async move {
             let mut pending: futures::stream::FuturesUnordered<_> = tasks
                 .into_iter()
-                .map(|(plugin_arc, plugin_name, wrapped_query)| {
-                    tokio::task::spawn_blocking(move || {
-                        let mut plugin_m = plugin_arc.lock().unwrap();
-                        let res = plugin_m
+                .map(|(plugin_runtime, plugin_name, wrapped_query)| {
+                    tokio::spawn(async move {
+                        let res = plugin_runtime
                             .call_get_error_code::<Json<RsLookupWrapper>, Json<Vec<ExternalImage>>>(
                                 "lookup_metadata_images",
                                 Json(wrapped_query),
-                            );
+                            )
+                            .await;
                         (plugin_name, res)
                     })
                 })
@@ -1378,14 +1380,7 @@ impl PluginManager {
     ) -> RsResult<Option<bool>> {
         let plugins = Self::filter_plugins_by_target(plugins, &target, None)?;
         for plugin_with_cred in plugins {
-            if let Some(plugin) = self
-                .plugins
-                .read()
-                .await
-                .iter()
-                .find(|p| p.filename == plugin_with_cred.plugin.path)
-            {
-                let mut plugin_m = plugin.plugin.lock().unwrap();
+            if let Some(plugin) = self.plugin_by_filename(&plugin_with_cred.plugin.path).await {
                 if plugin.infos.capabilities.contains(&PluginType::Request) {
                     let req = RsRequestPluginRequest {
                         request: request.clone(),
@@ -1395,11 +1390,12 @@ impl PluginManager {
                             .map(PluginCredential::from),
                         params: build_plugin_params(&plugin_with_cred),
                     };
-                    let res = plugin_m
+                    let res = plugin
                         .call_get_error_code::<Json<RsRequestPluginRequest>, Json<bool>>(
                             "check_instant",
                             Json(req),
-                        );
+                        )
+                        .await;
                     if let Ok(Json(instant)) = res {
                         return Ok(Some(instant));
                     } else if let Err((error, code)) = res {
@@ -1426,14 +1422,7 @@ impl PluginManager {
     ) -> RsResult<Option<(String, RsRequestAddResponse)>> {
         let plugins = Self::filter_plugins_by_target(plugins, &target, Some(&request))?;
         for plugin_with_cred in plugins.iter() {
-            if let Some(plugin) = self
-                .plugins
-                .read()
-                .await
-                .iter()
-                .find(|p| p.filename == plugin_with_cred.plugin.path)
-            {
-                let mut plugin_m = plugin.plugin.lock().unwrap();
+            if let Some(plugin) = self.plugin_by_filename(&plugin_with_cred.plugin.path).await {
                 if plugin.infos.capabilities.contains(&PluginType::Request) {
                     let req = RsRequestPluginRequest {
                         request: request.clone(),
@@ -1443,7 +1432,7 @@ impl PluginManager {
                             .map(PluginCredential::from),
                         params: build_plugin_params(&plugin_with_cred),
                     };
-                    let res = plugin_m.call_get_error_code::<Json<RsRequestPluginRequest>, Json<RsRequestAddResponse>>("request_add", Json(req));
+                    let res = plugin.call_get_error_code::<Json<RsRequestPluginRequest>, Json<RsRequestAddResponse>>("request_add", Json(req)).await;
                     if let Ok(Json(mut response)) = res {
                         // Convert relative ETA (ms) to absolute UTC timestamp (ms)
                         if let Some(relative_eta) = response.eta {
@@ -1474,14 +1463,7 @@ impl PluginManager {
         processing_id: &str,
         plugin_with_cred: &PluginWithCredential,
     ) -> RsResult<RsProcessingProgress> {
-        if let Some(plugin) = self
-            .plugins
-            .read()
-            .await
-            .iter()
-            .find(|p| p.filename == plugin_with_cred.plugin.path)
-        {
-            let mut plugin_m = plugin.plugin.lock().unwrap();
+        if let Some(plugin) = self.plugin_by_filename(&plugin_with_cred.plugin.path).await {
             let req = RsProcessingActionRequest {
                 processing_id: processing_id.to_string(),
                 credential: plugin_with_cred
@@ -1490,11 +1472,12 @@ impl PluginManager {
                     .map(PluginCredential::from),
                 params: build_plugin_params(plugin_with_cred),
             };
-            let res = plugin_m
+            let res = plugin
                 .call_get_error_code::<Json<RsProcessingActionRequest>, Json<RsProcessingProgress>>(
                     "get_progress",
                     Json(req),
-                );
+                )
+                .await;
             match res {
                 Ok(Json(mut progress)) => {
                     // Convert relative ETA (ms) to absolute UTC timestamp (ms)
@@ -1507,9 +1490,11 @@ impl PluginManager {
                     }
                     Ok(progress)
                 }
-                Err((error, code)) => {
-                    Err(Error::Error(format!("Plugin error {}: {}", code, error)))
-                }
+                Err(error) => Err(plugin_call_error(
+                    &plugin.infos.name,
+                    "get_progress",
+                    error,
+                )),
             }
         } else {
             Err(Error::NotFound(format!(
@@ -1525,14 +1510,7 @@ impl PluginManager {
         processing_id: &str,
         plugin_with_cred: &PluginWithCredential,
     ) -> RsResult<()> {
-        if let Some(plugin) = self
-            .plugins
-            .read()
-            .await
-            .iter()
-            .find(|p| p.filename == plugin_with_cred.plugin.path)
-        {
-            let mut plugin_m = plugin.plugin.lock().unwrap();
+        if let Some(plugin) = self.plugin_by_filename(&plugin_with_cred.plugin.path).await {
             let req = RsProcessingActionRequest {
                 processing_id: processing_id.to_string(),
                 credential: plugin_with_cred
@@ -1541,13 +1519,12 @@ impl PluginManager {
                     .map(PluginCredential::from),
                 params: build_plugin_params(plugin_with_cred),
             };
-            let res = plugin_m
-                .call_get_error_code::<Json<RsProcessingActionRequest>, ()>("pause", Json(req));
+            let res = plugin
+                .call_get_error_code::<Json<RsProcessingActionRequest>, ()>("pause", Json(req))
+                .await;
             match res {
                 Ok(()) => Ok(()),
-                Err((error, code)) => {
-                    Err(Error::Error(format!("Plugin error {}: {}", code, error)))
-                }
+                Err(error) => Err(plugin_call_error(&plugin.infos.name, "pause", error)),
             }
         } else {
             Err(Error::NotFound(format!(
@@ -1563,14 +1540,7 @@ impl PluginManager {
         processing_id: &str,
         plugin_with_cred: &PluginWithCredential,
     ) -> RsResult<()> {
-        if let Some(plugin) = self
-            .plugins
-            .read()
-            .await
-            .iter()
-            .find(|p| p.filename == plugin_with_cred.plugin.path)
-        {
-            let mut plugin_m = plugin.plugin.lock().unwrap();
+        if let Some(plugin) = self.plugin_by_filename(&plugin_with_cred.plugin.path).await {
             let req = RsProcessingActionRequest {
                 processing_id: processing_id.to_string(),
                 credential: plugin_with_cred
@@ -1579,13 +1549,12 @@ impl PluginManager {
                     .map(PluginCredential::from),
                 params: build_plugin_params(plugin_with_cred),
             };
-            let res = plugin_m
-                .call_get_error_code::<Json<RsProcessingActionRequest>, ()>("remove", Json(req));
+            let res = plugin
+                .call_get_error_code::<Json<RsProcessingActionRequest>, ()>("remove", Json(req))
+                .await;
             match res {
                 Ok(()) => Ok(()),
-                Err((error, code)) => {
-                    Err(Error::Error(format!("Plugin error {}: {}", code, error)))
-                }
+                Err(error) => Err(plugin_call_error(&plugin.infos.name, "remove", error)),
             }
         } else {
             Err(Error::NotFound(format!(

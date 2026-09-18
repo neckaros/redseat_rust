@@ -13,7 +13,6 @@ use chrono::{Datelike, Utc};
 use futures::{ready, AsyncReadExt, Stream, TryFutureExt, TryStreamExt};
 use nanoid::nanoid;
 use query_external_ip::SourceError;
-use reqwest::Client;
 use rs_plugin_common_interfaces::{
     provider::{RsProviderAddRequest, RsProviderPath},
     request::RsRequest,
@@ -32,7 +31,10 @@ use crate::{
     error::{RsError, RsResult},
     model::{users::ConnectedUser, ModelController},
     plugins::{
-        sources::{path_provider::PathProvider, RsRequestHeader},
+        sources::{
+            path_provider::PathProvider, streaming_http_client, RsRequestHeader,
+            TRANSFER_IDLE_TIMEOUT,
+        },
         PluginManager,
     },
     routes::mw_range::RangeDefinition,
@@ -45,6 +47,27 @@ use super::{
     local_provider, AsyncReadPinBox, AsyncSeekableWrite, BoxedStringFuture, FileStreamResult,
     Source, SourceRead,
 };
+
+fn stream_with_idle_timeout<R>(mut stream: ReaderStream<R>) -> impl Stream<Item = io::Result<Bytes>>
+where
+    R: AsyncRead + Unpin + Send + 'static,
+{
+    async_stream::stream! {
+        loop {
+            match tokio::time::timeout(TRANSFER_IDLE_TIMEOUT, stream.next()).await {
+                Ok(Some(chunk)) => yield chunk,
+                Ok(None) => break,
+                Err(_) => {
+                    yield Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "provider transfer made no progress before the idle timeout",
+                    ));
+                    break;
+                }
+            }
+        }
+    }
+}
 
 pub struct PluginProvider {
     id: String,
@@ -250,8 +273,8 @@ impl Source for PluginProvider {
         let plugin_manager = self.plugin_manager.clone();
         let source = tokio::spawn(async move {
             if let Some(length) = content_length {
-                let body = reqwest::Body::wrap_stream(streamreader);
-                let client = Client::new();
+                let body = reqwest::Body::wrap_stream(stream_with_idle_timeout(streamreader));
+                let client = streaming_http_client()?;
                 //println!("sending to stream (size: {}) {}", length, request.request.url);
                 let response = client
                     .post(request.request.url.clone())
@@ -282,6 +305,8 @@ impl Source for PluginProvider {
 
                 let mut writer = BufWriter::new(file);
                 // Read and write chunks from the stream
+                let streamreader = stream_with_idle_timeout(streamreader);
+                tokio::pin!(streamreader);
                 while let Some(chunk) = streamreader.next().await {
                     let chunk = chunk?; // Handle potential read errors
                     writer.write_all(&chunk).await?;
@@ -293,8 +318,8 @@ impl Source for PluginProvider {
                 let file = File::open(&dest).await?;
                 let file_size = file.metadata().await?.len();
                 let stream = ReaderStream::new(file);
-                let body = reqwest::Body::wrap_stream(stream);
-                let client = Client::new();
+                let body = reqwest::Body::wrap_stream(stream_with_idle_timeout(stream));
+                let client = streaming_http_client()?;
                 //println!("sending file to stream (size: {}) {}", file_size, request.request.url);
                 let response = client
                     .post(request.request.url.clone())

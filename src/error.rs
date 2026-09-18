@@ -75,6 +75,7 @@ pub enum Error {
     PluginUnsupportedCall(String, String),
     PluginUnsupportedCredentialType(CredentialType, Option<CredentialType>),
     PluginError(i32, String),
+    PluginTimeout(String, String),
 
     // -- Convert
     CouldNotFindConvertor(String, String),
@@ -288,6 +289,12 @@ impl Error {
                     message: error.to_string(),
                 },
             ),
+            Self::PluginTimeout(plugin, function) => (
+                StatusCode::GATEWAY_TIMEOUT,
+                ClientError::Custom {
+                    message: format!("Plugin {plugin} timed out while calling {function}"),
+                },
+            ),
             // -- Prediction
             Self::NoModelFound => (StatusCode::NOT_FOUND, ClientError::NOT_FOUND),
             Self::Model(model_error) => model_error.client_status_and_error(),
@@ -314,6 +321,22 @@ mod tests {
         assert!(matches!(
             client_error,
             ClientError::Custom { message } if message == "source failed"
+        ));
+    }
+
+    #[test]
+    fn plugin_timeout_is_reported_as_gateway_timeout() {
+        let (status, client_error) = Error::PluginTimeout(
+            "pcloud".to_string(),
+            "download_request".to_string(),
+        )
+        .client_status_and_error();
+
+        assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
+        assert!(matches!(
+            client_error,
+            ClientError::Custom { message }
+                if message == "Plugin pcloud timed out while calling download_request"
         ));
     }
 }

@@ -29,6 +29,7 @@ use crate::{
 };
 
 use super::{
+    plugin_call_error,
     sources::{RsRequestHeader, SourceRead},
     PluginManager,
 };
@@ -46,14 +47,7 @@ impl PluginManager {
         plugin: Plugin,
         request: HashMap<String, String>,
     ) -> RsResult<PluginCredential> {
-        if let Some(pluginwasm) = self
-            .plugins
-            .read()
-            .await
-            .iter()
-            .find(|p| p.filename == plugin.path)
-        {
-            let mut plugin_m = pluginwasm.plugin.lock().unwrap();
+        if let Some(pluginwasm) = self.plugin_by_filename(&plugin.path).await {
             if check_if_oauth(&pluginwasm.infos.credential_kind) {
                 let plugin_settings = serde_json::to_value(&plugin.settings)?;
                 let call_object: RsPluginRequest<HashMap<String, String>> = RsPluginRequest {
@@ -61,11 +55,15 @@ impl PluginManager {
                     plugin_settings,
                     ..Default::default()
                 };
-                let res = plugin_m.call_get_error_code::<Json<RsPluginRequest<HashMap<String, String>>>, Json<PluginCredential>>("exchange_token", Json(call_object));
+                let res = pluginwasm.call_get_error_code::<Json<RsPluginRequest<HashMap<String, String>>>, Json<PluginCredential>>("exchange_token", Json(call_object)).await;
 
                 match res {
                     Ok(Json(res)) => Ok(res),
-                    Err((error, code)) => Err(Error::PluginError(code, error.to_string())),
+                    Err(error) => Err(plugin_call_error(
+                        &pluginwasm.infos.name,
+                        "exchange_token",
+                        error,
+                    )),
                 }
             } else {
                 Err(Error::PluginUnsupportedCredentialType(
