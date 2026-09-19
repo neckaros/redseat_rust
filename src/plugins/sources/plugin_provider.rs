@@ -69,6 +69,13 @@ where
     }
 }
 
+fn map_upload_request_error(error: RsError, name: &str) -> RsError {
+    match error {
+        timeout @ Error::PluginTimeout(_, _) => timeout,
+        _ => SourcesError::NotFound(Some(name.to_string())).into(),
+    }
+}
+
 pub struct PluginProvider {
     id: String,
     plugin: PluginWithCredential,
@@ -255,7 +262,7 @@ impl Source for PluginProvider {
                 &self.plugin,
             )
             .await
-            .map_err(|_| SourcesError::NotFound(Some(name.to_string())))?;
+            .map_err(|error| map_upload_request_error(error, name))?;
 
         let content_length = length.clone();
         let mime = mime
@@ -385,5 +392,22 @@ impl<'a, R: AsyncRead + Unpin> Stream for RsReaderStream<'a, R> {
             }
             Err(e) => Poll::Ready(Some(Err(e))),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::map_upload_request_error;
+    use crate::Error;
+
+    #[test]
+    fn provider_upload_preserves_plugin_timeout() {
+        let error = Error::PluginTimeout("pCloud".to_string(), "upload_request".to_string());
+
+        assert!(matches!(
+            map_upload_request_error(error, "large-file.zip"),
+            Error::PluginTimeout(plugin, function)
+                if plugin == "pCloud" && function == "upload_request"
+        ));
     }
 }
