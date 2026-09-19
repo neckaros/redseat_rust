@@ -1,10 +1,12 @@
 use std::{
+    future::Future,
     io,
     path::PathBuf,
     pin::Pin,
     str::FromStr,
     sync::Arc,
     task::{Context, Poll},
+    time::Duration,
 };
 
 use axum::async_trait;
@@ -18,8 +20,9 @@ use rs_plugin_common_interfaces::{
     request::RsRequest,
 };
 use tokio::{
-    fs::{create_dir_all, remove_file, File},
+    fs::{create_dir_all, File},
     io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, BufWriter, ReadBuf},
+    sync::watch,
 };
 use tokio_stream::StreamExt;
 use tokio_util::io::ReaderStream;
@@ -48,14 +51,24 @@ use super::{
     Source, SourceRead,
 };
 
-fn stream_with_idle_timeout<R>(mut stream: ReaderStream<R>) -> impl Stream<Item = io::Result<Bytes>>
+fn stream_with_idle_timeout<R>(
+    mut stream: ReaderStream<R>,
+    progress: Option<watch::Sender<()>>,
+) -> impl Stream<Item = io::Result<Bytes>>
 where
     R: AsyncRead + Unpin + Send + 'static,
 {
     async_stream::stream! {
         loop {
             match tokio::time::timeout(TRANSFER_IDLE_TIMEOUT, stream.next()).await {
-                Ok(Some(chunk)) => yield chunk,
+                Ok(Some(chunk)) => {
+                    if chunk.is_ok() {
+                        if let Some(progress) = &progress {
+                            progress.send_replace(());
+                        }
+                    }
+                    yield chunk;
+                }
                 Ok(None) => break,
                 Err(_) => {
                     yield Err(io::Error::new(
@@ -69,10 +82,61 @@ where
     }
 }
 
-fn map_upload_request_error(error: RsError, name: &str) -> RsError {
+async fn wait_for_upload_with_idle_timeout<F, T>(
+    upload: F,
+    mut progress: watch::Receiver<()>,
+    idle_timeout: Duration,
+) -> RsResult<T>
+where
+    F: Future<Output = RsResult<T>>,
+{
+    tokio::pin!(upload);
+
+    loop {
+        tokio::select! {
+            result = &mut upload => return result,
+            progress_result = tokio::time::timeout(idle_timeout, progress.changed()) => {
+                match progress_result {
+                    Ok(Ok(())) => {}
+                    // The request body finished. Reqwest's read timeout now protects the
+                    // response wait, so the upload-progress watchdog is no longer needed.
+                    Ok(Err(_)) => return upload.await,
+                    Err(_) => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "provider upload made no progress before the idle timeout",
+                        ).into());
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn send_upload_with_idle_timeout(
+    request: reqwest::RequestBuilder,
+    progress: watch::Receiver<()>,
+) -> RsResult<reqwest::Response> {
+    wait_for_upload_with_idle_timeout(
+        async move { Ok(request.send().await?) },
+        progress,
+        TRANSFER_IDLE_TIMEOUT,
+    )
+    .await
+}
+
+fn map_provider_error(error: RsError, fallback: SourcesError) -> RsError {
     match error {
         timeout @ Error::PluginTimeout(_, _) => timeout,
-        _ => SourcesError::NotFound(Some(name.to_string())).into(),
+        _ => fallback.into(),
+    }
+}
+
+struct StagedUploadCleanup(PathBuf);
+
+impl Drop for StagedUploadCleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
     }
 }
 
@@ -262,7 +326,9 @@ impl Source for PluginProvider {
                 &self.plugin,
             )
             .await
-            .map_err(|error| map_upload_request_error(error, name))?;
+            .map_err(|error| {
+                map_provider_error(error, SourcesError::NotFound(Some(name.to_string())))
+            })?;
 
         let content_length = length.clone();
         let mime = mime
@@ -280,24 +346,30 @@ impl Source for PluginProvider {
         let plugin_manager = self.plugin_manager.clone();
         let source = tokio::spawn(async move {
             if let Some(length) = content_length {
-                let body = reqwest::Body::wrap_stream(stream_with_idle_timeout(streamreader));
+                let (progress_tx, progress_rx) = watch::channel(());
+                let body = reqwest::Body::wrap_stream(stream_with_idle_timeout(
+                    streamreader,
+                    Some(progress_tx),
+                ));
                 let client = streaming_http_client()?;
                 //println!("sending to stream (size: {}) {}", length, request.request.url);
-                let response = client
+                let upload = client
                     .post(request.request.url.clone())
                     .add_request_headers(&request.request, &None)?
                     .header("Content-Length", length)
                     .header("Content-Type", mime)
-                    .body(body)
-                    .send()
-                    .await?;
+                    .body(body);
+                let response = send_upload_with_idle_timeout(upload, progress_rx).await?;
                 //println!("response: {}", response.status());
                 let text = response.text().await?;
                 let request = plugin_manager
                     .provider_upload_parse_response(text, &plugin)
                     .await
-                    .map_err(|_| {
-                        SourcesError::Other("Unable to parse upload response".to_string())
+                    .map_err(|error| {
+                        map_provider_error(
+                            error,
+                            SourcesError::Other("Unable to parse upload response".to_string()),
+                        )
                     })?;
 
                 Ok::<String, RsError>(request.source)
@@ -305,6 +377,7 @@ impl Source for PluginProvider {
                 //download in temp directory if size is not available as it is necessary for upload
                 let dest_source = format!(".cache/{}", format!("{}-{}", nanoid!(), filename));
                 let dest = local.get_full_path(&dest_source);
+                let _cleanup = StagedUploadCleanup(dest.clone());
                 //println!("dest: {:?}", dest);
                 PathProvider::ensure_filepath(&dest).await?;
 
@@ -312,7 +385,7 @@ impl Source for PluginProvider {
 
                 let mut writer = BufWriter::new(file);
                 // Read and write chunks from the stream
-                let streamreader = stream_with_idle_timeout(streamreader);
+                let streamreader = stream_with_idle_timeout(streamreader, None);
                 tokio::pin!(streamreader);
                 while let Some(chunk) = streamreader.next().await {
                     let chunk = chunk?; // Handle potential read errors
@@ -325,27 +398,29 @@ impl Source for PluginProvider {
                 let file = File::open(&dest).await?;
                 let file_size = file.metadata().await?.len();
                 let stream = ReaderStream::new(file);
-                let body = reqwest::Body::wrap_stream(stream_with_idle_timeout(stream));
+                let (progress_tx, progress_rx) = watch::channel(());
+                let body =
+                    reqwest::Body::wrap_stream(stream_with_idle_timeout(stream, Some(progress_tx)));
                 let client = streaming_http_client()?;
                 //println!("sending file to stream (size: {}) {}", file_size, request.request.url);
-                let response = client
+                let upload = client
                     .post(request.request.url.clone())
                     .add_request_headers(&request.request, &None)?
                     .header("Content-Length", file_size)
                     .header("Content-Type", mime)
-                    .body(body)
-                    .send()
-                    .await?;
+                    .body(body);
+                let response = send_upload_with_idle_timeout(upload, progress_rx).await?;
                 //println!("response: {}", response.status());
                 let text = response.text().await?;
                 let request = plugin_manager
                     .provider_upload_parse_response(text, &plugin)
                     .await
-                    .map_err(|_| {
-                        SourcesError::Other("Unable to parse upload response".to_string())
+                    .map_err(|error| {
+                        map_provider_error(
+                            error,
+                            SourcesError::Other("Unable to parse upload response".to_string()),
+                        )
                     })?;
-
-                remove_file(dest).await;
 
                 Ok::<String, RsError>(request.source)
             }
@@ -397,17 +472,58 @@ impl<'a, R: AsyncRead + Unpin> Stream for RsReaderStream<'a, R> {
 
 #[cfg(test)]
 mod tests {
-    use super::map_upload_request_error;
+    use super::{map_provider_error, wait_for_upload_with_idle_timeout, StagedUploadCleanup};
+    use crate::plugins::sources::error::SourcesError;
     use crate::Error;
+    use std::time::Duration;
+    use tokio::sync::watch;
 
     #[test]
-    fn provider_upload_preserves_plugin_timeout() {
-        let error = Error::PluginTimeout("pCloud".to_string(), "upload_request".to_string());
+    fn provider_upload_preserves_plugin_timeouts() {
+        for (function, fallback) in [
+            (
+                "upload_request",
+                SourcesError::NotFound(Some("large-file.zip".to_string())),
+            ),
+            (
+                "upload_response",
+                SourcesError::Other("Unable to parse upload response".to_string()),
+            ),
+        ] {
+            let error = Error::PluginTimeout("pCloud".to_string(), function.to_string());
+
+            assert!(matches!(
+                map_provider_error(error, fallback),
+                Error::PluginTimeout(plugin, timed_out_function)
+                    if plugin == "pCloud" && timed_out_function == function
+            ));
+        }
+    }
+
+    #[test]
+    fn staged_upload_cleanup_removes_partial_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("partial-upload");
+        std::fs::write(&path, b"partial").unwrap();
+
+        drop(StagedUploadCleanup(path.clone()));
+
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn upload_watchdog_times_out_while_body_is_backpressured() {
+        let (_progress_tx, progress_rx) = watch::channel(());
+        let upload = std::future::pending::<crate::error::RsResult<()>>();
+
+        let error =
+            wait_for_upload_with_idle_timeout(upload, progress_rx, Duration::from_millis(10))
+                .await
+                .unwrap_err();
 
         assert!(matches!(
-            map_upload_request_error(error, "large-file.zip"),
-            Error::PluginTimeout(plugin, function)
-                if plugin == "pCloud" && function == "upload_request"
+            error,
+            Error::Io(ref error) if error.kind() == std::io::ErrorKind::TimedOut
         ));
     }
 }
