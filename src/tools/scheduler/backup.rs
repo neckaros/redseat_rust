@@ -5,7 +5,7 @@ use crate::domain::deleted;
 use crate::domain::movie::Movie;
 use crate::domain::serie::{Serie, SerieStatus};
 use crate::error::RsError;
-use crate::model::backups::BackupForUpdate;
+use crate::model::backups::{backup_source_matches, BackupForUpdate};
 use crate::model::deleted::DeletedQuery;
 use crate::model::episodes::{EpisodeForUpdate, EpisodeQuery};
 use crate::model::movies::MovieQuery;
@@ -347,21 +347,22 @@ fn pending_backup_medias(
 ) -> Vec<MediaBackup> {
     let latest_backups = backed_up
         .iter()
-        .fold(HashMap::<&str, i64>::new(), |mut latest, file| {
-            latest
-                .entry(file.file.as_str())
-                .and_modify(|modified| *modified = (*modified).max(file.modified))
-                .or_insert(file.modified);
+        .fold(HashMap::<&str, &str>::new(), |mut latest, file| {
+            latest.insert(file.file.as_str(), file.source_hash.as_str());
             latest
         });
 
     medias
         .into_iter()
         .filter(|media| {
+            let Some(source_hash) = media.source_hash.as_deref().filter(|hash| !hash.is_empty())
+            else {
+                return true;
+            };
+
             latest_backups
                 .get(media.id.as_str())
-                .map(|modified| *modified < media.modified)
-                .unwrap_or(true)
+                .is_none_or(|stored_hash| !backup_source_matches(stored_hash, source_hash))
         })
         .collect()
 }
@@ -395,35 +396,41 @@ mod tests {
     use crate::model::store::sql::library::medias::MediaBackup;
 
     #[test]
-    fn selects_missing_and_stale_media_for_backup() {
+    fn selects_only_missing_and_content_changed_media_for_backup() {
         let medias = vec![
             MediaBackup {
                 id: "current".to_string(),
                 name: "current".to_string(),
                 size: None,
-                modified: 10,
+                source_hash: Some("same-hash".to_string()),
             },
             MediaBackup {
-                id: "stale".to_string(),
-                name: "stale".to_string(),
+                id: "changed".to_string(),
+                name: "changed".to_string(),
                 size: None,
-                modified: 20,
+                source_hash: Some("new-hash".to_string()),
             },
             MediaBackup {
                 id: "missing".to_string(),
                 name: "missing".to_string(),
                 size: None,
-                modified: 30,
+                source_hash: Some("missing-hash".to_string()),
+            },
+            MediaBackup {
+                id: "unhashed".to_string(),
+                name: "unhashed".to_string(),
+                size: None,
+                source_hash: None,
             },
         ];
         let backups = vec![
             BackupMediaState {
                 file: "current".to_string(),
-                modified: 10,
+                source_hash: "version:same-hash:backup-id".to_string(),
             },
             BackupMediaState {
-                file: "stale".to_string(),
-                modified: 15,
+                file: "changed".to_string(),
+                source_hash: "old-hash".to_string(),
             },
         ];
 
@@ -433,7 +440,7 @@ mod tests {
                 .into_iter()
                 .map(|media| media.id)
                 .collect::<Vec<_>>(),
-            vec!["stale", "missing"]
+            vec!["changed", "missing", "unhashed"]
         );
     }
 

@@ -15,7 +15,7 @@ pub struct BackupInfos {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackupMediaState {
     pub file: String,
-    pub modified: i64,
+    pub source_hash: String,
 }
 
 const BACKUP_FILE_QUERY_ELEMENTS: &str = "backup, library, file, id, path, hash, sourcehash, size, modified, added, iv, infoSize, thumbsize, error";
@@ -220,15 +220,22 @@ impl SqliteStore {
             .server_store
             .call(move |conn| {
                 let mut query = conn.prepare(
-                    "SELECT file, MAX(modified)
-                     FROM Backups_Files
-                     WHERE backup = ? AND library = ? AND file <> 'db' AND error IS NULL
-                     GROUP BY file",
+                    "SELECT file, sourcehash
+                     FROM (
+                         SELECT file, sourcehash,
+                                ROW_NUMBER() OVER (
+                                    PARTITION BY file
+                                    ORDER BY added DESC, modified DESC, id DESC, sourcehash DESC
+                                ) AS version_rank
+                         FROM Backups_Files
+                         WHERE backup = ? AND library = ? AND file <> 'db' AND error IS NULL
+                     )
+                     WHERE version_rank = 1",
                 )?;
                 let rows = query.query_map(params![backup_id, library_id], |row| {
                     Ok(BackupMediaState {
                         file: row.get(0)?,
-                        modified: row.get(1)?,
+                        source_hash: row.get(1)?,
                     })
                 })?;
                 let states =
@@ -413,7 +420,7 @@ mod tests {
     use std::{collections::HashMap, sync::RwLock};
     use tokio_rusqlite::Connection;
 
-    fn backup_file(id: &str, path: &str, modified: i64) -> BackupFile {
+    fn backup_file(id: &str, path: &str, source_hash: &str, modified: i64) -> BackupFile {
         BackupFile {
             backup: "backup".to_string(),
             library: Some("library".to_string()),
@@ -421,7 +428,7 @@ mod tests {
             id: id.to_string(),
             path: path.to_string(),
             hash: String::new(),
-            sourcehash: format!("version:{id}"),
+            sourcehash: format!("version:{source_hash}:{id}"),
             size: 1,
             modified,
             added: modified,
@@ -456,11 +463,11 @@ mod tests {
         };
 
         store
-            .add_backup_file(backup_file("old", "old-path", 10))
+            .add_backup_file(backup_file("old", "old-path", "old-hash", 10))
             .await
             .unwrap();
         store
-            .add_backup_file(backup_file("new", "new-path", 20))
+            .add_backup_file(backup_file("new", "new-path", "new-hash", 20))
             .await
             .unwrap();
 
@@ -480,6 +487,6 @@ mod tests {
             .unwrap();
         assert_eq!(states.len(), 1);
         assert_eq!(states[0].file, "media");
-        assert_eq!(states[0].modified, 20);
+        assert_eq!(states[0].source_hash, "version:new-hash:new");
     }
 }
