@@ -38,7 +38,9 @@ pub fn book_metadata_update(book: &Book, incoming: &Book) -> BookForUpdate {
     if book.volume != incoming.volume {
         updates.volume = incoming.volume;
     }
-    if book.serie_ref.is_some() && book.chapter != incoming.chapter {
+    if (book.serie_ref.is_some() || incoming.serie_ref.is_some())
+        && book.chapter != incoming.chapter
+    {
         updates.chapter = incoming.chapter;
     }
     if book.year != incoming.year {
@@ -222,5 +224,19 @@ mod tests {
         let ids = update.otherids.unwrap();
         assert!(ids.contains("offline", "keep"));
         assert!(ids.contains("provider", "123"));
+    }
+
+    #[test]
+    fn metadata_refresh_keeps_chapter_when_refresh_adds_series() {
+        let stored = Book::default();
+        let incoming = Book {
+            serie_ref: Some("local-series".into()),
+            chapter: Some(3.0),
+            ..Default::default()
+        };
+
+        let update = book_metadata_update(&stored, &incoming);
+        assert_eq!(update.serie_ref.as_deref(), Some("local-series"));
+        assert_eq!(update.chapter, Some(3.0));
     }
 }

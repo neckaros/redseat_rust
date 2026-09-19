@@ -68,10 +68,11 @@ Missing files do not prevent entry deletion. Event payloads are unchanged.
 `GET /libraries/:libraryId/books/:id/metadata/refresh` refreshes a book from
 metadata plugins and emits a `books` event with `action: "Updated"` when scalar
 metadata, tags, or people relationships change. Newly created tag entities also
-emit their normal `tags` `Added` events. The refresh requires library Write
-access and matches provider results against the book's known IDs when present;
-books without an external ID accept the first matching book result so they can
-be enriched.
+emit their normal `tags` `Added` events, and a newly resolved series emits its
+normal `series` `Added` event. The refresh requires library Write access and
+matches provider results against the book's known IDs when present; books
+without an external ID accept the first matching book result so they can be
+enriched.
 
 The endpoint sends `Cache-Control: no-cache, no-transform` and
 `X-Accel-Buffering: no` so reverse proxies flush heartbeat and data events
