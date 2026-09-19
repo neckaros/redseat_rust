@@ -76,6 +76,7 @@ pub fn routes(mc: ModelController) -> Router {
         .route("/:id/image/search", get(handler_image_search))
         .route("/:id/image/fetch", post(handler_image_fetch))
         .route("/:id/image/refresh", get(handler_image_refresh))
+        .route("/:id/metadata/refresh", get(handler_metadata_refresh))
         .route("/:id/people", get(handler_people))
         .route("/:id/people/refresh", get(handler_refresh_people))
         .route("/:id/image", post(handler_post_image))
@@ -560,6 +561,15 @@ async fn handler_image_refresh(
     let book = mc
         .refresh_book_image(&library_id, &book_id, &kind, &user)
         .await?;
+    Ok(Json(json!(book)))
+}
+
+async fn handler_metadata_refresh(
+    Path((library_id, book_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<Json<Value>> {
+    let book = mc.refresh_book(&library_id, &book_id, &user).await?;
     Ok(Json(json!(book)))
 }
 

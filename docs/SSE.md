@@ -54,7 +54,7 @@ Missing files do not prevent entry deletion. Event payloads are unchanged.
 | `episodes` | Episodes created/updated/deleted | Library read access |
 | `series` | Series created/updated/deleted | Library read access |
 | `movies` | Movies created/updated/deleted | Library read access |
-| `books` | Books created/updated/deleted | Library read access |
+| `books` | Books created/updated/deleted, including metadata and relationship refreshes | Library read access |
 | `people` | People created/updated/deleted | Library read access |
 | `tags` | Tags created/updated/deleted | Library read access |
 | `backups` | Backup job events | Library admin or server admin |
@@ -64,6 +64,14 @@ Missing files do not prevent entry deletion. Event payloads are unchanged.
 | `watched` | Content marked as watched | User-specific (only watched owner) |
 | `unwatched` | Content unmarked as watched | User-specific (only watched owner) |
 | `request_processing` | Request processing status updates | Library read access |
+
+`GET /libraries/:libraryId/books/:id/metadata/refresh` refreshes a book from
+metadata plugins and emits a `books` event with `action: "Updated"` when scalar
+metadata, tags, or people relationships change. Newly created tag entities also
+emit their normal `tags` `Added` events. The refresh requires library Write
+access and matches provider results against the book's known IDs when present;
+books without an external ID accept the first matching book result so they can
+be enriched.
 
 The endpoint sends `Cache-Control: no-cache, no-transform` and
 `X-Accel-Buffering: no` so reverse proxies flush heartbeat and data events

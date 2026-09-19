@@ -18,6 +18,74 @@ pub struct BooksMessage {
     pub books: Vec<BookWithAction>,
 }
 
+/// Build the fields that a metadata refresh may update on an existing book.
+///
+/// Providers often return sparse records, so omitted values are deliberately
+/// left untouched. External IDs are merged so a provider cannot discard an ID
+/// saved by another source.
+pub fn book_metadata_update(book: &Book, incoming: &Book) -> BookForUpdate {
+    let mut updates = BookForUpdate::default();
+
+    if !incoming.name.trim().is_empty() && book.name != incoming.name {
+        updates.name = Some(incoming.name.clone());
+    }
+    if book.kind != incoming.kind {
+        updates.kind = incoming.kind.clone();
+    }
+    if book.serie_ref != incoming.serie_ref && incoming.serie_ref.is_some() {
+        updates.serie_ref = incoming.serie_ref.clone();
+    }
+    if book.volume != incoming.volume {
+        updates.volume = incoming.volume;
+    }
+    if book.serie_ref.is_some() && book.chapter != incoming.chapter {
+        updates.chapter = incoming.chapter;
+    }
+    if book.year != incoming.year {
+        updates.year = incoming.year;
+    }
+    if book.airdate != incoming.airdate {
+        updates.airdate = incoming.airdate;
+    }
+    if book.overview != incoming.overview {
+        updates.overview = incoming.overview.clone();
+    }
+    if book.pages != incoming.pages {
+        updates.pages = incoming.pages;
+    }
+    if book.params != incoming.params {
+        updates.params = incoming.params.clone();
+    }
+    if book.lang != incoming.lang {
+        updates.lang = incoming.lang.clone();
+    }
+    if book.original != incoming.original {
+        updates.original = incoming.original.clone();
+    }
+    if book.isbn13 != incoming.isbn13 {
+        updates.isbn13 = incoming.isbn13.clone();
+    }
+    if book.openlibrary_edition_id != incoming.openlibrary_edition_id {
+        updates.openlibrary_edition_id = incoming.openlibrary_edition_id.clone();
+    }
+    if book.openlibrary_work_id != incoming.openlibrary_work_id {
+        updates.openlibrary_work_id = incoming.openlibrary_work_id.clone();
+    }
+    if book.google_books_volume_id != incoming.google_books_volume_id {
+        updates.google_books_volume_id = incoming.google_books_volume_id.clone();
+    }
+    if book.asin != incoming.asin {
+        updates.asin = incoming.asin.clone();
+    }
+
+    let ids = super::merge_refresh_ids(book.otherids.as_ref(), incoming.otherids.as_ref());
+    if ids != book.otherids {
+        updates.otherids = ids;
+    }
+
+    updates
+}
+
 pub fn book_enrichment_update(book: &Book, matched: Book) -> BookForUpdate {
     let mut updates = BookForUpdate::default();
     if book.isbn13.is_none() {
@@ -129,5 +197,30 @@ mod tests {
         );
         linked.chapter = Some(1.0);
         assert!(book_enrichment_update(&linked, incoming).chapter.is_none());
+    }
+
+    #[test]
+    fn metadata_refresh_updates_changed_fields_and_preserves_provider_ids() {
+        let stored = Book {
+            name: "Old title".into(),
+            lang: Some("fr".into()),
+            otherids: Some(OtherIds::from(vec!["offline:keep".into()])),
+            ..Default::default()
+        };
+        let incoming = Book {
+            name: "New title".into(),
+            lang: Some("en".into()),
+            overview: Some("Description".into()),
+            otherids: Some(OtherIds::from(vec!["provider:123".into()])),
+            ..Default::default()
+        };
+
+        let update = book_metadata_update(&stored, &incoming);
+        assert_eq!(update.name.as_deref(), Some("New title"));
+        assert_eq!(update.lang.as_deref(), Some("en"));
+        assert_eq!(update.overview.as_deref(), Some("Description"));
+        let ids = update.otherids.unwrap();
+        assert!(ids.contains("offline", "keep"));
+        assert!(ids.contains("provider", "123"));
     }
 }
