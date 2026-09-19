@@ -154,6 +154,34 @@ mod metadata_refresh_tests {
 
         assert!(book_refresh_ids_match(&lookup, &result));
     }
+
+    #[test]
+    fn absent_credit_snapshot_preserves_sparse_relations() {
+        let mut relations = None;
+
+        merge_book_credit_snapshot(&mut relations, None);
+
+        assert!(relations.is_none());
+    }
+
+    #[test]
+    fn present_credit_snapshot_populates_relations() {
+        let mut relations = None;
+        let snapshot = Relations {
+            people_details: Some(Vec::new()),
+            ..Default::default()
+        };
+
+        merge_book_credit_snapshot(&mut relations, Some(snapshot));
+
+        assert_eq!(relations.and_then(|relations| relations.people_details), Some(Vec::new()));
+    }
+}
+
+fn merge_book_credit_snapshot(relations: &mut Option<Relations>, snapshot: Option<Relations>) {
+    if let Some(people_details) = snapshot.and_then(|snapshot| snapshot.people_details) {
+        relations.get_or_insert_default().people_details = Some(people_details);
+    }
 }
 
 fn book_refresh_ids_match(lookup_ids: &RsIds, result_ids: &RsIds) -> bool {
@@ -239,28 +267,57 @@ impl ModelController {
             .unwrap_or_default();
 
         let mut resolved: Vec<MediaItemReference> = Vec::new();
+        let mut provider_to_local = HashMap::new();
         if let Some(tags_details) = &relations.tags_details {
+            let mut pending = Vec::new();
             for tag in tags_details {
                 let otherids = tag_external_ids(tag.otherids.clone(), &tag.id);
                 let mut names = vec![tag.name.clone()];
                 if let Some(alts) = &tag.alt {
                     names.extend(alts.clone());
                 }
-                let reference = if let Some(reference) = self
+                if let Some(reference) = self
                     .get_tag_by_external_id(
                         library_id,
                         &tag.id,
                         names,
-                        otherids.clone(),
+                        otherids,
                         requesting_user,
                     )
                     .await?
                 {
-                    reference
+                    provider_to_local.insert(tag.id.clone(), reference.id.clone());
+                    if !resolved.iter().any(|current| current.id == reference.id) {
+                        resolved.push(reference);
+                    }
                 } else {
-                    let parent = if let Some(parent) = &tag.parent {
-                        if store.get_tag(parent).await?.is_some() {
-                            Some(parent.clone())
+                    pending.push(tag);
+                }
+            }
+
+            while !pending.is_empty() {
+                let mut progressed = false;
+                let mut index = 0;
+                while index < pending.len() {
+                    let tag = pending[index];
+                    let parent = if let Some(provider_parent) = &tag.parent {
+                        if let Some(local_parent) = provider_to_local.get(provider_parent) {
+                            Some(local_parent.clone())
+                        } else if let Some(reference) = self
+                            .get_tag_by_external_id(
+                                library_id,
+                                provider_parent,
+                                Vec::new(),
+                                tag_external_ids(None, provider_parent),
+                                requesting_user,
+                            )
+                            .await?
+                        {
+                            provider_to_local.insert(provider_parent.clone(), reference.id.clone());
+                            Some(reference.id)
+                        } else if pending.iter().any(|candidate| candidate.id == *provider_parent) {
+                            index += 1;
+                            continue;
                         } else {
                             None
                         }
@@ -278,21 +335,39 @@ impl ModelController {
                                 thumb: tag.thumb.clone(),
                                 params: tag.params.clone(),
                                 generated: tag.generated,
-                                otherids,
+                                otherids: tag_external_ids(tag.otherids.clone(), &tag.id),
                             },
                             requesting_user,
                         )
                         .await?;
-                    MediaItemReference {
-                        id: created.id,
-                        conf: None,
-                    }
-                };
-                if !resolved
-                    .iter()
-                    .any(|current: &MediaItemReference| current.id == reference.id)
-                {
-                    resolved.push(reference);
+                    provider_to_local.insert(tag.id.clone(), created.id.clone());
+                    resolved.push(MediaItemReference { id: created.id, conf: None });
+                    pending.remove(index);
+                    progressed = true;
+                }
+
+                // Malformed provider cycles cannot be represented locally. Break the
+                // cycle at one node, then resolve the remaining descendants normally.
+                if !progressed {
+                    let tag = pending.remove(0);
+                    let created = self
+                        .add_tag(
+                            library_id,
+                            TagForAdd {
+                                name: tag.name.clone(),
+                                parent: None,
+                                kind: tag.kind.clone(),
+                                alt: tag.alt.clone(),
+                                thumb: tag.thumb.clone(),
+                                params: tag.params.clone(),
+                                generated: tag.generated,
+                                otherids: tag_external_ids(tag.otherids.clone(), &tag.id),
+                            },
+                            requesting_user,
+                        )
+                        .await?;
+                    provider_to_local.insert(tag.id.clone(), created.id.clone());
+                    resolved.push(MediaItemReference { id: created.id, conf: None });
                 }
             }
         }
@@ -984,8 +1059,14 @@ impl ModelController {
             )
             .await?
         } else {
-            self.get_book(library_id, book_id.to_string(), requesting_user)
+            store
+                .get_book(book_id)
                 .await?
+                .ok_or(SourcesError::UnableToFindMovie(
+                    library_id.to_string(),
+                    book_id.to_string(),
+                    "refresh_book".to_string(),
+                ))?
                 .item
         };
 
@@ -1175,9 +1256,10 @@ impl ModelController {
         {
             Ok(mut snapshots) => {
                 for entry in &mut message.books {
-                    let snapshot = snapshots.remove(&entry.book.item.id);
-                    let relations = entry.book.relations.get_or_insert_default();
-                    relations.people_details = snapshot.and_then(|snapshot| snapshot.people_details);
+                    merge_book_credit_snapshot(
+                        &mut entry.book.relations,
+                        snapshots.remove(&entry.book.item.id),
+                    );
                 }
             }
             Err(error) => crate::tools::log::log_warn(
