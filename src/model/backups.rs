@@ -112,6 +112,13 @@ pub struct BackupForAdd {
     pub filter: Option<MediaQuery>,
     pub last: Option<i64>,
     pub password: Option<String>,
+    #[serde(default = "default_backup_max_versions", rename = "maxVersions")]
+    pub max_versions: u32,
+    #[serde(
+        default = "default_backup_max_database_versions",
+        rename = "maxDatabaseVersions"
+    )]
+    pub max_database_versions: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -129,6 +136,18 @@ pub struct BackupForUpdate {
     pub password: Option<String>,
     pub size: Option<u64>,
     pub name: Option<String>,
+    #[serde(rename = "maxVersions")]
+    pub max_versions: Option<u32>,
+    #[serde(rename = "maxDatabaseVersions")]
+    pub max_database_versions: Option<u32>,
+}
+
+const fn default_backup_max_versions() -> u32 {
+    1
+}
+
+const fn default_backup_max_database_versions() -> u32 {
+    3
 }
 
 fn backup_media_version_key(md5: Option<String>, backup_file_id: &str) -> String {
@@ -401,6 +420,8 @@ impl ModelController {
             password: backup.password,
             size: 0,
             plugin: backup.plugin,
+            max_versions: backup.max_versions.max(1),
+            max_database_versions: backup.max_database_versions.max(1),
         };
         self.store.add_backup(backup.clone()).await?;
         self.sync_backup_schedule(&backup).await?;
@@ -1164,6 +1185,25 @@ impl ModelController {
         Ok(total_deleted)
     }
 
+    /// Keep only the newest configured number of distinct content versions for each file.
+    ///
+    /// UNPROTECTED INTERNAL USAGE ONLY
+    pub async fn prune_backup_versions(&self, backup: &Backup) -> RsResult<usize> {
+        let backup_files = self.get_backup_backup_files(&backup.id).await?;
+        let obsolete = obsolete_backup_versions(
+            &backup_files,
+            backup.max_versions.max(1),
+            backup.max_database_versions.max(1),
+        );
+        let mut removed = 0;
+        for backup_file in obsolete {
+            self.remove_backup_file(&backup_file.id, &ConnectedUser::ServerAdmin)
+                .await?;
+            removed += 1;
+        }
+        Ok(removed)
+    }
+
     pub fn create_backup_progress_sender(
         &self,
         template: BackupFileProgress,
@@ -1220,6 +1260,45 @@ impl ModelController {
         self.store.add_backup_error(error).await?;
         Ok(())
     }
+}
+
+fn backup_content_version(sourcehash: &str) -> &str {
+    sourcehash
+        .strip_prefix("version:")
+        .and_then(|version| version.rsplit_once(':'))
+        .and_then(|(hash, _)| (hash != "missing").then_some(hash))
+        .unwrap_or(sourcehash)
+}
+
+fn obsolete_backup_versions(
+    files: &[BackupFile],
+    max_versions: u32,
+    max_database_versions: u32,
+) -> Vec<BackupFile> {
+    use std::collections::{HashMap, HashSet};
+
+    let mut files = files.iter().collect::<Vec<_>>();
+    files.sort_by_key(|file| std::cmp::Reverse(file.added));
+
+    let mut retained = HashMap::<&str, HashSet<&str>>::new();
+    files
+        .into_iter()
+        .filter_map(|file| {
+            let versions = retained.entry(file.file.as_str()).or_default();
+            let version = backup_content_version(&file.sourcehash);
+            let limit = if matches!(file.file.as_str(), "db" | "config") {
+                max_database_versions
+            } else {
+                max_versions
+            };
+            if versions.contains(version) || versions.len() >= limit.max(1) as usize {
+                Some(file.clone())
+            } else {
+                versions.insert(version);
+                None
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1311,5 +1390,98 @@ mod tests {
         assert!(backup_source_matches("hash", "hash"));
         assert!(backup_source_matches("version:hash:first-id", "hash"));
         assert!(!backup_source_matches("version:missing:first-id", "hash"));
+    }
+
+    #[test]
+    fn new_backup_requests_default_max_versions_to_one() {
+        let request: BackupForAdd = serde_json::from_value(serde_json::json!({
+            "name": "Backup",
+            "source": "local",
+            "path": "/backup"
+        }))
+        .unwrap();
+        assert_eq!(request.max_versions, 1);
+        assert_eq!(request.max_database_versions, 3);
+    }
+
+    fn version(id: &str, file: &str, hash: &str, added: i64) -> BackupFile {
+        BackupFile {
+            backup: "backup".to_string(),
+            library: Some("library".to_string()),
+            file: file.to_string(),
+            id: id.to_string(),
+            path: id.to_string(),
+            hash: String::new(),
+            sourcehash: format!("version:{hash}:{id}"),
+            size: 1,
+            modified: added,
+            added,
+            iv: None,
+            thumb_size: None,
+            info_size: None,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn retention_keeps_latest_distinct_versions_per_file() {
+        let files = vec![
+            version("a-old", "a", "same", 10),
+            version("a-duplicate", "a", "same", 20),
+            version("a-new", "a", "new", 30),
+            version("b-old", "b", "old", 10),
+            version("b-new", "b", "new", 20),
+        ];
+
+        let obsolete = obsolete_backup_versions(&files, 1, 3)
+            .into_iter()
+            .map(|file| file.id)
+            .collect::<std::collections::HashSet<_>>();
+
+        assert_eq!(obsolete.len(), 3);
+        assert!(obsolete.contains("a-old"));
+        assert!(obsolete.contains("a-duplicate"));
+        assert!(obsolete.contains("b-old"));
+        assert!(!obsolete.contains("a-new"));
+        assert!(!obsolete.contains("b-new"));
+    }
+
+    #[test]
+    fn retention_counts_content_hashes_instead_of_backup_rows() {
+        let files = vec![
+            version("old", "media", "old", 10),
+            version("same-old", "media", "new", 20),
+            version("latest", "media", "new", 30),
+        ];
+
+        let obsolete = obsolete_backup_versions(&files, 2, 3);
+        assert_eq!(obsolete.len(), 1);
+        assert_eq!(obsolete[0].id, "same-old");
+    }
+
+    #[test]
+    fn retention_uses_separate_database_snapshot_limit() {
+        let files = vec![
+            version("media-old", "media", "old", 10),
+            version("media-new", "media", "new", 20),
+            version("db-1", "db", "one", 10),
+            version("db-2", "db", "two", 20),
+            version("db-3", "db", "three", 30),
+            version("db-4", "db", "four", 40),
+            version("config-1", "config", "one", 10),
+            version("config-2", "config", "two", 20),
+            version("config-3", "config", "three", 30),
+            version("config-4", "config", "four", 40),
+        ];
+
+        let obsolete = obsolete_backup_versions(&files, 1, 3)
+            .into_iter()
+            .map(|file| file.id)
+            .collect::<std::collections::HashSet<_>>();
+
+        assert_eq!(obsolete.len(), 3);
+        assert!(obsolete.contains("media-old"));
+        assert!(obsolete.contains("db-1"));
+        assert!(obsolete.contains("config-1"));
     }
 }

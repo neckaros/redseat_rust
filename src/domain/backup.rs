@@ -27,6 +27,8 @@ pub struct Backup {
     pub last: Option<i64>,
     pub password: Option<String>,
     pub size: u64,
+    pub max_versions: u32,
+    pub max_database_versions: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

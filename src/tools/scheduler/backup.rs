@@ -304,6 +304,27 @@ impl RsSchedulerTask for BackupTask {
                     .await?;
                 }
 
+                let removed = mc.prune_backup_versions(&backup).await?;
+                log_info(
+                    crate::tools::log::LogServiceType::Scheduler,
+                    format!(
+                        "Backup {} removed {} obsolete file versions",
+                        backup.id, removed
+                    ),
+                );
+                let backup_files_infos = mc
+                    .get_backup_files_infos(&backup.id, &ConnectedUser::ServerAdmin)
+                    .await?;
+                mc.update_backup(
+                    &backup.id,
+                    BackupForUpdate {
+                        size: backup_files_infos.size,
+                        ..Default::default()
+                    },
+                    &ConnectedUser::ServerAdmin,
+                )
+                .await?;
+
                 Ok(())
             })
             .await;
