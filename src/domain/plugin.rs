@@ -1,6 +1,6 @@
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
 
 use super::{credential::Credential, ElementAction};
@@ -9,13 +9,13 @@ use rs_plugin_common_interfaces::{CredentialType, CustomParam, PluginInformation
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct PluginWasm {
     pub filename: String,
     pub path: PathBuf,
     pub infos: PluginInformation,
     #[serde(skip_serializing)]
-    pub plugin: Arc<Mutex<ExtismPlugin>>,
+    pub plugin: Arc<tokio::sync::Mutex<ExtismPlugin>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
