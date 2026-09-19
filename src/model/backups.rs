@@ -138,7 +138,7 @@ fn backup_media_version_key(md5: Option<String>, backup_file_id: &str) -> String
     }
 }
 
-fn backup_source_matches(stored: &str, source_hash: &str) -> bool {
+pub(crate) fn backup_source_matches(stored: &str, source_hash: &str) -> bool {
     stored == source_hash
         || stored
             .strip_prefix("version:")

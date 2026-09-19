@@ -53,7 +53,7 @@ pub struct MediaBackup {
     pub id: String,
     pub name: String,
     pub size: Option<u64>,
-    pub modified: i64,
+    pub source_hash: Option<String>,
 }
 
 impl RsSort {
@@ -163,7 +163,7 @@ fn media_backup_query(query: &MediaQuery) -> String {
 
     format!(
         "SELECT m.id, m.name, m.size,
-                MAX(IFNULL(m.added, 0), IFNULL(m.created, 0), IFNULL(m.modified, 0)) AS backup_modified{}
+                m.md5 AS source_hash{}
          FROM medias AS m",
         filter_fields.concat()
     )
@@ -844,7 +844,7 @@ impl SqliteLibraryStore {
         {}
         {}
         {}
-        ORDER BY backup_modified ASC",
+        ORDER BY m.id ASC",
                     where_query.format_recursive(),
                     backup_query,
                     where_query.format()
@@ -855,7 +855,7 @@ impl SqliteLibraryStore {
                         id: row.get(0)?,
                         name: row.get(1)?,
                         size: row.get(2)?,
-                        modified: row.get(3)?,
+                        source_hash: row.get(3)?,
                     };
                     Ok(s)
                 })?;
@@ -1441,7 +1441,7 @@ mod tests {
         assert_eq!(backups[0].id, "backup-media");
         assert_eq!(backups[0].name, "backup.jpg");
         assert_eq!(backups[0].size, Some(123));
-        assert!(backups[0].modified > 0);
+        assert_eq!(backups[0].source_hash.as_deref(), Some("source-hash"));
     }
 
     #[tokio::test]
