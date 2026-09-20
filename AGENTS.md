@@ -52,6 +52,8 @@ declared by the binary entry points; there is no `lib.rs`.
 
 ## Validation
 
+- Before pushing a branch containing Rust changes, run `cargo fmt --all` so
+  formatting failures are caught locally instead of by CI.
 - For Rust changes, start with `cargo check --bin redseat-rust`, then run the
   narrowest relevant `cargo test --bin redseat-rust <filter>`. Check the daemon
   target when changing its code or shared modules.
