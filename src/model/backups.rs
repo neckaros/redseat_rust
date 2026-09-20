@@ -1262,12 +1262,18 @@ impl ModelController {
     }
 }
 
-fn backup_content_version(sourcehash: &str) -> &str {
+fn backup_content_version(file: &BackupFile) -> String {
+    let sourcehash = file.sourcehash.as_str();
+    if sourcehash.is_empty() || sourcehash == "none" || sourcehash.starts_with("version:missing:") {
+        return format!("missing:{}", file.id);
+    }
+
     sourcehash
         .strip_prefix("version:")
         .and_then(|version| version.rsplit_once(':'))
-        .and_then(|(hash, _)| (hash != "missing").then_some(hash))
+        .map(|(hash, _)| hash)
         .unwrap_or(sourcehash)
+        .to_string()
 }
 
 fn obsolete_backup_versions(
@@ -1280,18 +1286,20 @@ fn obsolete_backup_versions(
     let mut files = files.iter().collect::<Vec<_>>();
     files.sort_by_key(|file| std::cmp::Reverse(file.added));
 
-    let mut retained = HashMap::<&str, HashSet<&str>>::new();
+    let mut retained = HashMap::<(Option<&str>, &str), HashSet<String>>::new();
     files
         .into_iter()
         .filter_map(|file| {
-            let versions = retained.entry(file.file.as_str()).or_default();
-            let version = backup_content_version(&file.sourcehash);
+            let versions = retained
+                .entry((file.library.as_deref(), file.file.as_str()))
+                .or_default();
+            let version = backup_content_version(file);
             let limit = if matches!(file.file.as_str(), "db" | "config") {
                 max_database_versions
             } else {
                 max_versions
             };
-            if versions.contains(version) || versions.len() >= limit.max(1) as usize {
+            if versions.contains(&version) || versions.len() >= limit.max(1) as usize {
                 Some(file.clone())
             } else {
                 versions.insert(version);
@@ -1483,5 +1491,27 @@ mod tests {
         assert!(obsolete.contains("media-old"));
         assert!(obsolete.contains("db-1"));
         assert!(obsolete.contains("config-1"));
+    }
+
+    #[test]
+    fn retention_preserves_legacy_versions_without_hashes() {
+        let mut empty_hash = version("empty", "media", "unused", 10);
+        empty_hash.sourcehash = String::new();
+        let mut none_hash = version("none", "media", "unused", 20);
+        none_hash.sourcehash = "none".to_string();
+        let missing_hash = version("missing", "media", "missing", 30);
+
+        let obsolete = obsolete_backup_versions(&[empty_hash, none_hash, missing_hash], 3, 3);
+        assert!(obsolete.is_empty());
+    }
+
+    #[test]
+    fn retention_scopes_file_versions_by_library() {
+        let old_library_db = version("old-library-db", "db", "old", 10);
+        let mut new_library_db = version("new-library-db", "db", "new", 20);
+        new_library_db.library = Some("new-library".to_string());
+
+        let obsolete = obsolete_backup_versions(&[old_library_db, new_library_db], 1, 1);
+        assert!(obsolete.is_empty());
     }
 }

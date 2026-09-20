@@ -26,7 +26,7 @@ use crate::{
     },
 };
 use axum::{async_trait, Error};
-use chrono::{DateTime, Duration};
+use chrono::DateTime;
 use futures::FutureExt;
 use human_bytes::human_bytes;
 use nanoid::nanoid;
@@ -196,31 +196,14 @@ impl RsSchedulerTask for BackupTask {
                     }
 
                     let database_snapshot = mc.create_database_snapshot(Some(library_id)).await?;
-                    let db_backup = mc
-                        .upload_backup_path(
-                            backup.clone(),
-                            "db",
-                            database_snapshot.path().to_path_buf(),
-                            format!("db-{}", now().format("%Y%m%d%H%M")),
-                            Some(library),
-                        )
-                        .await?;
-
-                    let delete_dbs_before = now().add(Duration::days(-7))?.timestamp_millis();
-                    let removed = mc
-                        .remove_backup_files_for_media(
-                            &backup.id,
-                            "db",
-                            Some(delete_dbs_before),
-                            Some(db_backup.id.clone()),
-                            &ConnectedUser::ServerAdmin,
-                        )
-                        .await?;
-                    log_info(
-                        crate::tools::log::LogServiceType::Scheduler,
-                        format!("Backup removed {} dbs backup", removed),
-                    );
-                    //println!("db backup: {:?}", db_backup);
+                    mc.upload_backup_path(
+                        backup.clone(),
+                        "db",
+                        database_snapshot.path().to_path_buf(),
+                        format!("db-{}", now().format("%Y%m%d%H%M")),
+                        Some(library),
+                    )
+                    .await?;
                     let bakcup_update = BackupForUpdate {
                         size: backup_files_infos.size,
                         last: Some(now().timestamp_millis()),
@@ -233,29 +216,14 @@ impl RsSchedulerTask for BackupTask {
                     mc.set_backup_status(message).await?;
 
                     let database_snapshot = mc.create_database_snapshot(None).await?;
-                    let db_backup = mc
-                        .upload_backup_path(
-                            backup.clone(),
-                            "db",
-                            database_snapshot.path().to_path_buf(),
-                            format!("db-{}", now().format("%Y%m%d%H%M")),
-                            None,
-                        )
-                        .await?;
-                    let delete_dbs_before = now().add(Duration::days(-7))?.timestamp_millis();
-                    let removed = mc
-                        .remove_backup_files_for_media(
-                            &backup.id,
-                            "db",
-                            Some(delete_dbs_before),
-                            Some(db_backup.id.clone()),
-                            &ConnectedUser::ServerAdmin,
-                        )
-                        .await?;
-                    log_info(
-                        crate::tools::log::LogServiceType::Scheduler,
-                        format!("Backup removed {} dbs backup", removed),
-                    );
+                    mc.upload_backup_path(
+                        backup.clone(),
+                        "db",
+                        database_snapshot.path().to_path_buf(),
+                        format!("db-{}", now().format("%Y%m%d%H%M")),
+                        None,
+                    )
+                    .await?;
 
                     let message = BackupProcessStatus::new_from_backup(&backup, 2, 1, 0, 0);
                     mc.set_backup_status(message).await?;
@@ -265,29 +233,14 @@ impl RsSchedulerTask for BackupTask {
                         .map_err(|_| {
                             RsError::Error("Unable to get config.json path for backup".to_string())
                         })?;
-                    let db_backup = mc
-                        .upload_backup_path(
-                            backup.clone(),
-                            "config",
-                            server_db_path,
-                            format!("config-{}", now().format("%Y%m%d%H%M")),
-                            None,
-                        )
-                        .await?;
-                    let delete_dbs_before = now().add(Duration::days(-7))?.timestamp_millis();
-                    let removed = mc
-                        .remove_backup_files_for_media(
-                            &backup.id,
-                            "config",
-                            Some(delete_dbs_before),
-                            Some(db_backup.id.clone()),
-                            &ConnectedUser::ServerAdmin,
-                        )
-                        .await?;
-                    log_info(
-                        crate::tools::log::LogServiceType::Scheduler,
-                        format!("Backup removed {} config backup", removed),
-                    );
+                    mc.upload_backup_path(
+                        backup.clone(),
+                        "config",
+                        server_db_path,
+                        format!("config-{}", now().format("%Y%m%d%H%M")),
+                        None,
+                    )
+                    .await?;
 
                     let backup_files_infos = mc
                         .get_backup_files_infos(&backup.id, &ConnectedUser::ServerAdmin)

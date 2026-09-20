@@ -328,6 +328,28 @@ interface TagMessage {
 }
 
 // Backup events
+interface Backup {
+  id: string;
+  name: string;
+  source: string;
+  plugin?: string;
+  credentials?: string;
+  library?: string;
+  path: string;
+  schedule?: string;
+  filter?: MediaQuery;
+  last?: number;
+  password?: string;
+  size: number;
+  maxVersions: number;
+  maxDatabaseVersions: number;
+}
+
+interface BackupWithStatus {
+  backup: Backup;
+  status?: BackupProcessStatus;
+}
+
 interface BackupMessage {
   backup: BackupWithStatus;
 }
