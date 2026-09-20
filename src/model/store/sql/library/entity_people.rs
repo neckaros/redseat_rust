@@ -1,4 +1,7 @@
-use rs_plugin_common_interfaces::domain::rs_ids::RsIds;
+use rs_plugin_common_interfaces::domain::{
+    media::{FileEpisode, MediaItemReference},
+    rs_ids::RsIds,
+};
 use rusqlite::{params, params_from_iter};
 
 use super::{Result, SqliteLibraryStore};
@@ -11,6 +14,63 @@ use crate::{
 };
 
 impl SqliteLibraryStore {
+    pub(crate) async fn replace_movie_title_relations(
+        &self,
+        movie_id: &str,
+        relations: &rs_plugin_common_interfaces::domain::Relations,
+    ) -> Result<bool> {
+        let movie_id = movie_id.to_string();
+        let tags = relations.tags.clone();
+        let series = relations.series.clone();
+        if tags.is_none() && series.is_none() {
+            return Ok(false);
+        }
+        self.connection.call(move |conn| {
+            if let Some(tags) = tags {
+                conn.execute("DELETE FROM movie_tag_mapping WHERE movie_ref = ?", [&movie_id])?;
+                for tag in tags {
+                    conn.execute(
+                        "INSERT INTO movie_tag_mapping (movie_ref, tag_ref, confidence) VALUES (?, ?, ?)",
+                        params![movie_id, tag.id, tag.conf],
+                    )?;
+                }
+            }
+            if let Some(series) = series {
+                conn.execute("DELETE FROM movie_serie_mapping WHERE movie_ref = ?", [&movie_id])?;
+                for serie in series {
+                    conn.execute(
+                        "INSERT INTO movie_serie_mapping (movie_ref, serie_ref, season, episode, episode_to) VALUES (?, ?, ?, ?, ?)",
+                        params![movie_id, serie.id, serie.season, serie.episode, serie.episode_to],
+                    )?;
+                }
+            }
+            Ok(())
+        }).await?;
+        Ok(true)
+    }
+
+    pub(crate) async fn replace_serie_title_relations(
+        &self,
+        serie_id: &str,
+        relations: &rs_plugin_common_interfaces::domain::Relations,
+    ) -> Result<bool> {
+        let Some(tags) = relations.tags.clone() else {
+            return Ok(false);
+        };
+        let serie_id = serie_id.to_string();
+        self.connection.call(move |conn| {
+            conn.execute("DELETE FROM serie_tag_mapping WHERE serie_ref = ?", [&serie_id])?;
+            for tag in tags {
+                conn.execute(
+                    "INSERT INTO serie_tag_mapping (serie_ref, tag_ref, confidence) VALUES (?, ?, ?)",
+                    params![serie_id, tag.id, tag.conf],
+                )?;
+            }
+            Ok(())
+        }).await?;
+        Ok(true)
+    }
+
     /// One mapping query for the complete page/event, including empty snapshots.
     pub(crate) async fn get_people_relations_batch(
         &self,
@@ -59,7 +119,76 @@ impl SqliteLibraryStore {
                     .push(Self::row_to_person_credit(row)?);
             }
         }
+        Self::load_title_relations(conn, entity, ids, &mut snapshots)?;
         Ok(snapshots)
+    }
+
+    fn load_title_relations(
+        conn: &rusqlite::Connection,
+        entity: PeopleEntity,
+        ids: &[String],
+        snapshots: &mut std::collections::HashMap<
+            String,
+            rs_plugin_common_interfaces::domain::Relations,
+        >,
+    ) -> rusqlite::Result<()> {
+        let tag_sql = match entity {
+            PeopleEntity::Movie => Some(
+                "SELECT mt.movie_ref, mt.tag_ref, mt.confidence
+                 FROM json_each(?) requested
+                 JOIN movie_tag_mapping mt ON mt.movie_ref = requested.value
+                 ORDER BY mt.movie_ref, mt.tag_ref",
+            ),
+            PeopleEntity::Serie => Some(
+                "SELECT st.serie_ref, st.tag_ref, st.confidence
+                 FROM json_each(?) requested
+                 JOIN serie_tag_mapping st ON st.serie_ref = requested.value
+                 ORDER BY st.serie_ref, st.tag_ref",
+            ),
+            PeopleEntity::Book => None,
+        };
+        if let Some(tag_sql) = tag_sql {
+            let mut query = conn.prepare(tag_sql)?;
+            let mut rows = query.query([serde_json::json!(ids)])?;
+            while let Some(row) = rows.next()? {
+                let id: String = row.get(0)?;
+                if let Some(relations) = snapshots.get_mut(&id) {
+                    relations.tags.get_or_insert_default().push(MediaItemReference {
+                        id: row.get(1)?,
+                        conf: row.get(2)?,
+                    });
+                }
+            }
+        }
+
+        if matches!(entity, PeopleEntity::Movie) {
+            let mut query = conn.prepare(
+                "SELECT ms.movie_ref, ms.serie_ref, ms.season, ms.episode, ms.episode_to
+                 FROM json_each(?) requested
+                 JOIN movie_serie_mapping ms ON ms.movie_ref = requested.value
+                 ORDER BY ms.movie_ref, ms.serie_ref, ms.season, ms.episode",
+            )?;
+            let mut rows = query.query([serde_json::json!(ids)])?;
+            while let Some(row) = rows.next()? {
+                let id: String = row.get(0)?;
+                if let Some(relations) = snapshots.get_mut(&id) {
+                    relations.series.get_or_insert_default().push(FileEpisode {
+                        id: row.get(1)?,
+                        season: row.get(2)?,
+                        episode: row.get(3)?,
+                        episode_to: row.get(4)?,
+                    });
+                }
+            }
+        }
+
+        for relations in snapshots.values_mut() {
+            relations.tags.get_or_insert_default();
+            if matches!(entity, PeopleEntity::Movie) {
+                relations.series.get_or_insert_default();
+            }
+        }
+        Ok(())
     }
 
     fn people_relations_sql(entity: PeopleEntity) -> String {
@@ -357,8 +486,10 @@ mod tests {
         error::RsResult,
         model::{
             entity_people::resolve_refresh_person,
+            series::SerieForUpdate,
             people::{PeopleQuery, PersonForAdd, PersonForInsert},
         },
+        domain::movie::MovieForUpdate,
     };
 
     async fn store() -> SqliteLibraryStore {
@@ -390,6 +521,60 @@ mod tests {
             })
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn title_relation_links_roundtrip_independently_from_media() {
+        use rs_plugin_common_interfaces::domain::{media::FileEpisode, Relations};
+
+        let store = store().await;
+        store.connection.call(|conn| {
+            conn.execute_batch("INSERT INTO movies(id,name) VALUES ('movie','Movie');
+                INSERT INTO series(id,name) VALUES ('show','Show'), ('collection','Collection');
+                INSERT INTO tags(id,name) VALUES ('tag','Tag');")?;
+            Ok(())
+        }).await.unwrap();
+
+        store.replace_movie_title_relations("movie", &Relations {
+            tags: Some(vec![MediaItemReference { id: "tag".into(), conf: Some(90) }]),
+            series: Some(vec![FileEpisode {
+                id: "collection".into(), season: Some(1), episode: Some(2), episode_to: None,
+            }]),
+            ..Default::default()
+        }).await.unwrap();
+        store.replace_serie_title_relations("show", &Relations {
+            tags: Some(vec![MediaItemReference { id: "tag".into(), conf: None }]),
+            ..Default::default()
+        }).await.unwrap();
+
+        let movie = store.get_people_relations_batch(PeopleEntity::Movie, vec!["movie".into()])
+            .await.unwrap().remove("movie").unwrap();
+        assert_eq!(movie.tags.unwrap()[0].id, "tag");
+        assert_eq!(movie.series.unwrap()[0].id, "collection");
+
+        let show = store.get_people_relations_batch(PeopleEntity::Serie, vec!["show".into()])
+            .await.unwrap().remove("show").unwrap();
+        assert_eq!(show.tags.unwrap()[0].id, "tag");
+        assert!(show.series.is_none());
+
+        store.update_movie("movie", MovieForUpdate {
+            remove_tags: Some(vec!["tag".into()]),
+            remove_series: Some(vec![FileEpisode {
+                id: "collection".into(), season: Some(1), episode: Some(2), episode_to: None,
+            }]),
+            ..Default::default()
+        }).await.unwrap();
+        store.update_serie("show", SerieForUpdate {
+            remove_tags: Some(vec!["tag".into()]),
+            ..Default::default()
+        }).await.unwrap();
+        let movie = store.get_people_relations_batch(PeopleEntity::Movie, vec!["movie".into()])
+            .await.unwrap().remove("movie").unwrap();
+        assert_eq!(movie.tags, Some(vec![]));
+        assert_eq!(movie.series, Some(vec![]));
+        let show = store.get_people_relations_batch(PeopleEntity::Serie, vec!["show".into()])
+            .await.unwrap().remove("show").unwrap();
+        assert_eq!(show.tags, Some(vec![]));
     }
 
     #[tokio::test]

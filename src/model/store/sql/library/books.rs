@@ -25,6 +25,26 @@ use crate::{
 use super::{Result, SqliteLibraryStore};
 
 impl SqliteLibraryStore {
+    fn hydrate_book_relations(
+        conn: &rusqlite::Connection,
+        books: &mut [ItemWithRelations<Book>],
+    ) -> rusqlite::Result<()> {
+        let mut credits = Self::load_people_relations(
+            conn,
+            crate::model::entity_people::PeopleEntity::Book,
+            &books.iter().map(|item| item.item.id.clone()).collect::<Vec<_>>(),
+        )?;
+        for book in books {
+            if let Some(snapshot) = credits.remove(&book.item.id) {
+                let relations = book.relations.get_or_insert_default();
+                relations.people = None;
+                relations.people_details = snapshot.people_details;
+            }
+            crate::model::entity_people::ensure_title_relation_fields(&mut book.relations, true);
+        }
+        Ok(())
+    }
+
     fn row_to_book(row: &Row) -> rusqlite::Result<ItemWithRelations<Book>> {
         let serie_ref: Option<String> = row.get(3)?;
         let volume: Option<f64> = row.get(4)?;
@@ -138,14 +158,7 @@ impl SqliteLibraryStore {
                 ))?;
                 let rows = statement.query_map(where_query.values(), Self::row_to_book)?;
                 let mut values = rows.collect::<std::result::Result<Vec<ItemWithRelations<Book>>, rusqlite::Error>>()?;
-                let mut credits = Self::load_people_relations(conn, crate::model::entity_people::PeopleEntity::Book, &values.iter().map(|item| item.item.id.clone()).collect::<Vec<_>>())?;
-                for item in &mut values {
-                    if let Some(snapshot) = credits.remove(&item.item.id) {
-                        let relations = item.relations.get_or_insert_default();
-                        relations.people = None;
-                        relations.people_details = snapshot.people_details;
-                    }
-                }
+                Self::hydrate_book_relations(conn, &mut values)?;
                 Ok(values)
             })
             .await?;
@@ -168,7 +181,9 @@ impl SqliteLibraryStore {
                 let row = statement
                     .query_row([book_id], Self::row_to_book)
                     .optional()?;
-                Ok(row)
+                let mut values = row.into_iter().collect::<Vec<_>>();
+                Self::hydrate_book_relations(conn, &mut values)?;
+                Ok(values.pop())
             })
             .await?;
         Ok(row)
@@ -229,8 +244,9 @@ impl SqliteLibraryStore {
                         && ids.find_detail_f64("chapter").map(|c| Some(c) == book.chapter).unwrap_or(true)
                 };
 
-                if let Some(book) = direct_row {
+                if let Some(mut book) = direct_row {
                     if volume_matches(&book) {
+                        Self::hydrate_book_relations(conn, std::slice::from_mut(&mut book))?;
                         return Ok(Some(book));
                     }
                 }
@@ -263,7 +279,7 @@ impl SqliteLibraryStore {
                     LIMIT 1",
                 )?;
 
-                let by_series_row = by_series_statement
+                let mut by_series_row = by_series_statement
                     .query_row(
                         params![
                             ids.openlibrary_work_id().map(str::to_string),
@@ -276,6 +292,10 @@ impl SqliteLibraryStore {
                         Self::row_to_book,
                     )
                     .optional()?;
+
+                if let Some(book) = &mut by_series_row {
+                    Self::hydrate_book_relations(conn, std::slice::from_mut(book))?;
+                }
 
                 Ok(by_series_row)
             })
@@ -608,7 +628,10 @@ mod tests {
             .unwrap();
         let fetched = store.get_book("book-no-isbn").await.unwrap().unwrap();
         assert!(fetched.item.isbn13.is_none());
-        assert!(fetched.relations.is_none());
+        let relations = fetched.relations.unwrap();
+        assert_eq!(relations.people_details, Some(vec![]));
+        assert_eq!(relations.tags, Some(vec![]));
+        assert_eq!(relations.series, Some(vec![]));
     }
 
     #[tokio::test]
@@ -719,13 +742,12 @@ mod tests {
         let fetched = store.get_book("book-rel").await.unwrap().unwrap();
         let relations = fetched.relations.unwrap();
         let tags = relations.tags.unwrap();
-        let people = relations.people.unwrap();
+        let people = relations.people_details.unwrap();
 
         assert_eq!(tags.len(), 2);
         assert!(tags.iter().any(|t| t.id == "tag-1"));
         assert!(tags.iter().any(|t| t.id == "tag-2"));
-        assert_eq!(people.len(), 1);
-        assert_eq!(people[0].id, "person-1");
+        assert!(people.is_empty());
 
         // Remove tag
         store.remove_book_tag("book-rel", "tag-1").await.unwrap();
@@ -756,6 +778,6 @@ mod tests {
         let tags3 = relations3.tags.unwrap();
         assert_eq!(tags3.len(), 1);
         assert_eq!(tags3[0].id, "tag-3");
-        assert!(relations3.people.is_none());
+        assert_eq!(relations3.people_details, Some(vec![]));
     }
 }

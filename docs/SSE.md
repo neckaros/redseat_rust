@@ -1081,10 +1081,14 @@ match both on the same relationship. For example:
 Filtering by person uses the mapping index before checking the small JSON lists;
 role-only searches may scan more relationship rows.
 
-### Title credit snapshots
+### Title relation snapshots
 
 Movie (including `/movies/upcoming` and `/movies/ondeck`), series, and book list
 responses include one `relations.peopleDetails` array on each flattened title.
+Movie responses also include title-level `tags` and `series`; series responses
+include title-level `tags` and intentionally omit `series`; book responses include
+`tags` and `series`. Single-item, create, and patch responses use the same shape.
+These are dedicated title mappings and are independent of media relations.
 The `movies`, `series`, and `books` live events include the same field inside
 `movies[].movie.relations`, `series[].serie.relations`, and `books[].book.relations`.
 Each entry contains the local person profile and optional relationship `roles`,
@@ -1100,8 +1104,8 @@ all credits. A missing array means unchanged, including events whose credit
 hydration failed (logged by the server). Nullable fields stay omitted inside a
 credit object; explicit empty role/name lists remain empty. Credit insertion,
 updates, and deletion advance the parent title timestamp, including removing its
-last credit. Generic `people` references and other relation fields keep their
-media-linking behavior; title snapshots emit only `peopleDetails` for credits.
+last credit. Generic `people` references keep their media-linking behavior.
+Migration 061 adds the dedicated movie-tag, movie-series, and series-tag mappings.
 
 ### Optional credit rank and plugin format
 

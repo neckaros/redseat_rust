@@ -210,13 +210,43 @@ impl SqliteLibraryStore {
 
                 where_query.add_where(QueryWhereType::Equal("id", &id));
 
-                let update_sql = format!(
-                    "UPDATE movies SET {} {}",
-                    where_query.format_update(),
-                    where_query.format()
-                );
-
-                conn.execute(&update_sql, where_query.values())?;
+                if !where_query.columns_update.is_empty() {
+                    let update_sql = format!(
+                        "UPDATE movies SET {} {}",
+                        where_query.format_update(),
+                        where_query.format()
+                    );
+                    conn.execute(&update_sql, where_query.values())?;
+                }
+                if let Some(tags) = update.add_tags {
+                    for tag in tags {
+                        conn.execute(
+                            "INSERT OR REPLACE INTO movie_tag_mapping (movie_ref, tag_ref, confidence) VALUES (?, ?, ?)",
+                            params![id, tag.id, tag.conf],
+                        )?;
+                    }
+                }
+                if let Some(tags) = update.remove_tags {
+                    for tag in tags {
+                        conn.execute("DELETE FROM movie_tag_mapping WHERE movie_ref = ? AND tag_ref = ?", params![id, tag])?;
+                    }
+                }
+                if let Some(series) = update.add_series {
+                    for serie in series {
+                        conn.execute(
+                            "INSERT OR REPLACE INTO movie_serie_mapping (movie_ref, serie_ref, season, episode, episode_to) VALUES (?, ?, ?, ?, ?)",
+                            params![id, serie.id, serie.season, serie.episode, serie.episode_to],
+                        )?;
+                    }
+                }
+                if let Some(series) = update.remove_series {
+                    for serie in series {
+                        conn.execute(
+                            "DELETE FROM movie_serie_mapping WHERE movie_ref = ? AND serie_ref = ? AND season IS ? AND episode IS ?",
+                            params![id, serie.id, serie.season, serie.episode],
+                        )?;
+                    }
+                }
                 Ok(())
             })
             .await?;

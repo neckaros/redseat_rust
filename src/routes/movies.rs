@@ -34,7 +34,7 @@ use axum::{
 };
 use futures::{Stream, TryStreamExt};
 use rs_plugin_common_interfaces::{
-    domain::rs_ids::RsIds,
+    domain::{rs_ids::RsIds, ItemWithRelations},
     lookup::{RsLookupMovie, RsLookupQuery},
     request::RsGroupDownload,
     ElementType, ExternalImage, ImageType, MediaType, RsRequest,
@@ -151,7 +151,7 @@ async fn handler_get(
     State(mc): State<ModelController>,
     user: ConnectedUser,
 ) -> Result<Json<Value>> {
-    let movie = mc.get_movie(&library_id, movie_id, &user).await?;
+    let movie = mc.get_movie_with_relations(&library_id, movie_id, &user).await?;
     let body = Json(json!(movie));
     Ok(body)
 }
@@ -337,8 +337,10 @@ async fn handler_patch(
     user: ConnectedUser,
     Json(update): Json<MovieForUpdate>,
 ) -> Result<Json<Value>> {
+    mc.update_movie(&library_id, movie_id.clone(), update, &user)
+        .await?;
     let new_credential = mc
-        .update_movie(&library_id, movie_id, update, &user)
+        .get_movie_with_relations(&library_id, movie_id, &user)
         .await?;
     Ok(Json(json!(new_credential)))
 }
@@ -485,9 +487,9 @@ async fn handler_post(
     Path(library_id): Path<String>,
     State(mc): State<ModelController>,
     user: ConnectedUser,
-    Json(tag): Json<Movie>,
+    Json(tag): Json<ItemWithRelations<Movie>>,
 ) -> Result<Json<Value>> {
-    let credential = mc.add_movie(&library_id, tag, &user).await?;
+    let credential = mc.add_movie_with_relations(&library_id, tag, &user).await?;
     let body = Json(json!(credential));
     Ok(body)
 }

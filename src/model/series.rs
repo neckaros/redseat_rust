@@ -3,7 +3,7 @@ use std::{collections::HashMap, io::Cursor};
 use async_recursion::async_recursion;
 use nanoid::nanoid;
 use rs_plugin_common_interfaces::{
-    domain::{rs_ids::RsIds, serie::SerieStatus, ItemWithRelations, Relations},
+    domain::{media::MediaItemReference, rs_ids::RsIds, serie::SerieStatus, ItemWithRelations, Relations},
     lookup::{
         RsLookupMetadataResult, RsLookupMetadataResultWrapper, RsLookupMetadataResults,
         RsLookupMovie, RsLookupQuery, RsLookupSerie,
@@ -76,6 +76,8 @@ impl SerieQuery {
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SerieForUpdate {
+    pub add_tags: Option<Vec<MediaItemReference>>,
+    pub remove_tags: Option<Vec<String>>,
     pub name: Option<String>,
     #[serde(rename = "type")]
     pub kind: Option<String>,
@@ -326,7 +328,11 @@ impl ModelController {
                     serie.fill_imdb_ratings(&self.imdb).await;
                     return Ok(Some(ItemWithRelations {
                         item: serie,
-                        relations: None,
+                        relations: Some(rs_plugin_common_interfaces::domain::Relations {
+                            people_details: Some(Vec::new()),
+                            tags: Some(Vec::new()),
+                            ..Default::default()
+                        }),
                     }));
                 }
                 Err(SourcesError::UnableToFindSerie(
@@ -534,7 +540,7 @@ impl ModelController {
 
     pub async fn send_serie(&self, mut message: SeriesMessage) {
         match self
-            .title_credit_snapshots(
+            .title_relation_snapshots(
                 &message.library,
                 super::entity_people::PeopleEntity::Serie,
                 message
@@ -613,6 +619,27 @@ impl ModelController {
                 .await;
         });
         Ok(inserted_serie)
+    }
+
+    pub async fn add_serie_with_relations(
+        &self,
+        library_id: &str,
+        item: ItemWithRelations<Serie>,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<ItemWithRelations<Serie>> {
+        let relations = item.relations;
+        let serie = self.add_serie(library_id, item.item, requesting_user).await?;
+        if let Some(relations) = relations {
+            self.store
+                .get_library_store(library_id)?
+                .replace_serie_title_relations(&serie.id, &relations)
+                .await?;
+        }
+        self.get_serie(library_id, serie.id, requesting_user)
+            .await?
+            .ok_or_else(|| {
+                Error::ServiceError("Created series disappeared".to_string(), None).into()
+            })
     }
 
     pub async fn enrich_serie_ids(
@@ -817,18 +844,24 @@ impl ModelController {
         let new_serie = self
             .update_serie(library_id, serie_id.to_string(), updates, requesting_user)
             .await?;
-        if let Some(relations) = relations.filter(|relations| relations.people_details.is_some()) {
-            if self
-                .refresh_entity_people(
+        if let Some(relations) = relations {
+            let store = self.store.get_library_store(library_id)?;
+            let title_relations_changed = store
+                .replace_serie_title_relations(serie_id, &relations)
+                .await?;
+            let people_changed = if let Some(people) = relations.people_details {
+                self.refresh_entity_people(
                     library_id,
                     super::entity_people::PeopleEntity::Serie,
                     serie_id,
-                    relations.people_details.unwrap_or_default(),
+                    people,
                     requesting_user,
                 )
                 .await?
-            {
-                let store = self.store.get_library_store(library_id)?;
+            } else {
+                false
+            };
+            if title_relations_changed || people_changed {
                 let updated = store
                     .get_serie(serie_id)
                     .await?

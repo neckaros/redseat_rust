@@ -218,6 +218,7 @@ impl ModelController {
                     Some(library_id.to_string()),
                 )
                 .await?;
+                super::entity_people::ensure_title_relation_fields(&mut book.relations, true);
                 Ok(book)
             } else {
                 // Try plugin lookup first
@@ -751,7 +752,7 @@ impl ModelController {
 
     pub async fn send_book(&self, mut message: BooksMessage) {
         match self
-            .title_credit_snapshots(
+            .title_relation_snapshots(
                 &message.library,
                 super::entity_people::PeopleEntity::Book,
                 message

@@ -26,6 +26,24 @@ use crate::{
 const SERIE_SQL_FIELDS: &str = "id, name, type, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, openlibrary_work_id, anilist_manga_id, mangadex_manga_uuid, myanimelist_manga_id, year, modified, added, imdb_rating, imdb_votes, trailer, maxCreated, trakt_rating, trakt_votes, status, posterv, backgroundv, cardv";
 
 impl SqliteLibraryStore {
+    fn hydrate_serie_relations(
+        conn: &rusqlite::Connection,
+        series: &mut [ItemWithRelations<Serie>],
+    ) -> rusqlite::Result<()> {
+        let mut credits = Self::load_people_relations(
+            conn,
+            crate::model::entity_people::PeopleEntity::Serie,
+            &series.iter().map(|item| item.item.id.clone()).collect::<Vec<_>>(),
+        )?;
+        for serie in series {
+            if let Some(snapshot) = credits.remove(&serie.item.id) {
+                serie.relations.get_or_insert_default().people_details = snapshot.people_details;
+            }
+            crate::model::entity_people::ensure_title_relation_fields(&mut serie.relations, false);
+        }
+        Ok(())
+    }
+
     fn row_to_serie(row: &Row) -> rusqlite::Result<ItemWithRelations<Serie>> {
         Ok(ItemWithRelations {
             item: Serie {
@@ -106,14 +124,7 @@ impl SqliteLibraryStore {
                 let mut backups: Vec<ItemWithRelations<Serie>> = rows
                     .collect::<std::result::Result<Vec<ItemWithRelations<Serie>>, rusqlite::Error>>(
                     )?;
-                let mut credits = Self::load_people_relations(conn, crate::model::entity_people::PeopleEntity::Serie, &backups.iter().map(|item| item.item.id.clone()).collect::<Vec<_>>())?;
-                for item in &mut backups {
-                    if let Some(snapshot) = credits.remove(&item.item.id) {
-                        let relations = item.relations.get_or_insert_default();
-                        relations.people = None;
-                        relations.people_details = snapshot.people_details;
-                    }
-                }
+                Self::hydrate_serie_relations(conn, &mut backups)?;
                 Ok(backups)
             })
             .await?;
@@ -131,7 +142,9 @@ impl SqliteLibraryStore {
                 let row = query
                     .query_row([credential_id], Self::row_to_serie)
                     .optional()?;
-                Ok(row)
+                let mut values = row.into_iter().collect::<Vec<_>>();
+                Self::hydrate_serie_relations(conn, &mut values)?;
+                Ok(values.pop())
             })
             .await?;
         Ok(row)
@@ -160,7 +173,9 @@ impl SqliteLibraryStore {
                 ids.mangadex_manga_uuid().unwrap_or("zz").to_string(),
                 ids.myanimelist_manga_id().unwrap_or(0)
             ],Self::row_to_serie).optional()?;
-            Ok(row)
+            let mut values = row.into_iter().collect::<Vec<_>>();
+            Self::hydrate_serie_relations(conn, &mut values)?;
+            Ok(values.pop())
         }).await?;
         Ok(row)
     }
@@ -214,13 +229,27 @@ impl SqliteLibraryStore {
 
                 where_query.add_where(QueryWhereType::Equal("id", &id));
 
-                let update_sql = format!(
-                    "UPDATE series SET {} {}",
-                    where_query.format_update(),
-                    where_query.format()
-                );
-
-                conn.execute(&update_sql, where_query.values())?;
+                if !where_query.columns_update.is_empty() {
+                    let update_sql = format!(
+                        "UPDATE series SET {} {}",
+                        where_query.format_update(),
+                        where_query.format()
+                    );
+                    conn.execute(&update_sql, where_query.values())?;
+                }
+                if let Some(tags) = update.add_tags {
+                    for tag in tags {
+                        conn.execute(
+                            "INSERT OR REPLACE INTO serie_tag_mapping (serie_ref, tag_ref, confidence) VALUES (?, ?, ?)",
+                            params![id, tag.id, tag.conf],
+                        )?;
+                    }
+                }
+                if let Some(tags) = update.remove_tags {
+                    for tag in tags {
+                        conn.execute("DELETE FROM serie_tag_mapping WHERE serie_ref = ? AND tag_ref = ?", params![id, tag])?;
+                    }
+                }
                 Ok(())
             })
             .await?;

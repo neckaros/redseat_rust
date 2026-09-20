@@ -2,9 +2,24 @@
 use std::future::Future;
 
 use rs_plugin_common_interfaces::{
-    domain::rs_ids::RsIds,
+    domain::{rs_ids::RsIds, Relations},
     lookup::{RsLookupMetadataResult, RsLookupPerson, RsLookupQuery},
 };
+
+/// Title API responses always expose the three relationship collections used by clients.
+pub(crate) fn ensure_title_relation_fields(
+    relations: &mut Option<Relations>,
+    include_series: bool,
+) {
+    let relations = relations.get_or_insert_default();
+    relations.people_details.get_or_insert_default();
+    relations.tags.get_or_insert_default();
+    if include_series {
+        relations.series.get_or_insert_default();
+    } else {
+        relations.series = None;
+    }
+}
 
 use super::{store::sql::library::SqliteLibraryStore, users::ConnectedUser, ModelController};
 use crate::{
@@ -100,7 +115,7 @@ fn merge_credit_values<T: PartialEq>(existing: &mut Option<Vec<T>>, incoming: Op
 }
 
 impl ModelController {
-    pub(crate) async fn title_credit_snapshots(
+    pub(crate) async fn title_relation_snapshots(
         &self,
         library_id: &str,
         entity: PeopleEntity,
@@ -276,5 +291,16 @@ mod tests {
         assert_eq!(pending["local"].roles, Some(vec![]));
         assert_eq!(pending["local"].characters, None);
         assert_eq!(pending["local"].rank, None);
+    }
+
+    #[test]
+    fn title_relations_always_serialize_required_collections() {
+        let mut relations = None;
+        ensure_title_relation_fields(&mut relations, true);
+
+        let value = serde_json::to_value(relations.unwrap()).unwrap();
+        assert_eq!(value["peopleDetails"], serde_json::json!([]));
+        assert_eq!(value["tags"], serde_json::json!([]));
+        assert_eq!(value["series"], serde_json::json!([]));
     }
 }

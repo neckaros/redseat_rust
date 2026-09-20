@@ -168,7 +168,7 @@ impl ModelController {
     ) -> RsResult<Vec<rs_plugin_common_interfaces::domain::ItemWithRelations<Movie>>> {
         let movies = self.get_movies(library_id, query, requesting_user).await?;
         let mut credits = self
-            .title_credit_snapshots(
+            .title_relation_snapshots(
                 library_id,
                 super::entity_people::PeopleEntity::Movie,
                 movies.iter().map(|movie| movie.id.clone()).collect(),
@@ -177,13 +177,36 @@ impl ModelController {
         Ok(movies
             .into_iter()
             .map(|movie| {
-                let relations = credits.remove(&movie.id);
+                let mut relations = credits.remove(&movie.id);
+                super::entity_people::ensure_title_relation_fields(&mut relations, true);
                 rs_plugin_common_interfaces::domain::ItemWithRelations {
                     item: movie,
                     relations,
                 }
             })
             .collect())
+    }
+
+    pub async fn get_movie_with_relations(
+        &self,
+        library_id: &str,
+        movie_id: String,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<rs_plugin_common_interfaces::domain::ItemWithRelations<Movie>> {
+        let movie = self.get_movie(library_id, movie_id, requesting_user).await?;
+        let mut relations = self
+            .title_relation_snapshots(
+                library_id,
+                super::entity_people::PeopleEntity::Movie,
+                vec![movie.id.clone()],
+            )
+            .await?
+            .remove(&movie.id);
+        super::entity_people::ensure_title_relation_fields(&mut relations, true);
+        Ok(rs_plugin_common_interfaces::domain::ItemWithRelations {
+            item: movie,
+            relations,
+        })
     }
 
     pub async fn get_movie(
@@ -483,7 +506,7 @@ impl ModelController {
 
     pub async fn send_movie(&self, mut message: MoviesMessage) {
         match self
-            .title_credit_snapshots(
+            .title_relation_snapshots(
                 &message.library,
                 super::entity_people::PeopleEntity::Movie,
                 message
@@ -545,6 +568,24 @@ impl ModelController {
         });
 
         Ok(new_person)
+    }
+
+    pub async fn add_movie_with_relations(
+        &self,
+        library_id: &str,
+        item: rs_plugin_common_interfaces::domain::ItemWithRelations<Movie>,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<rs_plugin_common_interfaces::domain::ItemWithRelations<Movie>> {
+        let relations = item.relations;
+        let movie = self.add_movie(library_id, item.item, requesting_user).await?;
+        if let Some(relations) = relations {
+            self.store
+                .get_library_store(library_id)?
+                .replace_movie_title_relations(&movie.id, &relations)
+                .await?;
+        }
+        self.get_movie_with_relations(library_id, movie.id, requesting_user)
+            .await
     }
 
     pub async fn enrich_movie_ids(
@@ -774,18 +815,24 @@ impl ModelController {
         let new_movie = self
             .update_movie(library_id, movie_id.to_string(), updates, requesting_user)
             .await?;
-        if let Some(relations) = relations.filter(|relations| relations.people_details.is_some()) {
-            if self
-                .refresh_entity_people(
+        if let Some(relations) = relations {
+            let store = self.store.get_library_store(library_id)?;
+            let title_relations_changed = store
+                .replace_movie_title_relations(movie_id, &relations)
+                .await?;
+            let people_changed = if let Some(people) = relations.people_details {
+                self.refresh_entity_people(
                     library_id,
                     super::entity_people::PeopleEntity::Movie,
                     movie_id,
-                    relations.people_details.unwrap_or_default(),
+                    people,
                     requesting_user,
                 )
                 .await?
-            {
-                let store = self.store.get_library_store(library_id)?;
+            } else {
+                false
+            };
+            if title_relations_changed || people_changed {
                 let updated = store.get_movie(movie_id).await?.ok_or_else(|| {
                     Error::ServiceError("Refreshed entity disappeared".to_string(), None)
                 })?;
