@@ -34,9 +34,9 @@ use crate::{
         ModelController,
     },
     routes::{
-        bind_downloads_to_book, parse_lookup_filters, ImageRequestOptions, ImageUploadOptions,
-        LookupPagination, RatingUpdateBody, SearchResultGroup, SseLookupSearchEvent,
-        SseLookupSearchResult, SseSearchEvent,
+        bind_downloads_to_book, parse_lookup_filters, ImageRequestOptions, LookupPagination,
+        RatingUpdateBody, SearchResultGroup, SseLookupSearchEvent, SseLookupSearchResult,
+        SseSearchEvent,
     },
     Error, Result,
 };
@@ -581,7 +581,7 @@ async fn handler_post_image(
     Path((library_id, book_id)): Path<(String, String)>,
     State(mc): State<ModelController>,
     user: ConnectedUser,
-    Query(query): Query<ImageUploadOptions>,
+    Query(query): Query<BookImageUploadOptions>,
     mut multipart: Multipart,
 ) -> Result<Json<Value>> {
     while let Some(field) = multipart.next_field().await.unwrap() {
@@ -600,11 +600,29 @@ async fn handler_post_image(
     Ok(Json(json!({"data": "ok"})))
 }
 
+#[derive(Debug, Deserialize)]
+struct BookImageUploadOptions {
+    #[serde(rename = "type", default = "default_book_image_type")]
+    kind: ImageType,
+}
+
+fn default_book_image_type() -> ImageType {
+    ImageType::Poster
+}
+
 #[cfg(test)]
 mod tests {
-    use super::BookMetadataSearchQuery;
+    use super::{BookImageUploadOptions, BookMetadataSearchQuery};
     use crate::Error;
     use axum::http::StatusCode;
+    use rs_plugin_common_interfaces::ImageType;
+
+    #[test]
+    fn book_image_upload_type_is_optional_and_defaults_to_poster() {
+        let query: BookImageUploadOptions = serde_json::from_value(serde_json::json!({})).unwrap();
+
+        assert_eq!(query.kind, ImageType::Poster);
+    }
 
     #[test]
     fn book_metadata_search_combines_title_author_and_isbn() {
