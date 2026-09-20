@@ -23,7 +23,10 @@ use crate::{
         ElementAction, MediaElement,
     },
     error::RsResult,
-    model::{people::PersonForAdd, tags::TagForAdd},
+    model::{
+        people::PersonForAdd,
+        tags::{TagForAdd, TagQuery},
+    },
     plugins::sources::{error::SourcesError, AsyncReadPinBox, FileStreamResult},
     routes::sse::SseEvent,
     tools::image_tools::{convert_image_reader, ImageSize},
@@ -166,7 +169,17 @@ mod metadata_refresh_tests {
 
     #[test]
     fn present_credit_snapshot_populates_relations() {
-        let mut relations = None;
+        let mut relations = Some(Relations {
+            people: Some(vec![MediaItemReference {
+                id: "person-1".to_string(),
+                conf: None,
+            }]),
+            tags: Some(vec![MediaItemReference {
+                id: "tag-1".to_string(),
+                conf: None,
+            }]),
+            ..Default::default()
+        });
         let snapshot = Relations {
             people_details: Some(Vec::new()),
             ..Default::default()
@@ -174,13 +187,18 @@ mod metadata_refresh_tests {
 
         merge_book_credit_snapshot(&mut relations, Some(snapshot));
 
-        assert_eq!(relations.and_then(|relations| relations.people_details), Some(Vec::new()));
+        let relations = relations.unwrap();
+        assert_eq!(relations.people_details, Some(Vec::new()));
+        assert!(relations.people.is_none());
+        assert_eq!(relations.tags.unwrap()[0].id, "tag-1");
     }
 }
 
 fn merge_book_credit_snapshot(relations: &mut Option<Relations>, snapshot: Option<Relations>) {
     if let Some(people_details) = snapshot.and_then(|snapshot| snapshot.people_details) {
-        relations.get_or_insert_default().people_details = Some(people_details);
+        let relations = relations.get_or_insert_default();
+        relations.people = None;
+        relations.people_details = Some(people_details);
     }
 }
 
@@ -216,7 +234,7 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> RsResult<Option<(Book, Option<Relations>)>> {
         let lookup_ids = query.ids.clone().unwrap_or_default();
-        let mut groups = self
+        let groups = self
             .exec_lookup_metadata_grouped(
                 RsLookupQuery::Book(query),
                 Some(library_id.to_string()),
@@ -225,7 +243,6 @@ impl ModelController {
                 None,
             )
             .await?;
-        merge_result_ids(&mut groups);
 
         Ok(groups
             .into_iter()
@@ -272,15 +289,11 @@ impl ModelController {
             let mut pending = Vec::new();
             for tag in tags_details {
                 let otherids = tag_external_ids(tag.otherids.clone(), &tag.id);
-                let mut names = vec![tag.name.clone()];
-                if let Some(alts) = &tag.alt {
-                    names.extend(alts.clone());
-                }
                 if let Some(reference) = self
                     .get_tag_by_external_id(
                         library_id,
                         &tag.id,
-                        names,
+                        Vec::new(),
                         otherids,
                         requesting_user,
                     )
@@ -324,24 +337,18 @@ impl ModelController {
                     } else {
                         None
                     };
-                    let created = self
-                        .add_tag(
+                    let reference = self
+                        .resolve_or_create_refreshed_tag(
                             library_id,
-                            TagForAdd {
-                                name: tag.name.clone(),
-                                parent,
-                                kind: tag.kind.clone(),
-                                alt: tag.alt.clone(),
-                                thumb: tag.thumb.clone(),
-                                params: tag.params.clone(),
-                                generated: tag.generated,
-                                otherids: tag_external_ids(tag.otherids.clone(), &tag.id),
-                            },
+                            tag,
+                            parent,
                             requesting_user,
                         )
                         .await?;
-                    provider_to_local.insert(tag.id.clone(), created.id.clone());
-                    resolved.push(MediaItemReference { id: created.id, conf: None });
+                    provider_to_local.insert(tag.id.clone(), reference.id.clone());
+                    if !resolved.iter().any(|current| current.id == reference.id) {
+                        resolved.push(reference);
+                    }
                     pending.remove(index);
                     progressed = true;
                 }
@@ -350,24 +357,18 @@ impl ModelController {
                 // cycle at one node, then resolve the remaining descendants normally.
                 if !progressed {
                     let tag = pending.remove(0);
-                    let created = self
-                        .add_tag(
+                    let reference = self
+                        .resolve_or_create_refreshed_tag(
                             library_id,
-                            TagForAdd {
-                                name: tag.name.clone(),
-                                parent: None,
-                                kind: tag.kind.clone(),
-                                alt: tag.alt.clone(),
-                                thumb: tag.thumb.clone(),
-                                params: tag.params.clone(),
-                                generated: tag.generated,
-                                otherids: tag_external_ids(tag.otherids.clone(), &tag.id),
-                            },
+                            tag,
+                            None,
                             requesting_user,
                         )
                         .await?;
-                    provider_to_local.insert(tag.id.clone(), created.id.clone());
-                    resolved.push(MediaItemReference { id: created.id, conf: None });
+                    provider_to_local.insert(tag.id.clone(), reference.id.clone());
+                    if !resolved.iter().any(|current| current.id == reference.id) {
+                        resolved.push(reference);
+                    }
                 }
             }
         }
@@ -405,6 +406,54 @@ impl ModelController {
             )
             .await?;
         Ok(true)
+    }
+
+    async fn resolve_or_create_refreshed_tag(
+        &self,
+        library_id: &str,
+        tag: &crate::domain::tag::Tag,
+        parent: Option<String>,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<MediaItemReference> {
+        let store = self.store.get_library_store(library_id)?;
+        let mut names = vec![tag.name.clone()];
+        if let Some(alts) = &tag.alt {
+            names.extend(alts.clone());
+        }
+        for name in names {
+            if let Some(existing) = store
+                .get_tags(TagQuery::new_with_name(&name))
+                .await?
+                .into_iter()
+                .find(|candidate| candidate.parent == parent)
+            {
+                return Ok(MediaItemReference {
+                    id: existing.id,
+                    conf: Some(80),
+                });
+            }
+        }
+
+        let created = self
+            .add_tag(
+                library_id,
+                TagForAdd {
+                    name: tag.name.clone(),
+                    parent,
+                    kind: tag.kind.clone(),
+                    alt: tag.alt.clone(),
+                    thumb: tag.thumb.clone(),
+                    params: tag.params.clone(),
+                    generated: tag.generated,
+                    otherids: tag_external_ids(tag.otherids.clone(), &tag.id),
+                },
+                requesting_user,
+            )
+            .await?;
+        Ok(MediaItemReference {
+            id: created.id,
+            conf: None,
+        })
     }
 
     pub async fn get_books(
@@ -976,6 +1025,16 @@ impl ModelController {
         let book = self
             .get_book(library_id, book_id.to_string(), requesting_user)
             .await?;
+        let store = self.store.get_library_store(library_id)?;
+        let local_book_id = book.item.id.clone();
+        if store.get_book(&local_book_id).await?.is_none() {
+            return Err(SourcesError::UnableToFindMovie(
+                library_id.to_string(),
+                book_id.to_string(),
+                "refresh_book".to_string(),
+            )
+            .into());
+        }
         let ids: RsIds = book.item.clone().into();
         let lookup_query = RsLookupBook {
             name: Some(book.item.name.clone()),
@@ -996,7 +1055,6 @@ impl ModelController {
         // A provider cannot know the library's local series primary key. Resolve
         // series details to an existing local row or create that row before the
         // book update is built; never persist the provider's raw serie_ref.
-        let store = self.store.get_library_store(library_id)?;
         if let Some(series) = relations
             .as_ref()
             .and_then(|relations| relations.series_details.as_ref())
@@ -1027,7 +1085,7 @@ impl ModelController {
         }
 
         let tags_changed = if let Some(relations) = &relations {
-            self.refresh_book_tags(library_id, book_id, relations, requesting_user)
+            self.refresh_book_tags(library_id, &local_book_id, relations, requesting_user)
                 .await?
         } else {
             false
@@ -1039,7 +1097,7 @@ impl ModelController {
             self.refresh_entity_people(
                 library_id,
                 super::entity_people::PeopleEntity::Book,
-                book_id,
+                &local_book_id,
                 people_details,
                 requesting_user,
             )
@@ -1053,14 +1111,14 @@ impl ModelController {
         let updated = if metadata_changed {
             self.update_book(
                 library_id,
-                book_id.to_string(),
+                local_book_id.clone(),
                 updates,
                 &ConnectedUser::ServerAdmin,
             )
             .await?
         } else {
             store
-                .get_book(book_id)
+                .get_book(&local_book_id)
                 .await?
                 .ok_or(SourcesError::UnableToFindMovie(
                     library_id.to_string(),
@@ -1085,7 +1143,7 @@ impl ModelController {
         }
 
         Ok(self
-            .get_book(library_id, book_id.to_string(), requesting_user)
+            .get_book(library_id, local_book_id, requesting_user)
             .await?
             .item)
     }
