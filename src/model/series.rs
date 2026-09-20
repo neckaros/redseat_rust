@@ -894,8 +894,40 @@ impl ModelController {
         let new_serie = self
             .update_serie(library_id, serie_id.to_string(), updates, requesting_user)
             .await?;
-        if let Some(relations) = relations {
+        if let Some(mut relations) = relations {
             let store = self.store.get_library_store(library_id)?;
+            let resolved_tags = self
+                .resolve_refresh_tags(library_id, &relations, requesting_user)
+                .await?;
+            let changed_tags = if resolved_tags.as_ref().is_some_and(|tags| !tags.is_empty()) {
+                let existing_tags = store
+                    .get_people_relations_batch(
+                        super::entity_people::PeopleEntity::Serie,
+                        vec![serie_id.to_string()],
+                    )
+                    .await?
+                    .remove(serie_id)
+                    .and_then(|relations| relations.tags)
+                    .unwrap_or_default();
+                super::entity_tags::changed_refresh_tags(resolved_tags, &existing_tags)
+            } else {
+                Vec::new()
+            };
+            let tags_changed = !changed_tags.is_empty();
+            if tags_changed {
+                store
+                    .update_serie(
+                        serie_id,
+                        SerieForUpdate {
+                            add_tags: Some(changed_tags),
+                            ..Default::default()
+                        },
+                    )
+                    .await?;
+            }
+            // Refresh results from one plugin must not remove tags contributed
+            // by another plugin. Explicit API removals remain unchanged.
+            relations.tags = None;
             let title_relations_changed = store
                 .replace_serie_title_relations(serie_id, &relations)
                 .await?;
@@ -911,7 +943,7 @@ impl ModelController {
             } else {
                 false
             };
-            if title_relations_changed || people_changed {
+            if title_relations_changed || people_changed || tags_changed {
                 let updated = store
                     .get_serie(serie_id)
                     .await?
