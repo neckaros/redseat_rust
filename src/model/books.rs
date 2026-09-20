@@ -4,9 +4,10 @@ use async_recursion::async_recursion;
 use nanoid::nanoid;
 use rs_plugin_common_interfaces::{
     domain::{
+        media::MediaItemReference,
         other_ids::OtherIds,
         rs_ids::{ApplyRsIds, RsIds},
-        ItemWithRelations,
+        ItemWithRelations, Relations,
     },
     lookup::{RsLookupBook, RsLookupMetadataResult, RsLookupQuery},
     ExternalImage, ImageType, MediaType,
@@ -22,7 +23,10 @@ use crate::{
         ElementAction, MediaElement,
     },
     error::RsResult,
-    model::{people::PersonForAdd, tags::TagForAdd},
+    model::{
+        people::PersonForAdd,
+        tags::{TagForAdd, TagQuery},
+    },
     plugins::sources::{error::SourcesError, AsyncReadPinBox, FileStreamResult},
     routes::sse::SseEvent,
     tools::image_tools::{convert_image_reader, ImageSize},
@@ -74,7 +78,384 @@ pub struct BookQuery {
     pub offset: Option<u32>,
 }
 
+const BOOK_SERIES_ID_KEYS: &[&str] = &["olwid", "anilist", "mangadex", "mal"];
+
+fn has_book_external_id(ids: &RsIds) -> bool {
+    ids.iter()
+        .any(|(key, _)| key != "redseat" && key != "volume" && key != "chapter")
+}
+
+fn has_book_edition_id(ids: &RsIds) -> bool {
+    ids.iter().any(|(key, _)| {
+        key != "redseat" && key != "volume" && key != "chapter"
+            && !BOOK_SERIES_ID_KEYS.contains(&key.as_str())
+    })
+}
+
+fn has_common_id_for_keys(left: &RsIds, right: &RsIds, keys: &[&str]) -> bool {
+    keys.iter().any(|key| {
+        left.get(key)
+            .zip(right.get(key))
+            .is_some_and(|(left, right)| left == right)
+    })
+}
+
+fn has_common_book_edition_id(left: &RsIds, right: &RsIds) -> bool {
+    left.iter().any(|(key, left_value)| {
+        key != "redseat"
+            && key != "volume"
+            && key != "chapter"
+            && !BOOK_SERIES_ID_KEYS.contains(&key.as_str())
+            && right.get(key).is_some_and(|right_value| right_value == left_value)
+    })
+}
+
+fn tag_external_ids(otherids: Option<OtherIds>, source_id: &str) -> Option<OtherIds> {
+    let mut otherids = otherids.unwrap_or_default();
+    if !source_id.trim().is_empty()
+        && !otherids.as_slice().iter().any(|id| id == source_id)
+    {
+        otherids.0.push(source_id.to_owned());
+    }
+    (!otherids.as_slice().is_empty()).then_some(otherids)
+}
+
+#[cfg(test)]
+mod metadata_refresh_tests {
+    use super::*;
+
+    #[test]
+    fn tag_source_id_is_added_to_external_ids() {
+        let ids = tag_external_ids(None, "provider:tag-1").unwrap();
+        assert_eq!(ids.as_slice(), &["provider:tag-1".to_string()]);
+    }
+
+    #[test]
+    fn refresh_rejects_another_edition_with_the_same_work_id() {
+        let mut lookup = RsIds::default();
+        lookup.set("olwid", "work-1");
+        lookup.set("isbn13", "isbn-1");
+        lookup.set("volume", 1.0);
+
+        let mut result = RsIds::default();
+        result.set("olwid", "work-1");
+        result.set("isbn13", "isbn-2");
+        result.set("volume", 1.0);
+
+        assert!(!book_refresh_ids_match(&lookup, &result));
+    }
+
+    #[test]
+    fn refresh_accepts_a_matching_series_volume() {
+        let mut lookup = RsIds::default();
+        lookup.set("olwid", "work-1");
+        lookup.set("volume", 1.0);
+
+        let mut result = RsIds::default();
+        result.set("olwid", "work-1");
+        result.set("volume", 1.0);
+
+        assert!(book_refresh_ids_match(&lookup, &result));
+    }
+
+    #[test]
+    fn absent_credit_snapshot_preserves_sparse_relations() {
+        let mut relations = None;
+
+        merge_book_credit_snapshot(&mut relations, None);
+
+        assert!(relations.is_none());
+    }
+
+    #[test]
+    fn present_credit_snapshot_populates_relations() {
+        let mut relations = Some(Relations {
+            people: Some(vec![MediaItemReference {
+                id: "person-1".to_string(),
+                conf: None,
+            }]),
+            tags: Some(vec![MediaItemReference {
+                id: "tag-1".to_string(),
+                conf: None,
+            }]),
+            ..Default::default()
+        });
+        let snapshot = Relations {
+            people_details: Some(Vec::new()),
+            ..Default::default()
+        };
+
+        merge_book_credit_snapshot(&mut relations, Some(snapshot));
+
+        let relations = relations.unwrap();
+        assert_eq!(relations.people_details, Some(Vec::new()));
+        assert!(relations.people.is_none());
+        assert_eq!(relations.tags.unwrap()[0].id, "tag-1");
+    }
+}
+
+fn merge_book_credit_snapshot(relations: &mut Option<Relations>, snapshot: Option<Relations>) {
+    if let Some(people_details) = snapshot.and_then(|snapshot| snapshot.people_details) {
+        let relations = relations.get_or_insert_default();
+        relations.people = None;
+        relations.people_details = Some(people_details);
+    }
+}
+
+fn book_refresh_ids_match(lookup_ids: &RsIds, result_ids: &RsIds) -> bool {
+    if !has_book_external_id(lookup_ids) {
+        return true;
+    }
+
+    let details_match = ["volume", "chapter"].iter().all(|detail| {
+        lookup_ids
+            .find_detail_f64(detail)
+            .map(|value| result_ids.find_detail_f64(detail) == Some(value))
+            .unwrap_or(true)
+    });
+
+    // Edition identifiers are stronger than a shared work/series identifier. If
+    // the stored book has one, never refresh it from a result for another edition.
+    if has_common_book_edition_id(lookup_ids, result_ids) {
+        return details_match;
+    }
+    if has_book_edition_id(lookup_ids) {
+        return false;
+    }
+
+    has_common_id_for_keys(lookup_ids, result_ids, BOOK_SERIES_ID_KEYS) && details_match
+}
+
 impl ModelController {
+    async fn lookup_book_metadata_with_relations(
+        &self,
+        library_id: &str,
+        query: RsLookupBook,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Option<(Book, Option<Relations>)>> {
+        let lookup_ids = query.ids.clone().unwrap_or_default();
+        let groups = self
+            .exec_lookup_metadata_grouped(
+                RsLookupQuery::Book(query),
+                Some(library_id.to_string()),
+                requesting_user,
+                None,
+                None,
+            )
+            .await?;
+
+        Ok(groups
+            .into_iter()
+            .flat_map(|(_, _, results)| results.results)
+            .find_map(|result| match result.metadata {
+                RsLookupMetadataResult::Book(book) => {
+                    let result_ids: RsIds = book.clone().into();
+                    if book_refresh_ids_match(&lookup_ids, &result_ids) {
+                        Some((book, result.relations))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            }))
+    }
+
+    async fn refresh_book_tags(
+        &self,
+        library_id: &str,
+        book_id: &str,
+        relations: &Relations,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<bool> {
+        let store = self.store.get_library_store(library_id)?;
+        let existing = store
+            .get_book(book_id)
+            .await?
+            .ok_or(SourcesError::UnableToFindMovie(
+                library_id.to_string(),
+                book_id.to_string(),
+                "refresh_book_tags".to_string(),
+            ))?;
+        let existing_tags = existing
+            .relations
+            .as_ref()
+            .and_then(|relations| relations.tags.as_ref())
+            .cloned()
+            .unwrap_or_default();
+
+        let mut resolved: Vec<MediaItemReference> = Vec::new();
+        let mut provider_to_local = HashMap::new();
+        if let Some(tags_details) = &relations.tags_details {
+            let mut pending = Vec::new();
+            for tag in tags_details {
+                let otherids = tag_external_ids(tag.otherids.clone(), &tag.id);
+                if let Some(reference) = self
+                    .get_tag_by_external_id(
+                        library_id,
+                        &tag.id,
+                        Vec::new(),
+                        otherids,
+                        requesting_user,
+                    )
+                    .await?
+                {
+                    provider_to_local.insert(tag.id.clone(), reference.id.clone());
+                    if !resolved.iter().any(|current| current.id == reference.id) {
+                        resolved.push(reference);
+                    }
+                } else {
+                    pending.push(tag);
+                }
+            }
+
+            while !pending.is_empty() {
+                let mut progressed = false;
+                let mut index = 0;
+                while index < pending.len() {
+                    let tag = pending[index];
+                    let parent = if let Some(provider_parent) = &tag.parent {
+                        if let Some(local_parent) = provider_to_local.get(provider_parent) {
+                            Some(local_parent.clone())
+                        } else if let Some(reference) = self
+                            .get_tag_by_external_id(
+                                library_id,
+                                provider_parent,
+                                Vec::new(),
+                                tag_external_ids(None, provider_parent),
+                                requesting_user,
+                            )
+                            .await?
+                        {
+                            provider_to_local.insert(provider_parent.clone(), reference.id.clone());
+                            Some(reference.id)
+                        } else if pending.iter().any(|candidate| candidate.id == *provider_parent) {
+                            index += 1;
+                            continue;
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    let reference = self
+                        .resolve_or_create_refreshed_tag(
+                            library_id,
+                            tag,
+                            parent,
+                            requesting_user,
+                        )
+                        .await?;
+                    provider_to_local.insert(tag.id.clone(), reference.id.clone());
+                    if !resolved.iter().any(|current| current.id == reference.id) {
+                        resolved.push(reference);
+                    }
+                    pending.remove(index);
+                    progressed = true;
+                }
+
+                // Malformed provider cycles cannot be represented locally. Break the
+                // cycle at one node, then resolve the remaining descendants normally.
+                if !progressed {
+                    let tag = pending.remove(0);
+                    let reference = self
+                        .resolve_or_create_refreshed_tag(
+                            library_id,
+                            tag,
+                            None,
+                            requesting_user,
+                        )
+                        .await?;
+                    provider_to_local.insert(tag.id.clone(), reference.id.clone());
+                    if !resolved.iter().any(|current| current.id == reference.id) {
+                        resolved.push(reference);
+                    }
+                }
+            }
+        }
+        if let Some(tags) = &relations.tags {
+            for tag in tags {
+                if store.get_tag(&tag.id).await?.is_some()
+                    && !resolved
+                        .iter()
+                        .any(|current: &MediaItemReference| current.id == tag.id)
+                {
+                    resolved.push(tag.clone());
+                }
+            }
+        }
+
+        let additions: Vec<_> = resolved
+            .into_iter()
+            .filter(|tag| {
+                existing_tags.iter().all(|current| {
+                    current.id != tag.id || current.conf.unwrap_or(100) != tag.conf.unwrap_or(100)
+                })
+            })
+            .collect();
+        if additions.is_empty() {
+            return Ok(false);
+        }
+
+        store
+            .update_book(
+                book_id,
+                BookForUpdate {
+                    add_tags: Some(additions),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        Ok(true)
+    }
+
+    async fn resolve_or_create_refreshed_tag(
+        &self,
+        library_id: &str,
+        tag: &crate::domain::tag::Tag,
+        parent: Option<String>,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<MediaItemReference> {
+        let store = self.store.get_library_store(library_id)?;
+        let mut names = vec![tag.name.clone()];
+        if let Some(alts) = &tag.alt {
+            names.extend(alts.clone());
+        }
+        for name in names {
+            if let Some(existing) = store
+                .get_tags(TagQuery::new_with_name(&name))
+                .await?
+                .into_iter()
+                .find(|candidate| candidate.parent == parent)
+            {
+                return Ok(MediaItemReference {
+                    id: existing.id,
+                    conf: Some(80),
+                });
+            }
+        }
+
+        let created = self
+            .add_tag(
+                library_id,
+                TagForAdd {
+                    name: tag.name.clone(),
+                    parent,
+                    kind: tag.kind.clone(),
+                    alt: tag.alt.clone(),
+                    thumb: tag.thumb.clone(),
+                    params: tag.params.clone(),
+                    generated: tag.generated,
+                    otherids: tag_external_ids(tag.otherids.clone(), &tag.id),
+                },
+                requesting_user,
+            )
+            .await?;
+        Ok(MediaItemReference {
+            id: created.id,
+            conf: None,
+        })
+    }
+
     pub async fn get_books(
         &self,
         library_id: &str,
@@ -634,6 +1015,139 @@ impl ModelController {
         Ok(())
     }
 
+    pub async fn refresh_book(
+        &self,
+        library_id: &str,
+        book_id: &str,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Book> {
+        requesting_user.check_library_role(library_id, LibraryRole::Write)?;
+        let book = self
+            .get_book(library_id, book_id.to_string(), requesting_user)
+            .await?;
+        let store = self.store.get_library_store(library_id)?;
+        let local_book_id = book.item.id.clone();
+        if store.get_book(&local_book_id).await?.is_none() {
+            return Err(SourcesError::UnableToFindMovie(
+                library_id.to_string(),
+                book_id.to_string(),
+                "refresh_book".to_string(),
+            )
+            .into());
+        }
+        let ids: RsIds = book.item.clone().into();
+        let lookup_query = RsLookupBook {
+            name: Some(book.item.name.clone()),
+            author: None,
+            ids: Some(ids),
+            page_key: None,
+            ..Default::default()
+        };
+        let (mut incoming, relations) = self
+            .lookup_book_metadata_with_relations(library_id, lookup_query, requesting_user)
+            .await?
+            .ok_or(SourcesError::UnableToFindMovie(
+                library_id.to_string(),
+                book_id.to_string(),
+                "refresh_book".to_string(),
+            ))?;
+
+        // A provider cannot know the library's local series primary key. Resolve
+        // series details to an existing local row or create that row before the
+        // book update is built; never persist the provider's raw serie_ref.
+        if let Some(series) = relations
+            .as_ref()
+            .and_then(|relations| relations.series_details.as_ref())
+            .and_then(|series| series.first())
+        {
+            incoming.serie_ref = if let Some(found) = self
+                .get_serie_by_any_id(library_id, series, requesting_user)
+                .await?
+            {
+                Some(found.id)
+            } else {
+                Some(
+                    self.add_serie(library_id, series.clone(), requesting_user)
+                        .await?
+                        .id,
+                )
+            };
+        } else {
+            incoming.serie_ref = if let Some(serie_ref) = incoming.serie_ref.as_deref() {
+                if store.get_serie(serie_ref).await?.is_some() {
+                    Some(serie_ref.to_owned())
+                } else {
+                    book.item.serie_ref.clone()
+                }
+            } else {
+                book.item.serie_ref.clone()
+            };
+        }
+
+        let tags_changed = if let Some(relations) = &relations {
+            self.refresh_book_tags(library_id, &local_book_id, relations, requesting_user)
+                .await?
+        } else {
+            false
+        };
+        let people_changed = if let Some(people_details) = relations
+            .as_ref()
+            .and_then(|relations| relations.people_details.clone())
+        {
+            self.refresh_entity_people(
+                library_id,
+                super::entity_people::PeopleEntity::Book,
+                &local_book_id,
+                people_details,
+                requesting_user,
+            )
+            .await?
+        } else {
+            false
+        };
+
+        let updates = crate::domain::book::book_metadata_update(&book.item, &incoming);
+        let metadata_changed = updates.has_update();
+        let updated = if metadata_changed {
+            self.update_book(
+                library_id,
+                local_book_id.clone(),
+                updates,
+                &ConnectedUser::ServerAdmin,
+            )
+            .await?
+        } else {
+            store
+                .get_book(&local_book_id)
+                .await?
+                .ok_or(SourcesError::UnableToFindMovie(
+                    library_id.to_string(),
+                    book_id.to_string(),
+                    "refresh_book".to_string(),
+                ))?
+                .item
+        };
+
+        if (tags_changed || people_changed) && !metadata_changed {
+            self.send_book(BooksMessage {
+                library: library_id.to_string(),
+                books: vec![BookWithAction {
+                    action: ElementAction::Updated,
+                    book: ItemWithRelations {
+                        item: updated.clone(),
+                        relations: None,
+                    },
+                }],
+            })
+            .await;
+        }
+
+        Ok(self
+            .get_book(library_id, local_book_id, requesting_user)
+            .await?
+            .item)
+    }
+
     pub async fn update_book(
         &self,
         library_id: &str,
@@ -750,6 +1264,42 @@ impl ModelController {
     }
 
     pub async fn send_book(&self, mut message: BooksMessage) {
+        let store = self.store.get_library_store(&message.library).ok();
+        if let Some(store) = &store {
+            for entry in &mut message.books {
+                let persisted_relations = store
+                    .get_book(&entry.book.item.id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|book| book.relations);
+                let provided_relations = entry.book.relations.take();
+                if persisted_relations.is_some() || provided_relations.is_some() {
+                    let mut relations = persisted_relations.unwrap_or_default();
+                    if let Some(provided) = provided_relations {
+                        if provided.people_details.is_some() {
+                            relations.people_details = provided.people_details;
+                        }
+                        if provided.tags_details.is_some() {
+                            relations.tags_details = provided.tags_details;
+                        }
+                        if provided.people.is_some() {
+                            relations.people = provided.people;
+                        }
+                        if provided.tags.is_some() {
+                            relations.tags = provided.tags;
+                        }
+                        if provided.series.is_some() {
+                            relations.series = provided.series;
+                        }
+                        if provided.series_details.is_some() {
+                            relations.series_details = provided.series_details;
+                        }
+                    }
+                    entry.book.relations = Some(relations);
+                }
+            }
+        }
         match self
             .title_credit_snapshots(
                 &message.library,
@@ -764,7 +1314,10 @@ impl ModelController {
         {
             Ok(mut snapshots) => {
                 for entry in &mut message.books {
-                    entry.book.relations = snapshots.remove(&entry.book.item.id);
+                    merge_book_credit_snapshot(
+                        &mut entry.book.relations,
+                        snapshots.remove(&entry.book.item.id),
+                    );
                 }
             }
             Err(error) => crate::tools::log::log_warn(
