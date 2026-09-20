@@ -13,6 +13,7 @@ pub mod deleted;
 pub mod entity_images;
 pub mod entity_people;
 pub mod entity_search;
+pub mod entity_tags;
 pub mod episodes;
 pub mod history;
 pub mod media_progresses;

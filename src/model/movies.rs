@@ -861,8 +861,27 @@ impl ModelController {
         let new_movie = self
             .update_movie(library_id, movie_id.to_string(), updates, requesting_user)
             .await?;
-        if let Some(relations) = relations {
+        if let Some(mut relations) = relations {
             let store = self.store.get_library_store(library_id)?;
+            let resolved_tags = self
+                .resolve_refresh_tags(library_id, &relations, requesting_user)
+                .await?;
+            let tags_changed = resolved_tags.as_ref().is_some_and(|tags| !tags.is_empty());
+            if let Some(tags) = resolved_tags.filter(|tags| !tags.is_empty()) {
+                store
+                    .update_movie(
+                        movie_id,
+                        MovieForUpdate {
+                            add_tags: Some(tags),
+                            ..Default::default()
+                        },
+                    )
+                    .await?;
+            }
+            // Plugin tag snapshots are additive: another provider may own tags
+            // already linked to this movie. Explicit API mutations retain their
+            // existing replacement/removal behavior elsewhere.
+            relations.tags = None;
             let title_relations_changed = store
                 .replace_movie_title_relations(movie_id, &relations)
                 .await?;
@@ -878,7 +897,7 @@ impl ModelController {
             } else {
                 false
             };
-            if title_relations_changed || people_changed {
+            if title_relations_changed || people_changed || tags_changed {
                 let updated = store.get_movie(movie_id).await?.ok_or_else(|| {
                     Error::ServiceError("Refreshed entity disappeared".to_string(), None)
                 })?;

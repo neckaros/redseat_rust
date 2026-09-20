@@ -894,8 +894,26 @@ impl ModelController {
         let new_serie = self
             .update_serie(library_id, serie_id.to_string(), updates, requesting_user)
             .await?;
-        if let Some(relations) = relations {
+        if let Some(mut relations) = relations {
             let store = self.store.get_library_store(library_id)?;
+            let resolved_tags = self
+                .resolve_refresh_tags(library_id, &relations, requesting_user)
+                .await?;
+            let tags_changed = resolved_tags.as_ref().is_some_and(|tags| !tags.is_empty());
+            if let Some(tags) = resolved_tags.filter(|tags| !tags.is_empty()) {
+                store
+                    .update_serie(
+                        serie_id,
+                        SerieForUpdate {
+                            add_tags: Some(tags),
+                            ..Default::default()
+                        },
+                    )
+                    .await?;
+            }
+            // Refresh results from one plugin must not remove tags contributed
+            // by another plugin. Explicit API removals remain unchanged.
+            relations.tags = None;
             let title_relations_changed = store
                 .replace_serie_title_relations(serie_id, &relations)
                 .await?;
@@ -911,7 +929,7 @@ impl ModelController {
             } else {
                 false
             };
-            if title_relations_changed || people_changed {
+            if title_relations_changed || people_changed || tags_changed {
                 let updated = store
                     .get_serie(serie_id)
                     .await?
