@@ -67,17 +67,19 @@ impl RsSchedulerTask for RefreshTask {
             };
             libraries_with_series.push((library, series));
         }
-        if let Err(error) = mc.imdb.prime_episode_ids(
-            libraries_with_series
-                .iter()
-                .flat_map(|(_, series)| series)
-                .filter(|serie| {
-                    serie.status != Some(SerieStatus::Ended)
-                        && serie.status != Some(SerieStatus::Canceled)
-                })
-                .filter_map(|serie| serie.imdb.as_deref()),
-        )
-        .await
+        if let Err(error) = mc
+            .imdb
+            .prime_episode_ids(
+                libraries_with_series
+                    .iter()
+                    .flat_map(|(_, series)| series)
+                    .filter(|serie| {
+                        serie.status != Some(SerieStatus::Ended)
+                            && serie.status != Some(SerieStatus::Canceled)
+                    })
+                    .filter_map(|serie| serie.imdb.as_deref()),
+            )
+            .await
         {
             log_error(
                 crate::tools::log::LogServiceType::Scheduler,

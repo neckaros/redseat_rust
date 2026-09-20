@@ -96,7 +96,6 @@ impl PluginManager {
         let mut results = vec![];
         for plugin_with_cred in plugins {
             if let Some(plugin) = self.plugin_by_filename(&plugin_with_cred.plugin.path).await {
-
                 println!("PLUGIN {}", plugin_with_cred.plugin.name);
                 if plugin
                     .infos
@@ -134,7 +133,6 @@ impl PluginManager {
         plugin_with_cred: PluginWithCredential,
     ) -> RsResult<RsVideoCapabilities> {
         if let Some(plugin) = self.plugin_by_filename(&plugin_with_cred.plugin.path).await {
-
             println!("PLUGIN {}", plugin_with_cred.plugin.name);
             if plugin
                 .infos
@@ -148,7 +146,9 @@ impl PluginManager {
                         Json(credential),
                     )
                     .await
-                    .map_err(|error| plugin_call_error(&plugin.infos.name, "get_convert_capabilities", error))?;
+                    .map_err(|error| {
+                        plugin_call_error(&plugin.infos.name, "get_convert_capabilities", error)
+                    })?;
                 return Ok(res.into_inner());
             } else {
                 return Err(crate::error::RsError::PluginUnsupportedCall(
@@ -224,7 +224,6 @@ impl PluginManager {
         job: RsVideoTranscodeJobPluginRequest,
     ) -> RsResult<RsVideoTranscodeJobStatus> {
         if let Some(plugin) = self.plugin_by_filename(&plugin_with_cred.plugin.path).await {
-
             println!("PLUGIN {} - convert submit", plugin_with_cred.plugin.name);
             if plugin
                 .infos
@@ -265,7 +264,6 @@ impl PluginManager {
         job_id: &str,
     ) -> RsResult<RsVideoTranscodeJobStatus> {
         if let Some(plugin) = self.plugin_by_filename(&plugin_with_cred.plugin.path).await {
-
             println!("PLUGIN {} - convert_status", plugin_with_cred.plugin.name);
             let action = RsVideoTranscodeJobPluginAction {
                 job_id: job_id.to_string(),
@@ -314,7 +312,6 @@ impl PluginManager {
         job_id: &str,
     ) -> RsResult<RsVideoTranscodeCancelResponse> {
         if let Some(plugin) = self.plugin_by_filename(&plugin_with_cred.plugin.path).await {
-
             println!("PLUGIN {}", plugin_with_cred.plugin.name);
             if plugin
                 .infos
@@ -359,7 +356,6 @@ impl PluginManager {
         job_id: &str,
     ) -> RsResult<RsRequest> {
         if let Some(plugin) = self.plugin_by_filename(&plugin_with_cred.plugin.path).await {
-
             println!("PLUGIN {} - convert_link", plugin_with_cred.plugin.name);
             if plugin
                 .infos
@@ -379,7 +375,9 @@ impl PluginManager {
                         Json(action),
                     )
                     .await
-                    .map_err(|error| plugin_call_error(&plugin.infos.name, "convert_link", error))?;
+                    .map_err(|error| {
+                        plugin_call_error(&plugin.infos.name, "convert_link", error)
+                    })?;
                 return Ok(res.into_inner());
             } else {
                 return Err(crate::error::RsError::PluginUnsupportedCall(
@@ -413,7 +411,6 @@ impl PluginManager {
         job_id: &str,
     ) -> RsResult<RsVideoTranscodeJobStatus> {
         if let Some(plugin) = self.plugin_by_filename(&plugin_with_cred.plugin.path).await {
-
             println!("PLUGIN {} - convert_clean", plugin_with_cred.plugin.name);
             let action = RsVideoTranscodeJobPluginAction {
                 job_id: job_id.to_string(),

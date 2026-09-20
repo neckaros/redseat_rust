@@ -386,7 +386,7 @@ impl ModelController {
     }
 
     /// Get list of user id this user is currently mapped from
-    /// Exemple if user A is mapped to B then passing user A will return B  
+    /// Exemple if user A is mapped to B then passing user A will return B
     pub async fn get_library_progress_user_mappings(
         &self,
         library_id: &str,
@@ -409,7 +409,7 @@ impl ModelController {
     }
 
     /// Get list of user id this user is currently mapped to
-    /// Exemple if user A is mapped to B then passing user B will return A  
+    /// Exemple if user A is mapped to B then passing user B will return A
     pub async fn get_library_progress_user_mapped(
         &self,
         library_id: &str,
@@ -578,7 +578,9 @@ impl ModelController {
                             .to_string(),
                     ));
                 }
-                self.store.resume_library_encryption_job(&existing.id).await?;
+                self.store
+                    .resume_library_encryption_job(&existing.id)
+                    .await?;
                 if let Err(error) = self.schedule_library_encryption_job(&existing).await {
                     let message = error.to_string();
                     self.store

@@ -1490,11 +1490,7 @@ impl PluginManager {
                     }
                     Ok(progress)
                 }
-                Err(error) => Err(plugin_call_error(
-                    &plugin.infos.name,
-                    "get_progress",
-                    error,
-                )),
+                Err(error) => Err(plugin_call_error(&plugin.infos.name, "get_progress", error)),
             }
         } else {
             Err(Error::NotFound(format!(

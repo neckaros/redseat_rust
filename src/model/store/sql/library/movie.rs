@@ -71,7 +71,12 @@ impl SqliteLibraryStore {
             .connection
             .call(move |conn| {
                 let mut where_query = RsQueryBuilder::new();
-                Self::add_people_filter(&mut where_query, crate::model::entity_people::PeopleEntity::Movie, query.person, query.role);
+                Self::add_people_filter(
+                    &mut where_query,
+                    crate::model::entity_people::PeopleEntity::Movie,
+                    query.person,
+                    query.role,
+                );
                 if let Some(q) = query.after {
                     where_query.add_where(SqlWhereType::After("modified".to_owned(), Box::new(q)));
                 }
@@ -98,11 +103,11 @@ impl SqliteLibraryStore {
                 where_query.add_oder(OrderBuilder::new("id".to_string(), SqlOrder::ASC));
 
                 let mut query = conn.prepare(&format!(
-                    "SELECT 
-            id, name, type, year, airdate, digitalairdate, 
+                    "SELECT
+            id, name, type, year, airdate, digitalairdate,
             duration, overview, country, status,
             lang, original,
-            imdb, slug, tmdb, trakt, otherids, 
+            imdb, slug, tmdb, trakt, otherids,
             imdb_rating, imdb_votes, trakt_rating, trakt_votes, trailer,
             modified, added, posterv, backgroundv, cardv FROM movies {}{}{}",
                     where_query.format(),
@@ -123,11 +128,11 @@ impl SqliteLibraryStore {
             .connection
             .call(move |conn| {
                 let mut query = conn.prepare(
-                    "SELECT 
-            id, name, type, year, airdate, digitalairdate, 
+                    "SELECT
+            id, name, type, year, airdate, digitalairdate,
             duration, overview, country, status,
             lang, original,
-            imdb, slug, tmdb, trakt, otherids, 
+            imdb, slug, tmdb, trakt, otherids,
             imdb_rating, imdb_votes, trakt_rating, trakt_votes, trailer,
             modified, added, posterv, backgroundv, cardv FROM movies WHERE id = ?",
                 )?;
@@ -146,14 +151,14 @@ impl SqliteLibraryStore {
             .connection
             .call(move |conn| {
                 let mut query = conn.prepare(
-                    "SELECT  
-            id, name, type, year, airdate, digitalairdate, 
+                    "SELECT
+            id, name, type, year, airdate, digitalairdate,
             duration, overview, country, status,
             lang, original,
-            imdb, slug, tmdb, trakt, otherids, 
+            imdb, slug, tmdb, trakt, otherids,
             imdb_rating, imdb_votes, trakt_rating, trakt_votes, trailer,
-            modified, added, posterv, backgroundv, cardv FROM movies 
-            WHERE 
+            modified, added, posterv, backgroundv, cardv FROM movies
+            WHERE
             imdb = ? or slug = ? or tmdb = ? or trakt = ?",
                 )?;
                 let row = query
@@ -286,11 +291,11 @@ impl SqliteLibraryStore {
         self.connection
             .call(move |conn| {
                 conn.execute(
-                    "INSERT INTO movies ( 
-                id, name, type, year, airdate, digitalairdate, 
+                    "INSERT INTO movies (
+                id, name, type, year, airdate, digitalairdate,
                 duration, overview, country, status,
                 lang, original,
-                imdb, slug, tmdb, trakt, otherids, 
+                imdb, slug, tmdb, trakt, otherids,
                 imdb_rating, imdb_votes, trakt_rating, trakt_votes, trailer)
             VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     params![

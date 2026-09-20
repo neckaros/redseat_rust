@@ -101,20 +101,20 @@ impl SqliteStore {
     }
     pub async fn get_plugin(&self, plugin_id: &str) -> Result<Option<Plugin>> {
         let plugin_id = plugin_id.to_string();
-        let row = self.server_store.call( move |conn| { 
+        let row = self.server_store.call( move |conn| {
                 let row = conn.query_row(
                 "SELECT id, name, path, kind, settings, libraries, credential, credtype, desc, version, repo, repov, params FROM plugins WHERE id = ?1",
                 [&plugin_id],
                 Self::row_to_plugin,
                 ).optional()?;
-    
+
                 Ok(row)
         }).await?;
         Ok(row)
     }
 
     pub async fn get_plugins(&self, query: PluginQuery) -> Result<Vec<Plugin>> {
-        let row = self.server_store.call( move |conn| { 
+        let row = self.server_store.call( move |conn| {
 
             let mut where_query = QueryBuilder::new();
             if let Some(q) = &query.kind {
@@ -131,7 +131,7 @@ impl SqliteStore {
             where_query.values(),
             Self::row_to_plugin,
             )?;
-            let libraries:Vec<Plugin> = rows.collect::<std::result::Result<Vec<Plugin>, rusqlite::Error>>()?; 
+            let libraries:Vec<Plugin> = rows.collect::<std::result::Result<Vec<Plugin>, rusqlite::Error>>()?;
             Ok(libraries)
         }).await?;
         Ok(row)
@@ -148,7 +148,7 @@ impl SqliteStore {
     }
 
     pub async fn add_plugin(&self, plugin: PluginForInsert) -> Result<()> {
-        self.server_store.call( move |conn| { 
+        self.server_store.call( move |conn| {
 
             conn.execute("INSERT INTO plugins (id, name, path, kind, settings, libraries, credential, credtype, desc, version, repo, repov, params)
             VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, ? ,?, ?)", params![
@@ -166,7 +166,7 @@ impl SqliteStore {
                 plugin.plugin.repov,
                 params_to_json(&plugin.plugin.params),
             ])?;
-            
+
             Ok(())
         }).await?;
         Ok(())

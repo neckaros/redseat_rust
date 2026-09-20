@@ -268,11 +268,7 @@ impl SqliteStore {
             .await?)
     }
 
-    pub async fn fail_library_encryption_job(
-        &self,
-        job_id: &str,
-        error: String,
-    ) -> Result<()> {
+    pub async fn fail_library_encryption_job(&self, job_id: &str, error: String) -> Result<()> {
         let job_id = job_id.to_string();
         self.server_store
             .call(move |conn| {
@@ -389,7 +385,14 @@ mod tests {
             .create_library_encryption_job(job.clone())
             .await
             .unwrap();
-        assert_eq!(store.list_active_library_encryption_jobs().await.unwrap().len(), 1);
+        assert_eq!(
+            store
+                .list_active_library_encryption_jobs()
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
 
         let item = LibraryEncryptionItem {
             id: "item-1".to_string(),
@@ -412,10 +415,7 @@ mod tests {
             .reset_library_encryption_item_pending("item-1")
             .await
             .unwrap();
-        let reset_items = store
-            .list_library_encryption_items(&job.id)
-            .await
-            .unwrap();
+        let reset_items = store.list_library_encryption_items(&job.id).await.unwrap();
         assert_eq!(reset_items[0].state, "pending");
         assert!(reset_items[0].staged_source.is_none());
         store
@@ -435,10 +435,7 @@ mod tests {
         assert!(checkpoint.snapshot_complete);
         assert_eq!(checkpoint.total_items, 1);
         assert_eq!(checkpoint.completed_items, 1);
-        let items = store
-            .list_library_encryption_items(&job.id)
-            .await
-            .unwrap();
+        let items = store.list_library_encryption_items(&job.id).await.unwrap();
         assert_eq!(items[0].state, "committed");
         assert_eq!(items[0].staged_source.as_deref(), Some("/media/staged"));
 
@@ -461,11 +458,12 @@ mod tests {
             .unwrap();
         assert_eq!(failed.phase, "failed");
         assert_eq!(failed.last_error.as_deref(), Some("scheduler unavailable"));
-        assert!(store.list_active_library_encryption_jobs().await.unwrap().is_empty());
-        store
-            .resume_library_encryption_job(&job.id)
+        assert!(store
+            .list_active_library_encryption_jobs()
             .await
-            .unwrap();
+            .unwrap()
+            .is_empty());
+        store.resume_library_encryption_job(&job.id).await.unwrap();
         let resumed = store
             .get_library_encryption_job("library-1")
             .await

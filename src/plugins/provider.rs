@@ -39,7 +39,10 @@ impl PluginManager {
         path: RsProviderPath,
         plugin_with_creds: &PluginWithCredential,
     ) -> RsResult<RsRequest> {
-        if let Some(plugin) = self.plugin_by_filename(&plugin_with_creds.plugin.path).await {
+        if let Some(plugin) = self
+            .plugin_by_filename(&plugin_with_creds.plugin.path)
+            .await
+        {
             if plugin.infos.capabilities.contains(&PluginType::Provider) {
                 let call_object: RsPluginRequest<RsProviderPath> = RsPluginRequest {
                     request: path.clone(),
@@ -59,7 +62,7 @@ impl PluginManager {
                 match res {
                     Ok(Json(res)) => Ok(res),
                     Err((_, code)) if code == 404 => {
-                            Err(Error::Error(format!("Provider plugin error: {}", code)))
+                        Err(Error::Error(format!("Provider plugin error: {}", code)))
                     }
                     Err(error) => Err(plugin_call_error(
                         &plugin.infos.name,
@@ -88,7 +91,10 @@ impl PluginManager {
         path: RsProviderAddRequest,
         plugin_with_creds: &PluginWithCredential,
     ) -> RsResult<RsProviderAddResponse> {
-        if let Some(plugin) = self.plugin_by_filename(&plugin_with_creds.plugin.path).await {
+        if let Some(plugin) = self
+            .plugin_by_filename(&plugin_with_creds.plugin.path)
+            .await
+        {
             if plugin.infos.capabilities.contains(&PluginType::Provider) {
                 let call_object: RsPluginRequest<RsProviderAddRequest> = RsPluginRequest {
                     request: path,
@@ -101,7 +107,7 @@ impl PluginManager {
                 match res {
                     Ok(Json(res)) => Ok(res),
                     Err((_, code)) if code == 404 => {
-                            Err(Error::Error(format!("Provider plugin error: {}", code)))
+                        Err(Error::Error(format!("Provider plugin error: {}", code)))
                     }
                     Err(error) => Err(plugin_call_error(
                         &plugin.infos.name,
@@ -128,7 +134,10 @@ impl PluginManager {
         response: String,
         plugin_with_creds: &PluginWithCredential,
     ) -> RsResult<RsProviderEntry> {
-        if let Some(plugin) = self.plugin_by_filename(&plugin_with_creds.plugin.path).await {
+        if let Some(plugin) = self
+            .plugin_by_filename(&plugin_with_creds.plugin.path)
+            .await
+        {
             if plugin.infos.capabilities.contains(&PluginType::Provider) {
                 let call_object: RsPluginRequest<String> = RsPluginRequest {
                     request: response,
@@ -146,7 +155,7 @@ impl PluginManager {
                 match res {
                     Ok(Json(res)) => Ok(res),
                     Err((_, code)) if code == 404 => {
-                            Err(Error::Error(format!("Provider plugin error: {}", code)))
+                        Err(Error::Error(format!("Provider plugin error: {}", code)))
                     }
                     Err(error) => Err(plugin_call_error(
                         &plugin.infos.name,
@@ -174,7 +183,10 @@ impl PluginManager {
         plugin_with_creds: &PluginWithCredential,
     ) -> RsResult<()> {
         let source = path.source.clone();
-        if let Some(plugin) = self.plugin_by_filename(&plugin_with_creds.plugin.path).await {
+        if let Some(plugin) = self
+            .plugin_by_filename(&plugin_with_creds.plugin.path)
+            .await
+        {
             if plugin.infos.capabilities.contains(&PluginType::Provider) {
                 let call_object: RsPluginRequest<RsProviderPath> = RsPluginRequest {
                     request: path,
@@ -194,13 +206,9 @@ impl PluginManager {
                 match res {
                     Ok(()) => Ok(()),
                     Err((_, code)) if code == 404 => {
-                            Err(SourcesError::NotFound(Some(source)).into())
+                        Err(SourcesError::NotFound(Some(source)).into())
                     }
-                    Err(error) => Err(plugin_call_error(
-                        &plugin.infos.name,
-                        "remove_file",
-                        error,
-                    )),
+                    Err(error) => Err(plugin_call_error(&plugin.infos.name, "remove_file", error)),
                 }
             } else {
                 Err(Error::ModelNotFound(format!(
@@ -221,7 +229,10 @@ impl PluginManager {
         path: RsProviderPath,
         plugin_with_creds: &PluginWithCredential,
     ) -> RsResult<RsProviderEntry> {
-        if let Some(plugin) = self.plugin_by_filename(&plugin_with_creds.plugin.path).await {
+        if let Some(plugin) = self
+            .plugin_by_filename(&plugin_with_creds.plugin.path)
+            .await
+        {
             if plugin.infos.capabilities.contains(&PluginType::Provider) {
                 let call_object: RsPluginRequest<RsProviderPath> = RsPluginRequest {
                     request: path,
@@ -236,13 +247,9 @@ impl PluginManager {
                 match res {
                     Ok(Json(p)) => Ok(p),
                     Err((_, code)) if code == 404 => {
-                            Err(Error::Error(format!("Provider plugin error: {}", code)))
+                        Err(Error::Error(format!("Provider plugin error: {}", code)))
                     }
-                    Err(error) => Err(plugin_call_error(
-                        &plugin.infos.name,
-                        "file_info",
-                        error,
-                    )),
+                    Err(error) => Err(plugin_call_error(&plugin.infos.name, "file_info", error)),
                 }
             } else {
                 Err(Error::ModelNotFound(format!(

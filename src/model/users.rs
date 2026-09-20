@@ -448,7 +448,6 @@ pub struct HistoryQuery {
     pub id: Option<RsIds>,
 
     pub page_key: Option<u64>,
-
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]

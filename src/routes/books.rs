@@ -211,9 +211,7 @@ async fn handler_patch(
 ) -> Result<Json<Value>> {
     mc.update_book(&library_id, book_id.clone(), update, &user)
         .await?;
-    Ok(Json(json!(
-        mc.get_book(&library_id, book_id, &user).await?
-    )))
+    Ok(Json(json!(mc.get_book(&library_id, book_id, &user).await?)))
 }
 
 async fn handler_delete(
@@ -222,7 +220,9 @@ async fn handler_delete(
     user: ConnectedUser,
     Query(options): Query<super::DeleteWithMediasQuery>,
 ) -> Result<Json<Value>> {
-    let deleted = mc.remove_book(&library_id, &book_id, options.delete_medias, &user).await?;
+    let deleted = mc
+        .remove_book(&library_id, &book_id, options.delete_medias, &user)
+        .await?;
     Ok(Json(json!(deleted)))
 }
 

@@ -3,7 +3,9 @@ use std::{collections::HashMap, io::Cursor};
 use async_recursion::async_recursion;
 use nanoid::nanoid;
 use rs_plugin_common_interfaces::{
-    domain::{media::MediaItemReference, rs_ids::RsIds, serie::SerieStatus, ItemWithRelations, Relations},
+    domain::{
+        media::MediaItemReference, rs_ids::RsIds, serie::SerieStatus, ItemWithRelations, Relations,
+    },
     lookup::{
         RsLookupMetadataResult, RsLookupMetadataResultWrapper, RsLookupMetadataResults,
         RsLookupMovie, RsLookupQuery, RsLookupSerie,
@@ -520,9 +522,13 @@ impl ModelController {
                 library: library_id.to_string(),
                 series: vec![SerieWithAction {
                     action: ElementAction::Updated,
-                    serie: rs_plugin_common_interfaces::domain::ItemWithRelations { item: serie.clone(), relations: None },
+                    serie: rs_plugin_common_interfaces::domain::ItemWithRelations {
+                        item: serie.clone(),
+                        relations: None,
+                    },
                 }],
-            }).await;
+            })
+            .await;
             Ok(serie)
         } else {
             let serie = self
@@ -599,9 +605,7 @@ impl ModelController {
         store.add_serie(new_serie).await?;
         let relation_result: RsResult<()> = async {
             if let Some(relations) = &relations {
-                store
-                    .replace_serie_title_relations(&id, relations)
-                    .await?;
+                store.replace_serie_title_relations(&id, relations).await?;
                 if let Some(credits) = &relations.people_details {
                     self.refresh_entity_people(
                         library_id,
@@ -641,9 +645,13 @@ impl ModelController {
             library: library_id.to_string(),
             series: vec![SerieWithAction {
                 action: ElementAction::Added,
-                serie: rs_plugin_common_interfaces::domain::ItemWithRelations { item: inserted_serie.clone(), relations: None },
+                serie: rs_plugin_common_interfaces::domain::ItemWithRelations {
+                    item: inserted_serie.clone(),
+                    relations: None,
+                },
             }],
-        }).await;
+        })
+        .await;
 
         let mc = self.clone();
         let inserted_serie_id = inserted_serie.id.clone();
@@ -828,9 +836,13 @@ impl ModelController {
             library: library_id.to_string(),
             series: vec![SerieWithAction {
                 action: ElementAction::Deleted,
-                serie: rs_plugin_common_interfaces::domain::ItemWithRelations { item: existing.clone(), relations: None },
+                serie: rs_plugin_common_interfaces::domain::ItemWithRelations {
+                    item: existing.clone(),
+                    relations: None,
+                },
             }],
-        }).await;
+        })
+        .await;
         Ok(existing)
     }
 
@@ -911,9 +923,13 @@ impl ModelController {
                     library: library_id.to_string(),
                     series: vec![SerieWithAction {
                         action: ElementAction::Updated,
-                        serie: rs_plugin_common_interfaces::domain::ItemWithRelations { item: updated.clone(), relations: None },
+                        serie: rs_plugin_common_interfaces::domain::ItemWithRelations {
+                            item: updated.clone(),
+                            relations: None,
+                        },
                     }],
-                }).await;
+                })
+                .await;
                 return Ok(updated);
             }
         }
@@ -1079,14 +1095,8 @@ impl ModelController {
             match external_serie_image_fallback(serie_id, serie_ids, resolved_serie) {
                 ExternalSerieImageFallback::ReturnRawError => raw_result,
                 ExternalSerieImageFallback::RetryWithResolvedLocalId(local_id) => {
-                    self.serie_image(
-                        library_id,
-                        &local_id,
-                        Some(kind),
-                        size,
-                        requesting_user,
-                    )
-                    .await
+                    self.serie_image(library_id, &local_id, Some(kind), size, requesting_user)
+                        .await
                 }
                 ExternalSerieImageFallback::RetryWithEnrichedLookup { name, ids } => {
                     let lookup_query = RsLookupQuery::Serie(RsLookupSerie {
@@ -1255,10 +1265,14 @@ impl ModelController {
         self.send_serie(SeriesMessage {
             library: library_id.to_string(),
             series: vec![SerieWithAction {
-                serie: rs_plugin_common_interfaces::domain::ItemWithRelations { item: serie, relations: None },
+                serie: rs_plugin_common_interfaces::domain::ItemWithRelations {
+                    item: serie,
+                    relations: None,
+                },
                 action: ElementAction::Updated,
             }],
-        }).await;
+        })
+        .await;
         Ok(())
     }
 }
@@ -1271,8 +1285,7 @@ mod tests {
 
     #[test]
     fn external_serie_image_fallback_returns_raw_error_when_resolution_fails() {
-        let fallback =
-            external_serie_image_fallback("tmdb:203744", RsIds::from_tmdb(203744), None);
+        let fallback = external_serie_image_fallback("tmdb:203744", RsIds::from_tmdb(203744), None);
 
         assert!(matches!(
             fallback,
@@ -1293,11 +1306,8 @@ mod tests {
             relations: None,
         };
 
-        let fallback = external_serie_image_fallback(
-            "tmdb:203744",
-            RsIds::from_tmdb(203744),
-            Some(resolved),
-        );
+        let fallback =
+            external_serie_image_fallback("tmdb:203744", RsIds::from_tmdb(203744), Some(resolved));
 
         match fallback {
             ExternalSerieImageFallback::RetryWithResolvedLocalId(local_id) => {
@@ -1320,11 +1330,8 @@ mod tests {
             relations: None,
         };
 
-        let fallback = external_serie_image_fallback(
-            "tmdb:203744",
-            RsIds::from_tmdb(203744),
-            Some(resolved),
-        );
+        let fallback =
+            external_serie_image_fallback("tmdb:203744", RsIds::from_tmdb(203744), Some(resolved));
 
         match fallback {
             ExternalSerieImageFallback::RetryWithEnrichedLookup { name, ids } => {

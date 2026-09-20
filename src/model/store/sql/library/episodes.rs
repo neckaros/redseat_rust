@@ -115,7 +115,7 @@ impl SqliteLibraryStore {
                 let mut query = conn.prepare(&format!(
                     "
 SELECT * FROM (
-SELECT 
+SELECT
     e.serie_ref,
     COALESCE(e.season, 0) AS season,
     COALESCE(e.number, 0) AS number,
@@ -137,15 +137,15 @@ SELECT
     e.imdb_rating,
     e.imdb_votes,
     e.trakt_rating,
-    e.trakt_votes, 
+    e.trakt_votes,
     null as serie_name
-FROM 
+FROM
     episodes e
-	
+
 	UNION
 
 
-SELECT 
+SELECT
     msm.serie_ref,
     COALESCE(msm.season, 0) AS season,
     COALESCE(msm.episode, 0) AS number,
@@ -167,15 +167,15 @@ SELECT
     e.imdb_rating,
     e.imdb_votes,
     e.trakt_rating,
-    e.trakt_votes, 
+    e.trakt_votes,
     null as serie_name
-FROM 
+FROM
     media_serie_mapping msm
-LEFT JOIN 
+LEFT JOIN
     episodes e
-ON 
-    msm.serie_ref = e.serie_ref 
-    AND msm.season = e.season 
+ON
+    msm.serie_ref = e.serie_ref
+    AND msm.season = e.season
     AND msm.episode = e.number
     {}
     )
@@ -200,18 +200,18 @@ ON
             .connection
             .call(move |conn| {
                 let mut stm = conn.prepare(
-                    " 
+                    "
             SELECT * FROM (
-    SELECT 
-        ep.serie_ref, ep.season, ep.number, ep.abs, ep.name, ep.overview, ep.airdate, ep.duration, 
-        ep.alt, ep.params, ep.imdb, ep.slug, ep.tmdb, ep.trakt, ep.tvdb, ep.otherids, 
+    SELECT
+        ep.serie_ref, ep.season, ep.number, ep.abs, ep.name, ep.overview, ep.airdate, ep.duration,
+        ep.alt, ep.params, ep.imdb, ep.slug, ep.tmdb, ep.trakt, ep.tvdb, ep.otherids,
         ep.modified, ep.added, ep.imdb_rating, ep.imdb_votes, ep.trakt_rating, ep.trakt_votes,
         series.name,
         ROW_NUMBER() OVER (PARTITION BY ep.serie_ref ORDER BY ep.airdate ASC) as rn
-    FROM 
+    FROM
         episodes as ep
     LEFT JOIN series ON ep.serie_ref = series.id
-    WHERE 
+    WHERE
         season <> 0 and
         airdate > round((julianday('now') - 2440587.5)*86400.0 * 1000)
 ) ranked
@@ -230,14 +230,14 @@ ORDER BY airdate ASC
     }
 
     pub async fn get_episodes_aired(&self, _query: EpisodeQuery) -> Result<Vec<Episode>> {
-        let row = self.connection.call( move |conn| { 
-            let mut stm = conn.prepare("SELECT 
+        let row = self.connection.call( move |conn| {
+            let mut stm = conn.prepare("SELECT
             ep.serie_ref, ep.season, ep.number, ep.abs, ep.name, ep.overview, ep.airdate, ep.duration, ep.alt, ep.params, ep.imdb, ep.slug, ep.tmdb, ep.trakt, ep.tvdb, ep.otherids, ep.modified, ep.added, ep.imdb_rating, ep.imdb_votes, ep.trakt_rating, ep.trakt_votes,
-            series.name  
-            FROM 
+            series.name
+            FROM
             episodes as ep
             LEFT JOIN series ON ep.serie_ref = series.id
-            WHERE 
+            WHERE
             season <> 0 and
             airdate < round((julianday('now') - 2440587.5)*86400.0 * 1000)
             ORDER BY  ep.airdate ASC,  ep.season ASC,  ep.number
@@ -245,7 +245,7 @@ ORDER BY airdate ASC
             let rows = stm.query_map(
             params![], Self::row_to_episode,
             )?;
-            let backups:Vec<Episode> = rows.collect::<std::result::Result<Vec<Episode>, rusqlite::Error>>()?; 
+            let backups:Vec<Episode> = rows.collect::<std::result::Result<Vec<Episode>, rusqlite::Error>>()?;
             Ok(backups)
         }).await?;
         Ok(row)
@@ -258,7 +258,7 @@ ORDER BY airdate ASC
         number: u32,
     ) -> Result<Option<Episode>> {
         let serie_id = serie_id.to_string();
-        let row = self.connection.call( move |conn| { 
+        let row = self.connection.call( move |conn| {
             let mut query = conn.prepare("SELECT serie_ref, season, number, abs, name, overview, airdate, duration, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, modified, added, imdb_rating, imdb_votes, trakt_rating, trakt_votes, null as serie_name FROM episodes WHERE serie_ref = ? and season = ? and number = ?")?;
             let row = query.query_row(
             params![serie_id, season, number],Self::row_to_episode).optional()?;
@@ -332,7 +332,7 @@ ORDER BY airdate ASC
     }
 
     pub async fn add_episode(&self, episode: Episode) -> Result<()> {
-        self.connection.call( move |conn| { 
+        self.connection.call( move |conn| {
             //println!("oo {} {} {}", episode.serie_ref, episode.season, episode.number);
             conn.execute("INSERT INTO episodes (serie_ref, season, number, abs, name, overview, airdate, duration, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, imdb_rating, imdb_votes, trakt_rating, trakt_votes)
             VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params![
@@ -615,8 +615,14 @@ mod tests {
         let connection = tokio_rusqlite::Connection::open_in_memory().await.unwrap();
         let store = SqliteLibraryStore::new(connection).await.unwrap();
         store.add_episode(episode(1, "Old title")).await.unwrap();
-        store.add_episode(episode(2, "Mapped episode")).await.unwrap();
-        store.add_episode(episode(4, "Removed episode")).await.unwrap();
+        store
+            .add_episode(episode(2, "Mapped episode"))
+            .await
+            .unwrap();
+        store
+            .add_episode(episode(4, "Removed episode"))
+            .await
+            .unwrap();
         let original_modified = store
             .get_episode("serie-1", 1, 1)
             .await
@@ -754,5 +760,4 @@ mod tests {
             .unwrap();
         assert!(unchanged.changes.is_empty());
     }
-
 }

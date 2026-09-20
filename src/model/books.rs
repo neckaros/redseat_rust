@@ -87,7 +87,9 @@ fn has_book_external_id(ids: &RsIds) -> bool {
 
 fn has_book_edition_id(ids: &RsIds) -> bool {
     ids.iter().any(|(key, _)| {
-        key != "redseat" && key != "volume" && key != "chapter"
+        key != "redseat"
+            && key != "volume"
+            && key != "chapter"
             && !BOOK_SERIES_ID_KEYS.contains(&key.as_str())
     })
 }
@@ -106,15 +108,15 @@ fn has_common_book_edition_id(left: &RsIds, right: &RsIds) -> bool {
             && key != "volume"
             && key != "chapter"
             && !BOOK_SERIES_ID_KEYS.contains(&key.as_str())
-            && right.get(key).is_some_and(|right_value| right_value == left_value)
+            && right
+                .get(key)
+                .is_some_and(|right_value| right_value == left_value)
     })
 }
 
 fn tag_external_ids(otherids: Option<OtherIds>, source_id: &str) -> Option<OtherIds> {
     let mut otherids = otherids.unwrap_or_default();
-    if !source_id.trim().is_empty()
-        && !otherids.as_slice().iter().any(|id| id == source_id)
-    {
+    if !source_id.trim().is_empty() && !otherids.as_slice().iter().any(|id| id == source_id) {
         otherids.0.push(source_id.to_owned());
     }
     (!otherids.as_slice().is_empty()).then_some(otherids)
@@ -328,7 +330,10 @@ impl ModelController {
                         {
                             provider_to_local.insert(provider_parent.clone(), reference.id.clone());
                             Some(reference.id)
-                        } else if pending.iter().any(|candidate| candidate.id == *provider_parent) {
+                        } else if pending
+                            .iter()
+                            .any(|candidate| candidate.id == *provider_parent)
+                        {
                             index += 1;
                             continue;
                         } else {
@@ -338,12 +343,7 @@ impl ModelController {
                         None
                     };
                     let reference = self
-                        .resolve_or_create_refreshed_tag(
-                            library_id,
-                            tag,
-                            parent,
-                            requesting_user,
-                        )
+                        .resolve_or_create_refreshed_tag(library_id, tag, parent, requesting_user)
                         .await?;
                     provider_to_local.insert(tag.id.clone(), reference.id.clone());
                     if !resolved.iter().any(|current| current.id == reference.id) {
@@ -358,12 +358,7 @@ impl ModelController {
                 if !progressed {
                     let tag = pending.remove(0);
                     let reference = self
-                        .resolve_or_create_refreshed_tag(
-                            library_id,
-                            tag,
-                            None,
-                            requesting_user,
-                        )
+                        .resolve_or_create_refreshed_tag(library_id, tag, None, requesting_user)
                         .await?;
                     provider_to_local.insert(tag.id.clone(), reference.id.clone());
                     if !resolved.iter().any(|current| current.id == reference.id) {
@@ -482,7 +477,11 @@ impl ModelController {
         for mut credit in relations.people_details.clone().unwrap_or_default() {
             let person = match store.get_person(&credit.person.id).await? {
                 Some(person) => Some(person),
-                None => store.get_person_by_external_id(credit.person.clone().into()).await?,
+                None => {
+                    store
+                        .get_person_by_external_id(credit.person.clone().into())
+                        .await?
+                }
             };
             if let Some(person) = person {
                 credit.person = person;
@@ -491,14 +490,16 @@ impl ModelController {
         }
         let mut changed = false;
         for (person_id, credit) in pending {
-            changed |= store.upsert_entity_person_ranked_credit(
-                super::entity_people::PeopleEntity::Book,
-                book_id,
-                &person_id,
-                credit.roles,
-                credit.characters,
-                credit.rank,
-            ).await?;
+            changed |= store
+                .upsert_entity_person_ranked_credit(
+                    super::entity_people::PeopleEntity::Book,
+                    book_id,
+                    &person_id,
+                    credit.roles,
+                    credit.characters,
+                    credit.rank,
+                )
+                .await?;
         }
         Ok(changed)
     }
@@ -534,10 +535,20 @@ impl ModelController {
                 for result in group.results {
                     if let RsLookupMetadataResult::Book(returned) = result.metadata {
                         if ids.has_common_id(&returned.into()) {
-                            let Some(relations) = result.relations.filter(|relations|
-                                relations.people_details.clone().unwrap_or_default().iter().any(|credit|
-                                    credit.roles.is_some() || credit.characters.is_some() || credit.rank.is_some())
-                            ) else { continue };
+                            let Some(relations) = result.relations.filter(|relations| {
+                                relations
+                                    .people_details
+                                    .clone()
+                                    .unwrap_or_default()
+                                    .iter()
+                                    .any(|credit| {
+                                        credit.roles.is_some()
+                                            || credit.characters.is_some()
+                                            || credit.rank.is_some()
+                                    })
+                            }) else {
+                                continue;
+                            };
                             {
                                 if self
                                     .apply_book_credits(library_id, book_id, &relations)
@@ -921,24 +932,30 @@ impl ModelController {
         }
 
         if let Some(relations) = &relations {
-            self.apply_book_credits(library_id, &new_book.id, relations).await?;
+            self.apply_book_credits(library_id, &new_book.id, relations)
+                .await?;
         }
 
-        let inserted = store
-            .get_book(&new_book.id)
-            .await?
-            .ok_or(SourcesError::UnableToFindMovie(
-                library_id.to_string(),
-                new_book.id.clone(),
-                "add_book".to_string(),
-            ))?;
+        let inserted =
+            store
+                .get_book(&new_book.id)
+                .await?
+                .ok_or(SourcesError::UnableToFindMovie(
+                    library_id.to_string(),
+                    new_book.id.clone(),
+                    "add_book".to_string(),
+                ))?;
         self.send_book(BooksMessage {
             library: library_id.to_string(),
             books: vec![BookWithAction {
                 action: ElementAction::Added,
-                book: rs_plugin_common_interfaces::domain::ItemWithRelations { item: inserted.item.clone(), relations: None },
+                book: rs_plugin_common_interfaces::domain::ItemWithRelations {
+                    item: inserted.item.clone(),
+                    relations: None,
+                },
             }],
-        }).await;
+        })
+        .await;
 
         let mc = self.clone();
         let lib_id = library_id.to_string();
@@ -1200,9 +1217,13 @@ impl ModelController {
             library: library_id.to_string(),
             books: vec![BookWithAction {
                 action: ElementAction::Updated,
-                book: rs_plugin_common_interfaces::domain::ItemWithRelations { item: updated.clone(), relations: None },
+                book: rs_plugin_common_interfaces::domain::ItemWithRelations {
+                    item: updated.clone(),
+                    relations: None,
+                },
             }],
-        }).await;
+        })
+        .await;
         Ok(updated)
     }
 
@@ -1258,9 +1279,13 @@ impl ModelController {
             library: library_id.to_string(),
             books: vec![BookWithAction {
                 action: ElementAction::Deleted,
-                book: rs_plugin_common_interfaces::domain::ItemWithRelations { item: existing.clone(), relations: None },
+                book: rs_plugin_common_interfaces::domain::ItemWithRelations {
+                    item: existing.clone(),
+                    relations: None,
+                },
             }],
-        }).await;
+        })
+        .await;
         Ok(existing)
     }
 
@@ -1555,9 +1580,13 @@ impl ModelController {
             library: library_id.to_string(),
             books: vec![BookWithAction {
                 action: ElementAction::Updated,
-                book: rs_plugin_common_interfaces::domain::ItemWithRelations { item: book, relations: None },
+                book: rs_plugin_common_interfaces::domain::ItemWithRelations {
+                    item: book,
+                    relations: None,
+                },
             }],
-        }).await;
+        })
+        .await;
         Ok(())
     }
 }

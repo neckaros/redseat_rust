@@ -14,7 +14,7 @@ use crate::{
 
 impl SqliteStore {
     pub async fn get_credentials(&self) -> Result<Vec<Credential>> {
-        let row = self.server_store.call( move |conn| { 
+        let row = self.server_store.call( move |conn| {
             let mut query = conn.prepare("SELECT id, name, source, type, login, password, preferences, user_ref, refreshtoken, expires  FROM Credentials")?;
             let rows = query.query_map(
             [],
@@ -30,11 +30,11 @@ impl SqliteStore {
                     user_ref:  row.get(7)?,
                     refresh_token:  row.get(8)?,
                     expires:  row.get(9)?,
-                    
+
                 })
             },
             )?;
-            let credentials:Vec<Credential> = rows.collect::<std::result::Result<Vec<Credential>, rusqlite::Error>>()?; 
+            let credentials:Vec<Credential> = rows.collect::<std::result::Result<Vec<Credential>, rusqlite::Error>>()?;
             Ok(credentials)
         }).await?;
         Ok(row)
@@ -42,7 +42,7 @@ impl SqliteStore {
 
     pub async fn get_credential(&self, credential_id: &str) -> Result<Option<Credential>> {
         let credential_id = credential_id.to_string();
-        let row = self.server_store.call( move |conn| { 
+        let row = self.server_store.call( move |conn| {
             let mut query = conn.prepare("SELECT id, name, source, type, login, password, preferences, user_ref, refreshtoken, expires  FROM Credentials WHERE id = ?")?;
             let row = query.query_row(
             [credential_id],
@@ -58,7 +58,7 @@ impl SqliteStore {
                     user_ref:  row.get(7)?,
                     refresh_token:  row.get(8)?,
                     expires:  row.get(9)?,
-                    
+
                 })
             },
             ).optional()?;
@@ -109,7 +109,7 @@ impl SqliteStore {
     }
 
     pub async fn add_crendential(&self, credential: Credential) -> Result<()> {
-        self.server_store.call( move |conn| { 
+        self.server_store.call( move |conn| {
 
             conn.execute("INSERT INTO Credentials (id, name, source, type, login, password, preferences, user_ref, refreshtoken, expires)
             VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?)", params![
@@ -124,7 +124,7 @@ impl SqliteStore {
                 credential.refresh_token,
                 credential.expires
             ])?;
-            
+
             Ok(())
         }).await?;
         Ok(())

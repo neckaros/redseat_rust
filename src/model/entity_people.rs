@@ -93,7 +93,9 @@ pub(crate) fn merge_credit(
 ) {
     use std::collections::hash_map::Entry;
     match pending.entry(credit.person.id.clone()) {
-        Entry::Vacant(entry) => { entry.insert(credit); }
+        Entry::Vacant(entry) => {
+            entry.insert(credit);
+        }
         Entry::Occupied(mut entry) => {
             let existing = entry.get_mut();
             merge_credit_values(&mut existing.roles, credit.roles);
@@ -131,7 +133,6 @@ impl ModelController {
             .get_people_relations_batch(entity, ids)
             .await?)
     }
-
 
     /// Select metadata only when a plugin returns one of the requested external IDs.
     pub(crate) async fn lookup_person_metadata(
@@ -248,7 +249,6 @@ impl ModelController {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,41 +256,63 @@ mod tests {
 
     #[test]
     fn credit_merge_combines_context_without_replacing_person_profile() {
-        let person = Person { id: "local".into(), name: "Saved name".into(), ..Default::default() };
+        let person = Person {
+            id: "local".into(),
+            name: "Saved name".into(),
+            ..Default::default()
+        };
         let mut pending = std::collections::HashMap::new();
-        merge_credit(&mut pending, PersonWithRoles {
-            person: person.clone(),
-            roles: Some(vec![PersonType::Actor]),
-            characters: Some(vec!["A".into()]),
-            rank: Some(4),
-            conf: None,
-        });
-        merge_credit(&mut pending, PersonWithRoles {
-            person: Person { name: "Other name".into(), ..person.clone() },
-            roles: Some(vec![PersonType::Actor, PersonType::Director]),
-            characters: Some(vec!["A".into(), "B".into()]),
-            rank: Some(0),
-            conf: None,
-        });
+        merge_credit(
+            &mut pending,
+            PersonWithRoles {
+                person: person.clone(),
+                roles: Some(vec![PersonType::Actor]),
+                characters: Some(vec!["A".into()]),
+                rank: Some(4),
+                conf: None,
+            },
+        );
+        merge_credit(
+            &mut pending,
+            PersonWithRoles {
+                person: Person {
+                    name: "Other name".into(),
+                    ..person.clone()
+                },
+                roles: Some(vec![PersonType::Actor, PersonType::Director]),
+                characters: Some(vec!["A".into(), "B".into()]),
+                rank: Some(0),
+                conf: None,
+            },
+        );
         merge_credit(&mut pending, person.clone().into());
         assert_eq!(pending.len(), 1);
         let credit = &pending["local"];
         assert_eq!(credit.person, person);
-        assert_eq!(credit.roles, Some(vec![PersonType::Actor, PersonType::Director]));
+        assert_eq!(
+            credit.roles,
+            Some(vec![PersonType::Actor, PersonType::Director])
+        );
         assert_eq!(credit.characters, Some(vec!["A".into(), "B".into()]));
         assert_eq!(credit.rank, Some(0));
     }
 
     #[test]
     fn credit_merge_preserves_explicit_empty_and_unknown_fields() {
-        let person = Person { id: "local".into(), ..Default::default() };
+        let person = Person {
+            id: "local".into(),
+            ..Default::default()
+        };
         let mut pending = std::collections::HashMap::new();
         merge_credit(&mut pending, person.clone().into());
-        merge_credit(&mut pending, PersonWithRoles {
-            person,
-            roles: Some(vec![]),
-            ..Default::default()
-        });
+        merge_credit(
+            &mut pending,
+            PersonWithRoles {
+                person,
+                roles: Some(vec![]),
+                ..Default::default()
+            },
+        );
         assert_eq!(pending["local"].roles, Some(vec![]));
         assert_eq!(pending["local"].characters, None);
         assert_eq!(pending["local"].rank, None);

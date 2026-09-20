@@ -354,8 +354,7 @@ impl SqliteLibraryStore {
                     );
                 }
                 if version < 54 {
-                    let initial =
-                        String::from_utf8_lossy(include_bytes!("054 - SYNC INDEXES.sql"));
+                    let initial = String::from_utf8_lossy(include_bytes!("054 - SYNC INDEXES.sql"));
                     conn.execute_batch(&initial)?;
                     version = 54;
                     conn.pragma_update(None, "user_version", version)?;
@@ -366,7 +365,8 @@ impl SqliteLibraryStore {
                 }
 
                 if version < 55 {
-                    let migration = String::from_utf8_lossy(include_bytes!("055 - ENTITY PEOPLE.sql"));
+                    let migration =
+                        String::from_utf8_lossy(include_bytes!("055 - ENTITY PEOPLE.sql"));
                     conn.execute_batch(&migration)?;
                     version = 55;
                     conn.pragma_update(None, "user_version", version)?;
@@ -377,7 +377,8 @@ impl SqliteLibraryStore {
                 }
 
                 if version < 56 {
-                    let migration = String::from_utf8_lossy(include_bytes!("056 - ENTITY PEOPLE SYNC.sql"));
+                    let migration =
+                        String::from_utf8_lossy(include_bytes!("056 - ENTITY PEOPLE SYNC.sql"));
                     conn.execute_batch(&migration)?;
                     version = 56;
                     conn.pragma_update(None, "user_version", version)?;
@@ -388,38 +389,63 @@ impl SqliteLibraryStore {
                 }
 
                 if version < 57 {
-                    conn.execute_batch(&String::from_utf8_lossy(include_bytes!("057 - PEOPLE ROLES.sql")))?;
+                    conn.execute_batch(&String::from_utf8_lossy(include_bytes!(
+                        "057 - PEOPLE ROLES.sql"
+                    )))?;
                     version = 57;
                     conn.pragma_update(None, "user_version", version)?;
-                    log_info(LogServiceType::Database, format!("Update Library Database to version: {}", version));
+                    log_info(
+                        LogServiceType::Database,
+                        format!("Update Library Database to version: {}", version),
+                    );
                 }
 
                 if version < 58 {
-                    conn.execute_batch(&String::from_utf8_lossy(include_bytes!("058 - CREDIT RANK.sql")))?;
+                    conn.execute_batch(&String::from_utf8_lossy(include_bytes!(
+                        "058 - CREDIT RANK.sql"
+                    )))?;
                     version = 58;
                     conn.pragma_update(None, "user_version", version)?;
-                    log_info(LogServiceType::Database, format!("Update Library Database to version: {}", version));
+                    log_info(
+                        LogServiceType::Database,
+                        format!("Update Library Database to version: {}", version),
+                    );
                 }
 
                 if version < 59 {
-                    conn.execute_batch(&String::from_utf8_lossy(include_bytes!("059 - OPTIONAL BOOK MEDIA DELETE.sql")))?;
+                    conn.execute_batch(&String::from_utf8_lossy(include_bytes!(
+                        "059 - OPTIONAL BOOK MEDIA DELETE.sql"
+                    )))?;
                     version = 59;
                     conn.pragma_update(None, "user_version", version)?;
-                    log_info(LogServiceType::Database, format!("Update Library Database to version: {}", version));
+                    log_info(
+                        LogServiceType::Database,
+                        format!("Update Library Database to version: {}", version),
+                    );
                 }
 
                 if version < 60 {
-                    conn.execute_batch(&String::from_utf8_lossy(include_bytes!("060 - OPTIONAL MOVIE MEDIA DELETE.sql")))?;
+                    conn.execute_batch(&String::from_utf8_lossy(include_bytes!(
+                        "060 - OPTIONAL MOVIE MEDIA DELETE.sql"
+                    )))?;
                     version = 60;
                     conn.pragma_update(None, "user_version", version)?;
-                    log_info(LogServiceType::Database, format!("Update Library Database to version: {}", version));
+                    log_info(
+                        LogServiceType::Database,
+                        format!("Update Library Database to version: {}", version),
+                    );
                 }
 
                 if version < 61 {
-                    conn.execute_batch(&String::from_utf8_lossy(include_bytes!("061 - TITLE RELATIONS.sql")))?;
+                    conn.execute_batch(&String::from_utf8_lossy(include_bytes!(
+                        "061 - TITLE RELATIONS.sql"
+                    )))?;
                     version = 61;
                     conn.pragma_update(None, "user_version", version)?;
-                    log_info(LogServiceType::Database, format!("Update Library Database to version: {}", version));
+                    log_info(
+                        LogServiceType::Database,
+                        format!("Update Library Database to version: {}", version),
+                    );
                 }
 
                 // VACUUM is expensive on large media libraries; schema startup
@@ -559,14 +585,30 @@ mod tests {
         }).await.unwrap();
 
         store.remove_serie("show".to_string()).await.unwrap();
-        assert!(store.get_media("episode-media", None).await.unwrap().is_some());
-        store.connection.call(|conn| {
-            let episodes: i64 = conn.query_row("SELECT count(*) FROM episodes WHERE serie_ref = 'show'", [], |row| row.get(0))?;
-            let mappings: i64 = conn.query_row("SELECT count(*) FROM media_serie_mapping WHERE serie_ref = 'show'", [], |row| row.get(0))?;
-            assert_eq!(episodes, 0);
-            assert_eq!(mappings, 0);
-            Ok(())
-        }).await.unwrap();
+        assert!(store
+            .get_media("episode-media", None)
+            .await
+            .unwrap()
+            .is_some());
+        store
+            .connection
+            .call(|conn| {
+                let episodes: i64 = conn.query_row(
+                    "SELECT count(*) FROM episodes WHERE serie_ref = 'show'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let mappings: i64 = conn.query_row(
+                    "SELECT count(*) FROM media_serie_mapping WHERE serie_ref = 'show'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(episodes, 0);
+                assert_eq!(mappings, 0);
+                Ok(())
+            })
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -575,27 +617,51 @@ mod tests {
         let store = SqliteLibraryStore::new(connection).await.unwrap();
 
         store
-            .get_people(PeopleQuery { limit: Some(1), offset: Some(0), ..Default::default() })
+            .get_people(PeopleQuery {
+                limit: Some(1),
+                offset: Some(0),
+                ..Default::default()
+            })
             .await
             .unwrap();
         store
-            .get_tags(TagQuery { limit: Some(1), offset: Some(0), ..Default::default() })
+            .get_tags(TagQuery {
+                limit: Some(1),
+                offset: Some(0),
+                ..Default::default()
+            })
             .await
             .unwrap();
         store
-            .get_series(SerieQuery { limit: Some(1), offset: Some(0), ..Default::default() })
+            .get_series(SerieQuery {
+                limit: Some(1),
+                offset: Some(0),
+                ..Default::default()
+            })
             .await
             .unwrap();
         store
-            .get_movies(MovieQuery { limit: Some(1), offset: Some(0), ..Default::default() })
+            .get_movies(MovieQuery {
+                limit: Some(1),
+                offset: Some(0),
+                ..Default::default()
+            })
             .await
             .unwrap();
         store
-            .get_books(BookQuery { limit: Some(1), offset: Some(0), ..Default::default() })
+            .get_books(BookQuery {
+                limit: Some(1),
+                offset: Some(0),
+                ..Default::default()
+            })
             .await
             .unwrap();
         store
-            .get_deleted(DeletedQuery { limit: Some(1), offset: Some(0), ..Default::default() })
+            .get_deleted(DeletedQuery {
+                limit: Some(1),
+                offset: Some(0),
+                ..Default::default()
+            })
             .await
             .unwrap();
         store

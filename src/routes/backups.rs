@@ -124,10 +124,9 @@ async fn handler_get_latest_backup_media(
         .into_response("nope", None, None, Some((mc.clone(), &user)))
         .await?;
     if query.sqlite && latest.file == "db" {
-        response.headers_mut().insert(
-            header::ACCEPT_RANGES,
-            HeaderValue::from_static("none"),
-        );
+        response
+            .headers_mut()
+            .insert(header::ACCEPT_RANGES, HeaderValue::from_static("none"));
     }
     if latest.file == "db" && latest.library.is_some() && !query.sqlite {
         response.headers_mut().insert(

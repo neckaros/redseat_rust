@@ -19,7 +19,8 @@ use crate::{
         library::LibraryRole,
         media::{FileType, Media, MediaWithAction, MediasMessage},
         people::{
-            FaceBBox, FaceEmbedding, PeopleMessage, Person, PersonType, PersonWithAction, UnassignedFace,
+            FaceBBox, FaceEmbedding, PeopleMessage, Person, PersonType, PersonWithAction,
+            UnassignedFace,
         },
         tag::Tag,
         ElementAction,
@@ -37,8 +38,8 @@ use crate::{
 use rs_plugin_common_interfaces::{
     domain::{other_ids::OtherIds, rs_ids::RsIds},
     lookup::{
-        RsLookupMetadataResult, RsLookupMetadataResults,
-        RsLookupMovie, RsLookupPerson, RsLookupQuery,
+        RsLookupMetadataResult, RsLookupMetadataResults, RsLookupMovie, RsLookupPerson,
+        RsLookupQuery,
     },
     url::RsLink,
     ExternalImage, Gender, ImageType,
@@ -506,13 +507,7 @@ impl ModelController {
             let existing_person = store.get_person_by_external_id(person_ids.clone()).await?;
             if let Some(existing_person) = existing_person {
                 let image = self
-                    .person_image(
-                        library_id,
-                        &existing_person.id,
-                        kind,
-                        size,
-                        requesting_user,
-                    )
+                    .person_image(library_id, &existing_person.id, kind, size, requesting_user)
                     .await?;
                 Ok(image)
             } else {
@@ -535,21 +530,16 @@ impl ModelController {
                     return raw_result;
                 }
 
-                let resolved_person =
-                    self.get_person(library_id, person_id.to_string(), requesting_user).await?;
+                let resolved_person = self
+                    .get_person(library_id, person_id.to_string(), requesting_user)
+                    .await?;
                 let Some(person) = resolved_person else {
                     return raw_result;
                 };
 
                 if person.id != person_id && !RsIds::is_id(&person.id) {
                     return self
-                        .person_image(
-                            library_id,
-                            &person.id,
-                            kind,
-                            size,
-                            requesting_user,
-                        )
+                        .person_image(library_id, &person.id, kind, size, requesting_user)
                         .await;
                 }
 
@@ -581,12 +571,7 @@ impl ModelController {
             {
                 // Try to refresh from external source first
                 let refresh_result = self
-                    .refresh_person_image(
-                        library_id,
-                        person_id,
-                        &kind,
-                        requesting_user,
-                    )
+                    .refresh_person_image(library_id, person_id, &kind, requesting_user)
                     .await;
                 match refresh_result {
                     Ok(_) => {
@@ -924,12 +909,8 @@ impl ModelController {
             if media.kind == FileType::Video {
                 let loaded_video_images = if video_images.is_none() {
                     Some(
-                        self.video_processing_images(
-                            library_id,
-                            media_id,
-                            requesting_user,
-                        )
-                        .await?,
+                        self.video_processing_images(library_id, media_id, requesting_user)
+                            .await?,
                     )
                 } else {
                     None

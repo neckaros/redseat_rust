@@ -142,9 +142,7 @@ async fn handler_seach_series(
     if let Some(filters) = filters {
         filters.apply_to_movie(&mut lookup);
     }
-    let groups = mc
-        .search_serie(&library_id, lookup, sources, &user)
-        .await?;
+    let groups = mc.search_serie(&library_id, lookup, sources, &user).await?;
     let body: Vec<SearchResultGroup> = groups
         .into_iter()
         .map(|(source_id, source_name, data)| SearchResultGroup {
@@ -254,9 +252,7 @@ async fn handler_patch(
 ) -> Result<Json<Value>> {
     mc.update_serie(&library_id, serie_id.clone(), update, &user)
         .await?;
-    let new_credential = mc
-        .get_serie(&library_id, serie_id, &user)
-        .await?;
+    let new_credential = mc.get_serie(&library_id, serie_id, &user).await?;
     Ok(Json(json!(new_credential)))
 }
 
@@ -279,7 +275,9 @@ async fn handler_post(
     user: ConnectedUser,
     Json(serie): Json<ItemWithRelations<Serie>>,
 ) -> Result<Json<Value>> {
-    let created_serie = mc.add_serie_with_relations(&library_id, serie, &user).await?;
+    let created_serie = mc
+        .add_serie_with_relations(&library_id, serie, &user)
+        .await?;
     let body = Json(json!(created_serie));
     Ok(body)
 }
@@ -396,9 +394,7 @@ async fn handler_lookup(
             serie_id,
             "handler_lookup".to_string(),
         ))?;
-    let name = pagination
-        .name()
-        .unwrap_or_else(|| serie.item.name.clone());
+    let name = pagination.name().unwrap_or_else(|| serie.item.name.clone());
     let ids: RsIds = serie.item.into();
     let query = RsLookupQuery::Serie(RsLookupSerie {
         name: Some(name),
