@@ -415,6 +415,13 @@ impl SqliteLibraryStore {
                     log_info(LogServiceType::Database, format!("Update Library Database to version: {}", version));
                 }
 
+                if version < 61 {
+                    conn.execute_batch(&String::from_utf8_lossy(include_bytes!("061 - TITLE RELATIONS.sql")))?;
+                    version = 61;
+                    conn.pragma_update(None, "user_version", version)?;
+                    log_info(LogServiceType::Database, format!("Update Library Database to version: {}", version));
+                }
+
                 // VACUUM is expensive on large media libraries; schema startup
                 // should be read-only once the database is current.
                 if initial_version != version {

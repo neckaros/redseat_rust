@@ -4,6 +4,7 @@ use serde_json::Value;
 use strum_macros::{Display, EnumString};
 
 use crate::{plugins::medias::imdb::ImdbContext, tools::serialization_tools::rating_serializer};
+use rs_plugin_common_interfaces::domain::media::{FileEpisode, MediaItemReference};
 
 use super::ElementAction;
 pub use rs_plugin_common_interfaces::domain::movie::{Movie, MovieStatus};
@@ -11,6 +12,10 @@ pub use rs_plugin_common_interfaces::domain::movie::{Movie, MovieStatus};
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MovieForUpdate {
+    pub add_tags: Option<Vec<MediaItemReference>>,
+    pub remove_tags: Option<Vec<String>>,
+    pub add_series: Option<Vec<FileEpisode>>,
+    pub remove_series: Option<Vec<FileEpisode>>,
     pub name: Option<String>,
     #[serde(rename = "type")]
     pub kind: Option<Value>,
@@ -117,7 +122,11 @@ impl MovieForUpdate {
     }
 
     pub fn has_update(&self) -> bool {
-        self.name.is_some()
+        self.add_tags.is_some()
+            || self.remove_tags.is_some()
+            || self.add_series.is_some()
+            || self.remove_series.is_some()
+            || self.name.is_some()
             || self.kind.is_some()
             || self.status.is_some()
             || self.digitalairdate.is_some()

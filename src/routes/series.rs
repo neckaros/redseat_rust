@@ -26,7 +26,7 @@ use axum::{
 };
 use futures::{Stream, TryStreamExt};
 use rs_plugin_common_interfaces::{
-    domain::rs_ids::RsIds,
+    domain::{rs_ids::RsIds, ItemWithRelations},
     lookup::{RsLookupMovie, RsLookupQuery, RsLookupSerie},
     ElementType, ExternalImage, ImageType,
 };
@@ -252,8 +252,10 @@ async fn handler_patch(
     user: ConnectedUser,
     Json(update): Json<SerieForUpdate>,
 ) -> Result<Json<Value>> {
+    mc.update_serie(&library_id, serie_id.clone(), update, &user)
+        .await?;
     let new_credential = mc
-        .update_serie(&library_id, serie_id, update, &user)
+        .get_serie(&library_id, serie_id, &user)
         .await?;
     Ok(Json(json!(new_credential)))
 }
@@ -275,9 +277,9 @@ async fn handler_post(
     Path(library_id): Path<String>,
     State(mc): State<ModelController>,
     user: ConnectedUser,
-    Json(serie): Json<Serie>,
+    Json(serie): Json<ItemWithRelations<Serie>>,
 ) -> Result<Json<Value>> {
-    let created_serie = mc.add_serie(&library_id, serie, &user).await?;
+    let created_serie = mc.add_serie_with_relations(&library_id, serie, &user).await?;
     let body = Json(json!(created_serie));
     Ok(body)
 }
