@@ -53,7 +53,7 @@ impl SqliteStore {
 
     pub async fn get_backups(&self) -> Result<Vec<Backup>> {
         let row = self.server_store.call( move |conn| { 
-            let mut query = conn.prepare("SELECT id, source, credentials, library, path, schedule, filter, last, password, size, plugin, name  FROM Backups")?;
+            let mut query = conn.prepare("SELECT id, source, credentials, library, path, schedule, filter, last, password, size, plugin, name, maxVersions, maxDatabaseVersions FROM Backups")?;
             let rows = query.query_map(
             [],
             |row| {
@@ -70,6 +70,8 @@ impl SqliteStore {
                     size:  row.get(9)?,
                     plugin:  row.get(10)?,
                     name:  row.get(11)?,
+                    max_versions: row.get(12)?,
+                    max_database_versions: row.get(13)?,
                     
                 })
             },
@@ -83,7 +85,7 @@ impl SqliteStore {
     pub async fn get_backup(&self, credential_id: &str) -> Result<Option<Backup>> {
         let credential_id = credential_id.to_string();
         let row = self.server_store.call( move |conn| { 
-            let mut query = conn.prepare("SELECT id, source, credentials, library, path, schedule, filter, last, password, size, plugin, name  FROM Backups WHERE id = ?")?;
+            let mut query = conn.prepare("SELECT id, source, credentials, library, path, schedule, filter, last, password, size, plugin, name, maxVersions, maxDatabaseVersions FROM Backups WHERE id = ?")?;
             let row = query.query_row(
             [credential_id],
             |row| {
@@ -100,6 +102,8 @@ impl SqliteStore {
                     size:  row.get(9)?,
                     plugin:  row.get(10)?,
                     name:  row.get(11)?,
+                    max_versions: row.get(12)?,
+                    max_database_versions: row.get(13)?,
                 })
             },
             ).optional()?;
@@ -122,6 +126,12 @@ impl SqliteStore {
                     &mut columns,
                     &mut values,
                 );
+                super::add_for_sql_update(
+                    update.max_database_versions.map(|value| value.max(1)),
+                    "maxDatabaseVersions",
+                    &mut columns,
+                    &mut values,
+                );
                 super::add_for_sql_update(update.library, "library", &mut columns, &mut values);
                 super::add_for_sql_update(update.path, "path", &mut columns, &mut values);
                 super::add_for_sql_update(update.schedule, "schedule", &mut columns, &mut values);
@@ -130,6 +140,12 @@ impl SqliteStore {
                 super::add_for_sql_update(update.password, "password", &mut columns, &mut values);
                 super::add_for_sql_update(update.size, "size", &mut columns, &mut values);
                 super::add_for_sql_update(update.name, "name", &mut columns, &mut values);
+                super::add_for_sql_update(
+                    update.max_versions.map(|value| value.max(1)),
+                    "maxVersions",
+                    &mut columns,
+                    &mut values,
+                );
 
                 if columns.len() > 0 {
                     values.push(Box::new(credential_id));
@@ -146,8 +162,8 @@ impl SqliteStore {
     pub async fn add_backup(&self, backup: Backup) -> Result<()> {
         self.server_store.call( move |conn| { 
 
-            conn.execute("INSERT INTO Backups (id, source, credentials, library, path, schedule, filter, last, password, size, plugin, name)
-            VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, ?, ?)", params![
+            conn.execute("INSERT INTO Backups (id, source, credentials, library, path, schedule, filter, last, password, size, plugin, name, maxVersions, maxDatabaseVersions)
+            VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params![
                 backup.id,
                 backup.source,
                 backup.credentials,
@@ -160,6 +176,8 @@ impl SqliteStore {
                 backup.size,
                 backup.plugin,
                 backup.name,
+                backup.max_versions.max(1),
+                backup.max_database_versions.max(1),
             ])?;
             
             Ok(())
@@ -450,7 +468,7 @@ mod tests {
                     [],
                 )?;
                 connection.execute(
-                    "INSERT INTO Backups (id, source, path, name) VALUES ('backup', 'local', '', 'Backup')",
+                    "INSERT INTO Backups (id, source, path, name, size) VALUES ('backup', 'local', '', 'Backup', 0)",
                     [],
                 )?;
                 Ok(())
@@ -461,6 +479,25 @@ mod tests {
             server_store: connection,
             libraries_stores: RwLock::new(HashMap::new()),
         };
+
+        assert_eq!(
+            store
+                .get_backup("backup")
+                .await
+                .unwrap()
+                .unwrap()
+                .max_versions,
+            1
+        );
+        assert_eq!(
+            store
+                .get_backup("backup")
+                .await
+                .unwrap()
+                .unwrap()
+                .max_database_versions,
+            3
+        );
 
         store
             .add_backup_file(backup_file("old", "old-path", "old-hash", 10))

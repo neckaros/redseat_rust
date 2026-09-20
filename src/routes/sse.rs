@@ -473,6 +473,8 @@ mod tests {
             last: None,
             password: None,
             size: 0,
+            max_versions: 1,
+            max_database_versions: 3,
         };
 
         let events = backup_snapshot_events(vec![BackupWithStatus {
@@ -504,6 +506,8 @@ mod tests {
             last: None,
             password: None,
             size: 0,
+            max_versions: 1,
+            max_database_versions: 3,
         };
         let mut snapshot = backup_snapshot_events(vec![BackupWithStatus {
             backup: backup.clone(),

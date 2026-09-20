@@ -139,8 +139,17 @@ pub async fn migrate_database(connection: &Connection) -> Result<usize> {
                 println!("Update SQL to version 12 (durable library encryption jobs)")
             }
 
+            if version < 13 {
+                let update =
+                    String::from_utf8_lossy(include_bytes!("013 - BACKUP MAX VERSIONS.sql"));
+                conn.execute_batch(&update)?;
+
+                conn.pragma_update(None, "user_version", 13)?;
+                println!("Update SQL to version 13 (backup max versions)")
+            }
+
             conn.execute("VACUUM;", params![])?;
-            Ok(12)
+            Ok(13)
         })
         .await?;
 
@@ -718,8 +727,9 @@ pub fn deserialize_from_row<T: DeserializeOwned>(
 
 #[cfg(test)]
 mod tests {
-    use super::{pagination_clause, MAX_PAGINATION_LIMIT};
+    use super::{migrate_database, pagination_clause, MAX_PAGINATION_LIMIT};
     use crate::model::error::Error;
+    use tokio_rusqlite::Connection;
 
     #[test]
     fn pagination_clause_preserves_requested_pages() {
@@ -748,5 +758,36 @@ mod tests {
                 maximum: 5000
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn backup_max_versions_migration_backfills_one() {
+        let connection = Connection::open_in_memory().await.unwrap();
+        connection
+            .call(|connection| {
+                connection.execute_batch(
+                    "CREATE TABLE Backups (id TEXT PRIMARY KEY);
+                     INSERT INTO Backups (id) VALUES ('existing');
+                     PRAGMA user_version = 12;",
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        migrate_database(&connection).await.unwrap();
+        let (max_versions, max_database_versions) = connection
+            .call(|connection| {
+                Ok(connection.query_row(
+                    "SELECT maxVersions, maxDatabaseVersions FROM Backups WHERE id = 'existing'",
+                    [],
+                    |row| Ok((row.get::<_, u32>(0)?, row.get::<_, u32>(1)?)),
+                )?)
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(max_versions, 1);
+        assert_eq!(max_database_versions, 3);
     }
 }
