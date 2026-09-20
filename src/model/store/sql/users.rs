@@ -83,7 +83,7 @@ impl SqliteStore {
     pub async fn get_user(&self, user_id: &str) -> Result<ServerUser> {
         let user_id = user_id.to_string();
         let error_user_id = user_id.to_string();
-        let user = self.server_store.call( move |conn| { 
+        let user = self.server_store.call( move |conn| {
                 let mut user = conn.query_row(
                 "SELECT id, name, role, preferences  FROM Users WHERE id = ?1",
                 [&user_id],
@@ -99,10 +99,10 @@ impl SqliteStore {
                     })
                 },
                 )?;
-                
-                
+
+
                     let mut stmt = conn.prepare("SELECT lur.library_ref, lur.roles, lib.name, lib.type, lur.limits FROM Libraries_Users_Rights as lur LEFT JOIN Libraries as lib ON lur.library_ref = lib.id WHERE user_ref = ?1")?;
-                    
+
                     let person_iter = stmt.query_map([&user_id], |row| {
                         let mut limits: LibraryLimits = deserialize_from_row(row, 4)?;
                         limits.user_id = Some(user_id.clone());
@@ -116,11 +116,11 @@ impl SqliteStore {
                     })?;
                     user.libraries = person_iter.flat_map(|e| e.ok()).collect::<Vec<ServerUserLibrariesRights>>();
                     Ok(user)
-   
 
-                
 
-                
+
+
+
         }).await.map_err(|err| {
             match err {
                 tokio_rusqlite::Error::Rusqlite(rusqlite::Error::QueryReturnedNoRows) => Error::UserNotFound(error_user_id),
@@ -131,7 +131,7 @@ impl SqliteStore {
     }
 
     pub async fn get_users(&self) -> Result<Vec<ServerUser>> {
-        let row = self.server_store.call( move |conn| { 
+        let row = self.server_store.call( move |conn| {
             let mut query = conn.prepare("SELECT id, name, role, preferences  FROM Users")?;
             let users = query.query_map([],
             |row| {
@@ -167,7 +167,7 @@ impl SqliteStore {
 
             let mut users: Vec<ServerUser> = users.collect::<std::result::Result<Vec<ServerUser>, rusqlite::Error>>()?;
 
-    
+
             let rights: Vec<ServerUserLibrariesRightsWithUser> = rights.collect::<std::result::Result<Vec<ServerUserLibrariesRightsWithUser>, rusqlite::Error>>()?;
 
             for person in &mut users {

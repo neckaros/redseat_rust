@@ -52,7 +52,7 @@ impl SqliteStore {
     }
 
     pub async fn get_backups(&self) -> Result<Vec<Backup>> {
-        let row = self.server_store.call( move |conn| { 
+        let row = self.server_store.call( move |conn| {
             let mut query = conn.prepare("SELECT id, source, credentials, library, path, schedule, filter, last, password, size, plugin, name, maxVersions, maxDatabaseVersions FROM Backups")?;
             let rows = query.query_map(
             [],
@@ -72,11 +72,11 @@ impl SqliteStore {
                     name:  row.get(11)?,
                     max_versions: row.get(12)?,
                     max_database_versions: row.get(13)?,
-                    
+
                 })
             },
             )?;
-            let backups:Vec<Backup> = rows.collect::<std::result::Result<Vec<Backup>, rusqlite::Error>>()?; 
+            let backups:Vec<Backup> = rows.collect::<std::result::Result<Vec<Backup>, rusqlite::Error>>()?;
             Ok(backups)
         }).await?;
         Ok(row)
@@ -84,7 +84,7 @@ impl SqliteStore {
 
     pub async fn get_backup(&self, credential_id: &str) -> Result<Option<Backup>> {
         let credential_id = credential_id.to_string();
-        let row = self.server_store.call( move |conn| { 
+        let row = self.server_store.call( move |conn| {
             let mut query = conn.prepare("SELECT id, source, credentials, library, path, schedule, filter, last, password, size, plugin, name, maxVersions, maxDatabaseVersions FROM Backups WHERE id = ?")?;
             let row = query.query_row(
             [credential_id],
@@ -160,7 +160,7 @@ impl SqliteStore {
     }
 
     pub async fn add_backup(&self, backup: Backup) -> Result<()> {
-        self.server_store.call( move |conn| { 
+        self.server_store.call( move |conn| {
 
             conn.execute("INSERT INTO Backups (id, source, credentials, library, path, schedule, filter, last, password, size, plugin, name, maxVersions, maxDatabaseVersions)
             VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params![
@@ -179,7 +179,7 @@ impl SqliteStore {
                 backup.max_versions.max(1),
                 backup.max_database_versions.max(1),
             ])?;
-            
+
             Ok(())
         }).await?;
         Ok(())
@@ -216,12 +216,12 @@ impl SqliteStore {
     /// Recover all the existing files for a backup
     pub async fn get_backup_backup_files(&self, backup_id: &str) -> Result<Vec<BackupFile>> {
         let backup_id = backup_id.to_owned();
-        let row = self.server_store.call( move |conn| { 
+        let row = self.server_store.call( move |conn| {
             let mut query = conn.prepare(&format!("SELECT {BACKUP_FILE_QUERY_ELEMENTS} FROM Backups_Files WHERE backup = ? ORDER BY added DESC"))?;
             let rows = query.query_map(
             [backup_id],Self::backup_file_from_row,
             )?;
-            let files:Vec<BackupFile> = rows.collect::<std::result::Result<Vec<BackupFile>, rusqlite::Error>>()?; 
+            let files:Vec<BackupFile> = rows.collect::<std::result::Result<Vec<BackupFile>, rusqlite::Error>>()?;
             Ok(files)
         }).await?;
         Ok(row)
@@ -272,12 +272,12 @@ impl SqliteStore {
     ) -> Result<Vec<BackupFile>> {
         let media_id = media_id.to_owned();
         let backup_id = backup_id.to_owned();
-        let row = self.server_store.call( move |conn| { 
+        let row = self.server_store.call( move |conn| {
             let mut query = conn.prepare(&format!("SELECT {BACKUP_FILE_QUERY_ELEMENTS} FROM Backups_Files WHERE file = ? and backup = ? ORDER BY added DESC"))?;
             let rows = query.query_map(
             [media_id, backup_id],Self::backup_file_from_row,
             )?;
-            let files:Vec<BackupFile> = rows.collect::<std::result::Result<Vec<BackupFile>, rusqlite::Error>>()?; 
+            let files:Vec<BackupFile> = rows.collect::<std::result::Result<Vec<BackupFile>, rusqlite::Error>>()?;
             Ok(files)
         }).await?;
         Ok(row)
@@ -291,12 +291,12 @@ impl SqliteStore {
     ) -> Result<Vec<BackupFile>> {
         let media_id = media_id.to_owned();
         let library_id = library_id.to_owned();
-        let row = self.server_store.call( move |conn| { 
+        let row = self.server_store.call( move |conn| {
             let mut query = conn.prepare(&format!("SELECT {BACKUP_FILE_QUERY_ELEMENTS} FROM Backups_Files WHERE file = ? and library = ? ORDER BY added DESC"))?;
             let rows = query.query_map(
             [media_id, library_id],Self::backup_file_from_row,
             )?;
-            let files:Vec<BackupFile> = rows.collect::<std::result::Result<Vec<BackupFile>, rusqlite::Error>>()?; 
+            let files:Vec<BackupFile> = rows.collect::<std::result::Result<Vec<BackupFile>, rusqlite::Error>>()?;
             Ok(files)
         }).await?;
         Ok(row)
@@ -305,13 +305,13 @@ impl SqliteStore {
     /// Get all the backup files for a library, whatever the backup
     pub async fn get_library_backup_files(&self, library_id: &str) -> Result<Vec<BackupFile>> {
         let library_id = library_id.to_owned();
-        let row = self.server_store.call( move |conn| { 
+        let row = self.server_store.call( move |conn| {
             let mut query = conn.prepare(&format!("SELECT {BACKUP_FILE_QUERY_ELEMENTS} FROM Backups_Files WHERE library = ? and file <> 'db' ORDER BY added DESC"))?;
             let rows = query.query_map(
             [library_id],
             Self::backup_file_from_row,
             )?;
-            let files:Vec<BackupFile> = rows.collect::<std::result::Result<Vec<BackupFile>, rusqlite::Error>>()?; 
+            let files:Vec<BackupFile> = rows.collect::<std::result::Result<Vec<BackupFile>, rusqlite::Error>>()?;
             Ok(files)
         }).await?;
         Ok(row)
@@ -337,7 +337,7 @@ impl SqliteStore {
     }
 
     pub async fn add_backup_file(&self, backup: BackupFile) -> Result<()> {
-        self.server_store.call( move |conn| { 
+        self.server_store.call( move |conn| {
             conn.execute("INSERT INTO Backups_Files (backup, library, file, id, path, hash, sourcehash, size, modified, added, iv, thumbsize, infoSize, error)
             VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params![
                 backup.backup,
@@ -355,7 +355,7 @@ impl SqliteStore {
                 backup.info_size,
                 backup.error
             ])?;
-            
+
             Ok(())
         }).await?;
         Ok(())
@@ -374,25 +374,25 @@ impl SqliteStore {
     //ERRORS
     pub async fn get_backup_error(&self, backup_error_id: &str) -> Result<Option<BackupError>> {
         let backup_error_id = backup_error_id.to_owned();
-        let row = self.server_store.call( move |conn| { 
+        let row = self.server_store.call( move |conn| {
             let mut query = conn.prepare("SELECT id, backup, library, file, date, error FROM Backups_Errors WHERE id = ?")?;
             let row = query.query_row(
             [backup_error_id],Self::backup_error_from_row,
             ).optional()?;
             Ok(row)
-           
+
         }).await?;
         Ok(row)
     }
 
     pub async fn get_backup_errors(&self, backup_id: &str) -> Result<Vec<BackupError>> {
         let backup_id = backup_id.to_owned();
-        let row = self.server_store.call( move |conn| { 
+        let row = self.server_store.call( move |conn| {
             let mut query = conn.prepare("SELECT id, backup, library, file, date, error FROM Backups_Errors WHERE backup = ? ORDER BY date DESC")?;
             let rows = query.query_map(
             [backup_id],Self::backup_error_from_row,
             )?;
-            let files:Vec<BackupError> = rows.collect::<std::result::Result<Vec<BackupError>, rusqlite::Error>>()?; 
+            let files:Vec<BackupError> = rows.collect::<std::result::Result<Vec<BackupError>, rusqlite::Error>>()?;
             Ok(files)
         }).await?;
         Ok(row)

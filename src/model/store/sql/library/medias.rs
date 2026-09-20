@@ -65,13 +65,13 @@ impl RsSort {
     }
 }
 
-const MEDIA_QUERY: &str = "SELECT 
+const MEDIA_QUERY: &str = "SELECT
             m.id, m.source, m.name, m.description, m.type, m.mimetype, m.size,
             art.rating as rating,
-            m.md5, m.params, 
-            m.width, m.height, m.phash, m.thumbhash, m.focal, m.iso, m.colorSpace, m.sspeed, m.orientation, m.duration, 
-            m.acodecs, m.achan, m.vcodecs, m.fps, m.bitrate, m.long, m.lat, m.model, m.pages, m.progress, 
-            m.thumb, m.thumbv, m.thumbsize, m.iv, m.origin, m.movie, m.book, m.lang, m.uploader, m.uploadkey, m.modified, 
+            m.md5, m.params,
+            m.width, m.height, m.phash, m.thumbhash, m.focal, m.iso, m.colorSpace, m.sspeed, m.orientation, m.duration,
+            m.acodecs, m.achan, m.vcodecs, m.fps, m.bitrate, m.long, m.lat, m.model, m.pages, m.progress,
+            m.thumb, m.thumbv, m.thumbsize, m.iv, m.origin, m.movie, m.book, m.lang, m.uploader, m.uploadkey, m.modified,
             m.added, m.created
 			,(select GROUP_CONCAT(tag_ref || '|' || IFNULL(confidence, 100)) from media_tag_mapping where media_ref = m.id and (confidence != -1 or confidence IS NULL)) as tags
 			,(select GROUP_CONCAT(people_ref ) from media_people_mapping where media_ref = m.id) as people
@@ -80,7 +80,7 @@ const MEDIA_QUERY: &str = "SELECT
 			m.progress as user_progress,
 			art.rating as user_rating,
             m.originalhash, m.originalid, m.face_recognition_error
-			
+
             FROM medias as m
             LEFT JOIN
 					(SELECT
@@ -98,13 +98,13 @@ const MEDIA_QUERY: &str = "SELECT
 
 fn media_query(user_id: &Option<String>) -> String {
     if let Some(user_id) = user_id {
-        format!("SELECT 
+        format!("SELECT
             m.id, m.source, m.name, m.description, m.type, m.mimetype, m.size,
             art.rating as rating,
-            m.md5, m.params, 
-            m.width, m.height, m.phash, m.thumbhash, m.focal, m.iso, m.colorSpace, m.sspeed, m.orientation, m.duration, 
-            m.acodecs, m.achan, m.vcodecs, m.fps, m.bitrate, m.long, m.lat, m.model, m.pages, m.progress, 
-            m.thumb, m.thumbv, m.thumbsize, m.iv, m.origin, m.movie, m.book, m.lang, m.uploader, m.uploadkey, m.modified, 
+            m.md5, m.params,
+            m.width, m.height, m.phash, m.thumbhash, m.focal, m.iso, m.colorSpace, m.sspeed, m.orientation, m.duration,
+            m.acodecs, m.achan, m.vcodecs, m.fps, m.bitrate, m.long, m.lat, m.model, m.pages, m.progress,
+            m.thumb, m.thumbv, m.thumbsize, m.iv, m.origin, m.movie, m.book, m.lang, m.uploader, m.uploadkey, m.modified,
             m.added, m.created
 			,(select GROUP_CONCAT(tag_ref || '|' || IFNULL(confidence, 100)) from media_tag_mapping where media_ref = m.id and (confidence != -1 or confidence IS NULL)) as tags
 			,(select GROUP_CONCAT(people_ref ) from media_people_mapping where media_ref = m.id) as people
@@ -115,9 +115,9 @@ fn media_query(user_id: &Option<String>) -> String {
             m.originalhash, m.originalid, m.face_recognition_error
 
             FROM medias as m
-            LEFT JOIN 
+            LEFT JOIN
 					media_progress mp
-				ON 
+				ON
 					mp.media_ref = m.id and mp.user_ref = '{}'
 			LEFT JOIN
 					ratings rt
@@ -134,9 +134,9 @@ fn media_query(user_id: &Option<String>) -> String {
 							ref
 					) as art
 				ON
-					art.ref = m.id          
-                    
-                    
+					art.ref = m.id
+
+
                     ", user_id, user_id)
     } else {
         MEDIA_QUERY.to_string()
@@ -595,9 +595,9 @@ impl SqliteLibraryStore {
                 let mut query = conn.prepare(&format!(
                     "
             {}
-            SELECT 
+            SELECT
             count(m.id)
-			
+
             FROM medias as m
              {}
                           {}
@@ -666,7 +666,7 @@ impl SqliteLibraryStore {
 
     pub async fn get_media_by_origin(&self, origin: RsLink) -> Option<ItemWithRelations<Media>> {
         let origin = origin.to_owned();
-        let row = self.connection.call( move |conn| { 
+        let row = self.connection.call( move |conn| {
             let query_elements = if let Some(file) = origin.file {
                 (vec![origin.platform.to_owned(), origin.id.to_owned(), file], "where json_extract(origin, '$.platform') = ? and json_extract(origin, '$.id') = ? and json_extract(origin, '$.file') = ?")
             } else {
@@ -689,7 +689,7 @@ impl SqliteLibraryStore {
             .connection
             .call(move |conn| {
                 let mut query = conn.prepare(
-                    "SELECT 
+                    "SELECT
             id, source, name, type, thumbsize, size, mimetype
             FROM medias
             WHERE id = ?",
@@ -729,9 +729,7 @@ impl SqliteLibraryStore {
             .call(move |conn| {
                 let mut query = conn.prepare("SELECT id FROM medias WHERE book = ? ORDER BY id")?;
                 let rows = query.query_map([book_id], |row| row.get(0))?;
-                Ok(
-                    rows.collect::<std::result::Result<Vec<String>, rusqlite::Error>>()?,
-                )
+                Ok(rows.collect::<std::result::Result<Vec<String>, rusqlite::Error>>()?)
             })
             .await?)
     }
@@ -741,11 +739,10 @@ impl SqliteLibraryStore {
         Ok(self
             .connection
             .call(move |conn| {
-                let mut query = conn.prepare("SELECT id FROM medias WHERE movie = ? ORDER BY id")?;
+                let mut query =
+                    conn.prepare("SELECT id FROM medias WHERE movie = ? ORDER BY id")?;
                 let rows = query.query_map([movie_id], |row| row.get(0))?;
-                Ok(
-                    rows.collect::<std::result::Result<Vec<String>, rusqlite::Error>>()?,
-                )
+                Ok(rows.collect::<std::result::Result<Vec<String>, rusqlite::Error>>()?)
             })
             .await?)
     }
@@ -818,7 +815,7 @@ impl SqliteLibraryStore {
     }
 
     pub async fn get_medias_locs(&self, precision: u32) -> Result<Vec<RsGpsPosition>> {
-        let rows = self.connection.call( move |conn| { 
+        let rows = self.connection.call( move |conn| {
 
             let mut query = conn.prepare("SELECT distinct(round(lat,?) || ',' || round(long,?)) as coord from medias where long IS NOT NULL")?;
             let rows = query.query_map(
@@ -826,7 +823,7 @@ impl SqliteLibraryStore {
                 let s: RsGpsPosition =  row.get(0)?;
                 Ok(s)
             })?;
-            let rows:Vec<RsGpsPosition> = rows.collect::<std::result::Result<Vec<RsGpsPosition>, rusqlite::Error>>()?; 
+            let rows:Vec<RsGpsPosition> = rows.collect::<std::result::Result<Vec<RsGpsPosition>, rusqlite::Error>>()?;
             Ok(rows)
         }).await?;
         Ok(rows)
@@ -1125,7 +1122,7 @@ impl SqliteLibraryStore {
             where_query.add_update(&update.f_number, "fnumber");
             where_query.add_update(&update.model, "model");
             where_query.add_update(&update.pages, "pages");
-            
+
             let v = to_comma_separated_optional(update.vcodecs);
             where_query.add_update(&v, "vcodecs");
             let v = to_comma_separated_optional(update.acodecs);
@@ -1148,7 +1145,7 @@ impl SqliteLibraryStore {
 
             where_query.add_update(&update.uploader, "uploader");
             where_query.add_update(&update.uploadkey, "uploadkey");
-            
+
             where_query.add_update(&update.original_hash, "originalhash");
             where_query.add_update(&update.original_id, "originalid");
 
@@ -1167,7 +1164,7 @@ impl SqliteLibraryStore {
                     conn.execute("INSERT OR REPLACE INTO media_progress (media_ref, user_ref, progress) VALUES (? ,? , ?)", params![id, user_id, progress])?;
                 }
             }*/
-            
+
 
 
             let all_tags: Vec<String> = existing.relations.as_ref().and_then(|r| r.tags.as_ref()).cloned().unwrap_or_default().into_iter().filter(|t| t.conf.unwrap_or(1) == 1).map(|t| t.id).collect();
@@ -1188,7 +1185,7 @@ impl SqliteLibraryStore {
             }
 
 
-            
+
             let all_people: Vec<String> = existing.relations.as_ref().and_then(|r| r.people.as_ref()).cloned().unwrap_or_default().into_iter().map(|t| t.id).collect();
             if let Some(add_people) = update.add_people {
                 for person in add_people {
@@ -1205,7 +1202,7 @@ impl SqliteLibraryStore {
                     conn.execute("DELETE FROM media_people_mapping WHERE media_ref = ? and people_ref = ?", params![id, person])?;
                 }
             }
-            
+
 
             let all_series: Vec<FileEpisode> = existing.relations.as_ref().and_then(|r| r.series.as_ref()).cloned().unwrap_or_default();
             if let Some(add_serie) = update.add_series {
@@ -1243,7 +1240,7 @@ impl SqliteLibraryStore {
                     } else {
                         conn.execute("DELETE FROM media_serie_mapping WHERE media_ref = ? and serie_ref = ?", params![id, file_serie.id])?;
                     }
-                   
+
                 }
             }
 
@@ -1254,16 +1251,16 @@ impl SqliteLibraryStore {
     }
 
     pub async fn add_media(&self, insert: MediaForInsert) -> Result<()> {
-        self.connection.call( move |conn| { 
+        self.connection.call( move |conn| {
             conn.execute("INSERT INTO medias (
-            id, source, name, description, type, mimetype, size, md5, params, width, 
-            height, phash, thumbhash, focal, iso, colorSpace, icc, mp, sspeed, fnumber, orientation, duration, acodecs, 
-            achan, vcodecs, fps, bitrate, long, lat, model, pages, progress, thumb, 
+            id, source, name, description, type, mimetype, size, md5, params, width,
+            height, phash, thumbhash, focal, iso, colorSpace, icc, mp, sspeed, fnumber, orientation, duration, acodecs,
+            achan, vcodecs, fps, bitrate, long, lat, model, pages, progress, thumb,
             thumbv, thumbsize, iv, origin, movie, book, lang, uploader, uploadkey, originalhash, originalid
             )
-            VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, 
+            VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params![
                 insert.id,
                 insert.media.source,
@@ -1289,7 +1286,7 @@ impl SqliteLibraryStore {
                 insert.media.orientation,
                 insert.media.duration,
                 to_pipe_separated_optional(insert.media.acodecs),
-                
+
                 to_pipe_separated_optional(insert.media.achan),
                 to_pipe_separated_optional(insert.media.vcodecs),
                 insert.media.fps,
@@ -1314,7 +1311,7 @@ impl SqliteLibraryStore {
                 insert.media.original_hash,
                 insert.media.original_id
             ])?;
-            
+
             Ok(())
         }).await?;
         Ok(())

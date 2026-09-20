@@ -73,8 +73,7 @@ impl ImdbContext {
         let now = get_time().as_secs();
         let mut source_modified = file_modified_seconds(&local_path).await;
 
-        let source_is_stale = source_modified == 0
-            || now.saturating_sub(source_modified) > 86_400;
+        let source_is_stale = source_modified == 0 || now.saturating_sub(source_modified) > 86_400;
         if source_is_stale && now >= cache.download_retry_after {
             log_info(
                 LogServiceType::Other,
@@ -140,10 +139,7 @@ impl ImdbContext {
         Ok(())
     }
 
-    pub async fn episode_ids(
-        &self,
-        parent_imdb_id: &str,
-    ) -> RsResult<HashMap<(u32, u32), String>> {
+    pub async fn episode_ids(&self, parent_imdb_id: &str) -> RsResult<HashMap<(u32, u32), String>> {
         self.prime_episode_ids([parent_imdb_id]).await?;
         let ids = self.episode_ids.read().await;
         Ok(ids
@@ -278,7 +274,10 @@ async fn download_episode_dataset(local_path: &std::path::Path) -> RsResult<()> 
 }
 
 async fn file_modified_seconds(path: &std::path::Path) -> u64 {
-    match fs::metadata(path).await.and_then(|metadata| metadata.modified()) {
+    match fs::metadata(path)
+        .await
+        .and_then(|metadata| metadata.modified())
+    {
         Ok(modified) => modified
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_secs())
@@ -299,12 +298,7 @@ fn parse_episode_line(
     }
     let season = columns.next()?.parse().ok()?;
     let episode = columns.next()?.parse().ok()?;
-    Some((
-        parent.to_owned(),
-        season,
-        episode,
-        imdb.to_owned(),
-    ))
+    Some((parent.to_owned(), season, episode, imdb.to_owned()))
 }
 
 #[cfg(test)]
@@ -318,12 +312,7 @@ mod tests {
         let requested = HashSet::from(["tt16418808".to_string()]);
         assert_eq!(
             parse_episode_line("tt20918504\ttt16418808\t1\t1", &requested),
-            Some((
-                "tt16418808".to_string(),
-                1,
-                1,
-                "tt20918504".to_string()
-            ))
+            Some(("tt16418808".to_string(), 1, 1, "tt20918504".to_string()))
         );
     }
 
@@ -336,10 +325,8 @@ mod tests {
 
     #[test]
     fn parses_imdb_rating_rows() {
-        let ratings = parse_ratings(
-            "tconst\taverageRating\tnumVotes\ntt20918504\t7.4\t1200\n",
-        )
-        .unwrap();
+        let ratings =
+            parse_ratings("tconst\taverageRating\tnumVotes\ntt20918504\t7.4\t1200\n").unwrap();
         assert_eq!(ratings.get("tt20918504"), Some(&(7.4, 1200)));
     }
 

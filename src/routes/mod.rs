@@ -266,8 +266,8 @@ pub fn bind_downloads_to_series(
 #[cfg(test)]
 mod tests {
     use super::{
-        bind_downloads_to_movie, bind_downloads_to_series, parse_lookup_filters,
-        LookupPagination, SseLookupSearchEvent, SseLookupSearchResult,
+        bind_downloads_to_movie, bind_downloads_to_series, parse_lookup_filters, LookupPagination,
+        SseLookupSearchEvent, SseLookupSearchResult,
     };
     use rs_plugin_common_interfaces::domain::person::PersonType;
     use rs_plugin_common_interfaces::request::{RsGroupDownload, RsRequest};
@@ -335,7 +335,10 @@ mod tests {
                 .and_then(|ids| ids.get("openlibrary")),
             Some("OL1L")
         );
-        assert_eq!(filters.tags.expect("tags")[0].name.as_deref(), Some("Fantasy"));
+        assert_eq!(
+            filters.tags.expect("tags")[0].name.as_deref(),
+            Some("Fantasy")
+        );
     }
 
     #[test]

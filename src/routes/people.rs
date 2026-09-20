@@ -95,7 +95,9 @@ async fn handler_refresh(
     State(mc): State<ModelController>,
     user: ConnectedUser,
 ) -> Result<Json<Value>> {
-    Ok(Json(json!(mc.refresh_person(&library_id, &person_id, &user).await?)))
+    Ok(Json(json!(
+        mc.refresh_person(&library_id, &person_id, &user).await?
+    )))
 }
 
 async fn handler_patch(

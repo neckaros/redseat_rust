@@ -32,7 +32,10 @@ impl SqliteLibraryStore {
         let mut credits = Self::load_people_relations(
             conn,
             crate::model::entity_people::PeopleEntity::Book,
-            &books.iter().map(|item| item.item.id.clone()).collect::<Vec<_>>(),
+            &books
+                .iter()
+                .map(|item| item.item.id.clone())
+                .collect::<Vec<_>>(),
         )?;
         for book in books {
             if let Some(snapshot) = credits.remove(&book.item.id) {

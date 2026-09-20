@@ -895,12 +895,15 @@ impl ModelController {
         query.limit = Some(200);
         let store = self.store.get_library_store(library_id)?;
         loop {
-            let medias = store.get_medias(query.clone(), LibraryLimits::default()).await?;
+            let medias = store
+                .get_medias(query.clone(), LibraryLimits::default())
+                .await?;
             if medias.is_empty() {
                 return Ok(());
             }
             for media in medias {
-                self.remove_media(library_id, &media.item.id, requesting_user).await?;
+                self.remove_media(library_id, &media.item.id, requesting_user)
+                    .await?;
             }
         }
     }
@@ -1711,7 +1714,10 @@ impl ModelController {
                 Err(e) => {
                     log_error(
                         LogServiceType::Source,
-                        format!("Unable to load video analysis frames for {}: {:?}", media_id, e),
+                        format!(
+                            "Unable to load video analysis frames for {}: {:?}",
+                            media_id, e
+                        ),
                     );
                     None
                 }
@@ -3015,13 +3021,8 @@ impl ModelController {
             .media_image(library_id, media_id, None, requesting_user)
             .await
         {
-            if let Ok(buffer) = convert_image_reader(
-                thumbnail.stream,
-                image::ImageFormat::Png,
-                None,
-                true,
-            )
-            .await
+            if let Ok(buffer) =
+                convert_image_reader(thumbnail.stream, image::ImageFormat::Png, None, true).await
             {
                 images.push(VideoProcessingImage {
                     buffer,

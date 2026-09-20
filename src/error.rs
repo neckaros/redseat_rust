@@ -326,11 +326,9 @@ mod tests {
 
     #[test]
     fn plugin_timeout_is_reported_as_gateway_timeout() {
-        let (status, client_error) = Error::PluginTimeout(
-            "pcloud".to_string(),
-            "download_request".to_string(),
-        )
-        .client_status_and_error();
+        let (status, client_error) =
+            Error::PluginTimeout("pcloud".to_string(), "download_request".to_string())
+                .client_status_and_error();
 
         assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
         assert!(matches!(

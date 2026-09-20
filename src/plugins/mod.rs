@@ -57,7 +57,8 @@ impl PluginWasm {
         let plugin = self.plugin.clone();
         let plugin_name = self.infos.name.clone();
         let queued_at = Instant::now();
-        let mut plugin = match tokio::time::timeout(PLUGIN_CALL_TIMEOUT, plugin.lock_owned()).await {
+        let mut plugin = match tokio::time::timeout(PLUGIN_CALL_TIMEOUT, plugin.lock_owned()).await
+        {
             Ok(plugin) => plugin,
             Err(_) => {
                 log_error(
@@ -80,9 +81,7 @@ impl PluginWasm {
         if let Err((error, _)) = &result {
             log_error(
                 LogServiceType::Plugin,
-                format!(
-                    "Plugin {plugin_name} call {function} failed after {elapsed:?}: {error:?}"
-                ),
+                format!("Plugin {plugin_name} call {function} failed after {elapsed:?}: {error:?}"),
             );
         } else if elapsed >= PLUGIN_SLOW_CALL_THRESHOLD {
             log_info(
@@ -110,11 +109,7 @@ impl PluginWasm {
     }
 }
 
-pub fn plugin_call_error(
-    plugin: &str,
-    function: &str,
-    error: (extism::Error, i32),
-) -> Error {
+pub fn plugin_call_error(plugin: &str, function: &str, error: (extism::Error, i32)) -> Error {
     if error.0.root_cause().to_string() == "timeout" {
         Error::PluginTimeout(plugin.to_string(), function.to_string())
     } else {
@@ -355,15 +350,15 @@ mod tests {
 
     // (module (func (export "spin") (loop (br 0))))
     const SPIN_WASM: &[u8] = &[
-        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
-        0x03, 0x02, 0x01, 0x00, 0x07, 0x08, 0x01, 0x04, 0x73, 0x70, 0x69, 0x6e, 0x00, 0x00,
-        0x0a, 0x09, 0x01, 0x07, 0x00, 0x03, 0x40, 0x0c, 0x00, 0x0b, 0x0b,
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x04, 0x01, 0x60, 0x00, 0x00, 0x03,
+        0x02, 0x01, 0x00, 0x07, 0x08, 0x01, 0x04, 0x73, 0x70, 0x69, 0x6e, 0x00, 0x00, 0x0a, 0x09,
+        0x01, 0x07, 0x00, 0x03, 0x40, 0x0c, 0x00, 0x0b, 0x0b,
     ];
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn blocking_plugin_call_does_not_starve_async_tasks() {
-        let manifest = Manifest::new([Wasm::data(SPIN_WASM)])
-            .with_timeout(Duration::from_millis(100));
+        let manifest =
+            Manifest::new([Wasm::data(SPIN_WASM)]).with_timeout(Duration::from_millis(100));
         let plugin = PluginBuilder::new(manifest).build().unwrap();
         let mut infos = PluginInformation::default();
         infos.name = "slow-test-plugin".to_string();

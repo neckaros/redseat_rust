@@ -487,8 +487,7 @@ impl EncryptLibraryTask {
         item: &LibraryEncryptionItem,
     ) -> RsResult<()> {
         if item.kind == "local" {
-            let backup =
-                Self::local_backup_path(&PathBuf::from(&item.source), &job.id, &item.id);
+            let backup = Self::local_backup_path(&PathBuf::from(&item.source), &job.id, &item.id);
             if backup.exists() {
                 fs::remove_file(&backup).await?;
                 Self::sync_parent(&backup).await?;
@@ -500,9 +499,7 @@ impl EncryptLibraryTask {
             if let Err(error) = source.remove(&item.source).await {
                 if !matches!(
                     error,
-                    RsError::Source(
-                        crate::plugins::sources::error::SourcesError::NotFound(_)
-                    )
+                    RsError::Source(crate::plugins::sources::error::SourcesError::NotFound(_))
                 ) {
                     return Err(error);
                 }
@@ -570,8 +567,14 @@ mod tests {
 
         assert_eq!(staged.parent(), original.parent());
         assert_eq!(backup.parent(), original.parent());
-        assert_eq!(staged.file_name().unwrap(), ".redseat-encryption-job-item.stage");
-        assert_eq!(backup.file_name().unwrap(), ".redseat-encryption-job-item.backup");
+        assert_eq!(
+            staged.file_name().unwrap(),
+            ".redseat-encryption-job-item.stage"
+        );
+        assert_eq!(
+            backup.file_name().unwrap(),
+            ".redseat-encryption-job-item.backup"
+        );
     }
 
     #[tokio::test]
@@ -612,9 +615,7 @@ mod tests {
                 staged_source: Some(staged.to_string_lossy().into_owned()),
                 state: "prepared".into(),
             };
-            EncryptLibraryTask::commit_local(&job, &item)
-                .await
-                .unwrap();
+            EncryptLibraryTask::commit_local(&job, &item).await.unwrap();
 
             assert_eq!(fs::read(&original).await.unwrap(), b"new");
             assert_eq!(fs::read(&backup).await.unwrap(), b"old");
@@ -656,9 +657,7 @@ mod tests {
         assert!(EncryptLibraryTask::local_prepared_stage_needs_rebuild(
             &job, &item
         ));
-        assert!(EncryptLibraryTask::commit_local(&job, &item)
-            .await
-            .is_err());
+        assert!(EncryptLibraryTask::commit_local(&job, &item).await.is_err());
         assert_eq!(fs::read(original).await.unwrap(), b"old");
     }
 

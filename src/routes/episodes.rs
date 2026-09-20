@@ -159,9 +159,7 @@ async fn handler_lookup_season(
             serie_id.to_string(),
             "handler_lookup_season".to_string(),
         ))?;
-    let name = pagination
-        .name()
-        .unwrap_or_else(|| serie.item.name.clone());
+    let name = pagination.name().unwrap_or_else(|| serie.item.name.clone());
     let ids: RsIds = serie.item.into();
     let query_episode = RsLookupEpisode {
         name: Some(name),
@@ -258,9 +256,7 @@ async fn handler_lookup(
             serie_id.to_string(),
             "handler_lookup".to_string(),
         ))?;
-    let name = pagination
-        .name()
-        .unwrap_or_else(|| serie.item.name.clone());
+    let name = pagination.name().unwrap_or_else(|| serie.item.name.clone());
     let ids: RsIds = serie.item.into();
     let query_episode = RsLookupEpisode {
         name: Some(name),
@@ -295,9 +291,7 @@ async fn handler_lookup_stream(
             serie_id.to_string(),
             "handler_lookup_stream".to_string(),
         ))?;
-    let name = pagination
-        .name()
-        .unwrap_or_else(|| serie.item.name.clone());
+    let name = pagination.name().unwrap_or_else(|| serie.item.name.clone());
     let ids: RsIds = serie.item.into();
     let query_episode = RsLookupEpisode {
         name: Some(name),
@@ -349,9 +343,7 @@ async fn handler_lookup_season_stream(
             serie_id.to_string(),
             "handler_lookup_season_stream".to_string(),
         ))?;
-    let name = pagination
-        .name()
-        .unwrap_or_else(|| serie.item.name.clone());
+    let name = pagination.name().unwrap_or_else(|| serie.item.name.clone());
     let ids: RsIds = serie.item.into();
     let query_episode = RsLookupEpisode {
         name: Some(name),
@@ -544,7 +536,9 @@ async fn handler_watched_get(
     let serie = mc
         .get_serie(&library_id, episode.serie.clone(), &user)
         .await?
-        .ok_or(Error::NotFound(format!("Unable to find serie for watched get")))?;
+        .ok_or(Error::NotFound(format!(
+            "Unable to find serie for watched get"
+        )))?;
     let query = HistoryQuery {
         id: Some(episode_history_ids(&serie.item, &episode)),
         ..Default::default()

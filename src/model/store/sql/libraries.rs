@@ -80,7 +80,7 @@ impl SqliteStore {
     // region:    --- Libraries
     pub async fn get_library(&self, library_id: &str) -> Result<Option<ServerLibrary>> {
         let library_id = library_id.to_string();
-        let row = self.server_store.call( move |conn| { 
+        let row = self.server_store.call( move |conn| {
                 let row = conn.query_row(
                 "SELECT id, name, source, root, type, crypt, settings, credentials, plugin, password  FROM Libraries WHERE id = ?1",
                 [&library_id],
@@ -101,14 +101,14 @@ impl SqliteStore {
                     })
                 },
                 ).optional()?;
-    
+
                 Ok(row)
         }).await?;
         Ok(row)
     }
 
     pub async fn get_libraries(&self) -> Result<Vec<ServerLibrary>> {
-        let row = self.server_store.call( move |conn| { 
+        let row = self.server_store.call( move |conn| {
             let mut query = conn.prepare("SELECT id, name, source, root, type, crypt, settings, credentials, plugin, password   FROM Libraries")?;
             let rows = query.query_map(
             [],
@@ -129,7 +129,7 @@ impl SqliteStore {
                 })
             },
             )?;
-            let libraries:Vec<ServerLibrary> = rows.collect::<std::result::Result<Vec<ServerLibrary>, rusqlite::Error>>()?; 
+            let libraries:Vec<ServerLibrary> = rows.collect::<std::result::Result<Vec<ServerLibrary>, rusqlite::Error>>()?;
             Ok(libraries)
         }).await?;
         Ok(row)
@@ -157,7 +157,7 @@ impl SqliteStore {
     }
 
     pub async fn add_library(&self, library: ServerLibrary) -> Result<()> {
-        self.server_store.call( move |conn| { 
+        self.server_store.call( move |conn| {
 
             conn.execute("INSERT INTO Libraries (id, name, type, source, root, settings, crypt, credentials, plugin, password)
             VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?)", params![
@@ -172,7 +172,7 @@ impl SqliteStore {
                 library.plugin,
                 library.password
             ])?;
-            
+
             Ok(())
         }).await?;
         Ok(())

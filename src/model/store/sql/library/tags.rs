@@ -52,9 +52,9 @@ impl SqliteLibraryStore {
 
     pub async fn get_tags(&self, query: TagQuery) -> Result<Vec<Tag>> {
         let pagination = pagination_clause(query.limit, query.offset)?;
-        let row = self.connection.call( move |conn| { 
+        let row = self.connection.call( move |conn| {
             let mut where_query = QueryBuilder::new();
-            
+
             if let Some(q) = &query.parent {
                 where_query.add_where(QueryWhereType::Equal("parent", q));
             }
@@ -78,11 +78,11 @@ impl SqliteLibraryStore {
             //println!("sql: {}", where_query.format());
 
             let mut query = conn.prepare(&format!("SELECT id, name, parent, type, alt, thumb, params, modified, added, generated, path, otherids  FROM tags {}{}{}", where_query.format(), where_query.format_order(), pagination))?;
-            
+
             let rows = query.query_map(
             where_query.values(), Self::row_to_tag,
             )?;
-            let backups:Vec<Tag> = rows.collect::<std::result::Result<Vec<Tag>, rusqlite::Error>>()?; 
+            let backups:Vec<Tag> = rows.collect::<std::result::Result<Vec<Tag>, rusqlite::Error>>()?;
             //println!("results: {:?}", backups);
             Ok(backups)
         }).await?;
@@ -180,11 +180,11 @@ impl SqliteLibraryStore {
 
             let generated = Some(update.generated.unwrap_or_default());
             where_query.add_update(&generated, "generated");
-            
+
 
 
             where_query.add_where(QueryWhereType::Equal("id", &id));
-            
+
 
             let update_sql = format!("UPDATE Tags SET {} {}", where_query.format_update(), where_query.format());
             tx.execute(&update_sql, where_query.values())?;
@@ -200,7 +200,7 @@ impl SqliteLibraryStore {
                 tx.execute("UPDATE OR IGNORE serie_tag_mapping SET tag_ref = ? WHERE tag_ref = ?", params![&migrate_to, id])?;
                 tx.execute("DELETE FROM serie_tag_mapping WHERE tag_ref = ?", [&id])?;
             }
-            
+
             if update.name.is_some() || update.parent.is_some() {
                 let new_path = match update.parent.as_deref() {
                     Some("") => "/".to_string(),
@@ -239,7 +239,7 @@ impl SqliteLibraryStore {
     }
 
     pub async fn add_tag(&self, tag: TagForInsert) -> Result<()> {
-        self.connection.call( move |conn| { 
+        self.connection.call( move |conn| {
             let new_path = if let Some(parent) = &tag.parent {
                 let mut query_parent = conn.prepare("SELECT id, name, parent, type, alt, thumb, params, modified, added, generated, path, otherids FROM tags WHERE id = ?")?;
                 let parent = query_parent.query_row(&[&parent],Self::row_to_tag)?;
@@ -247,7 +247,7 @@ impl SqliteLibraryStore {
             } else {
                 String::from("/")
             };
-            
+
             conn.execute("INSERT INTO tags (id, name, parent, type, alt, thumb, params, generated, path, otherids)
             VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?)", params![
                 tag.id,
@@ -261,7 +261,7 @@ impl SqliteLibraryStore {
                 new_path,
                 tag.otherids
             ])?;
-            
+
             Ok(())
         }).await?;
         Ok(())
@@ -349,9 +349,9 @@ impl SqliteLibraryStore {
     }
 
     pub async fn remove_tag(&self, tag_id: String) -> Result<()> {
-        self.connection.call( move |conn| { 
+        self.connection.call( move |conn| {
             let tx = conn.transaction()?;
-            
+
             let existing = tx.query_row("SELECT id, name, parent, type, alt, thumb, params, modified, added, generated, path, otherids FROM tags WHERE id = ?", &[&tag_id],Self::row_to_tag)?;
 
             tx.execute("DELETE FROM tags WHERE id = ?", &[&tag_id])?;
@@ -402,45 +402,78 @@ mod tests {
     #[tokio::test]
     async fn tag_merge_retargets_title_relations() {
         let store = tag_root_store().await;
-        store.connection.call(move |conn| {
-            conn.execute_batch("INSERT INTO movies(id,name) VALUES ('movie','Movie');
+        store
+            .connection
+            .call(move |conn| {
+                conn.execute_batch(
+                    "INSERT INTO movies(id,name) VALUES ('movie','Movie');
                 INSERT INTO series(id,name) VALUES ('show','Show');
                 INSERT INTO movie_tag_mapping(movie_ref,tag_ref) VALUES ('movie','t');
-                INSERT INTO serie_tag_mapping(serie_ref,tag_ref) VALUES ('show','t');")?;
-            Ok(())
-        }).await.unwrap();
+                INSERT INTO serie_tag_mapping(serie_ref,tag_ref) VALUES ('show','t');",
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
 
-        let (movie_modified, serie_modified): (i64, i64) = store.connection.call(|conn| {
-            Ok((
-                conn.query_row("SELECT modified FROM movies WHERE id = 'movie'", [], |row| row.get(0))?,
-                conn.query_row("SELECT modified FROM series WHERE id = 'show'", [], |row| row.get(0))?,
-            ))
-        }).await.unwrap();
+        let (movie_modified, serie_modified): (i64, i64) = store
+            .connection
+            .call(|conn| {
+                Ok((
+                    conn.query_row(
+                        "SELECT modified FROM movies WHERE id = 'movie'",
+                        [],
+                        |row| row.get(0),
+                    )?,
+                    conn.query_row("SELECT modified FROM series WHERE id = 'show'", [], |row| {
+                        row.get(0)
+                    })?,
+                ))
+            })
+            .await
+            .unwrap();
 
-        store.update_tag("t", TagForUpdate {
-            migrate_to: Some("other".into()),
-            ..Default::default()
-        }).await.unwrap();
+        store
+            .update_tag(
+                "t",
+                TagForUpdate {
+                    migrate_to: Some("other".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
 
-        store.connection.call(move |conn| {
-            let movie: String = conn.query_row(
-                "SELECT tag_ref FROM movie_tag_mapping WHERE movie_ref = 'movie'", [], |row| row.get(0)
-            )?;
-            let serie: String = conn.query_row(
-                "SELECT tag_ref FROM serie_tag_mapping WHERE serie_ref = 'show'", [], |row| row.get(0)
-            )?;
-            assert_eq!(movie, "other");
-            assert_eq!(serie, "other");
-            let updated_movie: i64 = conn.query_row(
-                "SELECT modified FROM movies WHERE id = 'movie'", [], |row| row.get(0)
-            )?;
-            let updated_serie: i64 = conn.query_row(
-                "SELECT modified FROM series WHERE id = 'show'", [], |row| row.get(0)
-            )?;
-            assert!(updated_movie > movie_modified);
-            assert!(updated_serie > serie_modified);
-            Ok(())
-        }).await.unwrap();
+        store
+            .connection
+            .call(move |conn| {
+                let movie: String = conn.query_row(
+                    "SELECT tag_ref FROM movie_tag_mapping WHERE movie_ref = 'movie'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let serie: String = conn.query_row(
+                    "SELECT tag_ref FROM serie_tag_mapping WHERE serie_ref = 'show'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(movie, "other");
+                assert_eq!(serie, "other");
+                let updated_movie: i64 = conn.query_row(
+                    "SELECT modified FROM movies WHERE id = 'movie'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let updated_serie: i64 =
+                    conn.query_row("SELECT modified FROM series WHERE id = 'show'", [], |row| {
+                        row.get(0)
+                    })?;
+                assert!(updated_movie > movie_modified);
+                assert!(updated_serie > serie_modified);
+                Ok(())
+            })
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

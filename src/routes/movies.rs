@@ -89,7 +89,9 @@ async fn handler_list(
     user: ConnectedUser,
     Query(query): Query<MovieQuery>,
 ) -> Result<Json<Value>> {
-    let libraries = mc.get_movies_with_relations(&library_id, query, &user).await?;
+    let libraries = mc
+        .get_movies_with_relations(&library_id, query, &user)
+        .await?;
     let body = Json(json!(libraries));
     Ok(body)
 }
@@ -151,7 +153,9 @@ async fn handler_get(
     State(mc): State<ModelController>,
     user: ConnectedUser,
 ) -> Result<Json<Value>> {
-    let movie = mc.get_movie_with_relations(&library_id, movie_id, &user).await?;
+    let movie = mc
+        .get_movie_with_relations(&library_id, movie_id, &user)
+        .await?;
     let body = Json(json!(movie));
     Ok(body)
 }
@@ -168,9 +172,7 @@ async fn handler_seach_movies(
     if let Some(filters) = filters {
         filters.apply_to_movie(&mut lookup);
     }
-    let groups = mc
-        .search_movie(&library_id, lookup, sources, &user)
-        .await?;
+    let groups = mc.search_movie(&library_id, lookup, sources, &user).await?;
     let body: Vec<SearchResultGroup> = groups
         .into_iter()
         .map(|(source_id, source_name, data)| SearchResultGroup {

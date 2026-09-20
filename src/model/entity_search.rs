@@ -291,12 +291,17 @@ mod tests {
         }
         .into();
         let credits = Relations {
-            people_details: Some(vec![rs_plugin_common_interfaces::domain::person::PersonWithRoles {
-                person: rs_plugin_common_interfaces::domain::person::Person { id: "author-id".into(), ..Default::default() },
-                roles: Some(vec![PersonType::Author]),
-                characters: Some(vec!["Narrator".into()]),
-                ..Default::default()
-            }]),
+            people_details: Some(vec![
+                rs_plugin_common_interfaces::domain::person::PersonWithRoles {
+                    person: rs_plugin_common_interfaces::domain::person::Person {
+                        id: "author-id".into(),
+                        ..Default::default()
+                    },
+                    roles: Some(vec![PersonType::Author]),
+                    characters: Some(vec!["Narrator".into()]),
+                    ..Default::default()
+                },
+            ]),
             ..Default::default()
         };
         let mut groups: SearchResultGroups = vec![

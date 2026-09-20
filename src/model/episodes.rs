@@ -122,7 +122,11 @@ fn should_retry_episode_lookup_with_enriched_ids(
 }
 
 fn take_episode_source(
-    groups: Vec<(String, String, rs_plugin_common_interfaces::lookup::RsLookupMetadataResults)>,
+    groups: Vec<(
+        String,
+        String,
+        rs_plugin_common_interfaces::lookup::RsLookupMetadataResults,
+    )>,
     serie_id: &str,
     excluded_source: Option<&str>,
 ) -> Option<(String, Vec<Episode>)> {
@@ -152,7 +156,10 @@ impl ModelController {
         episodes: &[Episode],
     ) -> RsResult<HashMap<String, Serie>> {
         let store = self.store.get_library_store(library_id)?;
-        let serie_refs: HashSet<String> = episodes.iter().map(|episode| episode.serie.clone()).collect();
+        let serie_refs: HashSet<String> = episodes
+            .iter()
+            .map(|episode| episode.serie.clone())
+            .collect();
         let mut series = HashMap::new();
         for serie_ref in serie_refs {
             if let Some(serie) = store.get_serie(&serie_ref).await? {
@@ -232,11 +239,7 @@ impl ModelController {
                             )
                             .await?;
                         if let Some((source_id, fallback_episodes)) =
-                            take_episode_source(
-                                fallback_groups,
-                                serie_id,
-                                Some(selected.as_str()),
-                            )
+                            take_episode_source(fallback_groups, serie_id, Some(selected.as_str()))
                         {
                             selected_source = Some(source_id);
                             fallback_episodes
@@ -317,12 +320,8 @@ impl ModelController {
         )?;
         let mut episodes = store.get_episodes(query).await?;
 
-        self.fill_episodes_watched(
-            &mut episodes,
-            requesting_user,
-            Some(library_id.to_string()),
-        )
-        .await?;
+        self.fill_episodes_watched(&mut episodes, requesting_user, Some(library_id.to_string()))
+            .await?;
         Ok(episodes)
     }
 
@@ -410,12 +409,8 @@ impl ModelController {
             store.get_episodes(query).await?
         };
 
-        self.fill_episodes_watched(
-            &mut episodes,
-            requesting_user,
-            Some(library_id.to_string()),
-        )
-        .await?;
+        self.fill_episodes_watched(&mut episodes, requesting_user, Some(library_id.to_string()))
+            .await?;
         Ok(episodes)
     }
 
@@ -441,11 +436,7 @@ impl ModelController {
                     )
                     .await?;
                 let progress = self
-                    .get_view_progress(
-                        history_ids,
-                        requesting_user,
-                        Some(library_id),
-                    )
+                    .get_view_progress(history_ids, requesting_user, Some(library_id))
                     .await?;
                 if let Some(progress) = progress {
                     episode.progress = Some(progress.progress);
@@ -523,12 +514,8 @@ impl ModelController {
             ),
         )?;
         let mut episodes = store.get_episodes_upcoming(query).await?;
-        self.fill_episodes_watched(
-            &mut episodes,
-            requesting_user,
-            Some(library_id.to_string()),
-        )
-        .await?;
+        self.fill_episodes_watched(&mut episodes, requesting_user, Some(library_id.to_string()))
+            .await?;
         Ok(episodes)
     }
 
@@ -546,12 +533,8 @@ impl ModelController {
             ),
         )?;
         let mut episodes = store.get_episodes_aired(query).await?;
-        self.fill_episodes_watched(
-            &mut episodes,
-            requesting_user,
-            Some(library_id.to_string()),
-        )
-        .await?;
+        self.fill_episodes_watched(&mut episodes, requesting_user, Some(library_id.to_string()))
+            .await?;
         let mut episodes = episodes
             .into_iter()
             .filter(|e| e.watched.is_none())
@@ -720,10 +703,7 @@ impl ModelController {
             .get_serie_ids(library_id, serie_id, requesting_user)
             .await?;
         let store = self.store.get_library_store_optional(library_id).ok_or(
-            Error::LibraryStoreNotFoundFor(
-                library_id.to_string(),
-                "refresh_episodes".to_string(),
-            ),
+            Error::LibraryStoreNotFoundFor(library_id.to_string(), "refresh_episodes".to_string()),
         )?;
         let existing_episodes = store
             .get_episodes(EpisodeQuery {
@@ -950,9 +930,7 @@ mod tests {
     use crate::domain::episode::Episode;
     use rs_plugin_common_interfaces::{
         domain::rs_ids::RsIds,
-        lookup::{
-            RsLookupMetadataResult, RsLookupMetadataResultWrapper, RsLookupMetadataResults,
-        },
+        lookup::{RsLookupMetadataResult, RsLookupMetadataResultWrapper, RsLookupMetadataResults},
     };
 
     #[test]
@@ -962,8 +940,7 @@ mod tests {
         enriched.set("tvdb", 421070u64);
 
         assert!(should_retry_episode_lookup_with_enriched_ids(
-            &original,
-            &enriched
+            &original, &enriched
         ));
     }
 
@@ -973,8 +950,7 @@ mod tests {
         let enriched = RsIds::from_tmdb(203744);
 
         assert!(!should_retry_episode_lookup_with_enriched_ids(
-            &original,
-            &enriched
+            &original, &enriched
         ));
     }
 
@@ -1024,8 +1000,7 @@ mod tests {
         assert_eq!(episodes[0].serie, "serie-1");
         assert_eq!(episodes[0].number, 1);
 
-        let (source, episodes) =
-            take_episode_source(groups, "serie-1", Some("primary")).unwrap();
+        let (source, episodes) = take_episode_source(groups, "serie-1", Some("primary")).unwrap();
         assert_eq!(source, "secondary");
         assert_eq!(episodes[0].number, 2);
     }

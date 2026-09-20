@@ -193,7 +193,9 @@ impl ModelController {
         movie_id: String,
         requesting_user: &ConnectedUser,
     ) -> RsResult<rs_plugin_common_interfaces::domain::ItemWithRelations<Movie>> {
-        let movie = self.get_movie(library_id, movie_id, requesting_user).await?;
+        let movie = self
+            .get_movie(library_id, movie_id, requesting_user)
+            .await?;
         let mut relations = self
             .title_relation_snapshots(
                 library_id,
@@ -315,11 +317,7 @@ impl ModelController {
         let history_ids = movie_history_ids(movie);
 
         let progress = self
-            .get_view_progress(
-                history_ids.clone(),
-                requesting_user,
-                library_id.clone(),
-            )
+            .get_view_progress(history_ids.clone(), requesting_user, library_id.clone())
             .await?;
         if let Some(progress) = progress {
             movie.progress = Some(progress.progress);
@@ -463,9 +461,13 @@ impl ModelController {
                 library: library_id.to_string(),
                 movies: vec![MovieWithAction {
                     action: ElementAction::Updated,
-                    movie: rs_plugin_common_interfaces::domain::ItemWithRelations { item: movie.clone(), relations: None },
+                    movie: rs_plugin_common_interfaces::domain::ItemWithRelations {
+                        item: movie.clone(),
+                        relations: None,
+                    },
                 }],
-            }).await;
+            })
+            .await;
             Ok(movie)
         } else {
             let movie = self
@@ -563,9 +565,7 @@ impl ModelController {
         store.add_movie(new_movie).await?;
         let relation_result: RsResult<()> = async {
             if let Some(relations) = &relations {
-                store
-                    .replace_movie_title_relations(&id, relations)
-                    .await?;
+                store.replace_movie_title_relations(&id, relations).await?;
                 if let Some(credits) = &relations.people_details {
                     self.refresh_entity_people(
                         library_id,
@@ -597,9 +597,13 @@ impl ModelController {
             library: library_id.to_string(),
             movies: vec![MovieWithAction {
                 action: ElementAction::Added,
-                movie: rs_plugin_common_interfaces::domain::ItemWithRelations { item: new_person.clone(), relations: None },
+                movie: rs_plugin_common_interfaces::domain::ItemWithRelations {
+                    item: new_person.clone(),
+                    relations: None,
+                },
             }],
-        }).await;
+        })
+        .await;
 
         let mc = self.clone();
         let lib_id = library_id.to_string();
@@ -762,9 +766,13 @@ impl ModelController {
             library: library_id.to_string(),
             movies: vec![MovieWithAction {
                 action: ElementAction::Deleted,
-                movie: rs_plugin_common_interfaces::domain::ItemWithRelations { item: existing.clone(), relations: None },
+                movie: rs_plugin_common_interfaces::domain::ItemWithRelations {
+                    item: existing.clone(),
+                    relations: None,
+                },
             }],
-        }).await;
+        })
+        .await;
         Ok(existing)
     }
 
@@ -878,9 +886,13 @@ impl ModelController {
                     library: library_id.to_string(),
                     movies: vec![MovieWithAction {
                         action: ElementAction::Updated,
-                        movie: rs_plugin_common_interfaces::domain::ItemWithRelations { item: updated.clone(), relations: None },
+                        movie: rs_plugin_common_interfaces::domain::ItemWithRelations {
+                            item: updated.clone(),
+                            relations: None,
+                        },
                     }],
-                }).await;
+                })
+                .await;
                 return Ok(updated);
             }
         }
@@ -945,13 +957,7 @@ impl ModelController {
 
             if movie.id != movie_id && !RsIds::is_id(&movie.id) {
                 return self
-                    .movie_image(
-                        library_id,
-                        &movie.id,
-                        Some(kind),
-                        size,
-                        requesting_user,
-                    )
+                    .movie_image(library_id, &movie.id, Some(kind), size, requesting_user)
                     .await;
             }
 
@@ -1107,10 +1113,14 @@ impl ModelController {
         self.send_movie(MoviesMessage {
             library: library_id.to_string(),
             movies: vec![MovieWithAction {
-                movie: rs_plugin_common_interfaces::domain::ItemWithRelations { item: movie, relations: None },
+                movie: rs_plugin_common_interfaces::domain::ItemWithRelations {
+                    item: movie,
+                    relations: None,
+                },
                 action: ElementAction::Updated,
             }],
-        }).await;
+        })
+        .await;
         Ok(())
     }
 }

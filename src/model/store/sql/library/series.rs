@@ -33,7 +33,10 @@ impl SqliteLibraryStore {
         let mut credits = Self::load_people_relations(
             conn,
             crate::model::entity_people::PeopleEntity::Serie,
-            &series.iter().map(|item| item.item.id.clone()).collect::<Vec<_>>(),
+            &series
+                .iter()
+                .map(|item| item.item.id.clone())
+                .collect::<Vec<_>>(),
         )?;
         for serie in series {
             if let Some(snapshot) = credits.remove(&serie.item.id) {
@@ -94,7 +97,12 @@ impl SqliteLibraryStore {
             .connection
             .call(move |conn| {
                 let mut where_query = RsQueryBuilder::new();
-                Self::add_people_filter(&mut where_query, crate::model::entity_people::PeopleEntity::Serie, query.person, query.role);
+                Self::add_people_filter(
+                    &mut where_query,
+                    crate::model::entity_people::PeopleEntity::Serie,
+                    query.person,
+                    query.role,
+                );
                 if let Some(q) = query.after {
                     where_query.add_where(SqlWhereType::After("modified".to_string(), Box::new(q)));
                 }
@@ -156,11 +164,11 @@ impl SqliteLibraryStore {
         &self,
         ids: RsIds,
     ) -> Result<Option<ItemWithRelations<Serie>>> {
-        let row = self.connection.call( move |conn| { 
-            let mut query = conn.prepare(&format!("SELECT 
-            {} 
-            FROM series 
-            WHERE 
+        let row = self.connection.call( move |conn| {
+            let mut query = conn.prepare(&format!("SELECT
+            {}
+            FROM series
+            WHERE
             id = ? or imdb = ? or slug = ? or tmdb = ? or trakt = ? or tvdb = ? or openlibrary_work_id = ? or anilist_manga_id = ? or mangadex_manga_uuid = ? or myanimelist_manga_id = ?", SERIE_SQL_FIELDS))?;
             let row = query.query_row(
             params![
@@ -288,7 +296,7 @@ impl SqliteLibraryStore {
     }
 
     pub async fn add_serie(&self, serie: Serie) -> Result<()> {
-        self.connection.call( move |conn| { 
+        self.connection.call( move |conn| {
 
             conn.execute("INSERT INTO series (id, name, type, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, openlibrary_work_id, anilist_manga_id, mangadex_manga_uuid, myanimelist_manga_id, year, imdb_rating, imdb_votes, trailer, trakt_rating, trakt_votes, status)
             VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params![
@@ -315,7 +323,7 @@ impl SqliteLibraryStore {
                 serie.trakt_votes,
                 serie.status
             ])?;
-            
+
             Ok(())
         }).await?;
         Ok(())
@@ -455,5 +463,4 @@ mod tests {
             .unwrap()
             .has_update());
     }
-
 }

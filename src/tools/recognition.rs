@@ -19,15 +19,15 @@ use tokio::io::AsyncWriteExt;
 
 const MODELS: &[(&str, &str)] = &[
     (
-        "det_10g.onnx", 
+        "det_10g.onnx",
         "https://huggingface.co/immich-app/buffalo_l/resolve/main/detection/model.onnx"
     ),
     (
-        "2d106det.onnx", 
+        "2d106det.onnx",
         "https://huggingface.co/fofr/comfyui/resolve/main/insightface/models/buffalo_l/2d106det.onnx"
     ),
     (
-        "w600k_r50.onnx", 
+        "w600k_r50.onnx",
         "https://huggingface.co/immich-app/buffalo_l/resolve/main/recognition/model.onnx"
     ),
 ];

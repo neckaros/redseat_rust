@@ -836,10 +836,7 @@ impl AsyncWrite for GuardedSeekWriter {
 }
 
 impl AsyncSeek for GuardedSeekWriter {
-    fn start_seek(
-        self: Pin<&mut Self>,
-        position: std::io::SeekFrom,
-    ) -> std::io::Result<()> {
+    fn start_seek(self: Pin<&mut Self>, position: std::io::SeekFrom) -> std::io::Result<()> {
         self.get_mut().inner.as_mut().start_seek(position)
     }
 

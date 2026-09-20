@@ -146,7 +146,10 @@ mod tests {
         assert_eq!(update.trakt, Some(42));
         assert!(update.birthday.is_some());
         assert!(update.death.is_some());
-        assert_eq!(update.kind.as_ref().map(|kind| kind.as_str()), Some("Acting"));
+        assert_eq!(
+            update.kind.as_ref().map(|kind| kind.as_str()),
+            Some("Acting")
+        );
         assert!(!update.add_socials.unwrap().is_empty());
     }
     #[tokio::test]

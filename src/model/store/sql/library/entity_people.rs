@@ -178,10 +178,13 @@ impl SqliteLibraryStore {
             while let Some(row) = rows.next()? {
                 let id: String = row.get(0)?;
                 if let Some(relations) = snapshots.get_mut(&id) {
-                    relations.tags.get_or_insert_default().push(MediaItemReference {
-                        id: row.get(1)?,
-                        conf: row.get(2)?,
-                    });
+                    relations
+                        .tags
+                        .get_or_insert_default()
+                        .push(MediaItemReference {
+                            id: row.get(1)?,
+                            conf: row.get(2)?,
+                        });
                 }
             }
         }
@@ -454,7 +457,8 @@ impl SqliteLibraryStore {
         roles: Option<Vec<PersonType>>,
         characters: Option<Vec<String>>,
     ) -> Result<bool> {
-        self.upsert_entity_person_ranked_credit(entity, id, person_id, roles, characters, None).await
+        self.upsert_entity_person_ranked_credit(entity, id, person_id, roles, characters, None)
+            .await
     }
 
     pub(crate) async fn upsert_entity_person_ranked_credit(
@@ -518,7 +522,8 @@ impl SqliteLibraryStore {
                     "SELECT {fields} FROM {mapping} m JOIN people p ON p.id = m.people_ref
                     WHERE m.{reference} = ? ORDER BY {ordering}, p.name, p.id"
                 ))?;
-                let people = query.query_map([&id], Self::row_to_person_credit)?
+                let people = query
+                    .query_map([&id], Self::row_to_person_credit)?
                     .collect::<rusqlite::Result<Vec<_>>>()?;
                 Ok(people)
             })
@@ -530,13 +535,13 @@ impl SqliteLibraryStore {
 mod tests {
     use super::*;
     use crate::{
+        domain::movie::MovieForUpdate,
         error::RsResult,
         model::{
             entity_people::resolve_refresh_person,
-            series::SerieForUpdate,
             people::{PeopleQuery, PersonForAdd, PersonForInsert},
+            series::SerieForUpdate,
         },
-        domain::movie::MovieForUpdate,
     };
 
     async fn store() -> SqliteLibraryStore {
@@ -577,7 +582,10 @@ mod tests {
 
         let resolved = resolve_refresh_person(
             &store,
-            Person { id: "local-person".into(), ..Default::default() },
+            Person {
+                id: "local-person".into(),
+                ..Default::default()
+            },
             |_| async { panic!("local people must not require plugin lookup") },
         )
         .await
@@ -593,25 +601,49 @@ mod tests {
         use rs_plugin_common_interfaces::domain::Relations;
 
         let store = store().await;
-        store.connection.call(|conn| {
-            conn.execute_batch("INSERT INTO movies(id,name) VALUES ('failed-movie','Movie');
-                INSERT INTO series(id,name) VALUES ('failed-show','Show');")?;
-            Ok(())
-        }).await.unwrap();
+        store
+            .connection
+            .call(|conn| {
+                conn.execute_batch(
+                    "INSERT INTO movies(id,name) VALUES ('failed-movie','Movie');
+                INSERT INTO series(id,name) VALUES ('failed-show','Show');",
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
         let duplicate_tags = Relations {
             tags: Some(vec![
-                MediaItemReference { id: "tag".into(), conf: None },
-                MediaItemReference { id: "tag".into(), conf: None },
+                MediaItemReference {
+                    id: "tag".into(),
+                    conf: None,
+                },
+                MediaItemReference {
+                    id: "tag".into(),
+                    conf: None,
+                },
             ]),
             ..Default::default()
         };
 
-        assert!(store.replace_movie_title_relations("failed-movie", &duplicate_tags).await.is_err());
-        store.rollback_created_title(PeopleEntity::Movie, "failed-movie").await.unwrap();
+        assert!(store
+            .replace_movie_title_relations("failed-movie", &duplicate_tags)
+            .await
+            .is_err());
+        store
+            .rollback_created_title(PeopleEntity::Movie, "failed-movie")
+            .await
+            .unwrap();
         assert!(store.get_movie("failed-movie").await.unwrap().is_none());
 
-        assert!(store.replace_serie_title_relations("failed-show", &duplicate_tags).await.is_err());
-        store.rollback_created_title(PeopleEntity::Serie, "failed-show").await.unwrap();
+        assert!(store
+            .replace_serie_title_relations("failed-show", &duplicate_tags)
+            .await
+            .is_err());
+        store
+            .rollback_created_title(PeopleEntity::Serie, "failed-show")
+            .await
+            .unwrap();
         assert!(store.get_serie("failed-show").await.unwrap().is_none());
     }
 
@@ -629,35 +661,76 @@ mod tests {
             Ok(())
         }).await.unwrap();
 
-        store.replace_movie_title_relations("movie", &Relations {
-            tags: Some(vec![MediaItemReference { id: "tag".into(), conf: Some(90) }]),
-            series: Some(vec![FileEpisode {
-                id: "collection".into(), season: Some(1), episode: Some(2), episode_to: None,
-            }]),
-            ..Default::default()
-        }).await.unwrap();
-        store.replace_serie_title_relations("show", &Relations {
-            tags: Some(vec![MediaItemReference { id: "tag".into(), conf: None }]),
-            ..Default::default()
-        }).await.unwrap();
+        store
+            .replace_movie_title_relations(
+                "movie",
+                &Relations {
+                    tags: Some(vec![MediaItemReference {
+                        id: "tag".into(),
+                        conf: Some(90),
+                    }]),
+                    series: Some(vec![FileEpisode {
+                        id: "collection".into(),
+                        season: Some(1),
+                        episode: Some(2),
+                        episode_to: None,
+                    }]),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .replace_serie_title_relations(
+                "show",
+                &Relations {
+                    tags: Some(vec![MediaItemReference {
+                        id: "tag".into(),
+                        conf: None,
+                    }]),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
 
-        let movie = store.get_people_relations_batch(PeopleEntity::Movie, vec!["movie".into()])
-            .await.unwrap().remove("movie").unwrap();
+        let movie = store
+            .get_people_relations_batch(PeopleEntity::Movie, vec!["movie".into()])
+            .await
+            .unwrap()
+            .remove("movie")
+            .unwrap();
         assert_eq!(movie.tags.unwrap()[0].id, "tag");
         assert_eq!(movie.series.unwrap()[0].id, "collection");
 
-        let show = store.get_people_relations_batch(PeopleEntity::Serie, vec!["show".into()])
-            .await.unwrap().remove("show").unwrap();
+        let show = store
+            .get_people_relations_batch(PeopleEntity::Serie, vec!["show".into()])
+            .await
+            .unwrap()
+            .remove("show")
+            .unwrap();
         assert_eq!(show.tags.unwrap()[0].id, "tag");
         assert!(show.series.is_none());
         assert_eq!(
-            store.get_serie("show").await.unwrap().unwrap()
-                .relations.unwrap().tags.unwrap()[0].id,
+            store
+                .get_serie("show")
+                .await
+                .unwrap()
+                .unwrap()
+                .relations
+                .unwrap()
+                .tags
+                .unwrap()[0]
+                .id,
             "tag"
         );
 
-        let book = store.get_people_relations_batch(PeopleEntity::Book, vec!["book".into()])
-            .await.unwrap().remove("book").unwrap();
+        let book = store
+            .get_people_relations_batch(PeopleEntity::Book, vec!["book".into()])
+            .await
+            .unwrap()
+            .remove("book")
+            .unwrap();
         assert_eq!(book.tags.unwrap()[0].id, "tag");
         let book_series = &book.series.unwrap()[0];
         assert_eq!(book_series.id, "collection");
@@ -666,73 +739,161 @@ mod tests {
 
         let duplicate_tags = Relations {
             tags: Some(vec![
-                MediaItemReference { id: "replacement".into(), conf: None },
-                MediaItemReference { id: "replacement".into(), conf: None },
+                MediaItemReference {
+                    id: "replacement".into(),
+                    conf: None,
+                },
+                MediaItemReference {
+                    id: "replacement".into(),
+                    conf: None,
+                },
             ]),
             ..Default::default()
         };
-        assert!(store.replace_movie_title_relations("movie", &duplicate_tags).await.is_err());
-        let movie = store.get_people_relations_batch(PeopleEntity::Movie, vec!["movie".into()])
-            .await.unwrap().remove("movie").unwrap();
+        assert!(store
+            .replace_movie_title_relations("movie", &duplicate_tags)
+            .await
+            .is_err());
+        let movie = store
+            .get_people_relations_batch(PeopleEntity::Movie, vec!["movie".into()])
+            .await
+            .unwrap()
+            .remove("movie")
+            .unwrap();
         assert_eq!(movie.tags.unwrap()[0].id, "tag");
 
         let collection = FileEpisode {
-            id: "collection".into(), season: None, episode: None, episode_to: None,
+            id: "collection".into(),
+            season: None,
+            episode: None,
+            episode_to: None,
         };
         for _ in 0..2 {
-            store.update_movie("movie", MovieForUpdate {
-                add_series: Some(vec![collection.clone()]),
-                ..Default::default()
-            }).await.unwrap();
+            store
+                .update_movie(
+                    "movie",
+                    MovieForUpdate {
+                        add_series: Some(vec![collection.clone()]),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
         }
-        let movie = store.get_people_relations_batch(PeopleEntity::Movie, vec!["movie".into()])
-            .await.unwrap().remove("movie").unwrap();
-        assert_eq!(movie.series.unwrap().iter().filter(|item| **item == collection).count(), 1);
+        let movie = store
+            .get_people_relations_batch(PeopleEntity::Movie, vec!["movie".into()])
+            .await
+            .unwrap()
+            .remove("movie")
+            .unwrap();
+        assert_eq!(
+            movie
+                .series
+                .unwrap()
+                .iter()
+                .filter(|item| **item == collection)
+                .count(),
+            1
+        );
 
-        store.update_movie("movie", MovieForUpdate {
-            remove_tags: Some(vec!["tag".into()]),
-            remove_series: Some(vec![
-                FileEpisode {
-                    id: "collection".into(), season: Some(1), episode: Some(2), episode_to: None,
+        store
+            .update_movie(
+                "movie",
+                MovieForUpdate {
+                    remove_tags: Some(vec!["tag".into()]),
+                    remove_series: Some(vec![
+                        FileEpisode {
+                            id: "collection".into(),
+                            season: Some(1),
+                            episode: Some(2),
+                            episode_to: None,
+                        },
+                        collection,
+                    ]),
+                    ..Default::default()
                 },
-                collection,
-            ]),
-            ..Default::default()
-        }).await.unwrap();
-        store.update_serie("show", SerieForUpdate {
-            remove_tags: Some(vec!["tag".into()]),
-            ..Default::default()
-        }).await.unwrap();
-        let movie = store.get_people_relations_batch(PeopleEntity::Movie, vec!["movie".into()])
-            .await.unwrap().remove("movie").unwrap();
+            )
+            .await
+            .unwrap();
+        store
+            .update_serie(
+                "show",
+                SerieForUpdate {
+                    remove_tags: Some(vec!["tag".into()]),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let movie = store
+            .get_people_relations_batch(PeopleEntity::Movie, vec!["movie".into()])
+            .await
+            .unwrap()
+            .remove("movie")
+            .unwrap();
         assert_eq!(movie.tags, Some(vec![]));
         assert_eq!(movie.series, Some(vec![]));
-        let show = store.get_people_relations_batch(PeopleEntity::Serie, vec!["show".into()])
-            .await.unwrap().remove("show").unwrap();
+        let show = store
+            .get_people_relations_batch(PeopleEntity::Serie, vec!["show".into()])
+            .await
+            .unwrap()
+            .remove("show")
+            .unwrap();
         assert_eq!(show.tags, Some(vec![]));
     }
 
     #[tokio::test]
     async fn credit_ranks_order_snapshots_preserve_unknowns_and_advance_sync() {
         let store = store().await;
-        store.connection.call(|conn| {
-            conn.execute_batch("INSERT INTO movies(id,name) VALUES ('title','Title');
+        store
+            .connection
+            .call(|conn| {
+                conn.execute_batch(
+                    "INSERT INTO movies(id,name) VALUES ('title','Title');
                 INSERT INTO series(id,name) VALUES ('title','Title');
-                INSERT INTO books(id,name) VALUES ('title','Title');")?;
-            Ok(())
-        }).await.unwrap();
-        for (id, name) in [("lead", "Z Lead"), ("tie-b", "B Tie"), ("tie-a", "B Tie"),
-            ("unknown", "A Actor"), ("crew", "A Director")] {
-            store.add_person(PersonForInsert { id: id.into(), person: PersonForAdd {
-                name: name.into(), ..Default::default()
-            }}).await.unwrap();
+                INSERT INTO books(id,name) VALUES ('title','Title');",
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        for (id, name) in [
+            ("lead", "Z Lead"),
+            ("tie-b", "B Tie"),
+            ("tie-a", "B Tie"),
+            ("unknown", "A Actor"),
+            ("crew", "A Director"),
+        ] {
+            store
+                .add_person(PersonForInsert {
+                    id: id.into(),
+                    person: PersonForAdd {
+                        name: name.into(),
+                        ..Default::default()
+                    },
+                })
+                .await
+                .unwrap();
         }
         for entity in [PeopleEntity::Movie, PeopleEntity::Serie, PeopleEntity::Book] {
-            for (person, rank, role) in [("crew", None, PersonType::Director),
-                ("unknown", None, PersonType::Actor), ("tie-b", Some(2), PersonType::Actor),
-                ("tie-a", Some(2), PersonType::Actor), ("lead", Some(0), PersonType::Actor)] {
-                assert!(store.upsert_entity_person_ranked_credit(entity, "title", person,
-                    Some(vec![role]), None, rank).await.unwrap());
+            for (person, rank, role) in [
+                ("crew", None, PersonType::Director),
+                ("unknown", None, PersonType::Actor),
+                ("tie-b", Some(2), PersonType::Actor),
+                ("tie-a", Some(2), PersonType::Actor),
+                ("lead", Some(0), PersonType::Actor),
+            ] {
+                assert!(store
+                    .upsert_entity_person_ranked_credit(
+                        entity,
+                        "title",
+                        person,
+                        Some(vec![role]),
+                        None,
+                        rank
+                    )
+                    .await
+                    .unwrap());
             }
             if matches!(entity, PeopleEntity::Book) {
                 store.connection.call(|conn| {
@@ -741,28 +902,79 @@ mod tests {
                 }).await.unwrap();
             }
             let credits = store.get_entity_people(entity, "title").await.unwrap();
-            assert_eq!(credits[0].conf, if matches!(entity, PeopleEntity::Book) { Some(80) } else { None });
-            assert_eq!(credits.iter().map(|credit| credit.person.id.as_str()).collect::<Vec<_>>(),
-                vec!["lead", "tie-a", "tie-b", "unknown", "crew"]);
+            assert_eq!(
+                credits[0].conf,
+                if matches!(entity, PeopleEntity::Book) {
+                    Some(80)
+                } else {
+                    None
+                }
+            );
+            assert_eq!(
+                credits
+                    .iter()
+                    .map(|credit| credit.person.id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["lead", "tie-a", "tie-b", "unknown", "crew"]
+            );
             assert_eq!(credits[0].rank, Some(0));
-            assert!(serde_json::to_value(&credits[3]).unwrap().get("rank").is_none());
-            let snapshots = store.get_people_relations_batch(entity, vec!["title".into()]).await.unwrap();
+            assert!(serde_json::to_value(&credits[3])
+                .unwrap()
+                .get("rank")
+                .is_none());
+            let snapshots = store
+                .get_people_relations_batch(entity, vec!["title".into()])
+                .await
+                .unwrap();
             let snapshot = &snapshots["title"];
-            assert_eq!(snapshot.people_details.as_ref().unwrap().iter().map(|credit| credit.person.id.as_str()).collect::<Vec<_>>(),
-                vec!["lead", "tie-a", "tie-b", "unknown", "crew"]);
+            assert_eq!(
+                snapshot
+                    .people_details
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .map(|credit| credit.person.id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["lead", "tie-a", "tie-b", "unknown", "crew"]
+            );
             assert_eq!(snapshot.people_details.as_ref().unwrap(), &credits);
-            assert!(!store.upsert_entity_person_ranked_credit(entity, "title", "lead", None, None, None).await.unwrap());
-            assert!(!store.upsert_entity_person_ranked_credit(entity, "title", "lead", None, None, Some(0)).await.unwrap());
+            assert!(!store
+                .upsert_entity_person_ranked_credit(entity, "title", "lead", None, None, None)
+                .await
+                .unwrap());
+            assert!(!store
+                .upsert_entity_person_ranked_credit(entity, "title", "lead", None, None, Some(0))
+                .await
+                .unwrap());
             let parent = entity.tables().0;
-            let before: i64 = store.connection.call(move |conn| Ok(conn.query_row(
-                &format!("SELECT modified FROM {parent} WHERE id = 'title'"), [], |row| row.get(0))?
-            )).await.unwrap();
-            assert!(store.upsert_entity_person_ranked_credit(entity, "title", "lead", None, None, Some(9)).await.unwrap());
-            store.connection.call(move |conn| {
-                let after: i64 = conn.query_row(&format!("SELECT modified FROM {parent} WHERE id = 'title'"), [], |row| row.get(0))?;
-                assert!(after > before);
-                Ok(())
-            }).await.unwrap();
+            let before: i64 = store
+                .connection
+                .call(move |conn| {
+                    Ok(conn.query_row(
+                        &format!("SELECT modified FROM {parent} WHERE id = 'title'"),
+                        [],
+                        |row| row.get(0),
+                    )?)
+                })
+                .await
+                .unwrap();
+            assert!(store
+                .upsert_entity_person_ranked_credit(entity, "title", "lead", None, None, Some(9))
+                .await
+                .unwrap());
+            store
+                .connection
+                .call(move |conn| {
+                    let after: i64 = conn.query_row(
+                        &format!("SELECT modified FROM {parent} WHERE id = 'title'"),
+                        [],
+                        |row| row.get(0),
+                    )?;
+                    assert!(after > before);
+                    Ok(())
+                })
+                .await
+                .unwrap();
             let credits = store.get_entity_people(entity, "title").await.unwrap();
             assert_eq!(credits[0].person.id, "tie-a");
         }
@@ -772,23 +984,52 @@ mod tests {
     async fn credit_ranks_survive_person_merges() {
         let store = store().await;
         for id in ["source", "target"] {
-            store.add_person(PersonForInsert { id: id.into(), person: PersonForAdd {
-                name: id.into(), ..Default::default()
-            }}).await.unwrap();
+            store
+                .add_person(PersonForInsert {
+                    id: id.into(),
+                    person: PersonForAdd {
+                        name: id.into(),
+                        ..Default::default()
+                    },
+                })
+                .await
+                .unwrap();
         }
-        store.connection.call(|conn| {
-            conn.execute_batch("INSERT INTO movies(id,name) VALUES ('title','Title');
+        store
+            .connection
+            .call(|conn| {
+                conn.execute_batch(
+                    "INSERT INTO movies(id,name) VALUES ('title','Title');
                 INSERT INTO series(id,name) VALUES ('title','Title');
-                INSERT INTO books(id,name) VALUES ('title','Title');")?;
-            Ok(())
-        }).await.unwrap();
-        for (entity, source, target) in [(PeopleEntity::Movie, Some(0), Some(7)),
-            (PeopleEntity::Serie, Some(4), None), (PeopleEntity::Book, None, Some(2))] {
-            store.upsert_entity_person_ranked_credit(entity, "title", "source", None, None, source).await.unwrap();
-            store.upsert_entity_person_ranked_credit(entity, "title", "target", None, None, target).await.unwrap();
+                INSERT INTO books(id,name) VALUES ('title','Title');",
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        for (entity, source, target) in [
+            (PeopleEntity::Movie, Some(0), Some(7)),
+            (PeopleEntity::Serie, Some(4), None),
+            (PeopleEntity::Book, None, Some(2)),
+        ] {
+            store
+                .upsert_entity_person_ranked_credit(entity, "title", "source", None, None, source)
+                .await
+                .unwrap();
+            store
+                .upsert_entity_person_ranked_credit(entity, "title", "target", None, None, target)
+                .await
+                .unwrap();
         }
-        store.transfer_faces_between_people("source", "target").await.unwrap();
-        for (entity, rank) in [(PeopleEntity::Movie, 0), (PeopleEntity::Serie, 4), (PeopleEntity::Book, 2)] {
+        store
+            .transfer_faces_between_people("source", "target")
+            .await
+            .unwrap();
+        for (entity, rank) in [
+            (PeopleEntity::Movie, 0),
+            (PeopleEntity::Serie, 4),
+            (PeopleEntity::Book, 2),
+        ] {
             let credits = store.get_entity_people(entity, "title").await.unwrap();
             assert_eq!(credits.len(), 1);
             assert_eq!(credits[0].person.id, "target");
@@ -800,24 +1041,39 @@ mod tests {
     async fn credit_ranks_migration_keeps_legacy_credits_unranked() {
         let store = store().await;
         existing(&store, Some(42)).await;
-        store.connection.call(|conn| {
-            conn.execute_batch("INSERT INTO movies(id,name) VALUES ('title','Title');
+        store
+            .connection
+            .call(|conn| {
+                conn.execute_batch(
+                    "INSERT INTO movies(id,name) VALUES ('title','Title');
                 INSERT INTO series(id,name) VALUES ('title','Title');
-                INSERT INTO books(id,name) VALUES ('title','Title');")?;
-            for (mapping, reference) in [("movie_people_mapping", "movie_ref"),
-                ("serie_people_mapping", "serie_ref"), ("book_people_mapping", "book_ref")] {
-                conn.execute_batch(&format!("DROP TRIGGER modified_{mapping}_rank;
+                INSERT INTO books(id,name) VALUES ('title','Title');",
+                )?;
+                for (mapping, reference) in [
+                    ("movie_people_mapping", "movie_ref"),
+                    ("serie_people_mapping", "serie_ref"),
+                    ("book_people_mapping", "book_ref"),
+                ] {
+                    conn.execute_batch(&format!(
+                        "DROP TRIGGER modified_{mapping}_rank;
                     ALTER TABLE {mapping} DROP COLUMN rank;
                     INSERT INTO {mapping}({reference},people_ref,roles,characters)
-                    VALUES ('title','local-person','[\"Actor\"]','[\"Character\"]');"))?;
-            }
-            conn.execute_batch("PRAGMA user_version = 57;")?;
-            Ok(())
-        }).await.unwrap();
+                    VALUES ('title','local-person','[\"Actor\"]','[\"Character\"]');"
+                    ))?;
+                }
+                conn.execute_batch("PRAGMA user_version = 57;")?;
+                Ok(())
+            })
+            .await
+            .unwrap();
         assert_eq!(store.migrate().await.unwrap(), 58);
         assert_eq!(store.migrate().await.unwrap(), 58);
         for entity in [PeopleEntity::Movie, PeopleEntity::Serie, PeopleEntity::Book] {
-            let credit = store.get_entity_people(entity, "title").await.unwrap().remove(0);
+            let credit = store
+                .get_entity_people(entity, "title")
+                .await
+                .unwrap()
+                .remove(0);
             assert_eq!(credit.rank, None);
             assert_eq!(credit.characters, Some(vec!["Character".into()]));
             assert_eq!(credit.roles, Some(vec![PersonType::Actor]));
