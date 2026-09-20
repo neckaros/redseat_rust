@@ -196,6 +196,21 @@ fn push_unique_tag(tags: &mut Vec<MediaItemReference>, incoming: MediaItemRefere
     }
 }
 
+pub(crate) fn changed_refresh_tags(
+    resolved: Option<Vec<MediaItemReference>>,
+    existing: &[MediaItemReference],
+) -> Vec<MediaItemReference> {
+    resolved
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|tag| {
+            existing.iter().all(|current| {
+                current.id != tag.id || current.conf.unwrap_or(100) != tag.conf.unwrap_or(100)
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,5 +244,45 @@ mod tests {
             },
         );
         assert_eq!(tags[0].conf, None);
+    }
+
+    #[test]
+    fn unchanged_refresh_tags_are_filtered_out() {
+        let existing = vec![MediaItemReference {
+            id: "local".into(),
+            conf: None,
+        }];
+        let resolved = Some(vec![
+            MediaItemReference {
+                id: "local".into(),
+                conf: Some(100),
+            },
+            MediaItemReference {
+                id: "new".into(),
+                conf: Some(80),
+            },
+        ]);
+
+        assert_eq!(
+            changed_refresh_tags(resolved, &existing),
+            vec![MediaItemReference {
+                id: "new".into(),
+                conf: Some(80),
+            }]
+        );
+    }
+
+    #[test]
+    fn changed_confidence_is_retained() {
+        let existing = vec![MediaItemReference {
+            id: "local".into(),
+            conf: Some(80),
+        }];
+        let resolved = Some(vec![MediaItemReference {
+            id: "local".into(),
+            conf: Some(90),
+        }]);
+
+        assert_eq!(changed_refresh_tags(resolved, &existing).len(), 1);
     }
 }

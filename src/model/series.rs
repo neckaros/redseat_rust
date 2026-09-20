@@ -899,13 +899,27 @@ impl ModelController {
             let resolved_tags = self
                 .resolve_refresh_tags(library_id, &relations, requesting_user)
                 .await?;
-            let tags_changed = resolved_tags.as_ref().is_some_and(|tags| !tags.is_empty());
-            if let Some(tags) = resolved_tags.filter(|tags| !tags.is_empty()) {
+            let changed_tags = if resolved_tags.as_ref().is_some_and(|tags| !tags.is_empty()) {
+                let existing_tags = store
+                    .get_people_relations_batch(
+                        super::entity_people::PeopleEntity::Serie,
+                        vec![serie_id.to_string()],
+                    )
+                    .await?
+                    .remove(serie_id)
+                    .and_then(|relations| relations.tags)
+                    .unwrap_or_default();
+                super::entity_tags::changed_refresh_tags(resolved_tags, &existing_tags)
+            } else {
+                Vec::new()
+            };
+            let tags_changed = !changed_tags.is_empty();
+            if tags_changed {
                 store
                     .update_serie(
                         serie_id,
                         SerieForUpdate {
-                            add_tags: Some(tags),
+                            add_tags: Some(changed_tags),
                             ..Default::default()
                         },
                     )
