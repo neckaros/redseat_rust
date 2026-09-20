@@ -14,6 +14,22 @@ use crate::{
 };
 
 impl SqliteLibraryStore {
+    pub(crate) async fn rollback_created_title(
+        &self,
+        entity: PeopleEntity,
+        id: &str,
+    ) -> Result<()> {
+        let id = id.to_string();
+        self.connection
+            .call(move |conn| {
+                let (table, _, _) = entity.tables();
+                conn.execute(&format!("DELETE FROM {table} WHERE id = ?"), [&id])?;
+                Ok(())
+            })
+            .await?;
+        Ok(())
+    }
+
     pub(crate) async fn replace_movie_title_relations(
         &self,
         movie_id: &str,
@@ -570,6 +586,33 @@ mod tests {
 
         assert_eq!(resolved.0.id, "local-person");
         assert!(resolved.1.is_none());
+    }
+
+    #[tokio::test]
+    async fn failed_title_creation_cleanup_removes_parent_and_relations() {
+        use rs_plugin_common_interfaces::domain::Relations;
+
+        let store = store().await;
+        store.connection.call(|conn| {
+            conn.execute_batch("INSERT INTO movies(id,name) VALUES ('failed-movie','Movie');
+                INSERT INTO series(id,name) VALUES ('failed-show','Show');")?;
+            Ok(())
+        }).await.unwrap();
+        let duplicate_tags = Relations {
+            tags: Some(vec![
+                MediaItemReference { id: "tag".into(), conf: None },
+                MediaItemReference { id: "tag".into(), conf: None },
+            ]),
+            ..Default::default()
+        };
+
+        assert!(store.replace_movie_title_relations("failed-movie", &duplicate_tags).await.is_err());
+        store.rollback_created_title(PeopleEntity::Movie, "failed-movie").await.unwrap();
+        assert!(store.get_movie("failed-movie").await.unwrap().is_none());
+
+        assert!(store.replace_serie_title_relations("failed-show", &duplicate_tags).await.is_err());
+        store.rollback_created_title(PeopleEntity::Serie, "failed-show").await.unwrap();
+        assert!(store.get_serie("failed-show").await.unwrap().is_none());
     }
 
     #[tokio::test]

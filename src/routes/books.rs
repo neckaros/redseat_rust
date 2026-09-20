@@ -190,9 +190,7 @@ async fn handler_post(
             &user,
         )
         .await?;
-    Ok(Json(json!(
-        mc.get_book(&library_id, created.id, &user).await?
-    )))
+    Ok(Json(json!(created)))
 }
 
 async fn handler_get(

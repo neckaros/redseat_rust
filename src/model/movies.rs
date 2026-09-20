@@ -561,20 +561,36 @@ impl ModelController {
         let id = nanoid!();
         new_movie.id = id.clone();
         store.add_movie(new_movie).await?;
-        if let Some(relations) = &relations {
-            store
-                .replace_movie_title_relations(&id, relations)
-                .await?;
-            if let Some(credits) = &relations.people_details {
-                self.refresh_entity_people(
-                    library_id,
-                    super::entity_people::PeopleEntity::Movie,
-                    &id,
-                    credits.clone(),
-                    requesting_user,
-                )
-                .await?;
+        let relation_result: RsResult<()> = async {
+            if let Some(relations) = &relations {
+                store
+                    .replace_movie_title_relations(&id, relations)
+                    .await?;
+                if let Some(credits) = &relations.people_details {
+                    self.refresh_entity_people(
+                        library_id,
+                        super::entity_people::PeopleEntity::Movie,
+                        &id,
+                        credits.clone(),
+                        requesting_user,
+                    )
+                    .await?;
+                }
             }
+            Ok(())
+        }
+        .await;
+        if let Err(error) = relation_result {
+            if let Err(cleanup_error) = store
+                .rollback_created_title(super::entity_people::PeopleEntity::Movie, &id)
+                .await
+            {
+                crate::tools::log::log_warn(
+                    crate::tools::log::LogServiceType::Source,
+                    format!("Unable to roll back failed movie creation {id}: {cleanup_error}"),
+                );
+            }
+            return Err(error);
         }
         let new_person = self.get_movie(library_id, id, requesting_user).await?;
         self.send_movie(MoviesMessage {

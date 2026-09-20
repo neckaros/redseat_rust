@@ -597,20 +597,36 @@ impl ModelController {
         let id = nanoid!();
         new_serie.id = id.clone();
         store.add_serie(new_serie).await?;
-        if let Some(relations) = &relations {
-            store
-                .replace_serie_title_relations(&id, relations)
-                .await?;
-            if let Some(credits) = &relations.people_details {
-                self.refresh_entity_people(
-                    library_id,
-                    super::entity_people::PeopleEntity::Serie,
-                    &id,
-                    credits.clone(),
-                    requesting_user,
-                )
-                .await?;
+        let relation_result: RsResult<()> = async {
+            if let Some(relations) = &relations {
+                store
+                    .replace_serie_title_relations(&id, relations)
+                    .await?;
+                if let Some(credits) = &relations.people_details {
+                    self.refresh_entity_people(
+                        library_id,
+                        super::entity_people::PeopleEntity::Serie,
+                        &id,
+                        credits.clone(),
+                        requesting_user,
+                    )
+                    .await?;
+                }
             }
+            Ok(())
+        }
+        .await;
+        if let Err(error) = relation_result {
+            if let Err(cleanup_error) = store
+                .rollback_created_title(super::entity_people::PeopleEntity::Serie, &id)
+                .await
+            {
+                crate::tools::log::log_warn(
+                    crate::tools::log::LogServiceType::Source,
+                    format!("Unable to roll back failed series creation {id}: {cleanup_error}"),
+                );
+            }
+            return Err(error);
         }
         let inserted_serie = self
             .get_serie(library_id, id.clone(), requesting_user)

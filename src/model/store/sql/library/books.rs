@@ -39,6 +39,8 @@ impl SqliteLibraryStore {
                 let relations = book.relations.get_or_insert_default();
                 relations.people = None;
                 relations.people_details = snapshot.people_details;
+                relations.tags = snapshot.tags;
+                relations.series = snapshot.series;
             }
             crate::model::entity_people::ensure_title_relation_fields(&mut book.relations, true);
         }
@@ -746,8 +748,22 @@ mod tests {
 
         assert_eq!(tags.len(), 2);
         assert!(tags.iter().any(|t| t.id == "tag-1"));
-        assert!(tags.iter().any(|t| t.id == "tag-2"));
+        assert!(tags.iter().any(|t| t.id == "tag-2" && t.conf.is_none()));
         assert!(people.is_empty());
+        let snapshot = store
+            .get_people_relations_batch(
+                crate::model::entity_people::PeopleEntity::Book,
+                vec!["book-rel".to_string()],
+            )
+            .await
+            .unwrap()
+            .remove("book-rel")
+            .unwrap();
+        assert!(snapshot
+            .tags
+            .unwrap()
+            .iter()
+            .any(|tag| tag.id == "tag-2" && tag.conf.is_none()));
 
         // Remove tag
         store.remove_book_tag("book-rel", "tag-1").await.unwrap();

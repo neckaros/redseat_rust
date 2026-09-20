@@ -262,6 +262,7 @@ impl ModelController {
                     Some(library_id.to_string()),
                 )
                 .await?;
+                super::entity_people::ensure_title_relation_fields(&mut book.relations, true);
                 Ok(book)
             }
         } else {
@@ -370,7 +371,7 @@ impl ModelController {
         upsert_people: bool,
         upsert_serie: bool,
         requesting_user: &ConnectedUser,
-    ) -> RsResult<Book> {
+    ) -> RsResult<ItemWithRelations<Book>> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
         let mut new_book = item.item;
         let relations = item.relations;
@@ -549,19 +550,18 @@ impl ModelController {
                 library_id.to_string(),
                 new_book.id.clone(),
                 "add_book".to_string(),
-            ))?
-            .item;
+            ))?;
         self.send_book(BooksMessage {
             library: library_id.to_string(),
             books: vec![BookWithAction {
                 action: ElementAction::Added,
-                book: rs_plugin_common_interfaces::domain::ItemWithRelations { item: inserted.clone(), relations: None },
+                book: rs_plugin_common_interfaces::domain::ItemWithRelations { item: inserted.item.clone(), relations: None },
             }],
         }).await;
 
         let mc = self.clone();
         let lib_id = library_id.to_string();
-        let bid = inserted.id.clone();
+        let bid = inserted.item.id.clone();
         tokio::spawn(async move {
             let _ = mc
                 .enrich_book_ids(&lib_id, &bid, &ConnectedUser::ServerAdmin)
