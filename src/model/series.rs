@@ -567,7 +567,18 @@ impl ModelController {
     pub async fn add_serie(
         &self,
         library_id: &str,
+        new_serie: Serie,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Serie> {
+        self.add_serie_internal(library_id, new_serie, None, requesting_user)
+            .await
+    }
+
+    async fn add_serie_internal(
+        &self,
+        library_id: &str,
         mut new_serie: Serie,
+        relations: Option<Relations>,
         requesting_user: &ConnectedUser,
     ) -> RsResult<Serie> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
@@ -586,6 +597,21 @@ impl ModelController {
         let id = nanoid!();
         new_serie.id = id.clone();
         store.add_serie(new_serie).await?;
+        if let Some(relations) = &relations {
+            store
+                .replace_serie_title_relations(&id, relations)
+                .await?;
+            if let Some(credits) = &relations.people_details {
+                self.refresh_entity_people(
+                    library_id,
+                    super::entity_people::PeopleEntity::Serie,
+                    &id,
+                    credits.clone(),
+                    requesting_user,
+                )
+                .await?;
+            }
+        }
         let inserted_serie = self
             .get_serie(library_id, id.clone(), requesting_user)
             .await?
@@ -628,13 +654,9 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> RsResult<ItemWithRelations<Serie>> {
         let relations = item.relations;
-        let serie = self.add_serie(library_id, item.item, requesting_user).await?;
-        if let Some(relations) = relations {
-            self.store
-                .get_library_store(library_id)?
-                .replace_serie_title_relations(&serie.id, &relations)
-                .await?;
-        }
+        let serie = self
+            .add_serie_internal(library_id, item.item, relations, requesting_user)
+            .await?;
         self.get_serie(library_id, serie.id, requesting_user)
             .await?
             .ok_or_else(|| {

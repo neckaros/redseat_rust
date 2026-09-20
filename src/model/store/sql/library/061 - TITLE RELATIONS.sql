@@ -13,6 +13,8 @@ CREATE TABLE movie_serie_mapping (
     episode_to INTEGER,
     PRIMARY KEY (movie_ref, serie_ref, season, episode)
 );
+CREATE UNIQUE INDEX movie_serie_mapping_unique
+ON movie_serie_mapping (movie_ref, serie_ref, ifnull(season, -1), ifnull(episode, -1));
 
 CREATE TABLE serie_tag_mapping (
     serie_ref TEXT NOT NULL,

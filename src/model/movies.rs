@@ -533,7 +533,18 @@ impl ModelController {
     pub async fn add_movie(
         &self,
         library_id: &str,
+        new_movie: Movie,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Movie> {
+        self.add_movie_internal(library_id, new_movie, None, requesting_user)
+            .await
+    }
+
+    async fn add_movie_internal(
+        &self,
+        library_id: &str,
         mut new_movie: Movie,
+        relations: Option<Relations>,
         requesting_user: &ConnectedUser,
     ) -> RsResult<Movie> {
         requesting_user.check_library_role(library_id, LibraryRole::Write)?;
@@ -550,6 +561,21 @@ impl ModelController {
         let id = nanoid!();
         new_movie.id = id.clone();
         store.add_movie(new_movie).await?;
+        if let Some(relations) = &relations {
+            store
+                .replace_movie_title_relations(&id, relations)
+                .await?;
+            if let Some(credits) = &relations.people_details {
+                self.refresh_entity_people(
+                    library_id,
+                    super::entity_people::PeopleEntity::Movie,
+                    &id,
+                    credits.clone(),
+                    requesting_user,
+                )
+                .await?;
+            }
+        }
         let new_person = self.get_movie(library_id, id, requesting_user).await?;
         self.send_movie(MoviesMessage {
             library: library_id.to_string(),
@@ -577,13 +603,9 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> RsResult<rs_plugin_common_interfaces::domain::ItemWithRelations<Movie>> {
         let relations = item.relations;
-        let movie = self.add_movie(library_id, item.item, requesting_user).await?;
-        if let Some(relations) = relations {
-            self.store
-                .get_library_store(library_id)?
-                .replace_movie_title_relations(&movie.id, &relations)
-                .await?;
-        }
+        let movie = self
+            .add_movie_internal(library_id, item.item, relations, requesting_user)
+            .await?;
         self.get_movie_with_relations(library_id, movie.id, requesting_user)
             .await
     }

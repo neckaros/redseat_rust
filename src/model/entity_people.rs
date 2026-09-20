@@ -60,6 +60,9 @@ where
     Fut: Future<Output = RsResult<Option<Person>>>,
 {
     let summary_kind = summary.kind.clone();
+    if let Some(existing) = store.get_person(&summary.id).await? {
+        return Ok(Some((existing, None)));
+    }
     let ids: RsIds = summary.clone().into();
     if ids.as_all_external_ids().is_empty() {
         return Ok(None);

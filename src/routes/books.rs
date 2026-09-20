@@ -190,7 +190,9 @@ async fn handler_post(
             &user,
         )
         .await?;
-    Ok(Json(json!(created)))
+    Ok(Json(json!(
+        mc.get_book(&library_id, created.id, &user).await?
+    )))
 }
 
 async fn handler_get(
@@ -208,8 +210,11 @@ async fn handler_patch(
     user: ConnectedUser,
     Json(update): Json<BookForUpdate>,
 ) -> Result<Json<Value>> {
-    let updated = mc.update_book(&library_id, book_id, update, &user).await?;
-    Ok(Json(json!(updated)))
+    mc.update_book(&library_id, book_id.clone(), update, &user)
+        .await?;
+    Ok(Json(json!(
+        mc.get_book(&library_id, book_id, &user).await?
+    )))
 }
 
 async fn handler_delete(

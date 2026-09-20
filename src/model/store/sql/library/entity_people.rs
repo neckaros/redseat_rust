@@ -26,24 +26,26 @@ impl SqliteLibraryStore {
             return Ok(false);
         }
         self.connection.call(move |conn| {
+            let tx = conn.transaction()?;
             if let Some(tags) = tags {
-                conn.execute("DELETE FROM movie_tag_mapping WHERE movie_ref = ?", [&movie_id])?;
+                tx.execute("DELETE FROM movie_tag_mapping WHERE movie_ref = ?", [&movie_id])?;
                 for tag in tags {
-                    conn.execute(
+                    tx.execute(
                         "INSERT INTO movie_tag_mapping (movie_ref, tag_ref, confidence) VALUES (?, ?, ?)",
                         params![movie_id, tag.id, tag.conf],
                     )?;
                 }
             }
             if let Some(series) = series {
-                conn.execute("DELETE FROM movie_serie_mapping WHERE movie_ref = ?", [&movie_id])?;
+                tx.execute("DELETE FROM movie_serie_mapping WHERE movie_ref = ?", [&movie_id])?;
                 for serie in series {
-                    conn.execute(
+                    tx.execute(
                         "INSERT INTO movie_serie_mapping (movie_ref, serie_ref, season, episode, episode_to) VALUES (?, ?, ?, ?, ?)",
                         params![movie_id, serie.id, serie.season, serie.episode, serie.episode_to],
                     )?;
                 }
             }
+            tx.commit()?;
             Ok(())
         }).await?;
         Ok(true)
@@ -59,13 +61,15 @@ impl SqliteLibraryStore {
         };
         let serie_id = serie_id.to_string();
         self.connection.call(move |conn| {
-            conn.execute("DELETE FROM serie_tag_mapping WHERE serie_ref = ?", [&serie_id])?;
+            let tx = conn.transaction()?;
+            tx.execute("DELETE FROM serie_tag_mapping WHERE serie_ref = ?", [&serie_id])?;
             for tag in tags {
-                conn.execute(
+                tx.execute(
                     "INSERT INTO serie_tag_mapping (serie_ref, tag_ref, confidence) VALUES (?, ?, ?)",
                     params![serie_id, tag.id, tag.conf],
                 )?;
             }
+            tx.commit()?;
             Ok(())
         }).await?;
         Ok(true)
@@ -145,7 +149,12 @@ impl SqliteLibraryStore {
                  JOIN serie_tag_mapping st ON st.serie_ref = requested.value
                  ORDER BY st.serie_ref, st.tag_ref",
             ),
-            PeopleEntity::Book => None,
+            PeopleEntity::Book => Some(
+                "SELECT bt.book_ref, bt.tag_ref, bt.confidence
+                 FROM json_each(?) requested
+                 JOIN book_tag_mapping bt ON bt.book_ref = requested.value
+                 ORDER BY bt.book_ref, bt.tag_ref",
+            ),
         };
         if let Some(tag_sql) = tag_sql {
             let mut query = conn.prepare(tag_sql)?;
@@ -182,9 +191,31 @@ impl SqliteLibraryStore {
             }
         }
 
+        if matches!(entity, PeopleEntity::Book) {
+            let mut query = conn.prepare(
+                "SELECT b.id, b.serie_ref, CAST(b.volume AS INTEGER), CAST(b.chapter AS INTEGER)
+                 FROM json_each(?) requested
+                 JOIN books b ON b.id = requested.value
+                 WHERE b.serie_ref IS NOT NULL
+                 ORDER BY b.id",
+            )?;
+            let mut rows = query.query([serde_json::json!(ids)])?;
+            while let Some(row) = rows.next()? {
+                let id: String = row.get(0)?;
+                if let Some(relations) = snapshots.get_mut(&id) {
+                    relations.series.get_or_insert_default().push(FileEpisode {
+                        id: row.get(1)?,
+                        season: row.get(2)?,
+                        episode: row.get(3)?,
+                        episode_to: None,
+                    });
+                }
+            }
+        }
+
         for relations in snapshots.values_mut() {
             relations.tags.get_or_insert_default();
-            if matches!(entity, PeopleEntity::Movie) {
+            if matches!(entity, PeopleEntity::Movie | PeopleEntity::Book) {
                 relations.series.get_or_insert_default();
             }
         }
@@ -524,6 +555,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn supplied_local_person_resolves_without_external_ids() {
+        let store = store().await;
+        existing(&store, None).await;
+
+        let resolved = resolve_refresh_person(
+            &store,
+            Person { id: "local-person".into(), ..Default::default() },
+            |_| async { panic!("local people must not require plugin lookup") },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(resolved.0.id, "local-person");
+        assert!(resolved.1.is_none());
+    }
+
+    #[tokio::test]
     async fn title_relation_links_roundtrip_independently_from_media() {
         use rs_plugin_common_interfaces::domain::{media::FileEpisode, Relations};
 
@@ -531,7 +580,9 @@ mod tests {
         store.connection.call(|conn| {
             conn.execute_batch("INSERT INTO movies(id,name) VALUES ('movie','Movie');
                 INSERT INTO series(id,name) VALUES ('show','Show'), ('collection','Collection');
-                INSERT INTO tags(id,name) VALUES ('tag','Tag');")?;
+                INSERT INTO books(id,name,serie_ref,volume,chapter) VALUES ('book','Book','collection',3,4);
+                INSERT INTO tags(id,name) VALUES ('tag','Tag'), ('replacement','Replacement');
+                INSERT INTO book_tag_mapping(book_ref,tag_ref) VALUES ('book','tag');")?;
             Ok(())
         }).await.unwrap();
 
@@ -556,12 +607,53 @@ mod tests {
             .await.unwrap().remove("show").unwrap();
         assert_eq!(show.tags.unwrap()[0].id, "tag");
         assert!(show.series.is_none());
+        assert_eq!(
+            store.get_serie("show").await.unwrap().unwrap()
+                .relations.unwrap().tags.unwrap()[0].id,
+            "tag"
+        );
+
+        let book = store.get_people_relations_batch(PeopleEntity::Book, vec!["book".into()])
+            .await.unwrap().remove("book").unwrap();
+        assert_eq!(book.tags.unwrap()[0].id, "tag");
+        let book_series = &book.series.unwrap()[0];
+        assert_eq!(book_series.id, "collection");
+        assert_eq!(book_series.season, Some(3));
+        assert_eq!(book_series.episode, Some(4));
+
+        let duplicate_tags = Relations {
+            tags: Some(vec![
+                MediaItemReference { id: "replacement".into(), conf: None },
+                MediaItemReference { id: "replacement".into(), conf: None },
+            ]),
+            ..Default::default()
+        };
+        assert!(store.replace_movie_title_relations("movie", &duplicate_tags).await.is_err());
+        let movie = store.get_people_relations_batch(PeopleEntity::Movie, vec!["movie".into()])
+            .await.unwrap().remove("movie").unwrap();
+        assert_eq!(movie.tags.unwrap()[0].id, "tag");
+
+        let collection = FileEpisode {
+            id: "collection".into(), season: None, episode: None, episode_to: None,
+        };
+        for _ in 0..2 {
+            store.update_movie("movie", MovieForUpdate {
+                add_series: Some(vec![collection.clone()]),
+                ..Default::default()
+            }).await.unwrap();
+        }
+        let movie = store.get_people_relations_batch(PeopleEntity::Movie, vec!["movie".into()])
+            .await.unwrap().remove("movie").unwrap();
+        assert_eq!(movie.series.unwrap().iter().filter(|item| **item == collection).count(), 1);
 
         store.update_movie("movie", MovieForUpdate {
             remove_tags: Some(vec!["tag".into()]),
-            remove_series: Some(vec![FileEpisode {
-                id: "collection".into(), season: Some(1), episode: Some(2), episode_to: None,
-            }]),
+            remove_series: Some(vec![
+                FileEpisode {
+                    id: "collection".into(), season: Some(1), episode: Some(2), episode_to: None,
+                },
+                collection,
+            ]),
             ..Default::default()
         }).await.unwrap();
         store.update_serie("show", SerieForUpdate {

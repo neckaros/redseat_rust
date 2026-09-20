@@ -37,7 +37,9 @@ impl SqliteLibraryStore {
         )?;
         for serie in series {
             if let Some(snapshot) = credits.remove(&serie.item.id) {
-                serie.relations.get_or_insert_default().people_details = snapshot.people_details;
+                let relations = serie.relations.get_or_insert_default();
+                relations.people_details = snapshot.people_details;
+                relations.tags = snapshot.tags;
             }
             crate::model::entity_people::ensure_title_relation_fields(&mut serie.relations, false);
         }

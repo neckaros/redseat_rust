@@ -195,6 +195,10 @@ impl SqliteLibraryStore {
                 tx.execute("DELETE FROM media_tag_mapping  WHERE tag_ref = ?", [&id])?;
                 tx.execute("UPDATE OR IGNORE channel_tag_mapping SET tag_ref = ? WHERE tag_ref = ?", params![&migrate_to, id])?;
                 tx.execute("DELETE FROM channel_tag_mapping WHERE tag_ref = ?", [&id])?;
+                tx.execute("UPDATE OR IGNORE movie_tag_mapping SET tag_ref = ? WHERE tag_ref = ?", params![&migrate_to, id])?;
+                tx.execute("DELETE FROM movie_tag_mapping WHERE tag_ref = ?", [&id])?;
+                tx.execute("UPDATE OR IGNORE serie_tag_mapping SET tag_ref = ? WHERE tag_ref = ?", params![&migrate_to, id])?;
+                tx.execute("DELETE FROM serie_tag_mapping WHERE tag_ref = ?", [&id])?;
             }
             
             if update.name.is_some() || update.parent.is_some() {
@@ -393,6 +397,35 @@ mod tests {
                 .unwrap();
         }
         store
+    }
+
+    #[tokio::test]
+    async fn tag_merge_retargets_title_relations() {
+        let store = tag_root_store().await;
+        store.connection.call(|conn| {
+            conn.execute_batch("INSERT INTO movies(id,name) VALUES ('movie','Movie');
+                INSERT INTO series(id,name) VALUES ('show','Show');
+                INSERT INTO movie_tag_mapping(movie_ref,tag_ref) VALUES ('movie','t');
+                INSERT INTO serie_tag_mapping(serie_ref,tag_ref) VALUES ('show','t');")?;
+            Ok(())
+        }).await.unwrap();
+
+        store.update_tag("t", TagForUpdate {
+            migrate_to: Some("other".into()),
+            ..Default::default()
+        }).await.unwrap();
+
+        store.connection.call(|conn| {
+            let movie: String = conn.query_row(
+                "SELECT tag_ref FROM movie_tag_mapping WHERE movie_ref = 'movie'", [], |row| row.get(0)
+            )?;
+            let serie: String = conn.query_row(
+                "SELECT tag_ref FROM serie_tag_mapping WHERE serie_ref = 'show'", [], |row| row.get(0)
+            )?;
+            assert_eq!(movie, "other");
+            assert_eq!(serie, "other");
+            Ok(())
+        }).await.unwrap();
     }
 
     #[tokio::test]
