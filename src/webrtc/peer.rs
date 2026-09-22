@@ -25,6 +25,8 @@ use webrtc::{
 
 pub const DATA_CHANNEL_LABEL: &str = "redseat-api-v1";
 const DISCONNECTED_PEER_GRACE: Duration = Duration::from_secs(30);
+const MAX_ESTABLISHED_PEERS: usize = 64;
+const MAX_ESTABLISHED_PEERS_PER_USER: usize = 8;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IceServer {
@@ -52,14 +54,22 @@ pub trait EstablishedPeerSink: Send + Sync {
 pub struct PeerRegistry {
     peers: Arc<Mutex<HashMap<String, EstablishedPeer>>>,
     established_tx: broadcast::Sender<EstablishedPeer>,
+    max_peers: usize,
+    max_peers_per_user: usize,
 }
 
 impl PeerRegistry {
     pub fn new() -> Self {
+        Self::with_limits(MAX_ESTABLISHED_PEERS, MAX_ESTABLISHED_PEERS_PER_USER)
+    }
+
+    fn with_limits(max_peers: usize, max_peers_per_user: usize) -> Self {
         let (established_tx, _) = broadcast::channel(64);
         Self {
             peers: Arc::new(Mutex::new(HashMap::new())),
             established_tx,
+            max_peers,
+            max_peers_per_user,
         }
     }
 
@@ -84,6 +94,17 @@ impl EstablishedPeerSink for PeerRegistry {
             let mut peers = self.peers.lock().await;
             if peers.contains_key(&peer.session_id) {
                 return Err("peer session is already established".to_owned());
+            }
+            if peers.len() >= self.max_peers {
+                return Err("established peer capacity reached".to_owned());
+            }
+            if peers
+                .values()
+                .filter(|existing| existing.cloud_user_uid == peer.cloud_user_uid)
+                .count()
+                >= self.max_peers_per_user
+            {
+                return Err("established peer capacity reached for user".to_owned());
             }
             peers.insert(peer.session_id.clone(), peer.clone());
         }
@@ -192,6 +213,41 @@ fn handle_established_peer_state(
                 )
                 .await;
             });
+        }
+        _ => {}
+    }
+}
+
+fn handle_negotiating_peer_state(
+    lifecycle_tx: tokio::sync::mpsc::UnboundedSender<PeerEvent>,
+    session_id: String,
+    established: Arc<AtomicBool>,
+    state_generation: Arc<AtomicU64>,
+    state: RTCPeerConnectionState,
+    disconnect_grace: Duration,
+) {
+    let generation = state_generation.fetch_add(1, Ordering::SeqCst) + 1;
+    match state {
+        RTCPeerConnectionState::Disconnected => {
+            tokio::spawn(async move {
+                tokio::time::sleep(disconnect_grace).await;
+                if state_generation.load(Ordering::SeqCst) == generation
+                    && !established.load(Ordering::SeqCst)
+                {
+                    let _ = lifecycle_tx.send(PeerEvent::Failed {
+                        session_id,
+                        message: "WebRTC peer negotiation remained disconnected",
+                    });
+                }
+            });
+        }
+        RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed => {
+            if !established.load(Ordering::SeqCst) {
+                let _ = lifecycle_tx.send(PeerEvent::Failed {
+                    session_id,
+                    message: "WebRTC peer negotiation failed",
+                });
+            }
         }
         _ => {}
     }
@@ -369,24 +425,21 @@ impl PeerSession {
         let state_session_id = session_id;
         let state_tx = lifecycle_tx;
         let state_established = Arc::clone(&established);
+        let state_generation = Arc::new(AtomicU64::new(0));
         pc.on_peer_connection_state_change(Box::new(move |state: RTCPeerConnectionState| {
             let tx = state_tx.clone();
             let session_id = state_session_id.clone();
             let established = Arc::clone(&state_established);
+            let state_generation = Arc::clone(&state_generation);
             Box::pin(async move {
-                if !established.load(Ordering::SeqCst)
-                    && matches!(
-                        state,
-                        RTCPeerConnectionState::Disconnected
-                            | RTCPeerConnectionState::Failed
-                            | RTCPeerConnectionState::Closed
-                    )
-                {
-                    let _ = tx.send(PeerEvent::Failed {
-                        session_id,
-                        message: "WebRTC peer negotiation failed",
-                    });
-                }
+                handle_negotiating_peer_state(
+                    tx,
+                    session_id,
+                    established,
+                    state_generation,
+                    state,
+                    DISCONNECTED_PEER_GRACE,
+                );
             })
         }));
 
@@ -500,6 +553,32 @@ mod tests {
             configuration::RTCConfiguration, sdp::session_description::RTCSessionDescription,
         },
     };
+
+    async fn unopened_peer(session_id: &str, cloud_user_uid: &str) -> EstablishedPeer {
+        let peer_connection = Arc::new(
+            APIBuilder::new()
+                .build()
+                .new_peer_connection(RTCConfiguration::default())
+                .await
+                .unwrap(),
+        );
+        let data_channel = peer_connection
+            .create_data_channel(
+                DATA_CHANNEL_LABEL,
+                Some(RTCDataChannelInit {
+                    ordered: Some(false),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+        EstablishedPeer {
+            session_id: session_id.to_owned(),
+            cloud_user_uid: cloud_user_uid.to_owned(),
+            peer_connection,
+            data_channel,
+        }
+    }
 
     #[test]
     fn filters_turn_and_relay_candidates_case_insensitively() {
@@ -728,6 +807,93 @@ mod tests {
         })
         .await
         .expect("disconnected peer remained after its grace period");
+    }
+
+    #[tokio::test]
+    async fn negotiating_peer_uses_a_resettable_disconnection_grace_period() {
+        let (lifecycle_tx, mut lifecycle_rx) = tokio::sync::mpsc::unbounded_channel();
+        let established = Arc::new(AtomicBool::new(false));
+        let state_generation = Arc::new(AtomicU64::new(0));
+        let grace = Duration::from_millis(25);
+
+        handle_negotiating_peer_state(
+            lifecycle_tx.clone(),
+            "session-negotiating".to_owned(),
+            Arc::clone(&established),
+            Arc::clone(&state_generation),
+            RTCPeerConnectionState::Disconnected,
+            grace,
+        );
+        handle_negotiating_peer_state(
+            lifecycle_tx.clone(),
+            "session-negotiating".to_owned(),
+            Arc::clone(&established),
+            Arc::clone(&state_generation),
+            RTCPeerConnectionState::Connected,
+            grace,
+        );
+        assert!(tokio::time::timeout(grace * 2, lifecycle_rx.recv())
+            .await
+            .is_err());
+
+        handle_negotiating_peer_state(
+            lifecycle_tx,
+            "session-negotiating".to_owned(),
+            established,
+            state_generation,
+            RTCPeerConnectionState::Disconnected,
+            grace,
+        );
+        let event = tokio::time::timeout(grace * 4, lifecycle_rx.recv())
+            .await
+            .expect("negotiating peer did not fail after its grace period")
+            .expect("negotiating peer lifecycle channel closed");
+        assert!(matches!(
+            event,
+            PeerEvent::Failed {
+                session_id,
+                message: "WebRTC peer negotiation remained disconnected",
+            } if session_id == "session-negotiating"
+        ));
+    }
+
+    #[tokio::test]
+    async fn established_peer_quotas_are_atomic_per_server_and_user() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let registry = PeerRegistry::with_limits(2, 1);
+        let first = unopened_peer("session-a1", "user-a").await;
+        let first_pc = Arc::clone(&first.peer_connection);
+        let same_user = unopened_peer("session-a2", "user-a").await;
+        let same_user_pc = Arc::clone(&same_user.peer_connection);
+        let (first_result, same_user_result) =
+            tokio::join!(registry.accept(first), registry.accept(same_user));
+        assert_ne!(first_result.is_ok(), same_user_result.is_ok());
+        if let Err(error) = first_result {
+            assert_eq!(error, "established peer capacity reached for user");
+            first_pc.close().await.unwrap();
+        }
+        if let Err(error) = same_user_result {
+            assert_eq!(error, "established peer capacity reached for user");
+            same_user_pc.close().await.unwrap();
+        }
+
+        let second = unopened_peer("session-b1", "user-b").await;
+        registry.accept(second).await.unwrap();
+        let over_server_limit = unopened_peer("session-c1", "user-c").await;
+        let over_server_limit_pc = Arc::clone(&over_server_limit.peer_connection);
+        assert_eq!(
+            registry.accept(over_server_limit).await.unwrap_err(),
+            "established peer capacity reached"
+        );
+        over_server_limit_pc.close().await.unwrap();
+
+        assert_ne!(
+            registry.get("session-a1").await.is_some(),
+            registry.get("session-a2").await.is_some()
+        );
+        assert!(registry.get("session-b1").await.is_some());
+        assert!(registry.get("session-c1").await.is_none());
+        registry.shutdown().await;
     }
 
     #[tokio::test]
