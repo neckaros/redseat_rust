@@ -32,7 +32,7 @@ hyper = { version = "1.0.0", features = ["full"] }
 mime = "0.3"
 
 jsonwebtoken = { version = "10", features = ["rust_crypto"] }
-tower = "0.4"
+tower = { version = "0.4", features = ["util"] }
 dirs = "5.0.1"
 clap = { version = "4.4.18", features = ["derive"] }
 lazy_static = "1.4.0"
