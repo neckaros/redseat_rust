@@ -1,9 +1,10 @@
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Weak,
     },
+    time::Duration,
 };
 
 use async_trait::async_trait;
@@ -23,6 +24,7 @@ use webrtc::{
 };
 
 pub const DATA_CHANNEL_LABEL: &str = "redseat-api-v1";
+const DISCONNECTED_PEER_GRACE: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IceServer {
@@ -101,39 +103,30 @@ impl EstablishedPeerSink for PeerRegistry {
         let session_id = peer.session_id.clone();
         let peers = Arc::downgrade(&self.peers);
         let peer_connection = Arc::downgrade(&peer.peer_connection);
+        let state_generation = Arc::new(AtomicU64::new(0));
+        let callback_generation = Arc::clone(&state_generation);
         peer.peer_connection
             .on_peer_connection_state_change(Box::new(move |state| {
                 let peers = peers.clone();
                 let peer_connection = peer_connection.clone();
                 let session_id = session_id.clone();
+                let state_generation = Arc::clone(&callback_generation);
                 Box::pin(async move {
-                    if matches!(
+                    handle_established_peer_state(
+                        peers,
+                        session_id,
+                        peer_connection,
+                        state_generation,
                         state,
-                        RTCPeerConnectionState::Disconnected
-                            | RTCPeerConnectionState::Failed
-                            | RTCPeerConnectionState::Closed
-                    ) {
-                        // Closing a peer from inside its own state callback can
-                        // re-enter the callback mutex. Defer ownership cleanup
-                        // until after this callback has returned.
-                        tokio::spawn(async move {
-                            remove_matching_peer(
-                                &peers,
-                                &session_id,
-                                &peer_connection,
-                                state != RTCPeerConnectionState::Closed,
-                            )
-                            .await;
-                        });
-                    }
+                        DISCONNECTED_PEER_GRACE,
+                    );
                 })
             }));
 
+        let connection_state = peer.peer_connection.connection_state();
         if matches!(
-            peer.peer_connection.connection_state(),
-            RTCPeerConnectionState::Disconnected
-                | RTCPeerConnectionState::Failed
-                | RTCPeerConnectionState::Closed
+            connection_state,
+            RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed
         ) || matches!(
             peer.data_channel.ready_state(),
             RTCDataChannelState::Closing | RTCDataChannelState::Closed
@@ -142,6 +135,16 @@ impl EstablishedPeerSink for PeerRegistry {
             let peer_connection = Arc::downgrade(&peer.peer_connection);
             remove_matching_peer(&peers, &peer.session_id, &peer_connection, true).await;
             return Err("peer closed before it could be registered".to_owned());
+        }
+        if connection_state == RTCPeerConnectionState::Disconnected {
+            handle_established_peer_state(
+                Arc::downgrade(&self.peers),
+                peer.session_id.clone(),
+                Arc::downgrade(&peer.peer_connection),
+                state_generation,
+                connection_state,
+                DISCONNECTED_PEER_GRACE,
+            );
         }
 
         let _ = self.established_tx.send(peer);
@@ -156,6 +159,41 @@ impl EstablishedPeerSink for PeerRegistry {
         for peer in peers {
             let _ = peer.peer_connection.close().await;
         }
+    }
+}
+
+fn handle_established_peer_state(
+    peers: Weak<Mutex<HashMap<String, EstablishedPeer>>>,
+    session_id: String,
+    peer_connection: Weak<RTCPeerConnection>,
+    state_generation: Arc<AtomicU64>,
+    state: RTCPeerConnectionState,
+    disconnect_grace: Duration,
+) {
+    let generation = state_generation.fetch_add(1, Ordering::SeqCst) + 1;
+    match state {
+        RTCPeerConnectionState::Disconnected => {
+            tokio::spawn(async move {
+                tokio::time::sleep(disconnect_grace).await;
+                if state_generation.load(Ordering::SeqCst) == generation {
+                    remove_matching_peer(&peers, &session_id, &peer_connection, true).await;
+                }
+            });
+        }
+        RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed => {
+            // Closing a peer from inside its own state callback can re-enter
+            // the callback mutex, so defer cleanup until this callback returns.
+            tokio::spawn(async move {
+                remove_matching_peer(
+                    &peers,
+                    &session_id,
+                    &peer_connection,
+                    state != RTCPeerConnectionState::Closed,
+                )
+                .await;
+            });
+        }
+        _ => {}
     }
 }
 
@@ -306,13 +344,15 @@ impl PeerSession {
                     let channel = opened_channel.clone();
                     let established = Arc::clone(&established);
                     Box::pin(async move {
+                        let Some(channel) = channel.upgrade() else {
+                            return;
+                        };
                         if established.swap(true, Ordering::SeqCst) {
+                            let _ = channel.close().await;
                             return;
                         }
                         let Some(pc) = pc.upgrade() else {
-                            return;
-                        };
-                        let Some(channel) = channel.upgrade() else {
+                            let _ = channel.close().await;
                             return;
                         };
                         let _ = tx.send(PeerEvent::Established(EstablishedPeer {
@@ -534,6 +574,16 @@ mod tests {
             )
             .await
             .unwrap();
+        let duplicate_channel = offerer
+            .create_data_channel(
+                DATA_CHANNEL_LABEL,
+                Some(RTCDataChannelInit {
+                    ordered: Some(false),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
         assert!(!channel.ordered());
         assert_eq!(channel.max_retransmits(), None);
         assert_eq!(channel.max_packet_lifetime(), None);
@@ -575,6 +625,27 @@ mod tests {
         assert_eq!(established.session_id, "session-1");
         assert_eq!(established.cloud_user_uid, "cloud-user-1");
         assert_eq!(established.data_channel.label(), DATA_CHANNEL_LABEL);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let states = [channel.ready_state(), duplicate_channel.ready_state()];
+                if states
+                    .iter()
+                    .filter(|state| **state == RTCDataChannelState::Open)
+                    .count()
+                    == 1
+                    && states
+                        .iter()
+                        .filter(|state| **state == RTCDataChannelState::Closed)
+                        .count()
+                        == 1
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("duplicate data channel was not closed");
 
         let registry = PeerRegistry::new();
         registry.accept(established.clone()).await.unwrap();
@@ -588,6 +659,75 @@ mod tests {
         .await
         .expect("closed data channel remained in the peer registry");
         offerer.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn disconnected_peer_is_removed_only_after_a_resettable_grace_period() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let peer_connection = Arc::new(
+            APIBuilder::new()
+                .build()
+                .new_peer_connection(RTCConfiguration::default())
+                .await
+                .unwrap(),
+        );
+        let data_channel = peer_connection
+            .create_data_channel(
+                DATA_CHANNEL_LABEL,
+                Some(RTCDataChannelInit {
+                    ordered: Some(false),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+        let registry = PeerRegistry::new();
+        registry.peers.lock().await.insert(
+            "session-grace".to_owned(),
+            EstablishedPeer {
+                session_id: "session-grace".to_owned(),
+                cloud_user_uid: "cloud-user-1".to_owned(),
+                peer_connection: Arc::clone(&peer_connection),
+                data_channel,
+            },
+        );
+        let state_generation = Arc::new(AtomicU64::new(0));
+        let grace = Duration::from_millis(25);
+
+        handle_established_peer_state(
+            Arc::downgrade(&registry.peers),
+            "session-grace".to_owned(),
+            Arc::downgrade(&peer_connection),
+            Arc::clone(&state_generation),
+            RTCPeerConnectionState::Disconnected,
+            grace,
+        );
+        handle_established_peer_state(
+            Arc::downgrade(&registry.peers),
+            "session-grace".to_owned(),
+            Arc::downgrade(&peer_connection),
+            Arc::clone(&state_generation),
+            RTCPeerConnectionState::Connected,
+            grace,
+        );
+        tokio::time::sleep(grace * 2).await;
+        assert!(registry.get("session-grace").await.is_some());
+
+        handle_established_peer_state(
+            Arc::downgrade(&registry.peers),
+            "session-grace".to_owned(),
+            Arc::downgrade(&peer_connection),
+            state_generation,
+            RTCPeerConnectionState::Disconnected,
+            grace,
+        );
+        tokio::time::timeout(grace * 4, async {
+            while registry.get("session-grace").await.is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("disconnected peer remained after its grace period");
     }
 
     #[tokio::test]
