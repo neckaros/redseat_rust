@@ -57,6 +57,7 @@ mod plugins;
 mod routes;
 mod server;
 mod tools;
+mod webrtc;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
@@ -147,6 +148,7 @@ async fn main() -> Result<()> {
     }
 
     let register_infos = register().await?;
+    let signaling = webrtc::start_from_config(&server::get_config().await);
     let app = app();
     let local_port = get_server_port().await;
     if let Some(certs) = register_infos.cert_paths {
@@ -166,10 +168,12 @@ async fn main() -> Result<()> {
             format!("->> LISTENING HTTP/HTTPS on {:?}\n", addr),
         );
 
-        axum_server_dual_protocol::bind_dual_protocol(addr, tls_config)
-            .serve(app.await?.into_make_service())
-            .await
-            .unwrap();
+        let server = axum_server_dual_protocol::bind_dual_protocol(addr, tls_config)
+            .serve(app.await?.into_make_service());
+        tokio::select! {
+            result = server => result.unwrap(),
+            _ = tokio::signal::ctrl_c() => {}
+        }
     } else {
         log_info(
             tools::log::LogServiceType::Register,
@@ -182,7 +186,15 @@ async fn main() -> Result<()> {
             format!("->> LISTENING on {:?}\n", listener.local_addr()),
         );
 
-        axum::serve(listener, app.await?).await.unwrap();
+        let server = axum::serve(listener, app.await?);
+        tokio::select! {
+            result = server => result.unwrap(),
+            _ = tokio::signal::ctrl_c() => {}
+        }
+    }
+
+    if let Some(signaling) = signaling {
+        signaling.shutdown().await;
     }
 
     // endregion: --- Start Server
