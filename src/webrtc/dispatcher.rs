@@ -36,6 +36,8 @@ use webrtc::data_channel::{
     RTCDataChannel,
 };
 
+use crate::tools::log::{log_error, LogServiceType};
+
 use super::{
     peer::{EstablishedPeer, EstablishedPeerSink, PeerRegistry},
     protocol::{
@@ -358,21 +360,29 @@ impl DataChannelSender {
     }
 
     async fn wait_for_backpressure(&self, cancellation: &CancellationToken) -> Result<(), String> {
+        let mut draining = false;
         loop {
             self.ensure_open(cancellation)?;
-            if self.channel.buffered_amount().await <= BUFFERED_AMOUNT_HIGH {
+            if !is_backpressured(self.channel.buffered_amount().await, draining) {
                 return Ok(());
             }
+            draining = true;
             tokio::select! {
                 _ = cancellation.cancelled() => return Err("operation was cancelled".to_owned()),
                 _ = self.closed.cancelled() => return Err("DataChannel is closed".to_owned()),
                 _ = tokio::time::sleep(Duration::from_millis(20)) => {}
             }
-            if self.channel.buffered_amount().await <= BUFFERED_AMOUNT_LOW {
-                return Ok(());
-            }
         }
     }
+}
+
+fn is_backpressured(buffered_amount: usize, draining: bool) -> bool {
+    buffered_amount
+        > if draining {
+            BUFFERED_AMOUNT_LOW
+        } else {
+            BUFFERED_AMOUNT_HIGH
+        }
 }
 
 struct RequestState {
@@ -570,6 +580,7 @@ impl IncomingPayload {
                 .await?;
             permit.send(Ok(bytes));
             self.next_index += 1;
+            self.updated_at = Instant::now();
         }
         if self.buffered.is_empty() {
             // The reservation is released only when the file itself is dropped.
@@ -601,6 +612,7 @@ impl IncomingPayload {
             .await?;
         permit.send(Ok(bytes));
         self.next_index += 1;
+        self.updated_at = Instant::now();
         self.flush_available().await?;
         if self.buffered.is_empty() {
             self.spool = None;
@@ -624,6 +636,10 @@ impl IncomingPayload {
             return Err("payload length does not match its descriptor".to_owned());
         }
         Ok(())
+    }
+
+    fn should_expire(&self) -> bool {
+        self.updated_at.elapsed() >= PAYLOAD_INACTIVITY
     }
 }
 
@@ -730,14 +746,12 @@ impl PeerDispatcher {
             }
         };
 
-        for state in self.requests.values() {
-            state.cancellation.cancel();
-        }
-        for state in self.subscriptions.values() {
-            state.cancellation.cancel();
-        }
-        closed.cancel();
-        if let Err(error) = result {
+        let fatal_error = result.err();
+        if let Some(error) = fatal_error.as_deref() {
+            log_error(
+                LogServiceType::Other,
+                format!("WebRTC API dispatcher failed: {error}"),
+            );
             let cancellation = CancellationToken::new();
             let safe_error = error.chars().take(256).collect::<String>();
             let _ = self
@@ -750,7 +764,17 @@ impl PeerDispatcher {
                     &cancellation,
                 )
                 .await;
+        }
+        for state in self.requests.values() {
+            state.cancellation.cancel();
+        }
+        for state in self.subscriptions.values() {
+            state.cancellation.cancel();
+        }
+        closed.cancel();
+        if fatal_error.is_some() {
             let _ = self.peer.data_channel.close().await;
+            let _ = self.peer.peer_connection.close().await;
         }
     }
 
@@ -784,7 +808,12 @@ impl PeerDispatcher {
                 }
                 Ok(())
             }
-            IncomingControl::Close(_) => Ok(self.peer.closed().cancel()),
+            IncomingControl::Close(_) => {
+                let _ = self.peer.data_channel.close().await;
+                let _ = self.peer.peer_connection.close().await;
+                self.peer.closed().cancel();
+                Ok(())
+            }
         }
     }
 
@@ -804,16 +833,12 @@ impl PeerDispatcher {
         validate_descriptor(&frame.payload)?;
         if self.cancelled_requests.contains(&frame.id) {
             self.register_operation(&frame.id)?;
-            if let Some(payload_id) = frame.payload.id {
-                validate_identifier(&payload_id, "payload")?;
-                if let Some(payload) = self.payloads.remove(&payload_id) {
-                    drop(payload);
-                }
-                self.remember_ignored_payload(payload_id);
-            }
+            self.discard_request_payload(&frame.payload)?;
             return Ok(());
         }
         if self.requests.len() >= MAX_ACTIVE_REQUESTS {
+            self.register_operation(&frame.id)?;
+            self.discard_request_payload(&frame.payload)?;
             return self
                 .send_immediate_error(&frame.id, 429, "transport", "too many active requests")
                 .await;
@@ -1071,6 +1096,16 @@ impl PeerDispatcher {
         }
     }
 
+    fn discard_request_payload(&mut self, descriptor: &PayloadDescriptor) -> Result<(), String> {
+        let Some(payload_id) = descriptor.id.as_deref() else {
+            return Ok(());
+        };
+        validate_identifier(payload_id, "payload")?;
+        self.payloads.remove(payload_id);
+        self.remember_ignored_payload(payload_id.to_owned());
+        Ok(())
+    }
+
     fn finish_payload_if_complete(&mut self, payload_id: &str) -> Result<(), String> {
         let Some(payload) = self.payloads.get(payload_id) else {
             return Ok(());
@@ -1172,7 +1207,7 @@ impl PeerDispatcher {
         let expired = self
             .payloads
             .iter()
-            .filter(|(_, payload)| payload.updated_at.elapsed() >= PAYLOAD_INACTIVITY)
+            .filter(|(_, payload)| payload.should_expire())
             .map(|(id, payload)| (id.clone(), payload.owner.clone()))
             .collect::<Vec<_>>();
         for (payload_id, owner) in expired {
@@ -1668,7 +1703,7 @@ async fn send_segmented_response(
     sender: &DataChannelSender,
     request_id: &str,
     status: u16,
-    headers: HashMap<String, String>,
+    mut headers: HashMap<String, String>,
     content_type: Option<String>,
     declared_length: Option<u64>,
     body: Body,
@@ -1678,6 +1713,7 @@ async fn send_segmented_response(
 ) -> Result<(), String> {
     let encoding = response_encoding(content_type.as_deref());
     let has_error = error.is_some();
+    let wire_length = prepare_segmented_metadata(&mut headers, declared_length, has_error);
     sender
         .send_control(
             &OutgoingControl::ResponseStart {
@@ -1687,7 +1723,7 @@ async fn send_segmented_response(
                 headers,
                 encoding,
                 content_type: content_type.clone(),
-                byte_length: declared_length,
+                byte_length: wire_length,
                 error,
             },
             cancellation,
@@ -1803,6 +1839,19 @@ async fn send_segmented_response(
             cancellation,
         )
         .await
+}
+
+fn prepare_segmented_metadata(
+    headers: &mut HashMap<String, String>,
+    declared_length: Option<u64>,
+    has_error: bool,
+) -> Option<u64> {
+    if has_error {
+        headers.insert(header::CONTENT_LENGTH.as_str().to_owned(), "0".to_owned());
+        Some(0)
+    } else {
+        declared_length
+    }
 }
 
 async fn send_response_segment(
@@ -2433,6 +2482,55 @@ mod tests {
         assert!(!response_is_bodyless(false, 206));
     }
 
+    #[test]
+    fn backpressure_drains_to_the_low_watermark_after_it_starts() {
+        assert!(!is_backpressured(BUFFERED_AMOUNT_HIGH, false));
+        assert!(is_backpressured(BUFFERED_AMOUNT_HIGH + 1, false));
+        assert!(is_backpressured(BUFFERED_AMOUNT_HIGH, true));
+        assert!(!is_backpressured(BUFFERED_AMOUNT_LOW, true));
+    }
+
+    #[test]
+    fn streamed_errors_advertise_an_empty_wire_body() {
+        let mut headers = HashMap::from([("content-length".to_owned(), "4096".to_owned())]);
+        assert_eq!(
+            prepare_segmented_metadata(&mut headers, Some(4096), true),
+            Some(0)
+        );
+        assert_eq!(headers.get("content-length").map(String::as_str), Some("0"));
+
+        let mut headers = HashMap::new();
+        assert_eq!(
+            prepare_segmented_metadata(&mut headers, None, true),
+            Some(0)
+        );
+        assert_eq!(headers.get("content-length").map(String::as_str), Some("0"));
+
+        let mut headers = HashMap::new();
+        assert_eq!(
+            prepare_segmented_metadata(&mut headers, Some(4096), false),
+            Some(4096)
+        );
+        assert!(!headers.contains_key("content-length"));
+    }
+
+    #[tokio::test]
+    async fn delivering_buffered_payload_data_refreshes_expiry_activity() {
+        let budgets = test_spool_budgets();
+        let mut payload = IncomingPayload::new(1).unwrap();
+        payload
+            .add_chunk(0, 1, b"body".to_vec(), &budgets)
+            .await
+            .unwrap();
+        payload.updated_at = Instant::now() - PAYLOAD_INACTIVITY;
+        assert!(payload.should_expire());
+
+        let (tx, mut rx) = mpsc::channel(1);
+        assert!(payload.attach_body(tx).await.unwrap());
+        assert_eq!(rx.recv().await.unwrap().unwrap(), "body");
+        assert!(!payload.should_expire());
+    }
+
     #[tokio::test]
     async fn spool_quota_is_held_until_the_file_is_dropped() {
         let budgets = test_spool_budgets();
@@ -2880,6 +2978,18 @@ mod tests {
             json!({"transport": "webrtc"})
         );
         assert_eq!(descriptor.byte_length, bytes.len() as u64);
+
+        channel
+            .send_text(json!({"v": 1, "type": "close", "reason": "done"}).to_string())
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while registry.contains_session("dispatcher-session").await {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("graceful close did not release the established peer");
 
         offerer.close().await.unwrap();
         registry.shutdown().await;
