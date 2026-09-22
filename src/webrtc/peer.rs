@@ -28,6 +28,16 @@ use webrtc::{
 };
 
 pub const DATA_CHANNEL_LABEL: &str = "redseat-api-v1";
+/// Reliable, ordered channel for bulk transfers (media streams, large uploads),
+/// served by its own dispatcher so API traffic keeps its own send queue.
+///
+/// Only the queue *before* data is sent is separated: webrtc-sctp holds at most
+/// 128 KiB of unsent data across channels and sends unordered (API) chunks before
+/// ordered (stream) ones. Data already in flight shares the association's
+/// congestion window and the network path, so a saturating stream still adds
+/// network queueing delay to API traffic. The larger gain is for uploads:
+/// browsers buffer per channel and interleave channels when sending.
+pub const STREAM_CHANNEL_LABEL: &str = "redseat-stream-v1";
 const DISCONNECTED_PEER_GRACE: Duration = Duration::from_secs(30);
 const MAX_ESTABLISHED_PEERS: usize = 64;
 const MAX_ESTABLISHED_PEERS_PER_USER: usize = 8;
@@ -48,9 +58,46 @@ pub struct EstablishedPeer {
     pub data_channel: Arc<RTCDataChannel>,
     incoming: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<DataChannelMessage>>>>,
     closed: CancellationToken,
+    stream_channels: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<StreamChannel>>>>,
+}
+
+/// A bulk-transfer channel opened by the client after the API channel.
+pub struct StreamChannel {
+    data_channel: Arc<RTCDataChannel>,
+    incoming: tokio::sync::mpsc::Receiver<DataChannelMessage>,
+    closed: CancellationToken,
+}
+
+impl StreamChannel {
+    /// Wraps the channel as a peer sharing `parent`'s connection so it can be
+    /// served by its own dispatcher. Closing the parent closes the stream channel.
+    pub fn into_peer(self, parent: &EstablishedPeer) -> EstablishedPeer {
+        let parent_closed = parent.closed();
+        let closed = self.closed.clone();
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = parent_closed.cancelled() => closed.cancel(),
+                _ = closed.cancelled() => {}
+            }
+        });
+        EstablishedPeer {
+            session_id: parent.session_id.clone(),
+            cloud_user_uid: parent.cloud_user_uid.clone(),
+            peer_connection: Arc::clone(&parent.peer_connection),
+            data_channel: self.data_channel,
+            incoming: Arc::new(Mutex::new(Some(self.incoming))),
+            closed: self.closed,
+            stream_channels: Arc::new(Mutex::new(None)),
+        }
+    }
 }
 
 impl EstablishedPeer {
+    /// Stream channels opened on this peer, in order. Can be claimed once.
+    pub async fn take_stream_channels(&self) -> Option<tokio::sync::mpsc::Receiver<StreamChannel>> {
+        self.stream_channels.lock().await.take()
+    }
+
     pub async fn take_incoming(
         &self,
     ) -> Result<tokio::sync::mpsc::Receiver<DataChannelMessage>, String> {
@@ -398,13 +445,23 @@ impl PeerSession {
         let channel_pc = Arc::downgrade(&pc);
         let channel_tx = lifecycle_tx.clone();
         let channel_established = Arc::clone(&established);
+        let (stream_tx, stream_rx) = tokio::sync::mpsc::channel(1);
+        let stream_channels = Arc::new(Mutex::new(Some(stream_rx)));
+        let stream_open = Arc::new(AtomicBool::new(false));
         pc.on_data_channel(Box::new(move |channel: Arc<RTCDataChannel>| {
             let session_id = channel_session_id.clone();
             let cloud_user_uid = channel_uid.clone();
             let pc = channel_pc.clone();
             let tx = channel_tx.clone();
             let established = Arc::clone(&channel_established);
+            let stream_tx = stream_tx.clone();
+            let stream_channels = Arc::clone(&stream_channels);
+            let stream_open = Arc::clone(&stream_open);
             Box::pin(async move {
+                if valid_stream_channel(&channel) {
+                    accept_stream_channel(channel, stream_open, stream_tx);
+                    return;
+                }
                 if !valid_data_channel(&channel) {
                     let _ = tx.send(PeerEvent::Failed {
                         session_id,
@@ -451,6 +508,7 @@ impl PeerSession {
                     let established = Arc::clone(&established);
                     let incoming = Arc::clone(&incoming);
                     let closed = closed.clone();
+                    let stream_channels = Arc::clone(&stream_channels);
                     Box::pin(async move {
                         let Some(channel) = channel.upgrade() else {
                             return;
@@ -470,6 +528,7 @@ impl PeerSession {
                             data_channel: channel,
                             incoming,
                             closed,
+                            stream_channels,
                         }));
                     })
                 }));
@@ -588,6 +647,89 @@ fn validate_direct_sdp_candidates(sdp: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Queues a stream channel for the peer's dispatcher once it opens (the client
+/// may open it together with the API channel). At most one is open at a time.
+fn accept_stream_channel(
+    channel: Arc<RTCDataChannel>,
+    stream_open: Arc<AtomicBool>,
+    stream_tx: tokio::sync::mpsc::Sender<StreamChannel>,
+) {
+    let (incoming_tx, incoming_rx) = tokio::sync::mpsc::channel(MAX_QUEUED_DATA_CHANNEL_MESSAGES);
+    let incoming = Arc::new(std::sync::Mutex::new(Some(incoming_rx)));
+    let closed = CancellationToken::new();
+
+    let message_channel = Arc::downgrade(&channel);
+    let message_closed = closed.clone();
+    channel.on_message(Box::new(move |message| {
+        let incoming_tx = incoming_tx.clone();
+        let channel = message_channel.clone();
+        let closed = message_closed.clone();
+        Box::pin(async move {
+            tokio::select! {
+                _ = closed.cancelled() => {}
+                result = incoming_tx.send(message) => {
+                    if result.is_err() {
+                        closed.cancel();
+                        if let Some(channel) = channel.upgrade() {
+                            let _ = channel.close().await;
+                        }
+                    }
+                }
+            }
+        })
+    }));
+
+    let close_closed = closed.clone();
+    let close_stream_open = Arc::clone(&stream_open);
+    let owns_slot = Arc::new(AtomicBool::new(false));
+    let close_owns_slot = Arc::clone(&owns_slot);
+    channel.on_close(Box::new(move || {
+        close_closed.cancel();
+        if close_owns_slot.swap(false, Ordering::SeqCst) {
+            close_stream_open.store(false, Ordering::SeqCst);
+        }
+        Box::pin(async {})
+    }));
+
+    let opened_channel = Arc::downgrade(&channel);
+    channel.on_open(Box::new(move || {
+        let channel = opened_channel.clone();
+        let incoming = incoming.lock().unwrap().take();
+        let closed = closed.clone();
+        let stream_open = Arc::clone(&stream_open);
+        let owns_slot = Arc::clone(&owns_slot);
+        let stream_tx = stream_tx.clone();
+        Box::pin(async move {
+            let (Some(channel), Some(incoming)) = (channel.upgrade(), incoming) else {
+                return;
+            };
+            if stream_open.swap(true, Ordering::SeqCst) {
+                closed.cancel();
+                let _ = channel.close().await;
+                return;
+            }
+            owns_slot.store(true, Ordering::SeqCst);
+            let stream = StreamChannel {
+                data_channel: Arc::clone(&channel),
+                incoming,
+                closed: closed.clone(),
+            };
+            if stream_tx.try_send(stream).is_err() {
+                closed.cancel();
+                let _ = channel.close().await;
+            }
+        })
+    }));
+}
+
+fn valid_stream_channel(channel: &RTCDataChannel) -> bool {
+    channel.label() == STREAM_CHANNEL_LABEL
+        && channel.ordered()
+        && channel.max_retransmits().is_none()
+        && channel.max_packet_lifetime().is_none()
+        && !channel.negotiated()
+}
+
 fn valid_data_channel(channel: &RTCDataChannel) -> bool {
     channel.label() == DATA_CHANNEL_LABEL
         && !channel.ordered()
@@ -633,6 +775,7 @@ mod tests {
             data_channel,
             incoming: Arc::new(Mutex::new(Some(tokio::sync::mpsc::channel(1).1))),
             closed: CancellationToken::new(),
+            stream_channels: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -826,6 +969,7 @@ mod tests {
                 data_channel,
                 incoming: Arc::new(Mutex::new(Some(tokio::sync::mpsc::channel(1).1))),
                 closed: CancellationToken::new(),
+                stream_channels: Arc::new(Mutex::new(None)),
             },
         );
         let state_generation = Arc::new(AtomicU64::new(0));

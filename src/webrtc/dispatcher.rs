@@ -42,9 +42,8 @@ use super::{
     peer::{EstablishedPeer, EstablishedPeerSink, PeerRegistry},
     protocol::{
         decode_binary, decode_control, encode_binary, encode_control, max_chunk_size,
-        negotiated_message_size, validate_identifier, CancelTarget, IncomingControl,
-        OutgoingControl, PayloadDescriptor, PayloadEncoding, RequestFrame, SubscribeFrame,
-        WireError, BASE_MESSAGE_SIZE, MAX_MESSAGE_SIZE, WIRE_VERSION,
+        validate_identifier, CancelTarget, IncomingControl, OutgoingControl, PayloadDescriptor,
+        PayloadEncoding, RequestFrame, SubscribeFrame, WireError, MAX_MESSAGE_SIZE, WIRE_VERSION,
     },
 };
 
@@ -94,12 +93,41 @@ impl EstablishedPeerSink for DispatcherSink {
 
     async fn accept(&self, peer: EstablishedPeer) -> Result<(), String> {
         let incoming = peer.take_incoming().await?;
+        let stream_channels = peer.take_stream_channels().await;
         self.registry.accept(peer.clone()).await?;
         let router = self.router.clone();
         let budgets = SpoolBudgets {
             peer: Arc::new(DiskBudget::new(MAX_PEER_SPOOL_BYTES)),
             server: Arc::clone(&self.server_spool),
         };
+        if let Some(mut stream_channels) = stream_channels {
+            // Each bulk-transfer channel gets its own dispatcher (and so its own
+            // send buffer and backpressure) sharing the peer's spool budget.
+            let router = router.clone();
+            let budgets = budgets.clone();
+            let parent = peer.clone();
+            tokio::spawn(async move {
+                let closed = parent.closed();
+                loop {
+                    let stream = tokio::select! {
+                        _ = closed.cancelled() => break,
+                        stream = stream_channels.recv() => stream,
+                    };
+                    let Some(stream) = stream else { break };
+                    let stream_peer = stream.into_peer(&parent);
+                    let Ok(incoming) = stream_peer.take_incoming().await else {
+                        continue;
+                    };
+                    let router = router.clone();
+                    let budgets = budgets.clone();
+                    tokio::spawn(async move {
+                        PeerDispatcher::new(router, stream_peer, incoming, budgets)
+                            .run()
+                            .await;
+                    });
+                }
+            });
+        }
         tokio::spawn(async move {
             PeerDispatcher::new(router, peer, incoming, budgets)
                 .run()
@@ -190,6 +218,10 @@ struct ReorderSpool {
     file: ReservedFile,
     free_slots: BTreeSet<u64>,
     slots: u64,
+    /// Bytes reserved per slot: the largest chunk written to it. Slots are
+    /// sized for the largest message, but the file is sparse, so a 16 KiB chunk
+    /// from a peer using the base message size only reserves 16 KiB.
+    slot_bytes: Vec<u64>,
 }
 
 impl ReorderSpool {
@@ -198,16 +230,20 @@ impl ReorderSpool {
             file: ReservedFile::new(budgets)?,
             free_slots: BTreeSet::new(),
             slots: 0,
+            slot_bytes: Vec::new(),
         })
     }
 
     async fn write(&mut self, bytes: &[u8]) -> Result<u64, String> {
+        if bytes.len() as u64 > REORDER_SLOT_SIZE {
+            return Err("payload chunk exceeds the spool slot size".to_owned());
+        }
         let slot = if let Some(slot) = self.free_slots.pop_first() {
             slot
         } else {
             let slot = self.slots;
-            self.file.reservation.grow(REORDER_SLOT_SIZE)?;
             self.slots += 1;
+            self.slot_bytes.push(0);
             self.file
                 .file
                 .set_len(self.slots * REORDER_SLOT_SIZE)
@@ -215,6 +251,11 @@ impl ReorderSpool {
                 .map_err(|_| "unable to grow payload spool file".to_owned())?;
             slot
         };
+        let held = &mut self.slot_bytes[slot as usize];
+        if bytes.len() as u64 > *held {
+            self.file.reservation.grow(bytes.len() as u64 - *held)?;
+            *held = bytes.len() as u64;
+        }
         self.file
             .file
             .seek(SeekFrom::Start(slot * REORDER_SLOT_SIZE))
@@ -252,9 +293,8 @@ impl ReorderSpool {
                 .set_len(self.slots * REORDER_SLOT_SIZE)
                 .await
                 .map_err(|_| "unable to reclaim payload spool file".to_owned())?;
-            self.file
-                .reservation
-                .shrink((old_slots - self.slots) * REORDER_SLOT_SIZE);
+            let released = self.slot_bytes.drain(self.slots as usize..).sum::<u64>();
+            self.file.reservation.shrink(released);
         }
         Ok(Bytes::from(bytes))
     }
@@ -303,26 +343,9 @@ struct DataChannelSender {
     channel: Arc<RTCDataChannel>,
     closed: CancellationToken,
     message_lock: Arc<Mutex<()>>,
-    /// Largest message the peer accepts; raised when it advertises `maxMessageSize`.
-    message_size: Arc<AtomicUsize>,
 }
 
 impl DataChannelSender {
-    fn message_size(&self) -> usize {
-        self.message_size.load(Ordering::Relaxed)
-    }
-
-    fn accept_peer_message_size(&self, advertised: Option<u64>) {
-        if advertised.is_some() {
-            self.message_size
-                .fetch_max(negotiated_message_size(advertised), Ordering::Relaxed);
-        }
-    }
-
-    fn chunk_size(&self, payload_id: &str) -> Result<usize, String> {
-        max_chunk_size(payload_id, self.message_size())
-    }
-
     async fn send_control(
         &self,
         frame: &OutgoingControl<'_>,
@@ -336,7 +359,7 @@ impl DataChannelSender {
         value: String,
         cancellation: &CancellationToken,
     ) -> Result<(), String> {
-        if value.len() > self.message_size() {
+        if value.len() > MAX_MESSAGE_SIZE {
             return Err("outgoing control frame is too large".to_owned());
         }
         self.wait_for_backpressure(cancellation).await?;
@@ -354,7 +377,7 @@ impl DataChannelSender {
         value: Vec<u8>,
         cancellation: &CancellationToken,
     ) -> Result<(), String> {
-        if value.len() > self.message_size() {
+        if value.len() > MAX_MESSAGE_SIZE {
             return Err("outgoing binary frame is too large".to_owned());
         }
         self.wait_for_backpressure(cancellation).await?;
@@ -717,7 +740,6 @@ impl PeerDispatcher {
             channel: Arc::clone(&peer.data_channel),
             closed: peer.closed(),
             message_lock: Arc::new(Mutex::new(())),
-            message_size: Arc::new(AtomicUsize::new(BASE_MESSAGE_SIZE)),
         };
         Self {
             router,
@@ -850,7 +872,6 @@ impl PeerDispatcher {
     async fn handle_request(&mut self, frame: RequestFrame) -> Result<(), String> {
         validate_identifier(&frame.id, "request")?;
         validate_request_metadata(&frame.method, &frame.path, &frame.headers, &frame.params)?;
-        self.sender.accept_peer_message_size(frame.max_message_size);
         if frame.response_type.as_deref().is_some_and(|value| {
             !matches!(value, "json" | "text" | "blob" | "arraybuffer" | "stream")
         }) {
@@ -952,7 +973,6 @@ impl PeerDispatcher {
     async fn handle_subscribe(&mut self, frame: SubscribeFrame) -> Result<(), String> {
         validate_identifier(&frame.id, "subscription")?;
         validate_request_metadata("GET", &frame.path, &frame.headers, &frame.params)?;
-        self.sender.accept_peer_message_size(frame.max_message_size);
         if self.cancelled_subscriptions.contains(&frame.id) {
             self.register_operation(&frame.id)?;
             return Ok(());
@@ -1009,7 +1029,7 @@ impl PeerDispatcher {
         {
             return Err("payload chunk arrived after payload completion".to_owned());
         }
-        if chunk.bytes.len() > max_chunk_size(&chunk.payload_id, MAX_MESSAGE_SIZE)? {
+        if chunk.bytes.len() > max_chunk_size(&chunk.payload_id)? {
             return Err("payload chunk exceeds the message-size limit".to_owned());
         }
         if !self.payloads.contains_key(&chunk.payload_id) {
@@ -1276,7 +1296,6 @@ impl PeerDispatcher {
                         kind,
                         message: message.to_owned(),
                     }),
-                    max_message_size: MAX_MESSAGE_SIZE,
                 },
                 &cancellation,
             )
@@ -1334,9 +1353,7 @@ fn validate_descriptor(descriptor: &PayloadDescriptor) -> Result<(), String> {
             if descriptor.chunks == 0 {
                 return Err("non-empty payload has no chunks".to_owned());
             }
-            let minimum_chunks = descriptor
-                .byte_length
-                .div_ceil(max_chunk_size(id, MAX_MESSAGE_SIZE)? as u64);
+            let minimum_chunks = descriptor.byte_length.div_ceil(max_chunk_size(id)? as u64);
             if (descriptor.chunks as u64) < minimum_chunks
                 || (descriptor.chunks as u64) > descriptor.byte_length
             {
@@ -1580,7 +1597,6 @@ async fn send_response(
                     headers,
                     payload: PayloadDescriptor::none(),
                     error,
-                    max_message_size: MAX_MESSAGE_SIZE,
                 },
                 cancellation,
             )
@@ -1663,7 +1679,6 @@ async fn send_response(
                     headers,
                     payload: PayloadDescriptor::none(),
                     error,
-                    max_message_size: MAX_MESSAGE_SIZE,
                 },
                 cancellation,
             )
@@ -1672,7 +1687,7 @@ async fn send_response(
     }
 
     let payload_id = new_payload_id();
-    let chunk_size = sender.chunk_size(&payload_id)?;
+    let chunk_size = max_chunk_size(&payload_id)?;
     let chunks = length.div_ceil(chunk_size as u64);
     if chunks > u32::MAX as u64 {
         return Err("response body has too many chunks".to_owned());
@@ -1693,7 +1708,6 @@ async fn send_response(
                 headers,
                 payload: descriptor.clone(),
                 error,
-                max_message_size: MAX_MESSAGE_SIZE,
             },
             cancellation,
         )
@@ -1763,8 +1777,6 @@ async fn send_segmented_response(
                 content_type: content_type.clone(),
                 byte_length: wire_length,
                 error,
-                max_message_size: MAX_MESSAGE_SIZE,
-                credit_window: MAX_RESPONSE_CREDITS,
             },
             cancellation,
         )
@@ -1930,7 +1942,7 @@ async fn send_response_segment(
     cancellation: &CancellationToken,
 ) -> Result<(), String> {
     let payload_id = new_payload_id();
-    let chunk_size = sender.chunk_size(&payload_id)?;
+    let chunk_size = max_chunk_size(&payload_id)?;
     let descriptor = PayloadDescriptor {
         id: Some(payload_id),
         encoding,
@@ -2001,7 +2013,6 @@ async fn send_response_error(
                     kind: "transport",
                     message: message.to_owned(),
                 }),
-                max_message_size: MAX_MESSAGE_SIZE,
             },
             cancellation,
         )
@@ -2018,7 +2029,7 @@ async fn send_payload_stream(
         .id
         .as_deref()
         .ok_or_else(|| "outgoing payload has no ID".to_owned())?;
-    let chunk_size = sender.chunk_size(id)?;
+    let chunk_size = max_chunk_size(id)?;
     let mut pending = Vec::with_capacity(chunk_size);
     let mut index = 0u32;
     let mut sent = 0u64;
@@ -2458,7 +2469,7 @@ async fn send_event(
     }
     let bytes = Bytes::from(event.data);
     let payload_id = new_payload_id();
-    let chunk_size = sender.chunk_size(&payload_id)?;
+    let chunk_size = max_chunk_size(&payload_id)?;
     let descriptor = PayloadDescriptor {
         id: Some(payload_id),
         encoding: if serde_json::from_slice::<Value>(&bytes).is_ok() {
@@ -2507,7 +2518,8 @@ mod tests {
         },
     };
 
-    use crate::webrtc::peer::{PeerSession, DATA_CHANNEL_LABEL};
+    use crate::webrtc::peer::{PeerSession, DATA_CHANNEL_LABEL, STREAM_CHANNEL_LABEL};
+    use webrtc::peer_connection::RTCPeerConnection;
 
     fn test_spool_budgets() -> SpoolBudgets {
         SpoolBudgets {
@@ -2616,23 +2628,25 @@ mod tests {
         let mut spool = ReorderSpool::new(budgets.clone()).unwrap();
         let first = spool.write(b"first").await.unwrap();
         let second = spool.write(b"second").await.unwrap();
-        assert_eq!(
-            budgets.peer.used.load(Ordering::Relaxed),
-            2 * REORDER_SLOT_SIZE
-        );
+        // Quota follows the bytes written, not the slot size.
+        assert_eq!(budgets.peer.used.load(Ordering::Relaxed), 5 + 6);
 
         assert_eq!(spool.read_and_free(first, 5).await.unwrap(), "first");
-        let reused = spool.write(b"third").await.unwrap();
+        let reused = spool.write(b"third-longer").await.unwrap();
         assert_eq!(reused, first);
-        assert_eq!(
-            budgets.peer.used.load(Ordering::Relaxed),
-            2 * REORDER_SLOT_SIZE
-        );
+        assert_eq!(budgets.peer.used.load(Ordering::Relaxed), 12 + 6);
 
         assert_eq!(spool.read_and_free(second, 6).await.unwrap(), "second");
-        assert_eq!(budgets.peer.used.load(Ordering::Relaxed), REORDER_SLOT_SIZE);
-        assert_eq!(spool.read_and_free(reused, 5).await.unwrap(), "third");
+        // The freed tail slot is truncated and released.
+        assert_eq!(budgets.peer.used.load(Ordering::Relaxed), 12);
+        assert_eq!(
+            spool.read_and_free(reused, 12).await.unwrap(),
+            "third-longer"
+        );
         assert_eq!(budgets.peer.used.load(Ordering::Relaxed), 0);
+
+        let oversized = vec![0; REORDER_SLOT_SIZE as usize + 1];
+        assert!(spool.write(&oversized).await.is_err());
     }
 
     #[tokio::test]
@@ -2703,7 +2717,6 @@ mod tests {
             params: HashMap::new(),
             response_type: None,
             response_stream: None,
-            max_message_size: None,
             payload: PayloadDescriptor {
                 id: Some("streaming-body".to_owned()),
                 encoding: PayloadEncoding::Binary,
@@ -2821,7 +2834,6 @@ mod tests {
             params: HashMap::from([("page".to_owned(), json!(2))]),
             response_type: None,
             response_stream: None,
-            max_message_size: None,
             payload: PayloadDescriptor::none(),
         };
         let response = router
@@ -3073,5 +3085,278 @@ mod tests {
 
         offerer.close().await.unwrap();
         registry.shutdown().await;
+    }
+
+    struct RealPeer {
+        offerer: Arc<RTCPeerConnection>,
+        api: Arc<RTCDataChannel>,
+        api_rx: mpsc::UnboundedReceiver<DataChannelMessage>,
+        registry: Arc<PeerRegistry>,
+        _answerer: PeerSession,
+        _sink: DispatcherSink,
+    }
+
+    impl RealPeer {
+        async fn close(self) {
+            self.offerer.close().await.unwrap();
+            self.registry.shutdown().await;
+        }
+    }
+
+    fn collect_messages(
+        channel: &Arc<RTCDataChannel>,
+    ) -> mpsc::UnboundedReceiver<DataChannelMessage> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        channel.on_message(Box::new(move |message| {
+            let tx = tx.clone();
+            Box::pin(async move {
+                let _ = tx.send(message);
+            })
+        }));
+        rx
+    }
+
+    async fn wait_for_state(channel: &Arc<RTCDataChannel>, state: RTCDataChannelState) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while channel.ready_state() != state {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("DataChannel did not reach {state}"));
+    }
+
+    fn new_offerer() -> impl std::future::Future<Output = Arc<RTCPeerConnection>> {
+        async {
+            Arc::new(
+                APIBuilder::new()
+                    .build()
+                    .new_peer_connection(RTCConfiguration::default())
+                    .await
+                    .unwrap(),
+            )
+        }
+    }
+
+    /// Connects an in-process offerer to a dispatcher serving `router`.
+    async fn connect_real_peer(router: Router) -> RealPeer {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let registry = Arc::new(PeerRegistry::new());
+        let sink = DispatcherSink::new(router, Arc::clone(&registry));
+        let (candidate_tx, mut candidate_rx) = mpsc::channel(32);
+        let (lifecycle_tx, mut lifecycle_rx) = mpsc::unbounded_channel();
+        let answerer = PeerSession::new(
+            "real-peer-session".to_owned(),
+            "cloud-user".to_owned(),
+            Vec::new(),
+            candidate_tx,
+            lifecycle_tx,
+        )
+        .await
+        .unwrap();
+        let offerer = new_offerer().await;
+        let api = offerer
+            .create_data_channel(
+                DATA_CHANNEL_LABEL,
+                Some(RTCDataChannelInit {
+                    ordered: Some(false),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+        let api_rx = collect_messages(&api);
+
+        let mut gathering_complete = offerer.gathering_complete_promise().await;
+        let offer = offerer.create_offer(None).await.unwrap();
+        offerer.set_local_description(offer).await.unwrap();
+        let _ = gathering_complete.recv().await;
+        let offer = offerer.local_description().await.unwrap();
+        let answer = answerer.accept_offer(offer.sdp).await.unwrap();
+        offerer
+            .set_remote_description(RTCSessionDescription::answer(answer).unwrap())
+            .await
+            .unwrap();
+        let established = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                tokio::select! {
+                    event = candidate_rx.recv() => {
+                        let super::super::peer::PeerEvent::LocalCandidate { candidate, .. } = event.unwrap() else {
+                            panic!("unexpected peer event in candidate queue");
+                        };
+                        offerer.add_ice_candidate(candidate.unwrap_or_default()).await.unwrap();
+                    }
+                    event = lifecycle_rx.recv() => match event.unwrap() {
+                        super::super::peer::PeerEvent::Established(peer) => break peer,
+                        super::super::peer::PeerEvent::Failed { message, .. } => panic!("{message}"),
+                        super::super::peer::PeerEvent::LocalCandidate { .. } => panic!("candidate in lifecycle queue"),
+                    }
+                }
+            }
+        })
+        .await
+        .expect("WebRTC DataChannel did not open");
+        sink.accept(established).await.unwrap();
+        wait_for_state(&api, RTCDataChannelState::Open).await;
+        RealPeer {
+            offerer,
+            api,
+            api_rx,
+            registry,
+            _answerer: answerer,
+            _sink: sink,
+        }
+    }
+
+    /// Reads the `response` frame for `id` and its reassembled payload.
+    async fn read_response(
+        rx: &mut mpsc::UnboundedReceiver<DataChannelMessage>,
+        id: &str,
+    ) -> (Value, Vec<u8>) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let mut frame: Option<Value> = None;
+            let mut chunks: HashMap<String, HashMap<u32, Vec<u8>>> = HashMap::new();
+            loop {
+                let message = rx.recv().await.expect("DataChannel closed");
+                if message.is_string {
+                    let value: Value = serde_json::from_slice(&message.data).unwrap();
+                    if value["type"] == "response" && value["id"] == id {
+                        frame = Some(value);
+                    }
+                } else {
+                    let chunk = decode_binary(&message.data).unwrap();
+                    chunks
+                        .entry(chunk.payload_id)
+                        .or_default()
+                        .insert(chunk.index, chunk.bytes);
+                }
+                let Some(frame) = &frame else { continue };
+                let descriptor: PayloadDescriptor =
+                    serde_json::from_value(frame["payload"].clone()).unwrap();
+                let Some(id) = &descriptor.id else {
+                    break (frame.clone(), Vec::new());
+                };
+                let received = chunks.get(id).map_or(0, HashMap::len);
+                if received == descriptor.chunks as usize {
+                    let parts = chunks.remove(id).unwrap();
+                    let mut bytes = Vec::new();
+                    for index in 0..descriptor.chunks {
+                        bytes.extend_from_slice(&parts[&index]);
+                    }
+                    break (frame.clone(), bytes);
+                }
+            }
+        })
+        .await
+        .expect("dispatcher did not respond")
+    }
+
+    fn get_request(id: &str, path: &str) -> String {
+        json!({
+            "v": 1,
+            "type": "request",
+            "id": id,
+            "method": "GET",
+            "path": path,
+            "responseType": "json",
+            "payload": {"encoding": "none", "byteLength": 0, "chunks": 0}
+        })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn real_peer_accepts_messages_of_the_maximum_size() {
+        let router = Router::new().route(
+            "/upload",
+            post(|body: Bytes| async move { Json(json!({"length": body.len()})) }),
+        );
+        let mut peer = connect_real_peer(router).await;
+
+        let payload_id = "max-size-upload";
+        let chunk_size = max_chunk_size(payload_id).unwrap();
+        let body = (0..chunk_size * 3)
+            .map(|index| index as u8)
+            .collect::<Vec<_>>();
+        peer.api
+            .send_text(
+                json!({
+                    "v": 1,
+                    "type": "request",
+                    "id": "upload-1",
+                    "method": "POST",
+                    "path": "/upload",
+                    "responseType": "json",
+                    "payload": {
+                        "id": payload_id,
+                        "encoding": "binary",
+                        "byteLength": body.len(),
+                        "chunks": 3
+                    }
+                })
+                .to_string(),
+            )
+            .await
+            .unwrap();
+        for (index, chunk) in body.chunks(chunk_size).enumerate() {
+            let frame = encode_binary(payload_id, index as u32, 3, chunk).unwrap();
+            assert_eq!(frame.len(), MAX_MESSAGE_SIZE);
+            peer.api.send(&Bytes::from(frame)).await.unwrap();
+        }
+
+        let (frame, bytes) = read_response(&mut peer.api_rx, "upload-1").await;
+        assert_eq!(frame["status"], 200);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&bytes).unwrap(),
+            json!({"length": body.len()})
+        );
+        peer.close().await;
+    }
+
+    #[tokio::test]
+    async fn real_peer_serves_one_stream_channel_alongside_the_api_channel() {
+        let router = Router::new().route(
+            "/api",
+            get(|| async { Json(json!({"transport": "webrtc"})) }),
+        );
+        let mut peer = connect_real_peer(router).await;
+        let ordered = Some(RTCDataChannelInit {
+            ordered: Some(true),
+            ..Default::default()
+        });
+        let stream = peer
+            .offerer
+            .create_data_channel(STREAM_CHANNEL_LABEL, ordered.clone())
+            .await
+            .unwrap();
+        let mut stream_rx = collect_messages(&stream);
+        wait_for_state(&stream, RTCDataChannelState::Open).await;
+
+        stream
+            .send_text(get_request("stream-1", "/api"))
+            .await
+            .unwrap();
+        let (frame, bytes) = read_response(&mut stream_rx, "stream-1").await;
+        assert_eq!(frame["status"], 200);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&bytes).unwrap(),
+            json!({"transport": "webrtc"})
+        );
+
+        peer.api
+            .send_text(get_request("api-1", "/api"))
+            .await
+            .unwrap();
+        let (frame, _) = read_response(&mut peer.api_rx, "api-1").await;
+        assert_eq!(frame["status"], 200);
+
+        // Only one stream channel may be open per peer.
+        let second = peer
+            .offerer
+            .create_data_channel(STREAM_CHANNEL_LABEL, ordered)
+            .await
+            .unwrap();
+        wait_for_state(&second, RTCDataChannelState::Closed).await;
+        assert_eq!(stream.ready_state(), RTCDataChannelState::Open);
+        peer.close().await;
     }
 }

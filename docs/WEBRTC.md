@@ -14,11 +14,9 @@ as peer-session metadata and never authenticates an API request.
 
 ## Streaming and bounds
 
-- Complete DataChannel messages are limited to 64 KiB. Every v1 peer accepts
-  16 KiB; the server sends larger messages (up to 64 KiB) only to a peer that
-  advertises `maxMessageSize` on its `request` or `subscribe` frames. The server
-  advertises its own `maxMessageSize` on `response` and `response-start` so a peer
-  can send larger messages after its first response.
+- Complete DataChannel messages are limited to 65,535 bytes in both directions:
+  webrtc-rs reads each incoming message into a `u16::MAX` buffer and closes the
+  channel on anything larger.
 - A peer may have at most 64 active requests, 16 active subscriptions, and 128
   incomplete or orphan payloads.
 - Request bodies are dispatched as soon as their descriptor arrives. In-order
@@ -30,7 +28,8 @@ as peer-session metadata and never authenticates an API request.
 - Chunks may precede their control frame and may arrive out of order; duplicate,
   conflicting, incomplete, or malformed framing is rejected. Each payload may
   hold at most 4,096 chunks ahead of its consumer. Reorder files use reusable
-  64-KiB slots and truncate released tail slots, so quota reflects the active
+  slots sized for the largest message, but quota is reserved for the bytes each
+  slot actually holds (the files are sparse), so 16-KiB chunks cost 16 KiB and truncate released tail slots, so quota reflects the active
   reorder window rather than total upload size. Spooling is limited to 512 MiB
   per peer and 8 GiB across the server.
 - A request with `responseType: "stream"` opts into incremental response framing
@@ -40,15 +39,24 @@ as peer-session metadata and never authenticates an API request.
   remain ordinary v1 payloads and therefore retain unordered-channel validation.
   The browser grants `response-credit` from its `ReadableStream` pull callback,
   keeping several segments requested so the link stays busy across round trips.
-  `response-start.creditWindow` advertises how many unused credits the server
-  holds (16). A peer that exceeds it has lost track of its credits; that stream
-  ends with a `response-end` error instead of the grant being silently dropped.
-  Peers that ignore `creditWindow` must keep at most two credits outstanding.
+  The server holds at most 16 unused credits per stream. A peer that exceeds that
+  has lost track of its credits; the stream ends with a `response-end` error
+  instead of the grant being silently dropped.
 - Legacy finite responses remain capped at 256 MiB. An oversized response receives
   a request-scoped 413 transport error rather than closing the shared channel.
   Unknown-length legacy responses use the same aggregate spool budgets.
 - HEAD, informational, 204, and 304 responses preserve HTTP headers (including
   `Content-Length`) while advertising an empty wire payload.
+- A peer may open one extra reliable, **ordered** channel, `redseat-stream-v1`,
+  alongside the API channel. It is served by its own dispatcher with the same
+  protocol and shares the peer's spool budget; opening a second one closes that
+  channel only. Clients use it for `stream` responses and large uploads. This
+  separates the send queues before data leaves: each channel has its own
+  application backpressure, and webrtc-sctp (which holds at most 128 KiB of
+  unsent data) sends queued unordered API chunks before ordered stream chunks.
+  Data already in flight shares the association's congestion window and the
+  network path, so a stream that saturates the link still adds network queueing
+  delay to API traffic.
 - DataChannel sends pause above an 8 MiB buffered amount and resume after it drains
   to 4 MiB or lower. The buffered amount includes sent but unacknowledged bytes, so
   this bounds the data in flight per peer and therefore its throughput per round
