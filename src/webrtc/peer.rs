@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Weak,
     },
 };
 
@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use tokio::sync::{broadcast, Mutex};
 use webrtc::{
     api::APIBuilder,
-    data_channel::RTCDataChannel,
+    data_channel::{data_channel_state::RTCDataChannelState, RTCDataChannel},
     ice_transport::{
         ice_candidate::{RTCIceCandidate, RTCIceCandidateInit},
         ice_candidate_type::RTCIceCandidateType,
@@ -48,7 +48,7 @@ pub trait EstablishedPeerSink: Send + Sync {
 }
 
 pub struct PeerRegistry {
-    peers: Mutex<HashMap<String, EstablishedPeer>>,
+    peers: Arc<Mutex<HashMap<String, EstablishedPeer>>>,
     established_tx: broadcast::Sender<EstablishedPeer>,
 }
 
@@ -56,7 +56,7 @@ impl PeerRegistry {
     pub fn new() -> Self {
         let (established_tx, _) = broadcast::channel(64);
         Self {
-            peers: Mutex::new(HashMap::new()),
+            peers: Arc::new(Mutex::new(HashMap::new())),
             established_tx,
         }
     }
@@ -78,12 +78,72 @@ impl EstablishedPeerSink for PeerRegistry {
     }
 
     async fn accept(&self, peer: EstablishedPeer) -> Result<(), String> {
-        let mut peers = self.peers.lock().await;
-        if peers.contains_key(&peer.session_id) {
-            return Err("peer session is already established".to_owned());
+        {
+            let mut peers = self.peers.lock().await;
+            if peers.contains_key(&peer.session_id) {
+                return Err("peer session is already established".to_owned());
+            }
+            peers.insert(peer.session_id.clone(), peer.clone());
         }
-        peers.insert(peer.session_id.clone(), peer.clone());
-        drop(peers);
+
+        let session_id = peer.session_id.clone();
+        let peers = Arc::downgrade(&self.peers);
+        let peer_connection = Arc::downgrade(&peer.peer_connection);
+        peer.data_channel.on_close(Box::new(move || {
+            let peers = peers.clone();
+            let peer_connection = peer_connection.clone();
+            let session_id = session_id.clone();
+            Box::pin(async move {
+                remove_matching_peer(&peers, &session_id, &peer_connection, true).await;
+            })
+        }));
+
+        let session_id = peer.session_id.clone();
+        let peers = Arc::downgrade(&self.peers);
+        let peer_connection = Arc::downgrade(&peer.peer_connection);
+        peer.peer_connection
+            .on_peer_connection_state_change(Box::new(move |state| {
+                let peers = peers.clone();
+                let peer_connection = peer_connection.clone();
+                let session_id = session_id.clone();
+                Box::pin(async move {
+                    if matches!(
+                        state,
+                        RTCPeerConnectionState::Disconnected
+                            | RTCPeerConnectionState::Failed
+                            | RTCPeerConnectionState::Closed
+                    ) {
+                        // Closing a peer from inside its own state callback can
+                        // re-enter the callback mutex. Defer ownership cleanup
+                        // until after this callback has returned.
+                        tokio::spawn(async move {
+                            remove_matching_peer(
+                                &peers,
+                                &session_id,
+                                &peer_connection,
+                                state != RTCPeerConnectionState::Closed,
+                            )
+                            .await;
+                        });
+                    }
+                })
+            }));
+
+        if matches!(
+            peer.peer_connection.connection_state(),
+            RTCPeerConnectionState::Disconnected
+                | RTCPeerConnectionState::Failed
+                | RTCPeerConnectionState::Closed
+        ) || matches!(
+            peer.data_channel.ready_state(),
+            RTCDataChannelState::Closing | RTCDataChannelState::Closed
+        ) {
+            let peers = Arc::downgrade(&self.peers);
+            let peer_connection = Arc::downgrade(&peer.peer_connection);
+            remove_matching_peer(&peers, &peer.session_id, &peer_connection, true).await;
+            return Err("peer closed before it could be registered".to_owned());
+        }
+
         let _ = self.established_tx.send(peer);
         Ok(())
     }
@@ -94,6 +154,33 @@ impl EstablishedPeerSink for PeerRegistry {
             guard.drain().map(|(_, peer)| peer).collect::<Vec<_>>()
         };
         for peer in peers {
+            let _ = peer.peer_connection.close().await;
+        }
+    }
+}
+
+async fn remove_matching_peer(
+    peers: &Weak<Mutex<HashMap<String, EstablishedPeer>>>,
+    session_id: &str,
+    peer_connection: &Weak<RTCPeerConnection>,
+    close: bool,
+) {
+    let (Some(peers), Some(peer_connection)) = (peers.upgrade(), peer_connection.upgrade()) else {
+        return;
+    };
+    let removed = {
+        let mut peers = peers.lock().await;
+        if peers
+            .get(session_id)
+            .is_some_and(|peer| Arc::ptr_eq(&peer.peer_connection, &peer_connection))
+        {
+            peers.remove(session_id)
+        } else {
+            None
+        }
+    };
+    if close {
+        if let Some(peer) = removed {
             let _ = peer.peer_connection.close().await;
         }
     }
@@ -121,7 +208,8 @@ impl PeerSession {
         session_id: String,
         cloud_user_uid: String,
         ice_servers: Vec<IceServer>,
-        event_tx: tokio::sync::mpsc::Sender<PeerEvent>,
+        candidate_tx: tokio::sync::mpsc::Sender<PeerEvent>,
+        lifecycle_tx: tokio::sync::mpsc::UnboundedSender<PeerEvent>,
     ) -> Result<Self, String> {
         let rtc_ice_servers = ice_servers
             .into_iter()
@@ -152,9 +240,10 @@ impl PeerSession {
         let established = Arc::new(AtomicBool::new(false));
 
         let candidate_session_id = session_id.clone();
-        let candidate_tx = event_tx.clone();
+        let candidate_lifecycle_tx = lifecycle_tx.clone();
         pc.on_ice_candidate(Box::new(move |candidate: Option<RTCIceCandidate>| {
             let tx = candidate_tx.clone();
+            let lifecycle_tx = candidate_lifecycle_tx.clone();
             let session_id = candidate_session_id.clone();
             Box::pin(async move {
                 let candidate = match candidate {
@@ -169,66 +258,76 @@ impl PeerSession {
                     Some(_) => return,
                     None => None,
                 };
-                let _ = tx
-                    .send(PeerEvent::LocalCandidate {
-                        session_id,
+                if tx
+                    .try_send(PeerEvent::LocalCandidate {
+                        session_id: session_id.clone(),
                         candidate,
                     })
-                    .await;
+                    .is_err()
+                {
+                    let _ = lifecycle_tx.send(PeerEvent::Failed {
+                        session_id,
+                        message: "too many local ICE candidates",
+                    });
+                }
             })
         }));
 
         let channel_session_id = session_id.clone();
         let channel_uid = cloud_user_uid;
-        let channel_pc = Arc::clone(&pc);
-        let channel_tx = event_tx.clone();
+        let channel_pc = Arc::downgrade(&pc);
+        let channel_tx = lifecycle_tx.clone();
         let channel_established = Arc::clone(&established);
         pc.on_data_channel(Box::new(move |channel: Arc<RTCDataChannel>| {
             let session_id = channel_session_id.clone();
             let cloud_user_uid = channel_uid.clone();
-            let pc = Arc::clone(&channel_pc);
+            let pc = channel_pc.clone();
             let tx = channel_tx.clone();
             let established = Arc::clone(&channel_established);
             Box::pin(async move {
                 if !valid_data_channel(&channel) {
-                    let _ = tx
-                        .send(PeerEvent::Failed {
-                            session_id,
-                            message: "invalid RedSeat data channel",
-                        })
-                        .await;
+                    let _ = tx.send(PeerEvent::Failed {
+                        session_id,
+                        message: "invalid RedSeat data channel",
+                    });
                     let _ = channel.close().await;
-                    let _ = pc.close().await;
+                    if let Some(pc) = pc.upgrade() {
+                        let _ = pc.close().await;
+                    }
                     return;
                 }
 
-                let opened_channel = Arc::clone(&channel);
+                let opened_channel = Arc::downgrade(&channel);
                 channel.on_open(Box::new(move || {
                     let tx = tx.clone();
                     let session_id = session_id.clone();
                     let cloud_user_uid = cloud_user_uid.clone();
-                    let pc = Arc::clone(&pc);
-                    let channel = Arc::clone(&opened_channel);
+                    let pc = pc.clone();
+                    let channel = opened_channel.clone();
                     let established = Arc::clone(&established);
                     Box::pin(async move {
                         if established.swap(true, Ordering::SeqCst) {
                             return;
                         }
-                        let _ = tx
-                            .send(PeerEvent::Established(EstablishedPeer {
-                                session_id,
-                                cloud_user_uid,
-                                peer_connection: pc,
-                                data_channel: channel,
-                            }))
-                            .await;
+                        let Some(pc) = pc.upgrade() else {
+                            return;
+                        };
+                        let Some(channel) = channel.upgrade() else {
+                            return;
+                        };
+                        let _ = tx.send(PeerEvent::Established(EstablishedPeer {
+                            session_id,
+                            cloud_user_uid,
+                            peer_connection: pc,
+                            data_channel: channel,
+                        }));
                     })
                 }));
             })
         }));
 
         let state_session_id = session_id;
-        let state_tx = event_tx;
+        let state_tx = lifecycle_tx;
         let state_established = Arc::clone(&established);
         pc.on_peer_connection_state_change(Box::new(move |state: RTCPeerConnectionState| {
             let tx = state_tx.clone();
@@ -243,12 +342,10 @@ impl PeerSession {
                             | RTCPeerConnectionState::Closed
                     )
                 {
-                    let _ = tx
-                        .send(PeerEvent::Failed {
-                            session_id,
-                            message: "WebRTC peer negotiation failed",
-                        })
-                        .await;
+                    let _ = tx.send(PeerEvent::Failed {
+                        session_id,
+                        message: "WebRTC peer negotiation failed",
+                    });
                 }
             })
         }));
@@ -264,6 +361,7 @@ impl PeerSession {
     }
 
     pub async fn accept_offer(&self, sdp: String) -> Result<String, String> {
+        validate_direct_sdp_candidates(&sdp)?;
         let offer = RTCSessionDescription::offer(sdp)
             .map_err(|error| format!("invalid WebRTC offer: {error}"))?;
         self.peer_connection
@@ -291,7 +389,7 @@ impl PeerSession {
         candidate: Option<RTCIceCandidateInit>,
     ) -> Result<(), String> {
         let candidate = candidate.unwrap_or_default();
-        if is_relay_candidate(&candidate.candidate) {
+        if !is_direct_candidate(&candidate.candidate) {
             return Ok(());
         }
         self.peer_connection
@@ -328,6 +426,19 @@ fn candidate_type(candidate: &str) -> Option<&str> {
         .windows(2)
         .find(|pair| pair[0].eq_ignore_ascii_case("typ"))
         .map(|pair| pair[1])
+}
+
+fn validate_direct_sdp_candidates(sdp: &str) -> Result<(), String> {
+    for line in sdp.split(['\r', '\n']).map(str::trim) {
+        let Some(prefix) = line.get(.."a=candidate:".len()) else {
+            continue;
+        };
+        if prefix.eq_ignore_ascii_case("a=candidate:") && !is_direct_candidate(&line["a=".len()..])
+        {
+            return Err("WebRTC offer contains a non-direct ICE candidate".to_owned());
+        }
+    }
+    Ok(())
 }
 
 fn valid_data_channel(channel: &RTCDataChannel) -> bool {
@@ -369,15 +480,39 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn rejects_embedded_relay_and_peer_reflexive_sdp_candidates() {
+        let direct = concat!(
+            "v=0\r\n",
+            "a=candidate:1 1 UDP 1 192.0.2.1 5000 typ host\r\n",
+            "a=candidate:2 1 UDP 1 198.51.100.1 5001 typ srflx\r\n"
+        );
+        assert!(validate_direct_sdp_candidates(direct).is_ok());
+
+        let relay = concat!(
+            "v=0\r\n",
+            "a=candidate:3 1 UDP 1 203.0.113.1 5002 typ relay raddr 0.0.0.0 rport 0\r\n"
+        );
+        assert!(validate_direct_sdp_candidates(relay).is_err());
+
+        let peer_reflexive = concat!(
+            "v=0\r\n",
+            "a=candidate:4 1 UDP 1 203.0.113.2 5003 typ prflx\r\n"
+        );
+        assert!(validate_direct_sdp_candidates(peer_reflexive).is_err());
+    }
+
     #[tokio::test]
     async fn browser_compatible_data_channel_reaches_handoff() {
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(32);
+        let (candidate_tx, mut candidate_rx) = tokio::sync::mpsc::channel(32);
+        let (lifecycle_tx, mut lifecycle_rx) = tokio::sync::mpsc::unbounded_channel();
         let answerer = PeerSession::new(
             "session-1".to_owned(),
             "cloud-user-1".to_owned(),
             Vec::new(),
-            event_tx,
+            candidate_tx,
+            lifecycle_tx,
         )
         .await
         .unwrap();
@@ -417,15 +552,20 @@ mod tests {
 
         let established = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
-                match event_rx.recv().await.unwrap() {
-                    PeerEvent::LocalCandidate { candidate, .. } => {
-                        offerer
-                            .add_ice_candidate(candidate.unwrap_or_default())
-                            .await
-                            .unwrap();
+                tokio::select! {
+                    event = candidate_rx.recv() => {
+                        let PeerEvent::LocalCandidate { candidate, .. } = event.unwrap() else {
+                            panic!("unexpected lifecycle event in candidate queue");
+                        };
+                        offerer.add_ice_candidate(candidate.unwrap_or_default()).await.unwrap();
                     }
-                    PeerEvent::Established(peer) => break peer,
-                    PeerEvent::Failed { message, .. } => panic!("{message}"),
+                    event = lifecycle_rx.recv() => match event.unwrap() {
+                        PeerEvent::Established(peer) => break peer,
+                        PeerEvent::Failed { message, .. } => panic!("{message}"),
+                        PeerEvent::LocalCandidate { .. } => {
+                            panic!("unexpected candidate in lifecycle queue")
+                        }
+                    }
                 }
             }
         })
@@ -435,7 +575,77 @@ mod tests {
         assert_eq!(established.session_id, "session-1");
         assert_eq!(established.cloud_user_uid, "cloud-user-1");
         assert_eq!(established.data_channel.label(), DATA_CHANNEL_LABEL);
-        established.peer_connection.close().await.unwrap();
+
+        let registry = PeerRegistry::new();
+        registry.accept(established.clone()).await.unwrap();
+        assert!(registry.get("session-1").await.is_some());
+        established.data_channel.close().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while registry.get("session-1").await.is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("closed data channel remained in the peer registry");
         offerer.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn closing_with_a_full_candidate_queue_does_not_deadlock_or_retain_peer() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let (candidate_tx, _candidate_rx) = tokio::sync::mpsc::channel(1);
+        candidate_tx
+            .try_send(PeerEvent::LocalCandidate {
+                session_id: "occupied".to_owned(),
+                candidate: None,
+            })
+            .unwrap();
+        let (lifecycle_tx, _lifecycle_rx) = tokio::sync::mpsc::unbounded_channel();
+        let session = PeerSession::new(
+            "session-full".to_owned(),
+            "cloud-user-1".to_owned(),
+            Vec::new(),
+            candidate_tx,
+            lifecycle_tx,
+        )
+        .await
+        .unwrap();
+        let peer = Arc::downgrade(&session.peer_connection);
+
+        tokio::time::timeout(Duration::from_secs(2), session.close())
+            .await
+            .expect("peer close blocked on a full event queue");
+        drop(session);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while peer.upgrade().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("closed pending peer was retained by one of its callbacks");
+    }
+
+    #[tokio::test]
+    async fn relay_candidate_in_offer_is_rejected_before_installation() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let (candidate_tx, _candidate_rx) = tokio::sync::mpsc::channel(1);
+        let (lifecycle_tx, _lifecycle_rx) = tokio::sync::mpsc::unbounded_channel();
+        let session = PeerSession::new(
+            "session-relay".to_owned(),
+            "cloud-user-1".to_owned(),
+            Vec::new(),
+            candidate_tx,
+            lifecycle_tx,
+        )
+        .await
+        .unwrap();
+        let offer = concat!(
+            "v=0\r\n",
+            "a=candidate:3 1 UDP 1 203.0.113.1 5002 typ relay raddr 0.0.0.0 rport 0\r\n"
+        );
+
+        assert!(session.accept_offer(offer.to_owned()).await.is_err());
+        assert!(session.peer_connection.remote_description().await.is_none());
+        session.close().await;
     }
 }

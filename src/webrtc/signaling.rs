@@ -155,7 +155,8 @@ async fn run_connection(
         format!("WebRTC signaling authenticated for server {server_id}"),
     );
 
-    let (peer_event_tx, mut peer_event_rx) = mpsc::channel(512);
+    let (candidate_tx, mut candidate_rx) = mpsc::channel(512);
+    let (lifecycle_tx, mut lifecycle_rx) = mpsc::unbounded_channel();
     let mut pending = HashMap::<String, PendingSession>::new();
     let mut established_sessions = HashSet::<String>::new();
     let mut expiry = tokio::time::interval(Duration::from_secs(1));
@@ -178,7 +179,18 @@ async fn run_connection(
                     fail_session(&mut socket, &mut pending, &session_id, "signaling session expired").await;
                 }
             }
-            event = peer_event_rx.recv() => {
+            event = lifecycle_rx.recv() => {
+                if let Some(event) = event {
+                    handle_peer_event(
+                        &mut socket,
+                        &mut pending,
+                        &mut established_sessions,
+                        peer_sink,
+                        event,
+                    ).await;
+                }
+            }
+            event = candidate_rx.recv() => {
                 if let Some(event) = event {
                     handle_peer_event(
                         &mut socket,
@@ -202,10 +214,11 @@ async fn run_connection(
                         if let Err(error) = handle_cloud_message(
                             &mut socket,
                             &mut pending,
-                            &established_sessions,
+                            &mut established_sessions,
                             peer_sink,
                             server_id,
-                            peer_event_tx.clone(),
+                            candidate_tx.clone(),
+                            lifecycle_tx.clone(),
                             message,
                         ).await {
                             break Err(error);
@@ -234,7 +247,17 @@ async fn run_connection(
     // A DataChannel-open callback and signaling close can become ready together.
     // Drain already-produced peer events before invalidating pending negotiations.
     tokio::task::yield_now().await;
-    while let Ok(event) = peer_event_rx.try_recv() {
+    while let Ok(event) = lifecycle_rx.try_recv() {
+        handle_peer_event(
+            &mut socket,
+            &mut pending,
+            &mut established_sessions,
+            peer_sink,
+            event,
+        )
+        .await;
+    }
+    while let Ok(event) = candidate_rx.try_recv() {
         handle_peer_event(
             &mut socket,
             &mut pending,
@@ -287,10 +310,11 @@ async fn authenticate(
 async fn handle_cloud_message(
     socket: &mut Socket,
     pending: &mut HashMap<String, PendingSession>,
-    established_sessions: &HashSet<String>,
+    established_sessions: &mut HashSet<String>,
     peer_sink: &dyn EstablishedPeerSink,
     server_id: &str,
-    event_tx: mpsc::Sender<PeerEvent>,
+    candidate_tx: mpsc::Sender<PeerEvent>,
+    lifecycle_tx: mpsc::UnboundedSender<PeerEvent>,
     message: CloudMessage,
 ) -> Result<(), String> {
     if message.version() != PROTOCOL_VERSION {
@@ -333,7 +357,15 @@ async fn handle_cloud_message(
                     return Ok(());
                 }
             };
-            match PeerSession::new(session_id.clone(), user.uid, ice_servers, event_tx).await {
+            match PeerSession::new(
+                session_id.clone(),
+                user.uid,
+                ice_servers,
+                candidate_tx,
+                lifecycle_tx,
+            )
+            .await
+            {
                 Ok(peer) => {
                     pending.insert(
                         session_id,
@@ -381,6 +413,7 @@ async fn handle_cloud_message(
                 return Ok(());
             }
             if let Some(session_id) = session_id {
+                established_sessions.remove(&session_id);
                 if let Some(session) = pending.remove(&session_id) {
                     session.peer.close().await;
                 }
@@ -405,13 +438,12 @@ async fn handle_cloud_message(
 async fn handle_signal(
     socket: &mut Socket,
     pending: &mut HashMap<String, PendingSession>,
-    established_sessions: &HashSet<String>,
+    established_sessions: &mut HashSet<String>,
     session_id: String,
     signal: PeerSignal,
 ) {
     let Some(session) = pending.get_mut(&session_id) else {
-        if established_sessions.contains(&session_id) && matches!(signal, PeerSignal::Close { .. })
-        {
+        if established_sessions.remove(&session_id) && matches!(signal, PeerSignal::Close { .. }) {
             return;
         }
         send_session_error(socket, &session_id, "unknown or expired signaling session").await;
@@ -505,6 +537,7 @@ async fn handle_signal(
         }
         PeerSignal::Close { .. } => {
             if session.peer.is_established() {
+                established_sessions.insert(session_id);
                 return;
             }
             if let Some(session) = pending.remove(&session_id) {
@@ -562,7 +595,11 @@ async fn handle_peer_event(
                     send_session_error(socket, &session_id, "unable to accept established peer")
                         .await;
                 } else {
-                    established_sessions.insert(session_id);
+                    // If signaling close won the race with the open callback, the
+                    // existing entry is a consumed-close marker and is removed.
+                    if !established_sessions.remove(&session_id) {
+                        established_sessions.insert(session_id);
+                    }
                 }
             }
         }
