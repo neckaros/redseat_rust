@@ -4,7 +4,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const WIRE_VERSION: u8 = 1;
-pub const MAX_MESSAGE_SIZE: usize = 16 * 1024;
+/// Largest DataChannel message the server accepts, and the most it sends to a peer
+/// that advertised support for it.
+pub const MAX_MESSAGE_SIZE: usize = 64 * 1024;
+/// Message size every v1 peer accepts. Used until a peer advertises `maxMessageSize`.
+pub const BASE_MESSAGE_SIZE: usize = 16 * 1024;
 pub const BINARY_HEADER_SIZE: usize = 14;
 pub const MAX_IDENTIFIER_BYTES: usize = 128;
 
@@ -89,6 +93,9 @@ pub struct RequestFrame {
     /// response-start/response-segment/response-end control frames.
     #[serde(default)]
     pub response_stream: Option<u8>,
+    /// Largest DataChannel message the peer accepts. Absent means `BASE_MESSAGE_SIZE`.
+    #[serde(default)]
+    pub max_message_size: Option<u64>,
     pub payload: PayloadDescriptor,
 }
 
@@ -102,6 +109,9 @@ pub struct SubscribeFrame {
     pub headers: HashMap<String, String>,
     #[serde(default)]
     pub params: HashMap<String, Value>,
+    /// Largest DataChannel message the peer accepts. Absent means `BASE_MESSAGE_SIZE`.
+    #[serde(default)]
+    pub max_message_size: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
@@ -152,6 +162,9 @@ pub enum OutgoingControl<'a> {
         payload: PayloadDescriptor,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<WireError>,
+        /// Largest DataChannel message the server accepts from this peer.
+        #[serde(rename = "maxMessageSize")]
+        max_message_size: usize,
     },
     ResponseStart {
         v: u8,
@@ -167,6 +180,12 @@ pub enum OutgoingControl<'a> {
         byte_length: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<WireError>,
+        /// Largest DataChannel message the server accepts from this peer.
+        #[serde(rename = "maxMessageSize")]
+        max_message_size: usize,
+        /// Most `response-credit` grants the server holds unused for this stream.
+        #[serde(rename = "creditWindow")]
+        credit_window: usize,
     },
     ResponseSegment {
         v: u8,
@@ -294,9 +313,16 @@ pub fn encode_binary(
     Ok(frame)
 }
 
-pub fn max_chunk_size(payload_id: &str) -> Result<usize, String> {
+pub fn max_chunk_size(payload_id: &str, message_size: usize) -> Result<usize, String> {
     validate_identifier(payload_id, "payload")?;
-    Ok(MAX_MESSAGE_SIZE - BINARY_HEADER_SIZE - payload_id.len())
+    Ok(message_size - BINARY_HEADER_SIZE - payload_id.len())
+}
+
+/// Message size to use when sending to a peer that advertised `advertised`.
+pub fn negotiated_message_size(advertised: Option<u64>) -> usize {
+    advertised.map_or(BASE_MESSAGE_SIZE, |value| {
+        value.clamp(BASE_MESSAGE_SIZE as u64, MAX_MESSAGE_SIZE as u64) as usize
+    })
 }
 
 pub fn validate_identifier(value: &str, kind: &str) -> Result<(), String> {
@@ -352,12 +378,24 @@ mod tests {
             content_type: Some("video/mp4".to_owned()),
             byte_length: Some(42),
             error: None,
+            max_message_size: MAX_MESSAGE_SIZE,
+            credit_window: 16,
         })
         .unwrap();
         let value: Value = serde_json::from_str(&encoded).unwrap();
         assert_eq!(value["type"], "response-start");
         assert_eq!(value["contentType"], "video/mp4");
         assert_eq!(value["byteLength"], 42);
+        assert_eq!(value["maxMessageSize"], MAX_MESSAGE_SIZE);
+        assert_eq!(value["creditWindow"], 16);
         assert!(value.get("content_type").is_none());
+    }
+
+    #[test]
+    fn negotiated_message_size_defaults_to_base_and_is_clamped() {
+        assert_eq!(negotiated_message_size(None), BASE_MESSAGE_SIZE);
+        assert_eq!(negotiated_message_size(Some(1024)), BASE_MESSAGE_SIZE);
+        assert_eq!(negotiated_message_size(Some(32 * 1024)), 32 * 1024);
+        assert_eq!(negotiated_message_size(Some(1 << 30)), MAX_MESSAGE_SIZE);
     }
 }

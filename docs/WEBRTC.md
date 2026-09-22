@@ -14,7 +14,11 @@ as peer-session metadata and never authenticates an API request.
 
 ## Streaming and bounds
 
-- Complete DataChannel messages are limited to 16 KiB.
+- Complete DataChannel messages are limited to 64 KiB. Every v1 peer accepts
+  16 KiB; the server sends larger messages (up to 64 KiB) only to a peer that
+  advertises `maxMessageSize` on its `request` or `subscribe` frames. The server
+  advertises its own `maxMessageSize` on `response` and `response-start` so a peer
+  can send larger messages after its first response.
 - A peer may have at most 64 active requests, 16 active subscriptions, and 128
   incomplete or orphan payloads.
 - Request bodies are dispatched as soon as their descriptor arrives. In-order
@@ -26,7 +30,7 @@ as peer-session metadata and never authenticates an API request.
 - Chunks may precede their control frame and may arrive out of order; duplicate,
   conflicting, incomplete, or malformed framing is rejected. Each payload may
   hold at most 4,096 chunks ahead of its consumer. Reorder files use reusable
-  16-KiB slots and truncate released tail slots, so quota reflects the active
+  64-KiB slots and truncate released tail slots, so quota reflects the active
   reorder window rather than total upload size. Spooling is limited to 512 MiB
   per peer and 8 GiB across the server.
 - A request with `responseType: "stream"` opts into incremental response framing
@@ -34,15 +38,21 @@ as peer-session metadata and never authenticates an API request.
   one-MiB `response-segment` payloads, and `response-end`. A declared length is
   optional, so unknown-length playback starts before EOF. Segment descriptors
   remain ordinary v1 payloads and therefore retain unordered-channel validation.
-  The browser grants `response-credit` from its `ReadableStream` pull callback;
-  the server retains at most two credits, bounding memory when playback is slow.
+  The browser grants `response-credit` from its `ReadableStream` pull callback,
+  keeping several segments requested so the link stays busy across round trips.
+  `response-start.creditWindow` advertises how many unused credits the server
+  holds (16). A peer that exceeds it has lost track of its credits; that stream
+  ends with a `response-end` error instead of the grant being silently dropped.
+  Peers that ignore `creditWindow` must keep at most two credits outstanding.
 - Legacy finite responses remain capped at 256 MiB. An oversized response receives
   a request-scoped 413 transport error rather than closing the shared channel.
   Unknown-length legacy responses use the same aggregate spool budgets.
 - HEAD, informational, 204, and 304 responses preserve HTTP headers (including
   `Content-Length`) while advertising an empty wire payload.
-- DataChannel sends pause above a 1 MiB buffered amount and resume after it drains
-  to 256 KiB or lower.
+- DataChannel sends pause above an 8 MiB buffered amount and resume after it drains
+  to 4 MiB or lower. The buffered amount includes sent but unacknowledged bytes, so
+  this bounds the data in flight per peer and therefore its throughput per round
+  trip.
 - Incomplete payloads expire after 60 seconds. Channel failure, peer failure,
   cancellation, and server shutdown cancel active work and release spool files.
 - The bounded pre-dispatch DataChannel queue applies cancellation-aware

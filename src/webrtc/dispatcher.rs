@@ -3,7 +3,7 @@ use std::{
     io::SeekFrom,
     pin::Pin,
     sync::{
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc,
     },
     time::{Duration, Instant},
@@ -42,8 +42,9 @@ use super::{
     peer::{EstablishedPeer, EstablishedPeerSink, PeerRegistry},
     protocol::{
         decode_binary, decode_control, encode_binary, encode_control, max_chunk_size,
-        validate_identifier, CancelTarget, IncomingControl, OutgoingControl, PayloadDescriptor,
-        PayloadEncoding, RequestFrame, SubscribeFrame, WireError, MAX_MESSAGE_SIZE, WIRE_VERSION,
+        negotiated_message_size, validate_identifier, CancelTarget, IncomingControl,
+        OutgoingControl, PayloadDescriptor, PayloadEncoding, RequestFrame, SubscribeFrame,
+        WireError, BASE_MESSAGE_SIZE, MAX_MESSAGE_SIZE, WIRE_VERSION,
     },
 };
 
@@ -56,7 +57,7 @@ const MAX_PEER_SPOOL_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_SERVER_SPOOL_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const RESPONSE_SEGMENT_SIZE: usize = 1024 * 1024;
 const REQUEST_BODY_QUEUE: usize = 16;
-const MAX_RESPONSE_CREDITS: usize = 2;
+const MAX_RESPONSE_CREDITS: usize = 16;
 const MAX_REORDERED_CHUNKS: usize = 4096;
 const REORDER_SLOT_SIZE: u64 = MAX_MESSAGE_SIZE as u64;
 const MAX_FORM_MANIFEST_SIZE: usize = 1024 * 1024;
@@ -66,8 +67,8 @@ const MAX_SEEN_IDENTIFIERS: usize = 8192;
 const MAX_HEADERS: usize = 128;
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 const PAYLOAD_INACTIVITY: Duration = Duration::from_secs(60);
-const BUFFERED_AMOUNT_HIGH: usize = 1024 * 1024;
-const BUFFERED_AMOUNT_LOW: usize = 256 * 1024;
+const BUFFERED_AMOUNT_HIGH: usize = 8 * 1024 * 1024;
+const BUFFERED_AMOUNT_LOW: usize = 4 * 1024 * 1024;
 
 pub struct DispatcherSink {
     router: Router,
@@ -302,9 +303,26 @@ struct DataChannelSender {
     channel: Arc<RTCDataChannel>,
     closed: CancellationToken,
     message_lock: Arc<Mutex<()>>,
+    /// Largest message the peer accepts; raised when it advertises `maxMessageSize`.
+    message_size: Arc<AtomicUsize>,
 }
 
 impl DataChannelSender {
+    fn message_size(&self) -> usize {
+        self.message_size.load(Ordering::Relaxed)
+    }
+
+    fn accept_peer_message_size(&self, advertised: Option<u64>) {
+        if advertised.is_some() {
+            self.message_size
+                .fetch_max(negotiated_message_size(advertised), Ordering::Relaxed);
+        }
+    }
+
+    fn chunk_size(&self, payload_id: &str) -> Result<usize, String> {
+        max_chunk_size(payload_id, self.message_size())
+    }
+
     async fn send_control(
         &self,
         frame: &OutgoingControl<'_>,
@@ -318,7 +336,7 @@ impl DataChannelSender {
         value: String,
         cancellation: &CancellationToken,
     ) -> Result<(), String> {
-        if value.len() > MAX_MESSAGE_SIZE {
+        if value.len() > self.message_size() {
             return Err("outgoing control frame is too large".to_owned());
         }
         self.wait_for_backpressure(cancellation).await?;
@@ -336,7 +354,7 @@ impl DataChannelSender {
         value: Vec<u8>,
         cancellation: &CancellationToken,
     ) -> Result<(), String> {
-        if value.len() > MAX_MESSAGE_SIZE {
+        if value.len() > self.message_size() {
             return Err("outgoing binary frame is too large".to_owned());
         }
         self.wait_for_backpressure(cancellation).await?;
@@ -396,6 +414,7 @@ struct RequestState {
 struct ResponseFlow {
     semaphore: Semaphore,
     credits: AtomicUsize,
+    window_exceeded: AtomicBool,
 }
 
 impl ResponseFlow {
@@ -403,13 +422,19 @@ impl ResponseFlow {
         Self {
             semaphore: Semaphore::new(0),
             credits: AtomicUsize::new(0),
+            window_exceeded: AtomicBool::new(false),
         }
     }
 
+    /// Adds one credit. A peer that grants more than the advertised window has
+    /// lost track of its credits, so the stream is failed rather than silently
+    /// dropping the grant (which would leave the peer waiting for a segment).
     fn grant(&self) {
         let mut credits = self.credits.load(Ordering::Relaxed);
         loop {
             if credits >= MAX_RESPONSE_CREDITS {
+                self.window_exceeded.store(true, Ordering::Release);
+                self.semaphore.close();
                 return;
             }
             match self.credits.compare_exchange_weak(
@@ -435,6 +460,10 @@ impl ResponseFlow {
         permit.forget();
         self.credits.fetch_sub(1, Ordering::AcqRel);
         Ok(())
+    }
+
+    fn window_exceeded(&self) -> bool {
+        self.window_exceeded.load(Ordering::Acquire)
     }
 }
 
@@ -688,6 +717,7 @@ impl PeerDispatcher {
             channel: Arc::clone(&peer.data_channel),
             closed: peer.closed(),
             message_lock: Arc::new(Mutex::new(())),
+            message_size: Arc::new(AtomicUsize::new(BASE_MESSAGE_SIZE)),
         };
         Self {
             router,
@@ -820,6 +850,7 @@ impl PeerDispatcher {
     async fn handle_request(&mut self, frame: RequestFrame) -> Result<(), String> {
         validate_identifier(&frame.id, "request")?;
         validate_request_metadata(&frame.method, &frame.path, &frame.headers, &frame.params)?;
+        self.sender.accept_peer_message_size(frame.max_message_size);
         if frame.response_type.as_deref().is_some_and(|value| {
             !matches!(value, "json" | "text" | "blob" | "arraybuffer" | "stream")
         }) {
@@ -921,6 +952,7 @@ impl PeerDispatcher {
     async fn handle_subscribe(&mut self, frame: SubscribeFrame) -> Result<(), String> {
         validate_identifier(&frame.id, "subscription")?;
         validate_request_metadata("GET", &frame.path, &frame.headers, &frame.params)?;
+        self.sender.accept_peer_message_size(frame.max_message_size);
         if self.cancelled_subscriptions.contains(&frame.id) {
             self.register_operation(&frame.id)?;
             return Ok(());
@@ -977,7 +1009,7 @@ impl PeerDispatcher {
         {
             return Err("payload chunk arrived after payload completion".to_owned());
         }
-        if chunk.bytes.len() > max_chunk_size(&chunk.payload_id)? {
+        if chunk.bytes.len() > max_chunk_size(&chunk.payload_id, MAX_MESSAGE_SIZE)? {
             return Err("payload chunk exceeds the message-size limit".to_owned());
         }
         if !self.payloads.contains_key(&chunk.payload_id) {
@@ -1244,6 +1276,7 @@ impl PeerDispatcher {
                         kind,
                         message: message.to_owned(),
                     }),
+                    max_message_size: MAX_MESSAGE_SIZE,
                 },
                 &cancellation,
             )
@@ -1301,7 +1334,9 @@ fn validate_descriptor(descriptor: &PayloadDescriptor) -> Result<(), String> {
             if descriptor.chunks == 0 {
                 return Err("non-empty payload has no chunks".to_owned());
             }
-            let minimum_chunks = descriptor.byte_length.div_ceil(max_chunk_size(id)? as u64);
+            let minimum_chunks = descriptor
+                .byte_length
+                .div_ceil(max_chunk_size(id, MAX_MESSAGE_SIZE)? as u64);
             if (descriptor.chunks as u64) < minimum_chunks
                 || (descriptor.chunks as u64) > descriptor.byte_length
             {
@@ -1545,6 +1580,7 @@ async fn send_response(
                     headers,
                     payload: PayloadDescriptor::none(),
                     error,
+                    max_message_size: MAX_MESSAGE_SIZE,
                 },
                 cancellation,
             )
@@ -1627,6 +1663,7 @@ async fn send_response(
                     headers,
                     payload: PayloadDescriptor::none(),
                     error,
+                    max_message_size: MAX_MESSAGE_SIZE,
                 },
                 cancellation,
             )
@@ -1635,7 +1672,7 @@ async fn send_response(
     }
 
     let payload_id = new_payload_id();
-    let chunk_size = max_chunk_size(&payload_id)?;
+    let chunk_size = sender.chunk_size(&payload_id)?;
     let chunks = length.div_ceil(chunk_size as u64);
     if chunks > u32::MAX as u64 {
         return Err("response body has too many chunks".to_owned());
@@ -1656,6 +1693,7 @@ async fn send_response(
                 headers,
                 payload: descriptor.clone(),
                 error,
+                max_message_size: MAX_MESSAGE_SIZE,
             },
             cancellation,
         )
@@ -1725,6 +1763,8 @@ async fn send_segmented_response(
                 content_type: content_type.clone(),
                 byte_length: wire_length,
                 error,
+                max_message_size: MAX_MESSAGE_SIZE,
+                credit_window: MAX_RESPONSE_CREDITS,
             },
             cancellation,
         )
@@ -1773,7 +1813,20 @@ async fn send_segmented_response(
             pending.extend_from_slice(&bytes[offset..offset + length]);
             offset += length;
             if pending.len() == RESPONSE_SEGMENT_SIZE {
-                response_flow.acquire(cancellation).await?;
+                if let Err(error) = response_flow.acquire(cancellation).await {
+                    if !response_flow.window_exceeded() {
+                        return Err(error);
+                    }
+                    return send_response_end_error(
+                        sender,
+                        request_id,
+                        sequence,
+                        sent,
+                        "response credit window exceeded",
+                        cancellation,
+                    )
+                    .await;
+                }
                 send_response_segment(
                     sender,
                     request_id,
@@ -1802,7 +1855,20 @@ async fn send_segmented_response(
         }
     }
     if !pending.is_empty() {
-        response_flow.acquire(cancellation).await?;
+        if let Err(error) = response_flow.acquire(cancellation).await {
+            if !response_flow.window_exceeded() {
+                return Err(error);
+            }
+            return send_response_end_error(
+                sender,
+                request_id,
+                sequence,
+                sent,
+                "response credit window exceeded",
+                cancellation,
+            )
+            .await;
+        }
         send_response_segment(
             sender,
             request_id,
@@ -1864,7 +1930,7 @@ async fn send_response_segment(
     cancellation: &CancellationToken,
 ) -> Result<(), String> {
     let payload_id = new_payload_id();
-    let chunk_size = max_chunk_size(&payload_id)?;
+    let chunk_size = sender.chunk_size(&payload_id)?;
     let descriptor = PayloadDescriptor {
         id: Some(payload_id),
         encoding,
@@ -1935,6 +2001,7 @@ async fn send_response_error(
                     kind: "transport",
                     message: message.to_owned(),
                 }),
+                max_message_size: MAX_MESSAGE_SIZE,
             },
             cancellation,
         )
@@ -1951,7 +2018,7 @@ async fn send_payload_stream(
         .id
         .as_deref()
         .ok_or_else(|| "outgoing payload has no ID".to_owned())?;
-    let chunk_size = max_chunk_size(id)?;
+    let chunk_size = sender.chunk_size(id)?;
     let mut pending = Vec::with_capacity(chunk_size);
     let mut index = 0u32;
     let mut sent = 0u64;
@@ -2391,7 +2458,7 @@ async fn send_event(
     }
     let bytes = Bytes::from(event.data);
     let payload_id = new_payload_id();
-    let chunk_size = max_chunk_size(&payload_id)?;
+    let chunk_size = sender.chunk_size(&payload_id)?;
     let descriptor = PayloadDescriptor {
         id: Some(payload_id),
         encoding: if serde_json::from_slice::<Value>(&bytes).is_ok() {
@@ -2592,11 +2659,22 @@ mod tests {
     #[test]
     fn response_credit_window_is_bounded() {
         let flow = ResponseFlow::new();
-        flow.grant();
-        flow.grant();
-        flow.grant();
+        for _ in 0..MAX_RESPONSE_CREDITS {
+            flow.grant();
+        }
         assert_eq!(flow.credits.load(Ordering::Relaxed), MAX_RESPONSE_CREDITS);
         assert_eq!(flow.semaphore.available_permits(), MAX_RESPONSE_CREDITS);
+        assert!(!flow.window_exceeded());
+    }
+
+    #[tokio::test]
+    async fn exceeding_the_response_credit_window_fails_the_stream() {
+        let flow = ResponseFlow::new();
+        for _ in 0..=MAX_RESPONSE_CREDITS {
+            flow.grant();
+        }
+        assert!(flow.window_exceeded());
+        assert!(flow.acquire(&CancellationToken::new()).await.is_err());
     }
 
     #[tokio::test]
@@ -2625,6 +2703,7 @@ mod tests {
             params: HashMap::new(),
             response_type: None,
             response_stream: None,
+            max_message_size: None,
             payload: PayloadDescriptor {
                 id: Some("streaming-body".to_owned()),
                 encoding: PayloadEncoding::Binary,
@@ -2742,6 +2821,7 @@ mod tests {
             params: HashMap::from([("page".to_owned(), json!(2))]),
             response_type: None,
             response_stream: None,
+            max_message_size: None,
             payload: PayloadDescriptor::none(),
         };
         let response = router
