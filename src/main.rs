@@ -148,8 +148,8 @@ async fn main() -> Result<()> {
     }
 
     let register_infos = register().await?;
-    let signaling = webrtc::start_from_config(&server::get_config().await);
-    let app = app();
+    let app = app().await?;
+    let signaling = webrtc::start_from_config(&server::get_config().await, app.clone());
     let local_port = get_server_port().await;
     if let Some(certs) = register_infos.cert_paths {
         log_info(
@@ -169,7 +169,7 @@ async fn main() -> Result<()> {
         );
 
         let server = axum_server_dual_protocol::bind_dual_protocol(addr, tls_config)
-            .serve(app.await?.into_make_service());
+            .serve(app.into_make_service());
         tokio::select! {
             result = server => result.unwrap(),
             _ = tokio::signal::ctrl_c() => {}
@@ -186,7 +186,7 @@ async fn main() -> Result<()> {
             format!("->> LISTENING on {:?}\n", listener.local_addr()),
         );
 
-        let server = axum::serve(listener, app.await?);
+        let server = axum::serve(listener, app);
         tokio::select! {
             result = server => result.unwrap(),
             _ = tokio::signal::ctrl_c() => {}

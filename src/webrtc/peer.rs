@@ -9,9 +9,13 @@ use std::{
 
 use async_trait::async_trait;
 use tokio::sync::{broadcast, Mutex};
+use tokio_util::sync::CancellationToken;
 use webrtc::{
     api::APIBuilder,
-    data_channel::{data_channel_state::RTCDataChannelState, RTCDataChannel},
+    data_channel::{
+        data_channel_message::DataChannelMessage, data_channel_state::RTCDataChannelState,
+        RTCDataChannel,
+    },
     ice_transport::{
         ice_candidate::{RTCIceCandidate, RTCIceCandidateInit},
         ice_candidate_type::RTCIceCandidateType,
@@ -27,6 +31,7 @@ pub const DATA_CHANNEL_LABEL: &str = "redseat-api-v1";
 const DISCONNECTED_PEER_GRACE: Duration = Duration::from_secs(30);
 const MAX_ESTABLISHED_PEERS: usize = 64;
 const MAX_ESTABLISHED_PEERS_PER_USER: usize = 8;
+const MAX_QUEUED_DATA_CHANNEL_MESSAGES: usize = 256;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IceServer {
@@ -41,6 +46,24 @@ pub struct EstablishedPeer {
     pub cloud_user_uid: String,
     pub peer_connection: Arc<RTCPeerConnection>,
     pub data_channel: Arc<RTCDataChannel>,
+    incoming: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<DataChannelMessage>>>>,
+    closed: CancellationToken,
+}
+
+impl EstablishedPeer {
+    pub async fn take_incoming(
+        &self,
+    ) -> Result<tokio::sync::mpsc::Receiver<DataChannelMessage>, String> {
+        self.incoming
+            .lock()
+            .await
+            .take()
+            .ok_or_else(|| "peer DataChannel receiver was already claimed".to_owned())
+    }
+
+    pub fn closed(&self) -> CancellationToken {
+        self.closed.clone()
+    }
 }
 
 /// Boundary between WebRTC negotiation and the future DataChannel API dispatcher.
@@ -112,11 +135,14 @@ impl EstablishedPeerSink for PeerRegistry {
         let session_id = peer.session_id.clone();
         let peers = Arc::downgrade(&self.peers);
         let peer_connection = Arc::downgrade(&peer.peer_connection);
+        let closed = peer.closed();
         peer.data_channel.on_close(Box::new(move || {
             let peers = peers.clone();
             let peer_connection = peer_connection.clone();
             let session_id = session_id.clone();
+            let closed = closed.clone();
             Box::pin(async move {
+                closed.cancel();
                 remove_matching_peer(&peers, &session_id, &peer_connection, true).await;
             })
         }));
@@ -392,6 +418,30 @@ impl PeerSession {
                 }
 
                 let opened_channel = Arc::downgrade(&channel);
+                let (incoming_tx, incoming_rx) =
+                    tokio::sync::mpsc::channel(MAX_QUEUED_DATA_CHANNEL_MESSAGES);
+                let incoming = Arc::new(Mutex::new(Some(incoming_rx)));
+                let closed = CancellationToken::new();
+                let message_channel = Arc::downgrade(&channel);
+                let message_closed = closed.clone();
+                channel.on_message(Box::new(move |message| {
+                    let incoming_tx = incoming_tx.clone();
+                    let channel = message_channel.clone();
+                    let closed = message_closed.clone();
+                    Box::pin(async move {
+                        tokio::select! {
+                            _ = closed.cancelled() => {}
+                            result = incoming_tx.send(message) => {
+                                if result.is_err() {
+                                    closed.cancel();
+                                    if let Some(channel) = channel.upgrade() {
+                                        let _ = channel.close().await;
+                                    }
+                                }
+                            }
+                        }
+                    })
+                }));
                 channel.on_open(Box::new(move || {
                     let tx = tx.clone();
                     let session_id = session_id.clone();
@@ -399,6 +449,8 @@ impl PeerSession {
                     let pc = pc.clone();
                     let channel = opened_channel.clone();
                     let established = Arc::clone(&established);
+                    let incoming = Arc::clone(&incoming);
+                    let closed = closed.clone();
                     Box::pin(async move {
                         let Some(channel) = channel.upgrade() else {
                             return;
@@ -416,6 +468,8 @@ impl PeerSession {
                             cloud_user_uid,
                             peer_connection: pc,
                             data_channel: channel,
+                            incoming,
+                            closed,
                         }));
                     })
                 }));
@@ -577,6 +631,8 @@ mod tests {
             cloud_user_uid: cloud_user_uid.to_owned(),
             peer_connection,
             data_channel,
+            incoming: Arc::new(Mutex::new(Some(tokio::sync::mpsc::channel(1).1))),
+            closed: CancellationToken::new(),
         }
     }
 
@@ -768,6 +824,8 @@ mod tests {
                 cloud_user_uid: "cloud-user-1".to_owned(),
                 peer_connection: Arc::clone(&peer_connection),
                 data_channel,
+                incoming: Arc::new(Mutex::new(Some(tokio::sync::mpsc::channel(1).1))),
+                closed: CancellationToken::new(),
             },
         );
         let state_generation = Arc::new(AtomicU64::new(0));

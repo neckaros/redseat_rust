@@ -4,6 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use axum::Router;
 use chrono::{DateTime, Utc};
 use futures::{SinkExt, StreamExt};
 use rand::Rng;
@@ -25,7 +26,10 @@ use crate::{
     tools::log::{log_error, log_info, LogServiceType},
 };
 
-use super::peer::{EstablishedPeerSink, IceServer, PeerEvent, PeerRegistry, PeerSession};
+use super::{
+    dispatcher::DispatcherSink,
+    peer::{EstablishedPeerSink, IceServer, PeerEvent, PeerRegistry, PeerSession},
+};
 
 const PROTOCOL_VERSION: u8 = 1;
 const MAX_MESSAGE_SIZE: usize = 64 * 1024;
@@ -60,7 +64,7 @@ impl Drop for SignalingHandle {
     }
 }
 
-pub fn start_from_config(config: &ServerConfig) -> Option<SignalingHandle> {
+pub fn start_from_config(config: &ServerConfig, router: Router) -> Option<SignalingHandle> {
     let server_id = config.id.clone().filter(|value| !value.is_empty())?;
     let token = config.token.clone().filter(|value| !value.is_empty())?;
     let url = config.get_signaling_url();
@@ -74,10 +78,12 @@ pub fn start_from_config(config: &ServerConfig) -> Option<SignalingHandle> {
 
     let shutdown = CancellationToken::new();
     let peers = Arc::new(PeerRegistry::new());
+    let peer_sink: Arc<dyn EstablishedPeerSink> =
+        Arc::new(DispatcherSink::new(router, Arc::clone(&peers)));
     let task_shutdown = shutdown.clone();
-    let task_peers = Arc::clone(&peers);
+    let task_peer_sink = Arc::clone(&peer_sink);
     let task = tokio::spawn(async move {
-        supervise(url, server_id, token, task_peers, task_shutdown).await;
+        supervise(url, server_id, token, task_peer_sink, task_shutdown).await;
     });
     Some(SignalingHandle {
         shutdown,
@@ -90,14 +96,20 @@ async fn supervise(
     url: String,
     server_id: String,
     token: String,
-    peers: Arc<PeerRegistry>,
+    peer_sink: Arc<dyn EstablishedPeerSink>,
     shutdown: CancellationToken,
 ) {
     let mut retry = 0u32;
     while !shutdown.is_cancelled() {
         let started = Instant::now();
-        let result =
-            run_connection(&url, &server_id, &token, peers.as_ref(), shutdown.clone()).await;
+        let result = run_connection(
+            &url,
+            &server_id,
+            &token,
+            peer_sink.as_ref(),
+            shutdown.clone(),
+        )
+        .await;
         if shutdown.is_cancelled() {
             break;
         }
@@ -119,7 +131,7 @@ async fn supervise(
             _ = tokio::time::sleep(Duration::from_millis(base_ms + jitter_ms)) => {}
         }
     }
-    peers.shutdown().await;
+    peer_sink.shutdown().await;
 }
 
 async fn run_connection(
