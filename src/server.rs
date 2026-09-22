@@ -37,6 +37,7 @@ const ENV_EXP_PORT: &str = "REDSEAT_EXP_PORT";
 const ENV_DIR: &str = "REDSEAT_DIR";
 const ENV_DOMAIN: &str = "REDSEAT_DOMAIN";
 const ENV_NOCERT: &str = "REDSEAT_NOCERT";
+const ENV_SIGNALING_URL: &str = "REDSEAT_SIGNALING_URL";
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ServerConfig {
     pub id: Option<String>,
@@ -49,11 +50,29 @@ pub struct ServerConfig {
     pub exp_port: Option<u16>,
     pub local: Option<String>,
     pub token: Option<String>,
+    /// Optional development/test override for the cloud WebRTC rendezvous endpoint.
+    #[serde(default, rename = "signalingUrl", alias = "signaling_url")]
+    pub signaling_url: Option<String>,
     #[serde(default = "default_false")]
     pub imagesUseIm: bool,
 }
 
 impl ServerConfig {
+    pub fn get_signaling_url(&self) -> String {
+        env::var(ENV_SIGNALING_URL)
+            .ok()
+            .or_else(|| self.signaling_url.clone())
+            .unwrap_or_else(|| {
+                format!(
+                    "wss://{}/api/webrtc/signaling",
+                    self.redseat_home
+                        .trim_end_matches('/')
+                        .trim_start_matches("https://")
+                        .trim_start_matches("http://")
+                )
+            })
+    }
+
     pub fn get_server_base_url(&self) -> RsResult<String> {
         return Ok(format!(
             "https://{}-srv.redseat.cloud:{}",

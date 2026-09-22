@@ -66,6 +66,8 @@ kamadak-exif = "0.6.1"
 which = "6.0.0"
 strum = "0.26.1"
 futures = "0.3.30"
+tokio-tungstenite = { version = "0.26.2", features = ["rustls-tls-webpki-roots"] }
+webrtc = "0.14.0"
 
 ndarray = "0.16.1"
 ort = "2.0.0-rc.10"
