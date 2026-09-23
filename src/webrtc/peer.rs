@@ -19,6 +19,7 @@ use webrtc::{
     ice_transport::{
         ice_candidate::{RTCIceCandidate, RTCIceCandidateInit},
         ice_candidate_type::RTCIceCandidateType,
+        ice_gathering_state::RTCIceGatheringState,
         ice_server::RTCIceServer,
     },
     peer_connection::{
@@ -42,6 +43,9 @@ const DISCONNECTED_PEER_GRACE: Duration = Duration::from_secs(30);
 const MAX_ESTABLISHED_PEERS: usize = 64;
 const MAX_ESTABLISHED_PEERS_PER_USER: usize = 8;
 const MAX_QUEUED_DATA_CHANNEL_MESSAGES: usize = 256;
+/// Upper bound on waiting for ICE gathering before closing a negotiating peer.
+/// webrtc-ice gives up on a STUN server after 5 s.
+const GATHERING_SETTLE_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IceServer {
@@ -368,6 +372,8 @@ pub enum PeerEvent {
 pub struct PeerSession {
     pub peer_connection: Arc<RTCPeerConnection>,
     established: Arc<AtomicBool>,
+    gathering_started: AtomicBool,
+    closed: AtomicBool,
 }
 
 impl PeerSession {
@@ -559,6 +565,8 @@ impl PeerSession {
         Ok(Self {
             peer_connection: pc,
             established,
+            gathering_started: AtomicBool::new(false),
+            closed: AtomicBool::new(false),
         })
     }
 
@@ -579,6 +587,8 @@ impl PeerSession {
             .create_answer(None)
             .await
             .map_err(|error| format!("unable to create WebRTC answer: {error}"))?;
+        // Installing the answer starts ICE gathering, which close() must wait out.
+        self.gathering_started.store(true, Ordering::SeqCst);
         self.peer_connection
             .set_local_description(answer)
             .await
@@ -604,8 +614,50 @@ impl PeerSession {
             .map_err(|error| format!("unable to add remote ICE candidate: {error}"))
     }
 
+    /// Closes the peer, deferring until ICE gathering has finished if it is
+    /// still running.
+    ///
+    /// webrtc-ice cannot cancel gathering: candidates gathered after the agent
+    /// closes are still started, and their sockets (host, server-reflexive and
+    /// mDNS) are never released. A client that aborts right after its offer
+    /// would otherwise leak every socket of the session.
     pub async fn close(&self) {
-        let _ = self.peer_connection.close().await;
+        if self.closed.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let peer_connection = Arc::clone(&self.peer_connection);
+        if !self.gathering_started.load(Ordering::SeqCst)
+            || peer_connection.ice_gathering_state() == RTCIceGatheringState::Complete
+        {
+            let _ = peer_connection.close().await;
+            return;
+        }
+        let mut gathered = peer_connection.gathering_complete_promise().await;
+        tokio::spawn(async move {
+            let _ = tokio::time::timeout(GATHERING_SETTLE_TIMEOUT, gathered.recv()).await;
+            let _ = peer_connection.close().await;
+        });
+    }
+}
+
+impl Drop for PeerSession {
+    fn drop(&mut self) {
+        // Once established the connection belongs to the registry. Otherwise a
+        // dropped peer is never closed, which leaks all of its sockets.
+        if self.established.load(Ordering::SeqCst) || self.closed.load(Ordering::SeqCst) {
+            return;
+        }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let session = PeerSession {
+            peer_connection: Arc::clone(&self.peer_connection),
+            established: Arc::clone(&self.established),
+            gathering_started: AtomicBool::new(self.gathering_started.load(Ordering::SeqCst)),
+            closed: AtomicBool::new(false),
+        };
+        // `close` marks the copy closed, so dropping it does not recurse.
+        runtime.spawn(async move { session.close().await });
     }
 }
 
@@ -818,6 +870,92 @@ mod tests {
             "a=candidate:4 1 UDP 1 203.0.113.2 5003 typ prflx\r\n"
         );
         assert!(validate_direct_sdp_candidates(peer_reflexive).is_err());
+    }
+
+    async fn negotiating_session(
+        session_id: &str,
+        ice_servers: Vec<IceServer>,
+    ) -> (PeerSession, Arc<RTCPeerConnection>) {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let (candidate_tx, _) = tokio::sync::mpsc::channel(32);
+        let (lifecycle_tx, _) = tokio::sync::mpsc::unbounded_channel();
+        let session = PeerSession::new(
+            session_id.to_owned(),
+            "cloud-user-1".to_owned(),
+            ice_servers,
+            candidate_tx,
+            lifecycle_tx,
+        )
+        .await
+        .unwrap();
+        let offerer = Arc::new(
+            APIBuilder::new()
+                .build()
+                .new_peer_connection(RTCConfiguration::default())
+                .await
+                .unwrap(),
+        );
+        offerer
+            .create_data_channel(
+                DATA_CHANNEL_LABEL,
+                Some(RTCDataChannelInit {
+                    ordered: Some(false),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+        let offer = offerer.create_offer(None).await.unwrap();
+        offerer.set_local_description(offer.clone()).await.unwrap();
+        session.accept_offer(offer.sdp).await.unwrap();
+        (session, offerer)
+    }
+
+    async fn wait_until_closed(peer_connection: &RTCPeerConnection) {
+        tokio::time::timeout(Duration::from_secs(20), async {
+            while peer_connection.connection_state() != RTCPeerConnectionState::Closed {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("negotiating peer was never closed");
+    }
+
+    #[tokio::test]
+    async fn closing_during_gathering_waits_for_candidates_before_closing() {
+        // An unroutable STUN server keeps server-reflexive gathering running
+        // until webrtc-ice's STUN timeout.
+        let unreachable_stun = IceServer {
+            urls: vec!["stun:192.0.2.1:3478".to_owned()],
+            username: String::new(),
+            credential: String::new(),
+        };
+        let (session, offerer) =
+            negotiating_session("session-gathering", vec![unreachable_stun]).await;
+        let peer_connection = Arc::clone(&session.peer_connection);
+        assert_ne!(
+            peer_connection.ice_gathering_state(),
+            RTCIceGatheringState::Complete
+        );
+        // Closing while candidates are still being gathered would strand their
+        // sockets, so the peer must only close once gathering completes.
+        session.close().await;
+        assert_ne!(
+            peer_connection.connection_state(),
+            RTCPeerConnectionState::Closed,
+            "peer closed while ICE gathering was still running"
+        );
+        wait_until_closed(&peer_connection).await;
+        offerer.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn dropping_a_negotiating_session_closes_its_peer() {
+        let (session, offerer) = negotiating_session("session-dropped", Vec::new()).await;
+        let peer_connection = Arc::clone(&session.peer_connection);
+        drop(session);
+        wait_until_closed(&peer_connection).await;
+        offerer.close().await.unwrap();
     }
 
     #[tokio::test]
