@@ -361,8 +361,10 @@ impl Manager {
 
         let mut key_lost = false;
         if let Some(certificate) = &status.certificate {
+            // Also reinstall when the files on disk were missing or unreadable at startup.
             let is_new = certificate.label == status.label
-                && self.state.certificate_not_before != Some(certificate.not_before);
+                && (self.state.certificate_not_before != Some(certificate.not_before)
+                    || !self.resolver.serves_label(&certificate.label));
             if is_new {
                 key_lost = !self.install(certificate).await;
             }
@@ -497,6 +499,11 @@ impl Manager {
                 ORDER_POLL_INTERVAL
             }
             Ok(CsrOutcome::Processing) => {
+                // Most likely our earlier CSR (its response was lost): don't send more CSRs
+                // for this name, or new keys would evict the one the running order uses.
+                let name = name.to_string();
+                self.update_state(|state| state.requested_name = Some(name))
+                    .await;
                 log_info(
                     LogServiceType::Register,
                     "Direct HTTPS: a certificate order is already running".to_string(),

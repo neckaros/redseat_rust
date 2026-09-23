@@ -216,9 +216,10 @@ pub async fn discover(options: &DiscoveryOptions) -> AddressReport {
     }
 }
 
-fn dedup<T: Ord>(values: &mut Vec<T>) {
-    values.sort();
-    values.dedup();
+/// Removes duplicates, keeping the first occurrence (and the configured order).
+fn dedup<T: Eq + std::hash::Hash + Clone>(values: &mut Vec<T>) {
+    let mut seen = std::collections::HashSet::new();
+    values.retain(|value| seen.insert(value.clone()));
 }
 
 enum UpnpTarget {
@@ -254,7 +255,10 @@ async fn upnp_map_port(options: &DiscoveryOptions, target: UpnpTarget) -> Result
         }
     };
     let local = SocketAddr::V4(local);
-    let mapped = match gateway
+    // Leased mappings only: they expire on their own once RedSeat stops renewing them. A
+    // permanent one (routers answering OnlyPermanentLeasesSupported) would keep forwarding
+    // the port after RedSeat stops or moves; forward it manually there (`portForwarded`).
+    let mapped = gateway
         .add_port(
             PortMappingProtocol::TCP,
             options.port,
@@ -262,22 +266,13 @@ async fn upnp_map_port(options: &DiscoveryOptions, target: UpnpTarget) -> Result
             UPNP_LEASE_SECONDS,
             UPNP_DESCRIPTION,
         )
-        .await
-    {
-        Err(AddPortError::OnlyPermanentLeasesSupported) => {
-            gateway
-                .add_port(
-                    PortMappingProtocol::TCP,
-                    options.port,
-                    local,
-                    0,
-                    UPNP_DESCRIPTION,
-                )
-                .await
+        .await;
+    mapped.map_err(|e| match e {
+        AddPortError::OnlyPermanentLeasesSupported => {
+            "the router only allows permanent mappings; forward the port manually and set portForwarded".to_string()
         }
-        result => result,
-    };
-    mapped.map_err(|e| format!("mapping refused: {e}"))?;
+        e => format!("mapping refused: {e}"),
+    })?;
 
     match gateway.get_external_ip().await {
         Ok(IpAddr::V4(external)) if classify_v4(external) == Some(AddressKind::PublicV4) => {
@@ -326,6 +321,18 @@ mod tests {
         ] {
             assert_eq!(kind(rejected), None, "{rejected}");
         }
+    }
+
+    #[test]
+    fn dedup_keeps_the_configured_order() {
+        let parse = |ip: &str| ip.parse::<IpAddr>().unwrap();
+        let mut ips = vec![
+            parse("192.168.1.10"),
+            parse("100.64.1.2"),
+            parse("192.168.1.10"),
+        ];
+        dedup(&mut ips);
+        assert_eq!(ips, vec![parse("192.168.1.10"), parse("100.64.1.2")]);
     }
 
     #[test]

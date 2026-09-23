@@ -131,6 +131,19 @@ impl SniResolver {
         }
     }
 
+    /// True when the active direct certificate covers `*.<label>.…`.
+    pub fn serves_label(&self, label: &str) -> bool {
+        let prefix = format!("*.{}.", label.to_ascii_lowercase());
+        self.certificates
+            .read()
+            .map(|c| {
+                c.direct
+                    .as_ref()
+                    .is_some_and(|direct| direct.names().iter().any(|n| n.starts_with(&prefix)))
+            })
+            .unwrap_or(false)
+    }
+
     pub fn has_certificate(&self) -> bool {
         self.certificates
             .read()
@@ -266,6 +279,8 @@ mod tests {
             .find("82-64-1-2.abcdefghijklmnopqrstuvwxyz234567.servers.redseat.cloud")
             .is_some());
         assert!(resolver.find("82.64.1.2").is_none());
+        assert!(resolver.serves_label("abcdefghijklmnopqrstuvwxyz234567"));
+        assert!(!resolver.serves_label("otherlabel"));
         assert!(resolver.find("unrelated.example.com").is_none());
     }
 
