@@ -28,6 +28,8 @@ use webrtc::{
     },
 };
 
+use crate::tools::log::{log_error, LogServiceType};
+
 pub const DATA_CHANNEL_LABEL: &str = "redseat-api-v1";
 /// Reliable, ordered channel for bulk transfers (media streams, large uploads),
 /// served by its own dispatcher so API traffic keeps its own send queue.
@@ -43,8 +45,8 @@ const DISCONNECTED_PEER_GRACE: Duration = Duration::from_secs(30);
 const MAX_ESTABLISHED_PEERS: usize = 64;
 const MAX_ESTABLISHED_PEERS_PER_USER: usize = 8;
 const MAX_QUEUED_DATA_CHANNEL_MESSAGES: usize = 256;
-/// Upper bound on waiting for ICE gathering before closing a negotiating peer.
-/// webrtc-ice gives up on a STUN server after 5 s.
+/// How long a deferred close waits for ICE gathering before checking whether it
+/// ever started. webrtc-ice gives up on a STUN server after 5 s.
 const GATHERING_SETTLE_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -634,8 +636,36 @@ impl PeerSession {
         }
         let mut gathered = peer_connection.gathering_complete_promise().await;
         tokio::spawn(async move {
-            let _ = tokio::time::timeout(GATHERING_SETTLE_TIMEOUT, gathered.recv()).await;
-            let _ = peer_connection.close().await;
+            let mut reported = false;
+            loop {
+                if tokio::time::timeout(GATHERING_SETTLE_TIMEOUT, gathered.recv())
+                    .await
+                    .is_ok()
+                {
+                    break;
+                }
+                // Gathering that never started cannot strand sockets. Closing
+                // during active gathering would, so keep waiting for it.
+                if peer_connection.ice_gathering_state() == RTCIceGatheringState::New {
+                    break;
+                }
+                if !reported {
+                    reported = true;
+                    log_error(
+                        LogServiceType::Other,
+                        format!(
+                            "WebRTC ICE gathering still running {}s after close was requested",
+                            GATHERING_SETTLE_TIMEOUT.as_secs()
+                        ),
+                    );
+                }
+            }
+            if let Err(error) = peer_connection.close().await {
+                log_error(
+                    LogServiceType::Other,
+                    format!("Unable to close negotiating WebRTC peer: {error}"),
+                );
+            }
         });
     }
 }
@@ -923,15 +953,16 @@ mod tests {
 
     #[tokio::test]
     async fn closing_during_gathering_waits_for_candidates_before_closing() {
-        // An unroutable STUN server keeps server-reflexive gathering running
-        // until webrtc-ice's STUN timeout.
-        let unreachable_stun = IceServer {
-            urls: vec!["stun:192.0.2.1:3478".to_owned()],
+        // A STUN server that never answers keeps server-reflexive gathering
+        // running until webrtc-ice's STUN timeout.
+        let silent_stun = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let silent_stun_server = IceServer {
+            urls: vec![format!("stun:{}", silent_stun.local_addr().unwrap())],
             username: String::new(),
             credential: String::new(),
         };
         let (session, offerer) =
-            negotiating_session("session-gathering", vec![unreachable_stun]).await;
+            negotiating_session("session-gathering", vec![silent_stun_server]).await;
         let peer_connection = Arc::clone(&session.peer_connection);
         assert_ne!(
             peer_connection.ice_gathering_state(),
