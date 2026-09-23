@@ -32,11 +32,11 @@ token) in the background at startup. The domain only changes with the config, wh
 startup, so a failed report is retried with backoff (1 min, doubling up to 1 h) until it succeeds,
 then re-sent daily in case the cloud's copy was lost.
 
-- `{ "domain": "nseat.example.org" }`, or `{ "domain": "nseat.example.org", "port": 8443 }` when the
-  public port isn't 443. The port comes from the domain value (`REDSEAT_DOMAIN=host:8443`) or from
+- `{ "domain": "nseat.example.org", "port": null }` (443), or `"port": 8443` when the public port
+  isn't 443. `port` is always sent, so a port stored earlier is cleared. The port comes from the domain value (`REDSEAT_DOMAIN=host:8443`) or from
   `REDSEAT_EXP_PORT`/`exp_port`, never from the listening port: behind a reverse proxy (Traefik…) the
   container's port isn't what clients connect to.
-- `{ "domain": null }` when none is set, so the cloud clears a stale one.
+- `{ "domain": null, "port": null }` when none is set, so the cloud clears a stale one.
 
 The web app tries `https://<domain>[:<port>]/ping` like a direct candidate. The server no longer
 reports its public IPv4 for the legacy `<id>-srv.redseat.cloud` record: that name stops following

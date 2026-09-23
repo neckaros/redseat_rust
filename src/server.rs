@@ -521,8 +521,8 @@ pub async fn get_ipv4() -> Result<String> {
 #[derive(Debug, Serialize, PartialEq)]
 pub struct DomainReport {
     pub domain: Option<String>,
-    /// Public port of the domain; absent means 443.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Public port of the domain. Always sent: `null` means 443 and clears a port the cloud
+    /// stored earlier (an omitted port leaves it unchanged, for older servers).
     pub port: Option<u16>,
 }
 
@@ -701,6 +701,15 @@ mod domain_report_tests {
     }
 
     #[test]
+    fn default_port_is_sent_as_null() {
+        let report = config(Some("nseat.example.org"), None).domain_report();
+        assert_eq!(
+            serde_json::to_value(&report).unwrap(),
+            serde_json::json!({ "domain": "nseat.example.org", "port": null })
+        );
+    }
+
+    #[test]
     fn retries_back_off_up_to_an_hour() {
         let minutes = |failures| domain_report_retry_delay(failures).as_secs() / 60;
         assert_eq!(
@@ -715,7 +724,7 @@ mod domain_report_tests {
         let report = config(None, Some(9443)).domain_report();
         assert_eq!(
             serde_json::to_value(&report).unwrap(),
-            serde_json::json!({ "domain": null })
+            serde_json::json!({ "domain": null, "port": null })
         );
     }
 }
