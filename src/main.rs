@@ -59,6 +59,9 @@ mod server;
 mod tools;
 mod webrtc;
 
+/// Target soft limit on open files; capped by the process hard limit.
+const OPEN_FILES_LIMIT: u64 = 65_536;
+
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
     // Rustls 0.23+ requires an explicit crypto provider when both aws-lc-rs and ring are available.
@@ -73,6 +76,20 @@ async fn main() -> Result<()> {
         tools::log::LogServiceType::Register,
         format!("Architecture: {}-{}", os, arch),
     );
+
+    // Containers commonly start with a 1024 soft limit on open files. Every
+    // WebRTC peer holds several UDP sockets, so raise it toward the hard limit.
+    match rlimit::increase_nofile_limit(OPEN_FILES_LIMIT) {
+        Ok(limit) => log_info(
+            LogServiceType::Register,
+            format!("Open files limit: {limit}"),
+        ),
+        Err(error) => log_error(
+            LogServiceType::Register,
+            format!("Unable to raise the open files limit: {error}"),
+        ),
+    }
+
     log_info(
         tools::log::LogServiceType::Register,
         "Starting redseat server".to_string(),
