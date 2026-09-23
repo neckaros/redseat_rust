@@ -75,7 +75,20 @@ pub fn members_changed() {
 /// Direct HTTPS runs for registered servers, except those behind a custom domain or a
 /// TLS-terminating proxy (`noCert`), which keep working unchanged.
 pub fn is_enabled(config: &ServerConfig) -> bool {
-    config.id.is_some() && config.token.is_some() && config.domain.is_none() && !config.noCert
+    disabled_reason(config).is_none()
+}
+
+/// Why direct HTTPS doesn't run for this server, for the startup log.
+pub fn disabled_reason(config: &ServerConfig) -> Option<String> {
+    if config.id.is_none() || config.token.is_none() {
+        Some("server not registered".to_string())
+    } else if let Some(domain) = &config.domain {
+        Some(format!("custom domain {domain} is used instead"))
+    } else if config.noCert {
+        Some("noCert is set".to_string())
+    } else {
+        None
+    }
 }
 
 /// Stores the label returned at registration. The cloud stays authoritative: it is read
@@ -105,7 +118,11 @@ pub async fn start(
     mc: ModelController,
     listening_ipv6: bool,
 ) -> bool {
-    if !is_enabled(config) {
+    if let Some(reason) = disabled_reason(config) {
+        log_info(
+            LogServiceType::Register,
+            format!("Direct HTTPS: disabled ({reason})"),
+        );
         return false;
     }
     let (Some(id), Some(token)) = (config.id.as_deref(), config.token.as_deref()) else {
@@ -122,14 +139,20 @@ pub async fn start(
         }
     };
 
-    if let Some(certificate) = load_installed_certificate().await {
-        log_info(
-            LogServiceType::Register,
-            format!(
-                "Direct HTTPS certificate loaded for {:?}",
-                certificate.names()
-            ),
-        );
+    let state = load_state().await;
+    let certificate = load_installed_certificate().await;
+    log_info(
+        LogServiceType::Register,
+        format!(
+            "Direct HTTPS: enabled, label {}, {}",
+            state.label.as_deref().unwrap_or("not known yet"),
+            match &certificate {
+                Some(certificate) => format!("certificate loaded for {:?}", certificate.names()),
+                None => "no certificate yet (will request one from the cloud)".to_string(),
+            }
+        ),
+    );
+    if let Some(certificate) = certificate {
         resolver.set_direct(certificate);
     }
 
@@ -138,7 +161,7 @@ pub async fn start(
         resolver,
         mc,
         discovery: discovery_options(config, listening_ipv6),
-        state: load_state().await,
+        state,
         reported: None,
         recovery_rotation_done: false,
     };
@@ -578,6 +601,25 @@ fn order_poll_delay(status: &CertificateStatus) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disabled_reason_names_the_mode() {
+        let mut config: ServerConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(
+            disabled_reason(&config).as_deref(),
+            Some("server not registered")
+        );
+        config.id = Some("id".into());
+        config.token = Some("token".into());
+        assert_eq!(disabled_reason(&config), None);
+        config.noCert = true;
+        assert_eq!(disabled_reason(&config).as_deref(), Some("noCert is set"));
+        config.domain = Some("redseat.example.com".into());
+        assert_eq!(
+            disabled_reason(&config).as_deref(),
+            Some("custom domain redseat.example.com is used instead")
+        );
+    }
 
     #[test]
     fn member_ids_follow_firebase_key_rules() {

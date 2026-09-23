@@ -144,6 +144,25 @@ impl SniResolver {
             .unwrap_or(false)
     }
 
+    /// What TLS will serve, for the startup log.
+    pub fn describe(&self) -> String {
+        let Ok(certificates) = self.certificates.read() else {
+            return "unavailable".to_string();
+        };
+        let mut served = vec![];
+        if let Some(direct) = &certificates.direct {
+            served.push(format!("direct {:?}", direct.names()));
+        }
+        if let Some(legacy) = &certificates.legacy {
+            served.push(format!("legacy {:?}", legacy.names()));
+        }
+        if served.is_empty() {
+            "no certificate yet".to_string()
+        } else {
+            served.join(", ")
+        }
+    }
+
     pub fn has_certificate(&self) -> bool {
         self.certificates
             .read()

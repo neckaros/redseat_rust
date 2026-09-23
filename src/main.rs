@@ -208,7 +208,10 @@ async fn main() -> Result<()> {
     if direct_https || resolver.has_certificate() {
         log_info(
             tools::log::LogServiceType::Register,
-            format!("Starting HTTP/HTTPS server"),
+            format!(
+                "Starting HTTP/HTTPS server, TLS serves: {}",
+                resolver.describe()
+            ),
         );
 
         let tls_config = RustlsConfig::from_config(Arc::new(direct::tls::server_config(resolver)));
@@ -436,10 +439,18 @@ async fn register() -> Result<RegisterInfo> {
                 tools::log::LogServiceType::Register,
                 "No Certificate option activated we will only expose http".to_string(),
             );
+        } else if let Some(domain) = &config.domain {
+            log_info(
+                tools::log::LogServiceType::Register,
+                format!(
+                    "Custom domain {}: no RedSeat certificate (legacy or direct), TLS must be handled in front of the server",
+                    domain
+                ),
+            );
         } else {
             log_info(
                 tools::log::LogServiceType::Register,
-                "Public domain certificate check".to_string(),
+                format!("Legacy certificate check ({}-srv.redseat.cloud)", id),
             );
             // Legacy `<id>-srv.redseat.cloud` certificate. Direct HTTPS doesn't depend on it,
             // so a failure here must not stop the server.
@@ -449,7 +460,10 @@ async fn register() -> Result<RegisterInfo> {
                     let public_config = PublicServerInfos::get(&certs.0, &id).await?;
                     log_info(
                         LogServiceType::Register,
-                        format!("Exposed public url: {}:{}", id, public_config.port),
+                        format!(
+                            "Legacy certificate ready: https://{}-srv.redseat.cloud:{}",
+                            id, public_config.port
+                        ),
                     );
                 }
                 Err(error) => log_error(
