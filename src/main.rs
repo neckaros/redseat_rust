@@ -28,7 +28,7 @@ use routes::{mw_auth, mw_range};
 
 pub use self::error::{Error, Result};
 use crate::{
-    server::{get_config, update_ip, ServerIpInfo},
+    server::get_config,
     tools::{
         auth::{get_or_init_keys, verify_local, ClaimsLocal},
         log::log_info,
@@ -409,7 +409,6 @@ async fn socket_io_fallback() -> StatusCode {
 }
 struct RegisterInfo {
     cert_paths: Option<(PathBuf, PathBuf)>,
-    ips: Option<ServerIpInfo>,
 }
 
 async fn register() -> Result<RegisterInfo> {
@@ -426,14 +425,10 @@ async fn register() -> Result<RegisterInfo> {
     }
     let _ = get_or_init_keys().await;
 
-    let mut register_info = RegisterInfo {
-        cert_paths: None,
-        ips: None,
-    };
+    let mut register_info = RegisterInfo { cert_paths: None };
 
     if let (Some(id), Some(_)) = (config.id, config.token) {
-        let ips = update_ip().await?;
-        register_info.ips = Some(ips);
+        server::spawn_domain_reporter();
         if (config.noCert) {
             log_info(
                 tools::log::LogServiceType::Register,

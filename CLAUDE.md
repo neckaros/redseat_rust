@@ -140,7 +140,8 @@ docker run -v redseat_config:/root/.config/redseat -p 8080:8080 neckaros/redseat
 | `REDSEAT_HOME` | Override cloud server URL |
 | `REDSEAT_PORT` | Server port (default: 8080) |
 | `REDSEAT_DIR` | Config directory |
-| `REDSEAT_DOMAIN` | Custom domain (disables IP-based) |
+| `REDSEAT_DOMAIN` | Custom domain `host[:port]` (disables direct HTTPS, reported to the cloud) |
+| `REDSEAT_EXP_PORT` | Public port when it differs from the listening port |
 | `REDSEAT_NOCERT` | Skip TLS cert generation |
 | `REDSEAT_PORT_FORWARDED` | Port forwarded manually: report public IPv4 for direct HTTPS |
 | `REDSEAT_LAN_IPS` | Comma-separated LAN addresses to report for direct HTTPS (Docker) |
