@@ -34,7 +34,7 @@ use crate::{
         log::log_info,
     },
 };
-use server::{get_home, get_server_id, get_server_port, PublicServerInfos};
+use server::{get_home, get_server_id, get_server_port};
 use tokio::net::TcpListener;
 use tools::{
     auth::{sign_local, Claims},
@@ -52,7 +52,6 @@ use tower_http::{
 use tracing_subscriber::filter::EnvFilter;
 use tracing_subscriber::fmt::fmt;
 
-mod certificate;
 mod direct;
 mod domain;
 mod error;
@@ -168,28 +167,19 @@ async fn main() -> Result<()> {
         );
     }
 
-    let register_infos = register().await?;
+    register().await?;
     let (app, mc) = app().await?;
     let config = server::get_config().await;
     let signaling = webrtc::start_from_config(&config, app.clone());
     let local_port = get_server_port().await;
 
-    // Certificates are chosen by SNI: the direct `*.<label>.servers.redseat.cloud` one
-    // (hot-reloaded when renewed) and the legacy `<id>-srv.redseat.cloud` one.
+    // The direct `*.<label>.servers.redseat.cloud` certificate, chosen by SNI and
+    // hot-reloaded when renewed.
     let resolver = Arc::new(direct::tls::SniResolver::default());
-    if let Some((chain_path, key_path)) = &register_infos.cert_paths {
-        match load_legacy_certificate(chain_path, key_path).await {
-            Ok(certificate) => resolver.set_legacy(Some(certificate)),
-            Err(error) => log_error(
-                LogServiceType::Register,
-                format!("Unable to load the legacy certificate: {:?}", error),
-            ),
-        }
-    }
     let direct_enabled = direct::is_enabled(&config);
     // IPv6 gets its own listener (IPv6-only, so it never conflicts with the IPv4 one) for
     // the global IPv6 addresses reported to direct HTTPS clients.
-    let ipv6_listener = if direct_enabled || resolver.has_certificate() {
+    let ipv6_listener = if direct_enabled {
         match bind_ipv6_only(local_port) {
             Ok(listener) => Some(listener),
             Err(error) => {
@@ -205,7 +195,7 @@ async fn main() -> Result<()> {
     };
     let direct_https = direct::start(&config, resolver.clone(), mc, ipv6_listener.is_some()).await;
 
-    if direct_https || resolver.has_certificate() {
+    if direct_https {
         log_info(
             tools::log::LogServiceType::Register,
             format!(
@@ -247,7 +237,7 @@ async fn main() -> Result<()> {
     } else {
         log_info(
             tools::log::LogServiceType::Register,
-            format!("Starting HTTP server only has no certificate found"),
+            format!("Starting HTTP server only (direct HTTPS disabled)"),
         );
         let addr = SocketAddr::from(([0, 0, 0, 0], local_port));
         let listener = TcpListener::bind(addr).await.unwrap();
@@ -282,15 +272,6 @@ fn bind_ipv6_only(port: u16) -> std::io::Result<std::net::TcpListener> {
     socket.listen(1024)?;
     socket.set_nonblocking(true)?;
     Ok(socket.into())
-}
-
-async fn load_legacy_certificate(
-    chain_path: &PathBuf,
-    key_path: &PathBuf,
-) -> Result<direct::tls::SniCertificate> {
-    let chain = tokio::fs::read_to_string(chain_path).await?;
-    let key = tokio::fs::read_to_string(key_path).await?;
-    direct::tls::SniCertificate::from_pem(&chain, &key)
 }
 
 async fn app() -> Result<(Router, ModelController)> {
@@ -407,11 +388,7 @@ async fn fallback(uri: Uri) -> (StatusCode, &'static str) {
 async fn socket_io_fallback() -> StatusCode {
     StatusCode::NOT_FOUND
 }
-struct RegisterInfo {
-    cert_paths: Option<(PathBuf, PathBuf)>,
-}
-
-async fn register() -> Result<RegisterInfo> {
+async fn register() -> Result<()> {
     log_info(
         tools::log::LogServiceType::Register,
         "Checking registration".to_string(),
@@ -425,51 +402,25 @@ async fn register() -> Result<RegisterInfo> {
     }
     let _ = get_or_init_keys().await;
 
-    let mut register_info = RegisterInfo { cert_paths: None };
-
-    if let (Some(id), Some(_)) = (config.id, config.token) {
+    if config.id.is_some() && config.token.is_some() {
         server::spawn_domain_reporter();
-        if (config.noCert) {
+        if let Some(domain) = &config.domain {
+            log_info(
+                tools::log::LogServiceType::Register,
+                format!(
+                    "Custom domain {}: TLS must be handled in front of the server",
+                    domain
+                ),
+            );
+        } else if config.noCert {
             log_info(
                 tools::log::LogServiceType::Register,
                 "No Certificate option activated we will only expose http".to_string(),
             );
-        } else if let Some(domain) = &config.domain {
-            log_info(
-                tools::log::LogServiceType::Register,
-                format!(
-                    "Custom domain {}: no RedSeat certificate (legacy or direct), TLS must be handled in front of the server",
-                    domain
-                ),
-            );
-        } else {
-            log_info(
-                tools::log::LogServiceType::Register,
-                format!("Legacy certificate check ({}-srv.redseat.cloud)", id),
-            );
-            // Legacy `<id>-srv.redseat.cloud` certificate. Direct HTTPS doesn't depend on it,
-            // so a failure here must not stop the server.
-            match certificate::dns_certify().await {
-                Ok(certs) => {
-                    register_info.cert_paths = Some(certs.clone());
-                    let public_config = PublicServerInfos::get(&certs.0, &id).await?;
-                    log_info(
-                        LogServiceType::Register,
-                        format!(
-                            "Legacy certificate ready: https://{}-srv.redseat.cloud:{}",
-                            id, public_config.port
-                        ),
-                    );
-                }
-                Err(error) => log_error(
-                    LogServiceType::Register,
-                    format!("Legacy certificate unavailable: {:?}", error),
-                ),
-            }
         }
     }
 
-    Ok(register_info)
+    Ok(())
 }
 
 #[cfg(test)]

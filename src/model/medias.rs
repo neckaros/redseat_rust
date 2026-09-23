@@ -3099,7 +3099,7 @@ impl ModelController {
             .map_err(|_| Error::UnableToSignShareToken)?;
         let uri = format!(
             "{}/libraries/{}/medias/{}?sharetoken={}",
-            config.get_server_base_url()?,
+            crate::server::get_public_base_url().await?,
             library_id,
             media_id,
             token
