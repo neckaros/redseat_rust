@@ -211,8 +211,7 @@ async fn main() -> Result<()> {
             format!("Starting HTTP/HTTPS server"),
         );
 
-        let tls_config =
-            RustlsConfig::from_config(Arc::new(direct::tls::server_config(resolver)));
+        let tls_config = RustlsConfig::from_config(Arc::new(direct::tls::server_config(resolver)));
 
         //let addr = format!("[::]:{}", local_port).parse::<SocketAddr>().unwrap();
         let addr = SocketAddr::from(([0, 0, 0, 0], local_port));

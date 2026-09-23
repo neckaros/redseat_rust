@@ -193,7 +193,11 @@ pub async fn discover(options: &DiscoveryOptions) -> AddressReport {
             .filter(|ip| classify_v4(*ip) == Some(AddressKind::PublicV4));
     }
 
-    let mut ipv6 = if options.ipv6 { local.public_v6 } else { vec![] };
+    let mut ipv6 = if options.ipv6 {
+        local.public_v6
+    } else {
+        vec![]
+    };
     dedup(&mut ipv6);
 
     AddressReport {
@@ -262,7 +266,13 @@ async fn upnp_map_port(options: &DiscoveryOptions, target: UpnpTarget) -> Result
     {
         Err(AddPortError::OnlyPermanentLeasesSupported) => {
             gateway
-                .add_port(PortMappingProtocol::TCP, options.port, local, 0, UPNP_DESCRIPTION)
+                .add_port(
+                    PortMappingProtocol::TCP,
+                    options.port,
+                    local,
+                    0,
+                    UPNP_DESCRIPTION,
+                )
                 .await
         }
         result => result,

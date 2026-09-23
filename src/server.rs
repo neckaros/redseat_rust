@@ -63,7 +63,12 @@ pub struct ServerConfig {
     pub port_forwarded: bool,
     /// LAN addresses to report for direct HTTPS instead of the discovered ones (for example
     /// the host's addresses when running in a container).
-    #[serde(default, rename = "lanIps", alias = "lan_ips", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "lanIps",
+        alias = "lan_ips",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub lan_ips: Option<Vec<String>>,
 }
 

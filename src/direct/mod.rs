@@ -87,7 +87,9 @@ pub async fn store_registration_label(label: &str) -> RsResult<()> {
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
     {
-        return Err(RsError::Error(format!("Invalid direct HTTPS label: {label}")));
+        return Err(RsError::Error(format!(
+            "Invalid direct HTTPS label: {label}"
+        )));
     }
     let mut state = load_state().await;
     state.label = Some(label.to_string());
@@ -123,7 +125,10 @@ pub async fn start(
     if let Some(certificate) = load_installed_certificate().await {
         log_info(
             LogServiceType::Register,
-            format!("Direct HTTPS certificate loaded for {:?}", certificate.names()),
+            format!(
+                "Direct HTTPS certificate loaded for {:?}",
+                certificate.names()
+            ),
         );
         resolver.set_direct(certificate);
     }
@@ -363,7 +368,10 @@ impl Manager {
             }
         }
 
-        let order_pending = status.order.as_ref().is_some_and(|order| !order.is_failed());
+        let order_pending = status
+            .order
+            .as_ref()
+            .is_some_and(|order| !order.is_failed());
         if let Some(order) = status.order.as_ref().filter(|order| order.is_failed()) {
             log_error(
                 LogServiceType::Register,

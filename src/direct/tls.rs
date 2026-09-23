@@ -49,7 +49,9 @@ impl SniCertificate {
     }
 
     fn matches(&self, server_name: &str) -> bool {
-        self.names.iter().any(|name| name_matches(name, server_name))
+        self.names
+            .iter()
+            .any(|name| name_matches(name, server_name))
     }
 }
 

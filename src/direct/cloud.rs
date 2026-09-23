@@ -91,7 +91,10 @@ pub enum CsrOutcome {
     /// An order is already running for this server.
     Processing,
     /// Not due for renewal, weekly limit reached, CSR rejected, or issuance unavailable.
-    Refused { status: StatusCode, message: String },
+    Refused {
+        status: StatusCode,
+        message: String,
+    },
 }
 
 #[derive(Deserialize)]
