@@ -3,7 +3,7 @@ use std::{
     io::SeekFrom,
     pin::Pin,
     sync::{
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc,
     },
     time::{Duration, Instant},
@@ -56,7 +56,7 @@ const MAX_PEER_SPOOL_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_SERVER_SPOOL_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const RESPONSE_SEGMENT_SIZE: usize = 1024 * 1024;
 const REQUEST_BODY_QUEUE: usize = 16;
-const MAX_RESPONSE_CREDITS: usize = 2;
+const MAX_RESPONSE_CREDITS: usize = 16;
 const MAX_REORDERED_CHUNKS: usize = 4096;
 const REORDER_SLOT_SIZE: u64 = MAX_MESSAGE_SIZE as u64;
 const MAX_FORM_MANIFEST_SIZE: usize = 1024 * 1024;
@@ -66,8 +66,8 @@ const MAX_SEEN_IDENTIFIERS: usize = 8192;
 const MAX_HEADERS: usize = 128;
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 const PAYLOAD_INACTIVITY: Duration = Duration::from_secs(60);
-const BUFFERED_AMOUNT_HIGH: usize = 1024 * 1024;
-const BUFFERED_AMOUNT_LOW: usize = 256 * 1024;
+const BUFFERED_AMOUNT_HIGH: usize = 8 * 1024 * 1024;
+const BUFFERED_AMOUNT_LOW: usize = 4 * 1024 * 1024;
 
 pub struct DispatcherSink {
     router: Router,
@@ -93,12 +93,41 @@ impl EstablishedPeerSink for DispatcherSink {
 
     async fn accept(&self, peer: EstablishedPeer) -> Result<(), String> {
         let incoming = peer.take_incoming().await?;
+        let stream_channels = peer.take_stream_channels().await;
         self.registry.accept(peer.clone()).await?;
         let router = self.router.clone();
         let budgets = SpoolBudgets {
             peer: Arc::new(DiskBudget::new(MAX_PEER_SPOOL_BYTES)),
             server: Arc::clone(&self.server_spool),
         };
+        if let Some(mut stream_channels) = stream_channels {
+            // Each bulk-transfer channel gets its own dispatcher (and so its own
+            // send buffer and backpressure) sharing the peer's spool budget.
+            let router = router.clone();
+            let budgets = budgets.clone();
+            let parent = peer.clone();
+            tokio::spawn(async move {
+                let closed = parent.closed();
+                loop {
+                    let stream = tokio::select! {
+                        _ = closed.cancelled() => break,
+                        stream = stream_channels.recv() => stream,
+                    };
+                    let Some(stream) = stream else { break };
+                    let stream_peer = stream.into_peer(&parent);
+                    let Ok(incoming) = stream_peer.take_incoming().await else {
+                        continue;
+                    };
+                    let router = router.clone();
+                    let budgets = budgets.clone();
+                    tokio::spawn(async move {
+                        PeerDispatcher::new(router, stream_peer, incoming, budgets)
+                            .run()
+                            .await;
+                    });
+                }
+            });
+        }
         tokio::spawn(async move {
             PeerDispatcher::new(router, peer, incoming, budgets)
                 .run()
@@ -189,6 +218,10 @@ struct ReorderSpool {
     file: ReservedFile,
     free_slots: BTreeSet<u64>,
     slots: u64,
+    /// Bytes reserved per slot: the largest chunk written to it. Slots are
+    /// sized for the largest message, but the file is sparse, so a 16 KiB chunk
+    /// from a peer using the base message size only reserves 16 KiB.
+    slot_bytes: Vec<u64>,
 }
 
 impl ReorderSpool {
@@ -197,16 +230,20 @@ impl ReorderSpool {
             file: ReservedFile::new(budgets)?,
             free_slots: BTreeSet::new(),
             slots: 0,
+            slot_bytes: Vec::new(),
         })
     }
 
     async fn write(&mut self, bytes: &[u8]) -> Result<u64, String> {
+        if bytes.len() as u64 > REORDER_SLOT_SIZE {
+            return Err("payload chunk exceeds the spool slot size".to_owned());
+        }
         let slot = if let Some(slot) = self.free_slots.pop_first() {
             slot
         } else {
             let slot = self.slots;
-            self.file.reservation.grow(REORDER_SLOT_SIZE)?;
             self.slots += 1;
+            self.slot_bytes.push(0);
             self.file
                 .file
                 .set_len(self.slots * REORDER_SLOT_SIZE)
@@ -214,6 +251,11 @@ impl ReorderSpool {
                 .map_err(|_| "unable to grow payload spool file".to_owned())?;
             slot
         };
+        let held = &mut self.slot_bytes[slot as usize];
+        if bytes.len() as u64 > *held {
+            self.file.reservation.grow(bytes.len() as u64 - *held)?;
+            *held = bytes.len() as u64;
+        }
         self.file
             .file
             .seek(SeekFrom::Start(slot * REORDER_SLOT_SIZE))
@@ -251,9 +293,8 @@ impl ReorderSpool {
                 .set_len(self.slots * REORDER_SLOT_SIZE)
                 .await
                 .map_err(|_| "unable to reclaim payload spool file".to_owned())?;
-            self.file
-                .reservation
-                .shrink((old_slots - self.slots) * REORDER_SLOT_SIZE);
+            let released = self.slot_bytes.drain(self.slots as usize..).sum::<u64>();
+            self.file.reservation.shrink(released);
         }
         Ok(Bytes::from(bytes))
     }
@@ -396,6 +437,7 @@ struct RequestState {
 struct ResponseFlow {
     semaphore: Semaphore,
     credits: AtomicUsize,
+    window_exceeded: AtomicBool,
 }
 
 impl ResponseFlow {
@@ -403,13 +445,19 @@ impl ResponseFlow {
         Self {
             semaphore: Semaphore::new(0),
             credits: AtomicUsize::new(0),
+            window_exceeded: AtomicBool::new(false),
         }
     }
 
+    /// Adds one credit. A peer that grants more than the advertised window has
+    /// lost track of its credits, so the stream is failed rather than silently
+    /// dropping the grant (which would leave the peer waiting for a segment).
     fn grant(&self) {
         let mut credits = self.credits.load(Ordering::Relaxed);
         loop {
             if credits >= MAX_RESPONSE_CREDITS {
+                self.window_exceeded.store(true, Ordering::Release);
+                self.semaphore.close();
                 return;
             }
             match self.credits.compare_exchange_weak(
@@ -435,6 +483,10 @@ impl ResponseFlow {
         permit.forget();
         self.credits.fetch_sub(1, Ordering::AcqRel);
         Ok(())
+    }
+
+    fn window_exceeded(&self) -> bool {
+        self.window_exceeded.load(Ordering::Acquire)
     }
 }
 
@@ -1773,7 +1825,20 @@ async fn send_segmented_response(
             pending.extend_from_slice(&bytes[offset..offset + length]);
             offset += length;
             if pending.len() == RESPONSE_SEGMENT_SIZE {
-                response_flow.acquire(cancellation).await?;
+                if let Err(error) = response_flow.acquire(cancellation).await {
+                    if !response_flow.window_exceeded() {
+                        return Err(error);
+                    }
+                    return send_response_end_error(
+                        sender,
+                        request_id,
+                        sequence,
+                        sent,
+                        "response credit window exceeded",
+                        cancellation,
+                    )
+                    .await;
+                }
                 send_response_segment(
                     sender,
                     request_id,
@@ -1802,7 +1867,20 @@ async fn send_segmented_response(
         }
     }
     if !pending.is_empty() {
-        response_flow.acquire(cancellation).await?;
+        if let Err(error) = response_flow.acquire(cancellation).await {
+            if !response_flow.window_exceeded() {
+                return Err(error);
+            }
+            return send_response_end_error(
+                sender,
+                request_id,
+                sequence,
+                sent,
+                "response credit window exceeded",
+                cancellation,
+            )
+            .await;
+        }
         send_response_segment(
             sender,
             request_id,
@@ -2440,7 +2518,8 @@ mod tests {
         },
     };
 
-    use crate::webrtc::peer::{PeerSession, DATA_CHANNEL_LABEL};
+    use crate::webrtc::peer::{PeerSession, DATA_CHANNEL_LABEL, STREAM_CHANNEL_LABEL};
+    use webrtc::peer_connection::RTCPeerConnection;
 
     fn test_spool_budgets() -> SpoolBudgets {
         SpoolBudgets {
@@ -2549,23 +2628,25 @@ mod tests {
         let mut spool = ReorderSpool::new(budgets.clone()).unwrap();
         let first = spool.write(b"first").await.unwrap();
         let second = spool.write(b"second").await.unwrap();
-        assert_eq!(
-            budgets.peer.used.load(Ordering::Relaxed),
-            2 * REORDER_SLOT_SIZE
-        );
+        // Quota follows the bytes written, not the slot size.
+        assert_eq!(budgets.peer.used.load(Ordering::Relaxed), 5 + 6);
 
         assert_eq!(spool.read_and_free(first, 5).await.unwrap(), "first");
-        let reused = spool.write(b"third").await.unwrap();
+        let reused = spool.write(b"third-longer").await.unwrap();
         assert_eq!(reused, first);
-        assert_eq!(
-            budgets.peer.used.load(Ordering::Relaxed),
-            2 * REORDER_SLOT_SIZE
-        );
+        assert_eq!(budgets.peer.used.load(Ordering::Relaxed), 12 + 6);
 
         assert_eq!(spool.read_and_free(second, 6).await.unwrap(), "second");
-        assert_eq!(budgets.peer.used.load(Ordering::Relaxed), REORDER_SLOT_SIZE);
-        assert_eq!(spool.read_and_free(reused, 5).await.unwrap(), "third");
+        // The freed tail slot is truncated and released.
+        assert_eq!(budgets.peer.used.load(Ordering::Relaxed), 12);
+        assert_eq!(
+            spool.read_and_free(reused, 12).await.unwrap(),
+            "third-longer"
+        );
         assert_eq!(budgets.peer.used.load(Ordering::Relaxed), 0);
+
+        let oversized = vec![0; REORDER_SLOT_SIZE as usize + 1];
+        assert!(spool.write(&oversized).await.is_err());
     }
 
     #[tokio::test]
@@ -2592,11 +2673,22 @@ mod tests {
     #[test]
     fn response_credit_window_is_bounded() {
         let flow = ResponseFlow::new();
-        flow.grant();
-        flow.grant();
-        flow.grant();
+        for _ in 0..MAX_RESPONSE_CREDITS {
+            flow.grant();
+        }
         assert_eq!(flow.credits.load(Ordering::Relaxed), MAX_RESPONSE_CREDITS);
         assert_eq!(flow.semaphore.available_permits(), MAX_RESPONSE_CREDITS);
+        assert!(!flow.window_exceeded());
+    }
+
+    #[tokio::test]
+    async fn exceeding_the_response_credit_window_fails_the_stream() {
+        let flow = ResponseFlow::new();
+        for _ in 0..=MAX_RESPONSE_CREDITS {
+            flow.grant();
+        }
+        assert!(flow.window_exceeded());
+        assert!(flow.acquire(&CancellationToken::new()).await.is_err());
     }
 
     #[tokio::test]
@@ -2993,5 +3085,278 @@ mod tests {
 
         offerer.close().await.unwrap();
         registry.shutdown().await;
+    }
+
+    struct RealPeer {
+        offerer: Arc<RTCPeerConnection>,
+        api: Arc<RTCDataChannel>,
+        api_rx: mpsc::UnboundedReceiver<DataChannelMessage>,
+        registry: Arc<PeerRegistry>,
+        _answerer: PeerSession,
+        _sink: DispatcherSink,
+    }
+
+    impl RealPeer {
+        async fn close(self) {
+            self.offerer.close().await.unwrap();
+            self.registry.shutdown().await;
+        }
+    }
+
+    fn collect_messages(
+        channel: &Arc<RTCDataChannel>,
+    ) -> mpsc::UnboundedReceiver<DataChannelMessage> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        channel.on_message(Box::new(move |message| {
+            let tx = tx.clone();
+            Box::pin(async move {
+                let _ = tx.send(message);
+            })
+        }));
+        rx
+    }
+
+    async fn wait_for_state(channel: &Arc<RTCDataChannel>, state: RTCDataChannelState) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while channel.ready_state() != state {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("DataChannel did not reach {state}"));
+    }
+
+    fn new_offerer() -> impl std::future::Future<Output = Arc<RTCPeerConnection>> {
+        async {
+            Arc::new(
+                APIBuilder::new()
+                    .build()
+                    .new_peer_connection(RTCConfiguration::default())
+                    .await
+                    .unwrap(),
+            )
+        }
+    }
+
+    /// Connects an in-process offerer to a dispatcher serving `router`.
+    async fn connect_real_peer(router: Router) -> RealPeer {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let registry = Arc::new(PeerRegistry::new());
+        let sink = DispatcherSink::new(router, Arc::clone(&registry));
+        let (candidate_tx, mut candidate_rx) = mpsc::channel(32);
+        let (lifecycle_tx, mut lifecycle_rx) = mpsc::unbounded_channel();
+        let answerer = PeerSession::new(
+            "real-peer-session".to_owned(),
+            "cloud-user".to_owned(),
+            Vec::new(),
+            candidate_tx,
+            lifecycle_tx,
+        )
+        .await
+        .unwrap();
+        let offerer = new_offerer().await;
+        let api = offerer
+            .create_data_channel(
+                DATA_CHANNEL_LABEL,
+                Some(RTCDataChannelInit {
+                    ordered: Some(false),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+        let api_rx = collect_messages(&api);
+
+        let mut gathering_complete = offerer.gathering_complete_promise().await;
+        let offer = offerer.create_offer(None).await.unwrap();
+        offerer.set_local_description(offer).await.unwrap();
+        let _ = gathering_complete.recv().await;
+        let offer = offerer.local_description().await.unwrap();
+        let answer = answerer.accept_offer(offer.sdp).await.unwrap();
+        offerer
+            .set_remote_description(RTCSessionDescription::answer(answer).unwrap())
+            .await
+            .unwrap();
+        let established = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                tokio::select! {
+                    event = candidate_rx.recv() => {
+                        let super::super::peer::PeerEvent::LocalCandidate { candidate, .. } = event.unwrap() else {
+                            panic!("unexpected peer event in candidate queue");
+                        };
+                        offerer.add_ice_candidate(candidate.unwrap_or_default()).await.unwrap();
+                    }
+                    event = lifecycle_rx.recv() => match event.unwrap() {
+                        super::super::peer::PeerEvent::Established(peer) => break peer,
+                        super::super::peer::PeerEvent::Failed { message, .. } => panic!("{message}"),
+                        super::super::peer::PeerEvent::LocalCandidate { .. } => panic!("candidate in lifecycle queue"),
+                    }
+                }
+            }
+        })
+        .await
+        .expect("WebRTC DataChannel did not open");
+        sink.accept(established).await.unwrap();
+        wait_for_state(&api, RTCDataChannelState::Open).await;
+        RealPeer {
+            offerer,
+            api,
+            api_rx,
+            registry,
+            _answerer: answerer,
+            _sink: sink,
+        }
+    }
+
+    /// Reads the `response` frame for `id` and its reassembled payload.
+    async fn read_response(
+        rx: &mut mpsc::UnboundedReceiver<DataChannelMessage>,
+        id: &str,
+    ) -> (Value, Vec<u8>) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let mut frame: Option<Value> = None;
+            let mut chunks: HashMap<String, HashMap<u32, Vec<u8>>> = HashMap::new();
+            loop {
+                let message = rx.recv().await.expect("DataChannel closed");
+                if message.is_string {
+                    let value: Value = serde_json::from_slice(&message.data).unwrap();
+                    if value["type"] == "response" && value["id"] == id {
+                        frame = Some(value);
+                    }
+                } else {
+                    let chunk = decode_binary(&message.data).unwrap();
+                    chunks
+                        .entry(chunk.payload_id)
+                        .or_default()
+                        .insert(chunk.index, chunk.bytes);
+                }
+                let Some(frame) = &frame else { continue };
+                let descriptor: PayloadDescriptor =
+                    serde_json::from_value(frame["payload"].clone()).unwrap();
+                let Some(id) = &descriptor.id else {
+                    break (frame.clone(), Vec::new());
+                };
+                let received = chunks.get(id).map_or(0, HashMap::len);
+                if received == descriptor.chunks as usize {
+                    let parts = chunks.remove(id).unwrap();
+                    let mut bytes = Vec::new();
+                    for index in 0..descriptor.chunks {
+                        bytes.extend_from_slice(&parts[&index]);
+                    }
+                    break (frame.clone(), bytes);
+                }
+            }
+        })
+        .await
+        .expect("dispatcher did not respond")
+    }
+
+    fn get_request(id: &str, path: &str) -> String {
+        json!({
+            "v": 1,
+            "type": "request",
+            "id": id,
+            "method": "GET",
+            "path": path,
+            "responseType": "json",
+            "payload": {"encoding": "none", "byteLength": 0, "chunks": 0}
+        })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn real_peer_accepts_messages_of_the_maximum_size() {
+        let router = Router::new().route(
+            "/upload",
+            post(|body: Bytes| async move { Json(json!({"length": body.len()})) }),
+        );
+        let mut peer = connect_real_peer(router).await;
+
+        let payload_id = "max-size-upload";
+        let chunk_size = max_chunk_size(payload_id).unwrap();
+        let body = (0..chunk_size * 3)
+            .map(|index| index as u8)
+            .collect::<Vec<_>>();
+        peer.api
+            .send_text(
+                json!({
+                    "v": 1,
+                    "type": "request",
+                    "id": "upload-1",
+                    "method": "POST",
+                    "path": "/upload",
+                    "responseType": "json",
+                    "payload": {
+                        "id": payload_id,
+                        "encoding": "binary",
+                        "byteLength": body.len(),
+                        "chunks": 3
+                    }
+                })
+                .to_string(),
+            )
+            .await
+            .unwrap();
+        for (index, chunk) in body.chunks(chunk_size).enumerate() {
+            let frame = encode_binary(payload_id, index as u32, 3, chunk).unwrap();
+            assert_eq!(frame.len(), MAX_MESSAGE_SIZE);
+            peer.api.send(&Bytes::from(frame)).await.unwrap();
+        }
+
+        let (frame, bytes) = read_response(&mut peer.api_rx, "upload-1").await;
+        assert_eq!(frame["status"], 200);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&bytes).unwrap(),
+            json!({"length": body.len()})
+        );
+        peer.close().await;
+    }
+
+    #[tokio::test]
+    async fn real_peer_serves_one_stream_channel_alongside_the_api_channel() {
+        let router = Router::new().route(
+            "/api",
+            get(|| async { Json(json!({"transport": "webrtc"})) }),
+        );
+        let mut peer = connect_real_peer(router).await;
+        let ordered = Some(RTCDataChannelInit {
+            ordered: Some(true),
+            ..Default::default()
+        });
+        let stream = peer
+            .offerer
+            .create_data_channel(STREAM_CHANNEL_LABEL, ordered.clone())
+            .await
+            .unwrap();
+        let mut stream_rx = collect_messages(&stream);
+        wait_for_state(&stream, RTCDataChannelState::Open).await;
+
+        stream
+            .send_text(get_request("stream-1", "/api"))
+            .await
+            .unwrap();
+        let (frame, bytes) = read_response(&mut stream_rx, "stream-1").await;
+        assert_eq!(frame["status"], 200);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&bytes).unwrap(),
+            json!({"transport": "webrtc"})
+        );
+
+        peer.api
+            .send_text(get_request("api-1", "/api"))
+            .await
+            .unwrap();
+        let (frame, _) = read_response(&mut peer.api_rx, "api-1").await;
+        assert_eq!(frame["status"], 200);
+
+        // Only one stream channel may be open per peer.
+        let second = peer
+            .offerer
+            .create_data_channel(STREAM_CHANNEL_LABEL, ordered)
+            .await
+            .unwrap();
+        wait_for_state(&second, RTCDataChannelState::Closed).await;
+        assert_eq!(stream.ready_state(), RTCDataChannelState::Open);
+        peer.close().await;
     }
 }

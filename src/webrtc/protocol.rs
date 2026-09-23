@@ -4,7 +4,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const WIRE_VERSION: u8 = 1;
-pub const MAX_MESSAGE_SIZE: usize = 16 * 1024;
+/// Largest DataChannel message sent or accepted. webrtc-rs reads each incoming
+/// message into a `u16::MAX`-byte buffer and closes the channel on anything
+/// larger, so 64 KiB (65,536) would be one byte too many.
+pub const MAX_MESSAGE_SIZE: usize = u16::MAX as usize;
 pub const BINARY_HEADER_SIZE: usize = 14;
 pub const MAX_IDENTIFIER_BYTES: usize = 128;
 
