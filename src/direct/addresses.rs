@@ -6,7 +6,13 @@ use std::{
     time::Duration,
 };
 
-use igd_next::{aio::tokio::search_gateway, AddPortError, PortMappingProtocol, SearchOptions};
+use igd_next::{
+    aio::{
+        tokio::{search_gateway, Tokio},
+        Gateway,
+    },
+    AddPortError, PortMappingProtocol, SearchOptions,
+};
 
 use super::cloud::AddressReport;
 
@@ -228,51 +234,143 @@ enum UpnpTarget {
     Fixed(SocketAddrV4),
 }
 
-/// Maps `port` on the IGD gateway to this host and returns the gateway's public IPv4.
-async fn upnp_map_port(options: &DiscoveryOptions, target: UpnpTarget) -> Result<Ipv4Addr, String> {
-    let gateway = search_gateway(SearchOptions {
-        timeout: Some(Duration::from_secs(3)),
-        single_search_timeout: Some(Duration::from_secs(3)),
-        ..Default::default()
+const SSDP_MULTICAST: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(239, 255, 255, 250), 1900);
+const SSDP_PORT: u16 = 1900;
+const SSDP_SEARCH: &str = "M-SEARCH * HTTP/1.1\r\n\
+    HOST: 239.255.255.250:1900\r\n\
+    ST: urn:schemas-upnp-org:device:InternetGatewayDevice:1\r\n\
+    MAN: \"ssdp:discover\"\r\n\
+    MX: 2\r\n\r\n";
+const SSDP_WAIT: Duration = Duration::from_secs(3);
+
+/// Routers answering an SSDP search sent from `local`'s interface, on `local`'s subnet.
+///
+/// `IP_MULTICAST_IF` pins the multicast to that interface: binding alone isn't enough, since
+/// the routing table (which a full-tunnel VPN points into the tunnel) still picks the egress.
+async fn ssdp_gateways(local: &LocalV4) -> std::io::Result<Vec<Ipv4Addr>> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+    socket.bind(&SocketAddr::V4(SocketAddrV4::new(local.ip, 0)).into())?;
+    socket.set_multicast_if_v4(&local.ip)?;
+    socket.set_nonblocking(true)?;
+    let socket = tokio::net::UdpSocket::from_std(socket.into())?;
+    socket
+        .send_to(SSDP_SEARCH.as_bytes(), SSDP_MULTICAST)
+        .await?;
+
+    let deadline = tokio::time::Instant::now() + SSDP_WAIT;
+    let mut gateways = vec![];
+    let mut buffer = [0u8; 2048];
+    loop {
+        match tokio::time::timeout_at(deadline, socket.recv_from(&mut buffer)).await {
+            Ok(Ok((_, SocketAddr::V4(from)))) => {
+                if same_subnet(local, *from.ip()) && !gateways.contains(from.ip()) {
+                    gateways.push(*from.ip());
+                }
+            }
+            Ok(Ok(_)) => {}
+            // Windows reports ICMP "port unreachable" from earlier sends as a receive error.
+            Ok(Err(error)) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+            Ok(Err(error)) => return Err(error),
+            Err(_) => return Ok(gateways),
+        }
+    }
+}
+
+/// The IGD at `gateway_ip`, reached with a unicast search from `bind_ip` (unicast follows the
+/// LAN route, so a VPN can't divert it).
+async fn gateway_at(bind_ip: Ipv4Addr, gateway_ip: Ipv4Addr) -> Result<Gateway<Tokio>, String> {
+    search_gateway(SearchOptions {
+        bind_addr: SocketAddr::V4(SocketAddrV4::new(bind_ip, 0)),
+        broadcast_address: SocketAddr::V4(SocketAddrV4::new(gateway_ip, SSDP_PORT)),
+        timeout: Some(SSDP_WAIT),
+        single_search_timeout: Some(SSDP_WAIT),
     })
     .await
-    .map_err(|e| format!("no gateway: {e}"))?;
+    .map_err(|e| format!("{gateway_ip}: {e}"))
+}
 
-    let local = match target {
-        UpnpTarget::Fixed(local) => local,
+/// Maps `port` on the IGD gateway to this host and returns the gateway's public IPv4.
+///
+/// Every router answering on any LAN interface is tried until one maps the port and has a
+/// public address: on a host with several networks, the first to answer may be an internal
+/// router.
+async fn upnp_map_port(options: &DiscoveryOptions, target: UpnpTarget) -> Result<Ipv4Addr, String> {
+    // (address to map to, gateway)
+    let mut candidates: Vec<(SocketAddrV4, Gateway<Tokio>)> = vec![];
+    let mut errors: Vec<String> = vec![];
+    match target {
         UpnpTarget::GatewaySubnet(lan_v4) => {
-            let IpAddr::V4(gateway_ip) = gateway.addr.ip() else {
-                return Err("IPv6 gateway".to_string());
-            };
-            let local_ip = lan_v4
-                .iter()
-                .find(|local| same_subnet(local, gateway_ip))
-                .map(|local| local.ip)
-                .ok_or_else(|| {
-                    format!("no local address on the gateway's network ({gateway_ip})")
-                })?;
-            SocketAddrV4::new(local_ip, options.local_port)
+            let found = futures::future::join_all(
+                lan_v4
+                    .iter()
+                    .map(|local| async move { (local.ip, ssdp_gateways(local).await) }),
+            )
+            .await;
+            for (local_ip, gateways) in found {
+                match gateways {
+                    Ok(gateways) => {
+                        for gateway_ip in gateways {
+                            match gateway_at(local_ip, gateway_ip).await {
+                                Ok(gateway) => candidates.push((
+                                    SocketAddrV4::new(local_ip, options.local_port),
+                                    gateway,
+                                )),
+                                Err(error) => errors.push(error),
+                            }
+                        }
+                    }
+                    Err(error) => errors.push(format!("search from {local_ip}: {error}")),
+                }
+            }
         }
-    };
-    let local = SocketAddr::V4(local);
+        // A container's addresses aren't the host's: search from the default interface.
+        UpnpTarget::Fixed(local) => match search_gateway(SearchOptions {
+            timeout: Some(SSDP_WAIT),
+            single_search_timeout: Some(SSDP_WAIT),
+            ..Default::default()
+        })
+        .await
+        {
+            Ok(gateway) => candidates.push((local, gateway)),
+            Err(error) => errors.push(error.to_string()),
+        },
+    }
+    if candidates.is_empty() && errors.is_empty() {
+        return Err("no gateway answered".to_string());
+    }
+    for (local, gateway) in candidates {
+        match map_on(&gateway, options.port, local).await {
+            Ok(external) => return Ok(external),
+            Err(error) => errors.push(format!("{}: {error}", gateway.addr)),
+        }
+    }
+    Err(errors.join("; "))
+}
+
+async fn map_on(
+    gateway: &Gateway<Tokio>,
+    port: u16,
+    local: SocketAddrV4,
+) -> Result<Ipv4Addr, String> {
     // Leased mappings only: they expire on their own once RedSeat stops renewing them. A
     // permanent one (routers answering OnlyPermanentLeasesSupported) would keep forwarding
     // the port after RedSeat stops or moves; forward it manually there (`portForwarded`).
-    let mapped = gateway
+    gateway
         .add_port(
             PortMappingProtocol::TCP,
-            options.port,
-            local,
+            port,
+            SocketAddr::V4(local),
             UPNP_LEASE_SECONDS,
             UPNP_DESCRIPTION,
         )
-        .await;
-    mapped.map_err(|e| match e {
-        AddPortError::OnlyPermanentLeasesSupported => {
-            "the router only allows permanent mappings; forward the port manually and set portForwarded".to_string()
-        }
-        e => format!("mapping refused: {e}"),
-    })?;
+        .await
+        .map_err(|e| match e {
+            AddPortError::OnlyPermanentLeasesSupported => {
+                "the router only allows permanent mappings; forward the port manually and set portForwarded".to_string()
+            }
+            e => format!("mapping refused: {e}"),
+        })?;
 
     match gateway.get_external_ip().await {
         Ok(IpAddr::V4(external)) if classify_v4(external) == Some(AddressKind::PublicV4) => {
@@ -333,6 +431,16 @@ mod tests {
         ];
         dedup(&mut ips);
         assert_eq!(ips, vec![parse("192.168.1.10"), parse("100.64.1.2")]);
+    }
+
+    /// Sends a real SSDP search from each LAN interface (`cargo test -- --ignored`).
+    #[tokio::test]
+    #[ignore]
+    async fn ssdp_search_runs_on_every_interface() {
+        for local in local_addresses().lan_v4 {
+            let gateways = ssdp_gateways(&local).await;
+            println!("{} -> {:?}", local.ip, gateways);
+        }
     }
 
     #[test]
