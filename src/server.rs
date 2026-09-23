@@ -563,7 +563,64 @@ impl ServerConfig {
     }
 }
 
-/// Reports the custom domain (or its absence) to the cloud, at startup and every 30 minutes.
+const DOMAIN_REPORT_REFRESH: Duration = Duration::from_secs(24 * 60 * 60);
+const DOMAIN_REPORT_FIRST_RETRY: Duration = Duration::from_secs(60);
+const DOMAIN_REPORT_MAX_RETRY: Duration = Duration::from_secs(60 * 60);
+
+/// Delay before retrying after `failures` consecutive failed reports: 1 min, doubling up to 1 h.
+fn domain_report_retry_delay(failures: u32) -> Duration {
+    DOMAIN_REPORT_FIRST_RETRY
+        .saturating_mul(1u32 << failures.saturating_sub(1).min(16))
+        .min(DOMAIN_REPORT_MAX_RETRY)
+}
+
+/// Reports the custom domain in the background. The domain only changes with the config, which
+/// is read at startup, so one successful report is enough: failures are retried with backoff,
+/// then it's re-sent daily in case the cloud's copy was lost.
+pub fn spawn_domain_reporter() {
+    tokio::spawn(async {
+        let mut failures = 0u32;
+        loop {
+            let delay = match report_domain().await {
+                Ok(report) => {
+                    log_info(LogServiceType::Register, describe_domain_report(&report));
+                    failures = 0;
+                    DOMAIN_REPORT_REFRESH
+                }
+                Err(error) => {
+                    failures = failures.saturating_add(1);
+                    let delay = domain_report_retry_delay(failures);
+                    log_error(
+                        LogServiceType::Register,
+                        format!(
+                            "Unable to report the custom domain (retrying in {}s): {:?}",
+                            delay.as_secs(),
+                            error
+                        ),
+                    );
+                    delay
+                }
+            };
+            tokio::time::sleep(delay).await;
+        }
+    });
+}
+
+fn describe_domain_report(report: &DomainReport) -> String {
+    match &report.domain {
+        Some(domain) => format!(
+            "Reported custom domain https://{}{}",
+            domain,
+            report
+                .port
+                .map(|port| format!(":{port}"))
+                .unwrap_or_default()
+        ),
+        None => "Reported no custom domain".to_string(),
+    }
+}
+
+/// Reports the custom domain (or its absence) to the cloud.
 pub async fn report_domain() -> Result<DomainReport> {
     let config = get_config().await;
     let id = config.id.clone().ok_or(crate::Error::ServerNoServerId)?;
@@ -641,6 +698,16 @@ mod domain_report_tests {
                 .port,
             None
         );
+    }
+
+    #[test]
+    fn retries_back_off_up_to_an_hour() {
+        let minutes = |failures| domain_report_retry_delay(failures).as_secs() / 60;
+        assert_eq!(
+            [1, 2, 3, 4, 5, 6, 7, 8].map(minutes),
+            [1, 2, 4, 8, 16, 32, 60, 60]
+        );
+        assert_eq!(minutes(u32::MAX), 60);
     }
 
     #[test]

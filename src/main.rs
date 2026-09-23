@@ -28,7 +28,7 @@ use routes::{mw_auth, mw_range};
 
 pub use self::error::{Error, Result};
 use crate::{
-    server::{get_config, report_domain},
+    server::get_config,
     tools::{
         auth::{get_or_init_keys, verify_local, ClaimsLocal},
         log::log_info,
@@ -411,29 +411,6 @@ struct RegisterInfo {
     cert_paths: Option<(PathBuf, PathBuf)>,
 }
 
-fn log_domain_report(report: Result<server::DomainReport>) {
-    match report {
-        Ok(report) => log_info(
-            LogServiceType::Register,
-            match report.domain {
-                Some(domain) => format!(
-                    "Reported custom domain https://{}{}",
-                    domain,
-                    report
-                        .port
-                        .map(|port| format!(":{port}"))
-                        .unwrap_or_default()
-                ),
-                None => "Reported no custom domain".to_string(),
-            },
-        ),
-        Err(error) => log_error(
-            LogServiceType::Register,
-            format!("Unable to report the custom domain: {:?}", error),
-        ),
-    }
-}
-
 async fn register() -> Result<RegisterInfo> {
     log_info(
         tools::log::LogServiceType::Register,
@@ -451,7 +428,7 @@ async fn register() -> Result<RegisterInfo> {
     let mut register_info = RegisterInfo { cert_paths: None };
 
     if let (Some(id), Some(_)) = (config.id, config.token) {
-        log_domain_report(report_domain().await);
+        server::spawn_domain_reporter();
         if (config.noCert) {
             log_info(
                 tools::log::LogServiceType::Register,

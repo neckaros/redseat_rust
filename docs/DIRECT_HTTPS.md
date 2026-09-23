@@ -27,8 +27,10 @@ the server.
 
 ## Custom domain report
 
-Every registered server reports its custom domain at startup and every 30 minutes, to
-`PATCH /api/servers/<id>` (registration token):
+Every registered server reports its custom domain to `PATCH /api/servers/<id>` (registration
+token) in the background at startup. The domain only changes with the config, which is read at
+startup, so a failed report is retried with backoff (1 min, doubling up to 1 h) until it succeeds,
+then re-sent daily in case the cloud's copy was lost.
 
 - `{ "domain": "nseat.example.org" }`, or `{ "domain": "nseat.example.org", "port": 8443 }` when the
   public port isn't 443. The port comes from the domain value (`REDSEAT_DOMAIN=host:8443`) or from

@@ -17,8 +17,8 @@ use tokio_util::sync::CancellationToken;
 
 use self::{
     backup::BackupTask, encrypt_library::EncryptLibraryTask, face_recognition::FaceRecognitionTask,
-    ip::ReportDomainTask, iptv_refresh::IptvRefreshTask, refresh::RefreshTask,
-    request_progress::RequestProgressTask, series::SerieTask,
+    iptv_refresh::IptvRefreshTask, refresh::RefreshTask, request_progress::RequestProgressTask,
+    series::SerieTask,
 };
 
 use super::{
@@ -29,7 +29,6 @@ use super::{
 pub mod backup;
 pub mod encrypt_library;
 pub mod face_recognition;
-pub mod ip;
 pub mod iptv_refresh;
 pub mod refresh;
 pub mod request_progress;
@@ -316,7 +315,6 @@ impl RsSchedulerWhen {
 pub enum RsTaskType {
     Backup,
     Refresh,
-    Ip,
     Face,
     RequestProgress,
     EncryptLibrary,
@@ -341,10 +339,6 @@ impl RsSchedulerItem {
             }
             RsTaskType::Refresh => {
                 let deserialized: RefreshTask = serde_json::from_str(&self.task)?;
-                Ok(Box::pin(deserialized))
-            }
-            RsTaskType::Ip => {
-                let deserialized: ReportDomainTask = serde_json::from_str(&self.task)?;
                 Ok(Box::pin(deserialized))
             }
             RsTaskType::Face => {
