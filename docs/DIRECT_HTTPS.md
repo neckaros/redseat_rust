@@ -40,7 +40,8 @@ All calls use `Authorization: Token <registration token>` on `https://<home>/api
   (container and VM bridges such as `docker0` and `br-*` are skipped). Global IPv6 addresses go in `ipv6`.
   The public IPv4 is only reported when the port is reachable on it: the interface itself has a public
   address, a UPnP-IGD mapping succeeded, or the port is declared as forwarded manually (see below).
-  The UPnP mapping (`RedSeat`, 1 h lease) is renewed on every check, so it expires within an hour once RedSeat stops. Routers that only allow permanent mappings get none: forward the port manually and set `portForwarded`.
+  The router is searched from each LAN IPv4 address (the search socket is bound to it, so a full-tunnel VPN
+  can't route the discovery into the tunnel). The UPnP mapping (`RedSeat`, 1 h lease) is renewed on every check, so it expires within an hour once RedSeat stops. Routers that only allow permanent mappings get none: forward the port manually and set `portForwarded`.
 - **Certificate install:** when `certificate.label` equals `label` and `certificate.notBefore` changed
   (or no certificate for that label could be loaded from disk at startup), the chain is matched against the pending keys (keys of CSRs sent but not issued yet) and the current key.
   TLS is hot-reloaded: no restart.

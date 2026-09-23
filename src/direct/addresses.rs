@@ -6,7 +6,13 @@ use std::{
     time::Duration,
 };
 
-use igd_next::{aio::tokio::search_gateway, AddPortError, PortMappingProtocol, SearchOptions};
+use igd_next::{
+    aio::{
+        tokio::{search_gateway, Tokio},
+        Gateway,
+    },
+    AddPortError, PortMappingProtocol, SearchOptions,
+};
 
 use super::cloud::AddressReport;
 
@@ -228,15 +234,40 @@ enum UpnpTarget {
     Fixed(SocketAddrV4),
 }
 
+/// Searches for the IGD gateway from each local address in parallel; the first to answer wins.
+///
+/// The search socket is bound to each LAN address rather than `0.0.0.0`: the SSDP multicast
+/// then leaves through that interface. Unbound, it follows the routing table, which a
+/// full-tunnel VPN points into the tunnel, so the router never sees it.
+async fn search_gateway_from(local_ips: &[Ipv4Addr]) -> Result<Gateway<Tokio>, String> {
+    let search = |bind_ip: Ipv4Addr| {
+        Box::pin(async move {
+            search_gateway(SearchOptions {
+                bind_addr: SocketAddr::V4(SocketAddrV4::new(bind_ip, 0)),
+                timeout: Some(Duration::from_secs(3)),
+                single_search_timeout: Some(Duration::from_secs(3)),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| format!("no gateway: {e}"))
+        })
+    };
+    if local_ips.is_empty() {
+        return search(Ipv4Addr::UNSPECIFIED).await;
+    }
+    futures::future::select_ok(local_ips.iter().map(|ip| search(*ip)))
+        .await
+        .map(|(gateway, _)| gateway)
+}
+
 /// Maps `port` on the IGD gateway to this host and returns the gateway's public IPv4.
 async fn upnp_map_port(options: &DiscoveryOptions, target: UpnpTarget) -> Result<Ipv4Addr, String> {
-    let gateway = search_gateway(SearchOptions {
-        timeout: Some(Duration::from_secs(3)),
-        single_search_timeout: Some(Duration::from_secs(3)),
-        ..Default::default()
-    })
-    .await
-    .map_err(|e| format!("no gateway: {e}"))?;
+    let search_ips: Vec<Ipv4Addr> = match &target {
+        UpnpTarget::GatewaySubnet(lan_v4) => lan_v4.iter().map(|local| local.ip).collect(),
+        // A container's addresses aren't the host's: search from the default interface.
+        UpnpTarget::Fixed(_) => vec![],
+    };
+    let gateway = search_gateway_from(&search_ips).await?;
 
     let local = match target {
         UpnpTarget::Fixed(local) => local,
