@@ -17,7 +17,8 @@ as peer-session metadata and never authenticates an API request.
 - Complete DataChannel messages are limited to 65,535 bytes in both directions:
   webrtc-rs reads each incoming message into a `u16::MAX` buffer and closes the
   channel on anything larger.
-- A peer may have at most 64 active requests, 16 active subscriptions, and 128
+- A peer may have at most 128 active requests per channel (the browser client
+  keeps at most 56 waiting for a response), 16 active subscriptions, and 128
   incomplete or orphan payloads.
 - Request bodies are dispatched as soon as their descriptor arrives. In-order
   chunks flow into Axum through a bounded 16-chunk queue; only chunks that arrive

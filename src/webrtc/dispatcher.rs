@@ -47,7 +47,10 @@ use super::{
     },
 };
 
-const MAX_ACTIVE_REQUESTS: usize = 64;
+/// Per channel. Clients keep at most 56 requests waiting for a response; the
+/// headroom covers streams already handed to their consumer, which stay active
+/// here until their last segment is sent or they are cancelled.
+const MAX_ACTIVE_REQUESTS: usize = 128;
 const MAX_ACTIVE_SUBSCRIPTIONS: usize = 16;
 const MAX_PENDING_PAYLOADS: usize = 128;
 const MAX_TRANSFER_SIZE: u64 = 8 * 1024 * 1024 * 1024 * 1024;
@@ -770,6 +773,10 @@ impl PeerDispatcher {
         let mut expiry = tokio::time::interval(Duration::from_secs(5));
         let result = loop {
             tokio::select! {
+                // Finished requests are removed before new messages are read, so a
+                // client that sends a new request after receiving a response does
+                // not see a 429 for a slot the server has not freed yet.
+                biased;
                 _ = closed.cancelled() => break Ok(()),
                 _ = expiry.tick() => {
                     if let Err(error) = self.expire_payloads().await {
