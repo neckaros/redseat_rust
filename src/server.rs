@@ -38,6 +38,8 @@ const ENV_DIR: &str = "REDSEAT_DIR";
 const ENV_DOMAIN: &str = "REDSEAT_DOMAIN";
 const ENV_NOCERT: &str = "REDSEAT_NOCERT";
 const ENV_SIGNALING_URL: &str = "REDSEAT_SIGNALING_URL";
+const ENV_PORT_FORWARDED: &str = "REDSEAT_PORT_FORWARDED";
+const ENV_LAN_IPS: &str = "REDSEAT_LAN_IPS";
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ServerConfig {
     pub id: Option<String>,
@@ -55,6 +57,19 @@ pub struct ServerConfig {
     pub signaling_url: Option<String>,
     #[serde(default = "default_false")]
     pub imagesUseIm: bool,
+    /// The port is forwarded manually on the router: report the public IPv4 for direct
+    /// HTTPS even when UPnP can't open it.
+    #[serde(default, rename = "portForwarded", alias = "port_forwarded")]
+    pub port_forwarded: bool,
+    /// LAN addresses to report for direct HTTPS instead of the discovered ones (for example
+    /// the host's addresses when running in a container).
+    #[serde(
+        default,
+        rename = "lanIps",
+        alias = "lan_ips",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub lan_ips: Option<Vec<String>>,
 }
 
 impl ServerConfig {
@@ -90,6 +105,16 @@ impl ServerConfig {
             .and_then(|p| p.parse::<u16>().ok())
             .or_else(|| config_port)
             .unwrap_or(8080)
+    }
+
+    /// Port clients connect to: the exposed port when it differs from the listening one
+    /// (container port mapping), otherwise the listening port.
+    pub fn get_exposed_port(&self) -> u16 {
+        env::var(ENV_EXP_PORT)
+            .ok()
+            .and_then(|p| p.parse::<u16>().ok())
+            .or(self.exp_port)
+            .unwrap_or_else(|| self.get_port())
     }
 }
 
@@ -298,6 +323,21 @@ pub async fn get_config_with_overrides() -> Result<ServerConfig> {
         }
     }) {
         config.noCert = noCert;
+    }
+    if let Some(port_forwarded) = env::var(ENV_PORT_FORWARDED)
+        .ok()
+        .and_then(|val| val.parse::<bool>().ok())
+    {
+        config.port_forwarded = port_forwarded;
+    }
+    if let Ok(lan_ips) = env::var(ENV_LAN_IPS) {
+        config.lan_ips = Some(
+            lan_ips
+                .split(',')
+                .map(|ip| ip.trim().to_string())
+                .filter(|ip| !ip.is_empty())
+                .collect(),
+        );
     }
 
     if args.imagesUseIm {

@@ -11,7 +11,7 @@ use crate::{
     },
     tools::{
         image_tools::image_magick::Red,
-        log::{log_info, LogServiceType},
+        log::{log_error, log_info, LogServiceType},
     },
     Result,
 };
@@ -130,6 +130,8 @@ pub struct RegisterQuery {
     token: String,
     uid: String,
     username: String,
+    /// Direct HTTPS label (`server.label` of the cloud registration response).
+    label: Option<String>,
 }
 
 async fn handler_register(
@@ -161,6 +163,14 @@ async fn handler_register(
         config.token = Some(query.token);
         let home = config.redseat_home.clone();
         update_config(config).await?;
+        if let Some(label) = &query.label {
+            if let Err(error) = crate::direct::store_registration_label(label).await {
+                log_error(
+                    LogServiceType::Register,
+                    format!("Unable to store the direct HTTPS label: {:?}", error),
+                );
+            }
+        }
         let server_id = get_server_id()
             .await
             .ok_or(crate::Error::Error("Failed to set ID".to_string()));

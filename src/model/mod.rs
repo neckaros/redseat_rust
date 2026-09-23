@@ -398,6 +398,7 @@ impl ModelController {
         requesting_user.check_role(&UserRole::Admin)?;
         let user_id = user.id.clone();
         self.store.add_user(user).await?;
+        crate::direct::members_changed();
         self.get_user(&user_id, requesting_user).await
     }
 

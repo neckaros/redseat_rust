@@ -39,6 +39,7 @@ redseat-rust/
 | Config/env variables | `src/server.rs` | `REDSEAT_*` env vars |
 | Encryption | `src/tools/encryption.rs` | AES-256-CBC streaming |
 | Scheduled tasks | `src/tools/scheduler/` | 15s tick loop |
+| Direct HTTPS (label, certificate, addresses) | `src/direct/` | See `docs/DIRECT_HTTPS.md`, keep it updated |
 | SSE and events | `docs/SSE.md` | don't forget to update the SSE.md file if you do modification or add events |
 
 ## ARCHITECTURE
@@ -141,6 +142,8 @@ docker run -v redseat_config:/root/.config/redseat -p 8080:8080 neckaros/redseat
 | `REDSEAT_DIR` | Config directory |
 | `REDSEAT_DOMAIN` | Custom domain (disables IP-based) |
 | `REDSEAT_NOCERT` | Skip TLS cert generation |
+| `REDSEAT_PORT_FORWARDED` | Port forwarded manually: report public IPv4 for direct HTTPS |
+| `REDSEAT_LAN_IPS` | Comma-separated LAN addresses to report for direct HTTPS (Docker) |
 
 ## SUBDIRECTORY AGENTS
 

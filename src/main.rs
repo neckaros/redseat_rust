@@ -6,6 +6,7 @@ use std::{
     net::{IpAddr, Ipv6Addr, SocketAddr},
     path::PathBuf,
     str::FromStr,
+    sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -15,7 +16,9 @@ use axum_server::tls_rustls::RustlsConfig;
 use domain::ffmpeg;
 use error::RsError;
 use http::{StatusCode, Uri};
-use hyper::header::{ACCEPT, AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, REFERER, REFERRER_POLICY};
+use hyper::header::{
+    ACCEPT_RANGES, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE,
+};
 use model::{server::AuthMessage, store::SqliteStore, ModelController};
 use plugins::{
     medias::{imdb::ImdbContext, trakt::TraktContext},
@@ -42,7 +45,7 @@ use tools::{
 };
 use tower::ServiceBuilder;
 use tower_http::{
-    cors::{Any, CorsLayer},
+    cors::{AllowHeaders, Any, CorsLayer},
     trace::TraceLayer,
 };
 
@@ -50,6 +53,7 @@ use tracing_subscriber::filter::EnvFilter;
 use tracing_subscriber::fmt::fmt;
 
 mod certificate;
+mod direct;
 mod domain;
 mod error;
 mod model;
@@ -165,18 +169,52 @@ async fn main() -> Result<()> {
     }
 
     let register_infos = register().await?;
-    let app = app().await?;
-    let signaling = webrtc::start_from_config(&server::get_config().await, app.clone());
+    let (app, mc) = app().await?;
+    let config = server::get_config().await;
+    let signaling = webrtc::start_from_config(&config, app.clone());
     let local_port = get_server_port().await;
-    if let Some(certs) = register_infos.cert_paths {
+
+    // Certificates are chosen by SNI: the direct `*.<label>.servers.redseat.cloud` one
+    // (hot-reloaded when renewed) and the legacy `<id>-srv.redseat.cloud` one.
+    let resolver = Arc::new(direct::tls::SniResolver::default());
+    if let Some((chain_path, key_path)) = &register_infos.cert_paths {
+        match load_legacy_certificate(chain_path, key_path).await {
+            Ok(certificate) => resolver.set_legacy(Some(certificate)),
+            Err(error) => log_error(
+                LogServiceType::Register,
+                format!("Unable to load the legacy certificate: {:?}", error),
+            ),
+        }
+    }
+    let direct_enabled = direct::is_enabled(&config);
+    // IPv6 gets its own listener (IPv6-only, so it never conflicts with the IPv4 one) for
+    // the global IPv6 addresses reported to direct HTTPS clients.
+    let ipv6_listener = if direct_enabled || resolver.has_certificate() {
+        match bind_ipv6_only(local_port) {
+            Ok(listener) => Some(listener),
+            Err(error) => {
+                log_info(
+                    LogServiceType::Register,
+                    format!("Not listening on IPv6: {}", error),
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let direct_https = direct::start(&config, resolver.clone(), mc, ipv6_listener.is_some()).await;
+
+    if direct_https || resolver.has_certificate() {
         log_info(
             tools::log::LogServiceType::Register,
-            format!("Starting HTTP/HTTPS server"),
+            format!(
+                "Starting HTTP/HTTPS server, TLS serves: {}",
+                resolver.describe()
+            ),
         );
 
-        let tls_config = RustlsConfig::from_pem_chain_file(certs.0, certs.1)
-            .await
-            .unwrap();
+        let tls_config = RustlsConfig::from_config(Arc::new(direct::tls::server_config(resolver)));
 
         //let addr = format!("[::]:{}", local_port).parse::<SocketAddr>().unwrap();
         let addr = SocketAddr::from(([0, 0, 0, 0], local_port));
@@ -185,10 +223,25 @@ async fn main() -> Result<()> {
             format!("->> LISTENING HTTP/HTTPS on {:?}\n", addr),
         );
 
-        let server = axum_server_dual_protocol::bind_dual_protocol(addr, tls_config)
-            .serve(app.into_make_service());
+        let server = axum_server_dual_protocol::bind_dual_protocol(addr, tls_config.clone())
+            .serve(app.clone().into_make_service());
+        let server_ipv6 = async {
+            match ipv6_listener {
+                Some(listener) => {
+                    log_info(
+                        tools::log::LogServiceType::Register,
+                        format!("->> LISTENING HTTP/HTTPS on [::]:{}\n", local_port),
+                    );
+                    axum_server_dual_protocol::from_tcp_dual_protocol(listener, tls_config)
+                        .serve(app.into_make_service())
+                        .await
+                }
+                None => std::future::pending().await,
+            }
+        };
         tokio::select! {
             result = server => result.unwrap(),
+            result = server_ipv6 => result.unwrap(),
             _ = tokio::signal::ctrl_c() => {}
         }
     } else {
@@ -219,7 +272,28 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn app() -> Result<Router> {
+fn bind_ipv6_only(port: u16) -> std::io::Result<std::net::TcpListener> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    let socket = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))?;
+    socket.set_only_v6(true)?;
+    #[cfg(unix)]
+    socket.set_reuse_address(true)?;
+    socket.bind(&SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)).into())?;
+    socket.listen(1024)?;
+    socket.set_nonblocking(true)?;
+    Ok(socket.into())
+}
+
+async fn load_legacy_certificate(
+    chain_path: &PathBuf,
+    key_path: &PathBuf,
+) -> Result<direct::tls::SniCertificate> {
+    let chain = tokio::fs::read_to_string(chain_path).await?;
+    let key = tokio::fs::read_to_string(key_path).await?;
+    direct::tls::SniCertificate::from_pem(&chain, &key)
+}
+
+async fn app() -> Result<(Router, ModelController)> {
     let store = SqliteStore::new().await.unwrap();
     let plugin_manager = PluginManager::new().await?;
     let mut mc = ModelController::new(store, plugin_manager).await?;
@@ -233,15 +307,20 @@ async fn app() -> Result<Router> {
             Method::HEAD,
             Method::OPTIONS,
             Method::POST,
+            Method::PUT,
         ])
-        .allow_headers([
-            AUTHORIZATION,
-            ACCEPT,
-            CACHE_CONTROL,
+        // Echo requested headers: the web app sends Authorization, SHARETOKEN, Range…
+        // (a `*` wildcard never covers Authorization).
+        .allow_headers(AllowHeaders::mirror_request())
+        .expose_headers([
+            ACCEPT_RANGES,
+            CONTENT_DISPOSITION,
+            CONTENT_LENGTH,
+            CONTENT_RANGE,
             CONTENT_TYPE,
-            REFERRER_POLICY,
-            REFERER,
         ])
+        // Private Network Access: lets the public web app call this server on a LAN address.
+        .allow_private_network(true)
         // Allow any origin: auth is token/session-based (not cookies),
         // and Chromecast HLS playback requires CORS from Google's receiver domain
         .allow_origin(Any);
@@ -262,7 +341,7 @@ async fn app() -> Result<Router> {
             ),
         );
     }
-    Ok(Router::new()
+    let router = Router::new()
         .nest("/ping", routes::ping::routes())
         .nest("/infos", routes::infos::routes(mc.clone()))
         .nest("/libraries", routes::libraries::routes(mc.clone()))
@@ -316,7 +395,8 @@ async fn app() -> Result<Router> {
         ))
         .layer(DefaultBodyLimit::disable())
         .layer(ServiceBuilder::new().layer(cors))
-        .layer(TraceLayer::new_for_http()))
+        .layer(TraceLayer::new_for_http());
+    Ok((router, mc))
 }
 async fn fallback(uri: Uri) -> (StatusCode, &'static str) {
     log_info(LogServiceType::Other, format!("Route not found: {}", uri));
@@ -359,19 +439,38 @@ async fn register() -> Result<RegisterInfo> {
                 tools::log::LogServiceType::Register,
                 "No Certificate option activated we will only expose http".to_string(),
             );
+        } else if let Some(domain) = &config.domain {
+            log_info(
+                tools::log::LogServiceType::Register,
+                format!(
+                    "Custom domain {}: no RedSeat certificate (legacy or direct), TLS must be handled in front of the server",
+                    domain
+                ),
+            );
         } else {
             log_info(
                 tools::log::LogServiceType::Register,
-                "Public domain certificate check".to_string(),
+                format!("Legacy certificate check ({}-srv.redseat.cloud)", id),
             );
-            let certs = certificate::dns_certify().await?;
-            register_info.cert_paths = Some(certs.clone());
-
-            let public_config = PublicServerInfos::get(&certs.0, &id).await?;
-            log_info(
-                LogServiceType::Register,
-                format!("Exposed public url: {}:{}", id, public_config.port),
-            );
+            // Legacy `<id>-srv.redseat.cloud` certificate. Direct HTTPS doesn't depend on it,
+            // so a failure here must not stop the server.
+            match certificate::dns_certify().await {
+                Ok(certs) => {
+                    register_info.cert_paths = Some(certs.clone());
+                    let public_config = PublicServerInfos::get(&certs.0, &id).await?;
+                    log_info(
+                        LogServiceType::Register,
+                        format!(
+                            "Legacy certificate ready: https://{}-srv.redseat.cloud:{}",
+                            id, public_config.port
+                        ),
+                    );
+                }
+                Err(error) => log_error(
+                    LogServiceType::Register,
+                    format!("Legacy certificate unavailable: {:?}", error),
+                ),
+            }
         }
     }
 
@@ -392,7 +491,7 @@ mod tests {
 
     #[tokio::test]
     async fn routes() {
-        let router = app().await.unwrap();
+        let (router, _) = app().await.unwrap();
 
         // Test ping returns success JSON with CORS
         let response = router
@@ -433,5 +532,39 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn preflight_allows_private_network_and_range() {
+        let (router, _) = app().await.unwrap();
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method(http::Method::OPTIONS)
+                    .uri("/libraries/lib/medias/media")
+                    .header(header::ORIGIN, "https://www.redseat.cloud")
+                    .header(header::ACCESS_CONTROL_REQUEST_METHOD, "GET")
+                    .header(
+                        header::ACCESS_CONTROL_REQUEST_HEADERS,
+                        "authorization,range,sharetoken",
+                    )
+                    .header("Access-Control-Request-Private-Network", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert!(response.status().is_success());
+        let headers = response.headers();
+        assert_eq!(
+            headers.get("Access-Control-Allow-Private-Network").unwrap(),
+            "true"
+        );
+        assert_eq!(
+            headers.get(header::ACCESS_CONTROL_ALLOW_HEADERS).unwrap(),
+            "authorization,range,sharetoken"
+        );
     }
 }
