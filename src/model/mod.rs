@@ -45,7 +45,7 @@ use crate::{
         image_tools::{resize_image_reader, ImageSize},
         log::log_info,
         scheduler::{
-            self, face_recognition::FaceRecognitionTask, ip::RefreshIpTask,
+            self, face_recognition::FaceRecognitionTask, ip::ReportDomainTask,
             iptv_refresh::IptvRefreshTask, refresh::RefreshTask,
             request_progress::RequestProgressTask, RsScheduler, RsTaskType,
         },
@@ -216,7 +216,7 @@ impl ModelController {
             .add(
                 RsTaskType::Ip,
                 scheduler::RsSchedulerWhen::Every(SECONDS_IN_HOUR / 2),
-                RefreshIpTask {},
+                ReportDomainTask {},
             )
             .await?;
         scheduler

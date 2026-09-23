@@ -25,6 +25,21 @@ true: those setups are unchanged. The legacy `<id>-srv.redseat.cloud` certificat
 and served alongside the direct one until every client has moved; failing to get it no longer stops
 the server.
 
+## Custom domain report
+
+Every registered server reports its custom domain at startup and every 30 minutes, to
+`PATCH /api/servers/<id>` (registration token):
+
+- `{ "domain": "nseat.example.org" }`, or `{ "domain": "nseat.example.org", "port": 8443 }` when the
+  public port isn't 443. The port comes from the domain value (`REDSEAT_DOMAIN=host:8443`) or from
+  `REDSEAT_EXP_PORT`/`exp_port`, never from the listening port: behind a reverse proxy (Traefik…) the
+  container's port isn't what clients connect to.
+- `{ "domain": null }` when none is set, so the cloud clears a stale one.
+
+The web app tries `https://<domain>[:<port>]/ping` like a direct candidate. The server no longer
+reports its public IPv4 for the legacy `<id>-srv.redseat.cloud` record: that name stops following
+IP changes.
+
 ## Background loop
 
 All calls use `Authorization: Token <registration token>` on `https://<home>/api/servers/<id>`.
@@ -76,7 +91,8 @@ internet-wide scanners from linking the server's IP to its label.
 |---|---|---|
 | `portForwarded` | `REDSEAT_PORT_FORWARDED=true` | The port is forwarded manually on the router: report the public IPv4 without UPnP. |
 | `lanIps` | `REDSEAT_LAN_IPS=192.168.1.10,fd00::10` | LAN addresses to report instead of the discovered ones (for example the host's addresses in Docker). UPnP then maps to the first of these IPv4 addresses. |
-| `exp_port` | `REDSEAT_EXP_PORT` | Port clients connect to, when it differs from the listening port. |
+| `exp_port` | `REDSEAT_EXP_PORT` | Port clients connect to, when it differs from the listening port. Also the custom domain's port when the domain value has none. |
+| `domain` | `REDSEAT_DOMAIN=host[:port]` | Custom domain (TLS handled in front of the server): disables direct HTTPS, reported to the cloud. |
 
 The registration redirect (`/infos/register`) accepts an optional `label` query parameter. Servers
 registered without it get the label from `GET …/certificate` on first run.

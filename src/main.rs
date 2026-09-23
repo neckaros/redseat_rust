@@ -28,7 +28,7 @@ use routes::{mw_auth, mw_range};
 
 pub use self::error::{Error, Result};
 use crate::{
-    server::{get_config, update_ip, ServerIpInfo},
+    server::{get_config, report_domain},
     tools::{
         auth::{get_or_init_keys, verify_local, ClaimsLocal},
         log::log_info,
@@ -409,7 +409,29 @@ async fn socket_io_fallback() -> StatusCode {
 }
 struct RegisterInfo {
     cert_paths: Option<(PathBuf, PathBuf)>,
-    ips: Option<ServerIpInfo>,
+}
+
+fn log_domain_report(report: Result<server::DomainReport>) {
+    match report {
+        Ok(report) => log_info(
+            LogServiceType::Register,
+            match report.domain {
+                Some(domain) => format!(
+                    "Reported custom domain https://{}{}",
+                    domain,
+                    report
+                        .port
+                        .map(|port| format!(":{port}"))
+                        .unwrap_or_default()
+                ),
+                None => "Reported no custom domain".to_string(),
+            },
+        ),
+        Err(error) => log_error(
+            LogServiceType::Register,
+            format!("Unable to report the custom domain: {:?}", error),
+        ),
+    }
 }
 
 async fn register() -> Result<RegisterInfo> {
@@ -426,14 +448,10 @@ async fn register() -> Result<RegisterInfo> {
     }
     let _ = get_or_init_keys().await;
 
-    let mut register_info = RegisterInfo {
-        cert_paths: None,
-        ips: None,
-    };
+    let mut register_info = RegisterInfo { cert_paths: None };
 
     if let (Some(id), Some(_)) = (config.id, config.token) {
-        let ips = update_ip().await?;
-        register_info.ips = Some(ips);
+        log_domain_report(report_domain().await);
         if (config.noCert) {
             log_info(
                 tools::log::LogServiceType::Register,

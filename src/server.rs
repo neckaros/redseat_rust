@@ -110,10 +110,7 @@ impl ServerConfig {
     /// Port clients connect to: the exposed port when it differs from the listening one
     /// (container port mapping), otherwise the listening port.
     pub fn get_exposed_port(&self) -> u16 {
-        env::var(ENV_EXP_PORT)
-            .ok()
-            .and_then(|p| p.parse::<u16>().ok())
-            .or(self.exp_port)
+        self.get_explicit_exposed_port()
             .unwrap_or_else(|| self.get_port())
     }
 }
@@ -497,13 +494,6 @@ pub async fn get_server_file_string(name: &str) -> Result<Option<String>> {
     };
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ServerIpInfo {
-    pub ipv4: Option<String>,
-    pub ipv6: Option<String>,
-    pub domain: Option<String>,
-}
-
 pub async fn get_ipv4() -> Result<String> {
     let client = Client::builder()
         .timeout(Duration::from_secs(1))
@@ -526,79 +516,139 @@ pub async fn get_ipv4() -> Result<String> {
     }
 }
 
-pub async fn get_ipv6() -> Result<String> {
-    let client = Client::builder()
-        .timeout(Duration::from_secs(1))
-        .build()
-        .unwrap();
-
-    let ip = client.get("https://v6.ident.me/").send().await;
-    if let Ok(ip) = ip {
-        if let Ok(ip) = ip.text().await {
-            return Ok(ip);
-        }
-    }
-    let ip = client.get("https://api64.ipify.org/").send().await;
-    if let Ok(ip) = ip {
-        if let Ok(ip) = ip.text().await {
-            return Ok(ip);
-        }
-    }
-    Err(Error::Error("Unable to get IPV6".to_string()))
+/// How clients reach a server with a custom domain, reported to the cloud (`PATCH
+/// /api/servers/<id>`). `domain: null` tells the cloud there is none, so a stale one is cleared.
+#[derive(Debug, Serialize, PartialEq)]
+pub struct DomainReport {
+    pub domain: Option<String>,
+    /// Public port of the domain; absent means 443.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
 }
 
-pub async fn update_ip() -> Result<ServerIpInfo> {
-    log_info(LogServiceType::Register, "Checking public IPs".to_string());
-    let config = get_config().await;
-    let request = if let Some(domain) = &config.domain {
-        log_info(
-            LogServiceType::Register,
-            format!("Using providezd domain: {}", domain),
-        );
-        ServerIpInfo {
-            ipv4: None,
-            ipv6: None,
-            domain: Some(domain.to_string()),
-        }
-    } else {
-        let ipv4 = get_ipv4().await?;
-        let request = ServerIpInfo {
-            ipv4: Some(ipv4.clone()),
-            ipv6: None,
-            domain: None,
+impl ServerConfig {
+    /// Exposed port set explicitly (`REDSEAT_EXP_PORT` or `exp_port`), if any.
+    pub fn get_explicit_exposed_port(&self) -> Option<u16> {
+        env::var(ENV_EXP_PORT)
+            .ok()
+            .and_then(|p| p.parse::<u16>().ok())
+            .or(self.exp_port)
+    }
+
+    /// The domain endpoint: a port written in the domain (`host:8443`), else the explicit
+    /// exposed port, else none (443). Never the listening port: behind a reverse proxy it
+    /// isn't what clients connect to.
+    pub fn domain_report(&self) -> DomainReport {
+        let Some(domain) = self.domain.as_deref() else {
+            return DomainReport {
+                domain: None,
+                port: None,
+            };
         };
-        request
-    };
-    let id = config.id.ok_or(crate::Error::ServerNoServerId)?;
-    let token = config.token.ok_or(crate::Error::ServerNotYetRegistered)?;
+        let domain = domain
+            .trim()
+            .trim_start_matches("https://")
+            .trim_start_matches("http://")
+            .trim_end_matches('/');
+        let (host, port) = match domain.rsplit_once(':') {
+            Some((host, port)) if port.parse::<u16>().is_ok() => (host, port.parse::<u16>().ok()),
+            _ => (domain, None),
+        };
+        DomainReport {
+            domain: Some(host.to_string()),
+            port: port
+                .or_else(|| self.get_explicit_exposed_port())
+                .filter(|port| *port != 443),
+        }
+    }
+}
 
-    let client = reqwest::Client::new();
+/// Reports the custom domain (or its absence) to the cloud, at startup and every 30 minutes.
+pub async fn report_domain() -> Result<DomainReport> {
+    let config = get_config().await;
+    let id = config.id.clone().ok_or(crate::Error::ServerNoServerId)?;
+    let token = config
+        .token
+        .clone()
+        .ok_or(crate::Error::ServerNotYetRegistered)?;
+    let report = config.domain_report();
 
-    log_info(
-        LogServiceType::Register,
-        format!(
-            "Calling: https://{}/servers/{}/register",
-            config.redseat_home, id
-        ),
-    );
-    log_info(
-        LogServiceType::Register,
-        format!("With content: {:?}", request),
-    );
-    let result = client
+    let response = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()?
         .patch(format!(
-            "https://{}/servers/{}/register",
-            config.redseat_home, id
+            "https://{}/api/servers/{}",
+            config
+                .redseat_home
+                .trim_end_matches('/')
+                .trim_start_matches("https://")
+                .trim_start_matches("http://"),
+            id
         ))
         .header("Authorization", format!("Token {}", token))
-        .json(&request)
+        .json(&report)
         .send()
         .await?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(Error::Error(format!(
+            "Domain report failed ({status}): {}",
+            body.chars().take(200).collect::<String>()
+        )));
+    }
+    Ok(report)
+}
 
-    log_info(
-        LogServiceType::Register,
-        format!("Result: {:?}", result.text().await?),
-    );
+#[cfg(test)]
+mod domain_report_tests {
+    use super::*;
 
-    Ok(request)
+    fn config(domain: Option<&str>, exp_port: Option<u16>) -> ServerConfig {
+        let mut config: ServerConfig = serde_json::from_str("{}").unwrap();
+        config.domain = domain.map(str::to_string);
+        config.exp_port = exp_port;
+        config.port = Some(8080);
+        config
+    }
+
+    #[test]
+    fn domain_report_never_uses_the_listening_port() {
+        // Behind a reverse proxy (Traefik…): 443, not the container's 8080.
+        assert_eq!(
+            config(Some("nseat.example.org"), None).domain_report(),
+            DomainReport {
+                domain: Some("nseat.example.org".into()),
+                port: None
+            }
+        );
+        assert_eq!(
+            config(Some("https://nseat.example.org:8443/"), None).domain_report(),
+            DomainReport {
+                domain: Some("nseat.example.org".into()),
+                port: Some(8443)
+            }
+        );
+        assert_eq!(
+            config(Some("nseat.example.org"), Some(9443))
+                .domain_report()
+                .port,
+            Some(9443)
+        );
+        assert_eq!(
+            config(Some("nseat.example.org:443"), None)
+                .domain_report()
+                .port,
+            None
+        );
+    }
+
+    #[test]
+    fn missing_domain_is_reported_as_null() {
+        let report = config(None, Some(9443)).domain_report();
+        assert_eq!(
+            serde_json::to_value(&report).unwrap(),
+            serde_json::json!({ "domain": null })
+        );
+    }
 }
