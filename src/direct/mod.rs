@@ -74,6 +74,21 @@ fn public_endpoint() -> &'static OnceLock<PublicEndpoint> {
     &ENDPOINT
 }
 
+/// Set once direct HTTPS has checked its addresses after startup (or couldn't start).
+static STARTUP_ADDRESS_CHECK_DONE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// True while direct HTTPS is enabled but hasn't checked its addresses since startup: until
+/// then, `public_base_url` can be `None` only because nothing is published yet. Background
+/// work needing a public URL waits for this instead of failing.
+pub fn public_url_pending(config: &ServerConfig) -> bool {
+    is_enabled(config) && !STARTUP_ADDRESS_CHECK_DONE.load(std::sync::atomic::Ordering::Acquire)
+}
+
+fn mark_startup_address_check_done() {
+    STARTUP_ADDRESS_CHECK_DONE.store(true, std::sync::atomic::Ordering::Release);
+}
+
 /// Public direct HTTPS base URL (`https://<ip-encoded>.<label>.<zone>[:port]`), or `None`
 /// without a certificate or a public address. IPv4 first: remote services may lack IPv6.
 pub fn public_base_url() -> Option<String> {
@@ -170,6 +185,7 @@ pub async fn start(
                 LogServiceType::Register,
                 format!("Direct HTTPS disabled: {error:?}"),
             );
+            mark_startup_address_check_done();
             return false;
         }
     };
@@ -308,6 +324,7 @@ impl Manager {
             let now = Instant::now();
             if now >= next_addresses {
                 next_addresses = Instant::now() + self.check_addresses().await;
+                mark_startup_address_check_done();
             }
             if now >= next_members {
                 next_members = Instant::now() + self.sync_members().await;
@@ -663,6 +680,21 @@ mod tests {
             disabled_reason(&config).as_deref(),
             Some("custom domain redseat.example.com is used instead")
         );
+    }
+
+    #[test]
+    fn public_url_waits_only_for_enabled_direct_https() {
+        let mut config: ServerConfig = serde_json::from_str("{}").unwrap();
+        // Not registered: nothing will be published, so don't wait.
+        assert!(!public_url_pending(&config));
+        config.id = Some("id".into());
+        config.token = Some("token".into());
+        config.domain = Some("nseat.example.org".into());
+        // Custom domain: the URL doesn't depend on direct HTTPS.
+        assert!(!public_url_pending(&config));
+        config.domain = None;
+        // Direct HTTPS before its first address check (nothing in tests runs the loop).
+        assert!(public_url_pending(&config));
     }
 
     #[test]

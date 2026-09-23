@@ -3569,6 +3569,11 @@ impl ModelController {
     }
 
     async fn start_queued_plugin_convert_jobs(&self, plugin_id: &str) -> crate::Result<()> {
+        // Submitting needs the public URL, which direct HTTPS publishes shortly after startup:
+        // keep jobs queued until then rather than failing them.
+        if crate::direct::public_url_pending(&crate::server::get_config().await) {
+            return Ok(());
+        }
         let limit = self.plugin_convert_concurrency_limit(plugin_id).await?;
         let capacity = if let Some(limit) = limit {
             let active = self
