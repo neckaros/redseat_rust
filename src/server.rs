@@ -6,7 +6,7 @@ use crate::{
         image_tools::has_image_magick,
         log::{log_error, log_info, LogServiceType},
     },
-    RegisterInfo, Result,
+    Result,
 };
 use axum::serve::Serve;
 use clap::Parser;
@@ -86,16 +86,6 @@ impl ServerConfig {
                         .trim_start_matches("http://")
                 )
             })
-    }
-
-    pub fn get_server_base_url(&self) -> RsResult<String> {
-        return Ok(format!(
-            "https://{}-srv.redseat.cloud:{}",
-            self.id
-                .clone()
-                .ok_or(RsError::Error("No id set for this server".to_string()))?,
-            self.get_port().to_string()
-        ));
     }
 
     pub fn get_port(&self) -> u16 {
@@ -249,35 +239,38 @@ pub async fn get_home() -> String {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PublicServerInfos {
     pub port: u16,
-    pub cert: Option<String>,
     pub id: Option<String>,
     pub local: Option<String>,
 }
 
 impl PublicServerInfos {
-    pub async fn get(public_cert_path: &PathBuf, _url: &str) -> RsResult<Self> {
-        let cert = read_to_string(public_cert_path).await?;
-        let config = get_config().await;
-        Ok(PublicServerInfos {
-            port: get_server_port().await,
-            cert: Some(cert),
-            id: get_server_id().await,
-            local: config.local,
-        })
-    }
-
     pub async fn current() -> RsResult<Self> {
-        let public_cert_path = get_server_file_path("cert_chain.pem").await?;
-        let cert = read_to_string(public_cert_path).await.ok();
         let config = get_config().await;
-
         Ok(PublicServerInfos {
             port: get_server_port().await,
-            cert,
             id: get_server_id().await,
             local: config.local,
         })
     }
+}
+
+/// Public HTTPS base URL of this server, for services outside the network (e.g. remote video
+/// conversion plugins): the custom domain, else a public direct HTTPS address.
+pub async fn get_public_base_url() -> RsResult<String> {
+    let report = get_config().await.domain_report();
+    if let Some(domain) = report.domain {
+        let port = report
+            .port
+            .map(|port| format!(":{port}"))
+            .unwrap_or_default();
+        return Ok(format!("https://{domain}{port}"));
+    }
+    crate::direct::public_base_url().ok_or_else(|| {
+        Error::Error(
+            "No public URL: needs a custom domain, or direct HTTPS with a certificate and a public address"
+                .to_string(),
+        )
+    })
 }
 
 pub async fn get_config() -> ServerConfig {

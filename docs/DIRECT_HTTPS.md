@@ -21,9 +21,12 @@ UPnP, `tls.rs` SNI resolver and CSR).
 ## When it runs
 
 For registered servers (`id` and `token` in `config.json`), unless `domain` is set or `noCert` is
-true: those setups are unchanged. The legacy `<id>-srv.redseat.cloud` certificate is still obtained
-and served alongside the direct one until every client has moved; failing to get it no longer stops
-the server.
+true. Without direct HTTPS, the server only listens on plain HTTP: TLS is then handled in front of it
+(custom domain behind a reverse proxy), or clients use WebRTC.
+
+The legacy `<id>-srv.redseat.cloud` name and certificate are gone. Files left in the config folder by
+older versions (`cert_chain.pem`, `cert_private.pem`, `letsencrypt_account.json`) are unused and can be
+deleted.
 
 ## Custom domain report
 
@@ -38,9 +41,14 @@ then re-sent daily in case the cloud's copy was lost.
   container's port isn't what clients connect to.
 - `{ "domain": null, "port": null }` when none is set, so the cloud clears a stale one.
 
-The web app tries `https://<domain>[:<port>]/ping` like a direct candidate. The server no longer
-reports its public IPv4 for the legacy `<id>-srv.redseat.cloud` record: that name stops following
-IP changes.
+The web app tries `https://<domain>[:<port>]/ping` like a direct candidate.
+
+## Public URL for remote services
+
+Temporary media URLs handed to services outside the network (remote video conversion plugins) use
+the custom domain, else a public direct HTTPS address: `https://<ip-encoded>.<label>.<zone>[:port]`
+from the last accepted address report (IPv4 first) and the installed certificate. Without either,
+the request fails with "No public URL".
 
 ## Background loop
 
@@ -74,9 +82,7 @@ All calls use `Authorization: Token <registration token>` on `https://<home>/api
 ## TLS
 
 The listener serves HTTP and HTTPS on the same port. The certificate is chosen from the SNI:
-
-- `*.<label>.servers.redseat.cloud`: the direct certificate (and the previous label's during a rotation);
-- `<id>-srv.redseat.cloud` / `*.<id>-srv.redseat.cloud`: the legacy certificate.
+`*.<label>.servers.redseat.cloud`, the direct certificate (and the previous label's during a rotation).
 
 Handshakes without SNI, with a bare IP, or with any other name get no certificate and fail. This stops
 internet-wide scanners from linking the server's IP to its label.

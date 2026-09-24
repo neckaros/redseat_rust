@@ -62,6 +62,56 @@ struct DirectState {
     requested_name: Option<String>,
 }
 
+/// What `public_base_url` needs, published by the running loop.
+struct PublicEndpoint {
+    resolver: Arc<SniResolver>,
+    /// Last address report the cloud accepted.
+    report: std::sync::RwLock<Option<AddressReport>>,
+}
+
+fn public_endpoint() -> &'static OnceLock<PublicEndpoint> {
+    static ENDPOINT: OnceLock<PublicEndpoint> = OnceLock::new();
+    &ENDPOINT
+}
+
+/// Set once direct HTTPS has checked its addresses after startup (or couldn't start).
+static STARTUP_ADDRESS_CHECK_DONE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// True while direct HTTPS is enabled but hasn't checked its addresses since startup: until
+/// then, `public_base_url` can be `None` only because nothing is published yet. Background
+/// work needing a public URL waits for this instead of failing.
+pub fn public_url_pending(config: &ServerConfig) -> bool {
+    is_enabled(config) && !STARTUP_ADDRESS_CHECK_DONE.load(std::sync::atomic::Ordering::Acquire)
+}
+
+fn mark_startup_address_check_done() {
+    STARTUP_ADDRESS_CHECK_DONE.store(true, std::sync::atomic::Ordering::Release);
+}
+
+/// Public direct HTTPS base URL (`https://<ip-encoded>.<label>.<zone>[:port]`), or `None`
+/// without a certificate or a public address. IPv4 first: remote services may lack IPv6.
+pub fn public_base_url() -> Option<String> {
+    let endpoint = public_endpoint().get()?;
+    let suffix = endpoint.resolver.direct_suffix()?;
+    let report = endpoint.report.read().ok()?.clone()?;
+    direct_public_url(&suffix, &report)
+}
+
+fn direct_public_url(suffix: &str, report: &AddressReport) -> Option<String> {
+    let host = report
+        .ipv4
+        .as_ref()
+        .map(|ipv4| ipv4.replace('.', "-"))
+        // Reported IPv6 addresses are already in RFC 5952 form.
+        .or_else(|| report.ipv6.first().map(|ipv6| ipv6.replace(':', "-")))?;
+    let port = match report.port {
+        443 => String::new(),
+        port => format!(":{port}"),
+    };
+    Some(format!("https://{host}.{suffix}{port}"))
+}
+
 fn members_notify() -> &'static Notify {
     static NOTIFY: OnceLock<Notify> = OnceLock::new();
     NOTIFY.get_or_init(Notify::new)
@@ -135,6 +185,7 @@ pub async fn start(
                 LogServiceType::Register,
                 format!("Direct HTTPS disabled: {error:?}"),
             );
+            mark_startup_address_check_done();
             return false;
         }
     };
@@ -155,6 +206,10 @@ pub async fn start(
     if let Some(certificate) = certificate {
         resolver.set_direct(certificate);
     }
+    let _ = public_endpoint().set(PublicEndpoint {
+        resolver: resolver.clone(),
+        report: std::sync::RwLock::new(None),
+    });
 
     let manager = Manager {
         cloud,
@@ -269,6 +324,7 @@ impl Manager {
             let now = Instant::now();
             if now >= next_addresses {
                 next_addresses = Instant::now() + self.check_addresses().await;
+                mark_startup_address_check_done();
             }
             if now >= next_members {
                 next_members = Instant::now() + self.sync_members().await;
@@ -299,6 +355,11 @@ impl Manager {
                     LogServiceType::Register,
                     format!("Direct HTTPS: reported addresses {report:?}"),
                 );
+                if let Some(endpoint) = public_endpoint().get() {
+                    if let Ok(mut published) = endpoint.report.write() {
+                        *published = Some(report.clone());
+                    }
+                }
                 self.reported = Some((report, Instant::now()));
                 ADDRESS_CHECK_INTERVAL
             }
@@ -619,6 +680,43 @@ mod tests {
             disabled_reason(&config).as_deref(),
             Some("custom domain redseat.example.com is used instead")
         );
+    }
+
+    #[test]
+    fn public_url_waits_only_for_enabled_direct_https() {
+        let mut config: ServerConfig = serde_json::from_str("{}").unwrap();
+        // Not registered: nothing will be published, so don't wait.
+        assert!(!public_url_pending(&config));
+        config.id = Some("id".into());
+        config.token = Some("token".into());
+        config.domain = Some("nseat.example.org".into());
+        // Custom domain: the URL doesn't depend on direct HTTPS.
+        assert!(!public_url_pending(&config));
+        config.domain = None;
+        // Direct HTTPS before its first address check (nothing in tests runs the loop).
+        assert!(public_url_pending(&config));
+    }
+
+    #[test]
+    fn public_url_prefers_ipv4_and_omits_443() {
+        let suffix = "abc.servers.redseat.cloud";
+        let report = |ipv4: Option<&str>, ipv6: &[&str], port| AddressReport {
+            lan: vec!["192.168.1.10".into()],
+            ipv4: ipv4.map(str::to_string),
+            ipv6: ipv6.iter().map(|ip| ip.to_string()).collect(),
+            port,
+        };
+        assert_eq!(
+            direct_public_url(suffix, &report(Some("82.64.1.2"), &["2a01:e0a::10"], 7080))
+                .as_deref(),
+            Some("https://82-64-1-2.abc.servers.redseat.cloud:7080")
+        );
+        assert_eq!(
+            direct_public_url(suffix, &report(None, &["2a01:e0a::10"], 443)).as_deref(),
+            Some("https://2a01-e0a--10.abc.servers.redseat.cloud")
+        );
+        // LAN only: no public URL.
+        assert_eq!(direct_public_url(suffix, &report(None, &[], 7080)), None);
     }
 
     #[test]

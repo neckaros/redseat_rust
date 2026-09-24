@@ -98,8 +98,6 @@ struct Certificates {
     direct: Option<SniCertificate>,
     /// The direct certificate replaced by a label rotation, still served for the old label.
     previous_direct: Option<SniCertificate>,
-    /// The `<id>-srv.redseat.cloud` certificate, kept until every client uses direct HTTPS.
-    legacy: Option<SniCertificate>,
 }
 
 /// Serves a certificate only when the client's SNI matches one of its names. Handshakes
@@ -111,12 +109,6 @@ pub struct SniResolver {
 }
 
 impl SniResolver {
-    pub fn set_legacy(&self, certificate: Option<SniCertificate>) {
-        if let Ok(mut certificates) = self.certificates.write() {
-            certificates.legacy = certificate;
-        }
-    }
-
     /// Hot-swaps the direct certificate. When its names change (label rotation), the previous
     /// one keeps answering for the old label.
     pub fn set_direct(&self, certificate: SniCertificate) {
@@ -149,38 +141,31 @@ impl SniResolver {
         let Ok(certificates) = self.certificates.read() else {
             return "unavailable".to_string();
         };
-        let mut served = vec![];
-        if let Some(direct) = &certificates.direct {
-            served.push(format!("direct {:?}", direct.names()));
-        }
-        if let Some(legacy) = &certificates.legacy {
-            served.push(format!("legacy {:?}", legacy.names()));
-        }
-        if served.is_empty() {
-            "no certificate yet".to_string()
-        } else {
-            served.join(", ")
+        match &certificates.direct {
+            Some(direct) => format!("{:?}", direct.names()),
+            None => "no certificate yet".to_string(),
         }
     }
 
-    pub fn has_certificate(&self) -> bool {
-        self.certificates
-            .read()
-            .map(|c| c.direct.is_some() || c.legacy.is_some())
-            .unwrap_or(false)
+    /// `<label>.<zone>` of the active direct certificate (its wildcard name without `*.`).
+    pub fn direct_suffix(&self) -> Option<String> {
+        let certificates = self.certificates.read().ok()?;
+        let suffix = certificates
+            .direct
+            .as_ref()?
+            .names()
+            .iter()
+            .find_map(|name| name.strip_prefix("*.").map(str::to_string));
+        suffix
     }
 
     fn find(&self, server_name: &str) -> Option<Arc<CertifiedKey>> {
         let certificates = self.certificates.read().ok()?;
-        let found = [
-            &certificates.direct,
-            &certificates.previous_direct,
-            &certificates.legacy,
-        ]
-        .into_iter()
-        .flatten()
-        .find(|certificate| certificate.matches(server_name))
-        .map(|certificate| certificate.key.clone());
+        let found = [&certificates.direct, &certificates.previous_direct]
+            .into_iter()
+            .flatten()
+            .find(|certificate| certificate.matches(server_name))
+            .map(|certificate| certificate.key.clone());
         found
     }
 }
