@@ -987,16 +987,21 @@ impl ModelController {
                         media_id.to_string(),
                         "media_image".to_string(),
                     ))?;
-            //headerSize(), end: headerSize() + fileInfo.thumbsize - 1 }
+            // Encrypted files embed their thumbnail; the server cannot generate a missing one.
+            let thumb_size = media_source
+                .thumb_size
+                .filter(|size| *size > 0)
+                .ok_or_else(|| SourcesError::NotFound(Some(format!("{media_id} thumbnail"))))?;
+            // Range ends are inclusive: read exactly `thumb_size` bytes after the header.
             let range = RangeDefinition {
                 start: Some(CRYPTO_HEADER_SIZE),
-                end: Some(CRYPTO_HEADER_SIZE + media_source.thumb_size.unwrap_or(0)),
+                end: Some(CRYPTO_HEADER_SIZE + thumb_size - 1),
             };
             let source = self.source_for_library(library_id).await?;
             let reader = source.get_file(&media_source.source, Some(range)).await?;
             if let SourceRead::Stream(mut reader) = reader {
                 reader.range = None;
-                reader.size = media_source.thumb_size;
+                reader.size = Some(thumb_size);
                 return Ok(reader);
             } else {
                 return Err(SourcesError::UnableToFindSource(
