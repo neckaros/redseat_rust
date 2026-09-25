@@ -987,10 +987,12 @@ impl ModelController {
                         media_id.to_string(),
                         "media_image".to_string(),
                     ))?;
-            //headerSize(), end: headerSize() + fileInfo.thumbsize - 1 }
+            // Range ends are inclusive: read exactly `thumb_size` bytes after the header.
             let range = RangeDefinition {
                 start: Some(CRYPTO_HEADER_SIZE),
-                end: Some(CRYPTO_HEADER_SIZE + media_source.thumb_size.unwrap_or(0)),
+                end: Some(
+                    CRYPTO_HEADER_SIZE + media_source.thumb_size.unwrap_or(0).saturating_sub(1),
+                ),
             };
             let source = self.source_for_library(library_id).await?;
             let reader = source.get_file(&media_source.source, Some(range)).await?;
