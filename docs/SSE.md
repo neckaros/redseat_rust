@@ -316,6 +316,16 @@ interface SeriesMessage {
   series: SerieWithAction[];
 }
 
+interface SerieWithAction {
+  action: ElementAction;
+  // All Serie fields are present at the top level (flattened), plus optional relations.
+  // Optional fields are omitted when empty, including:
+  //   lang?: string;      original language (ISO 639-1, e.g. "en")
+  //   original?: string;  original title
+  //   overview?: string;
+  serie: Serie & { relations?: Relations };
+}
+
 interface MoviesMessage {
   library: string;
   movies: MovieWithAction[];
