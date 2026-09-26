@@ -109,6 +109,10 @@ pub struct SerieForUpdate {
 
     pub year: Option<u16>,
     pub max_created: Option<i64>,
+
+    pub lang: Option<String>,
+    pub original: Option<String>,
+    pub overview: Option<String>,
 }
 
 enum ExternalSerieImageFallback {
@@ -217,6 +221,15 @@ impl SerieForUpdate {
         }
         if existing.year != incoming.year {
             update.year = incoming.year;
+        }
+        if existing.lang != incoming.lang {
+            update.lang = incoming.lang;
+        }
+        if existing.original != incoming.original {
+            update.original = incoming.original;
+        }
+        if existing.overview != incoming.overview {
+            update.overview = incoming.overview;
         }
         let ids = crate::domain::merge_refresh_ids(
             existing.otherids.as_ref(),

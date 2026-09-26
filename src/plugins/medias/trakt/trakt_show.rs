@@ -151,6 +151,8 @@ impl From<TraktFullShow> for Serie {
             trakt_rating: value.rating.map(|r| r as f32),
             trailer: value.trailer,
             year: value.year,
+            lang: value.language,
+            overview: value.overview,
             max_created: None,
             modified: t,
             added: t,

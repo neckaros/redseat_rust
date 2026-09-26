@@ -23,7 +23,7 @@ use crate::{
     tools::array_tools::replace_add_remove_from_array,
 };
 
-const SERIE_SQL_FIELDS: &str = "id, name, type, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, openlibrary_work_id, anilist_manga_id, mangadex_manga_uuid, myanimelist_manga_id, year, modified, added, imdb_rating, imdb_votes, trailer, maxCreated, trakt_rating, trakt_votes, status, posterv, backgroundv, cardv";
+const SERIE_SQL_FIELDS: &str = "id, name, type, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, openlibrary_work_id, anilist_manga_id, mangadex_manga_uuid, myanimelist_manga_id, year, modified, added, imdb_rating, imdb_votes, trailer, maxCreated, trakt_rating, trakt_votes, status, posterv, backgroundv, cardv, lang, original, overview";
 
 impl SqliteLibraryStore {
     fn hydrate_serie_relations(
@@ -86,6 +86,10 @@ impl SqliteLibraryStore {
                 posterv: row.get(25)?,
                 backgroundv: row.get(26)?,
                 cardv: row.get(27)?,
+
+                lang: row.get(28)?,
+                original: row.get(29)?,
+                overview: row.get(30)?,
             },
             relations: None,
         })
@@ -227,6 +231,9 @@ impl SqliteLibraryStore {
 
                 where_query.add_update(&update.year, "year");
                 where_query.add_update(&update.max_created, "max_created");
+                where_query.add_update(&update.lang, "lang");
+                where_query.add_update(&update.original, "original");
+                where_query.add_update(&update.overview, "overview");
 
                 let alts = replace_add_remove_from_array(
                     existing.item.alt,
@@ -298,8 +305,8 @@ impl SqliteLibraryStore {
     pub async fn add_serie(&self, serie: Serie) -> Result<()> {
         self.connection.call( move |conn| {
 
-            conn.execute("INSERT INTO series (id, name, type, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, openlibrary_work_id, anilist_manga_id, mangadex_manga_uuid, myanimelist_manga_id, year, imdb_rating, imdb_votes, trailer, trakt_rating, trakt_votes, status)
-            VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params![
+            conn.execute("INSERT INTO series (id, name, type, alt, params, imdb, slug, tmdb, trakt, tvdb, otherids, openlibrary_work_id, anilist_manga_id, mangadex_manga_uuid, myanimelist_manga_id, year, imdb_rating, imdb_votes, trailer, trakt_rating, trakt_votes, status, lang, original, overview)
+            VALUES (?, ?, ? ,?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params![
                 serie.id,
                 serie.name,
                 serie.kind,
@@ -321,7 +328,10 @@ impl SqliteLibraryStore {
                 serie.trailer,
                 serie.trakt_rating,
                 serie.trakt_votes,
-                serie.status
+                serie.status,
+                serie.lang,
+                serie.original,
+                serie.overview
             ])?;
 
             Ok(())
@@ -413,6 +423,9 @@ mod tests {
             imdb_votes: Some(100),
             params: Some(serde_json::json!({"overview":"Description"})),
             otherids: Some(OtherIds::from(vec!["provider:123".into()])),
+            lang: Some("ko".into()),
+            original: Some("오징어 게임".into()),
+            overview: Some("Players compete in children's games.".into()),
             ..stored.clone()
         };
         store
@@ -441,6 +454,12 @@ mod tests {
         assert_eq!(loaded.tvdb, Some(42));
         assert_eq!(loaded.imdb_rating, Some(8.0));
         assert_eq!(loaded.imdb_votes, Some(100));
+        assert_eq!(loaded.lang.as_deref(), Some("ko"));
+        assert_eq!(loaded.original.as_deref(), Some("오징어 게임"));
+        assert_eq!(
+            loaded.overview.as_deref(),
+            Some("Players compete in children's games.")
+        );
         assert_eq!(
             loaded.params,
             Some(serde_json::json!({"overview":"Description"}))
