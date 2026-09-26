@@ -424,7 +424,7 @@ mod tests {
             params: Some(serde_json::json!({"overview":"Description"})),
             otherids: Some(OtherIds::from(vec!["provider:123".into()])),
             lang: Some("ko".into()),
-            original: Some("오징어 게임".into()),
+            original: Some("\u{C624}\u{C9D5}\u{C5B4} \u{AC8C}\u{C784}".into()),
             overview: Some("Players compete in children's games.".into()),
             ..stored.clone()
         };
@@ -455,7 +455,7 @@ mod tests {
         assert_eq!(loaded.imdb_rating, Some(8.0));
         assert_eq!(loaded.imdb_votes, Some(100));
         assert_eq!(loaded.lang.as_deref(), Some("ko"));
-        assert_eq!(loaded.original.as_deref(), Some("오징어 게임"));
+        assert_eq!(loaded.original.as_deref(), Some("\u{C624}\u{C9D5}\u{C5B4} \u{AC8C}\u{C784}"));
         assert_eq!(
             loaded.overview.as_deref(),
             Some("Players compete in children's games.")
