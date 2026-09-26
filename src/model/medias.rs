@@ -1014,21 +1014,29 @@ impl ModelController {
             }
         }
 
-        let size = size.filter(|s| !(s == &ImageSize::Large || s == &ImageSize::Small));
+        // Stored thumbs are 512px: only smaller sizes need a resized variant
+        let size = size.filter(|s| (1..ImageSize::Small.to_size()).contains(&s.to_size()));
 
         let result = self
-            .library_image(library_id, ".thumbs", media_id, None, None, requesting_user)
+            .library_image(
+                library_id,
+                ".thumbs",
+                media_id,
+                None,
+                size.clone(),
+                requesting_user,
+            )
             .await;
         if let Err(error) = result {
             if let crate::Error::Source(SourcesError::NotFound(_)) = &error {
                 self.generate_thumb(library_id, media_id, requesting_user)
                     .await?;
-                self.library_image(library_id, ".thumbs", media_id, None, None, requesting_user)
+                self.library_image(library_id, ".thumbs", media_id, None, size, requesting_user)
                     .await
             } else if let crate::Error::CorruptedImage = &error {
                 self.generate_thumb(library_id, media_id, requesting_user)
                     .await?;
-                self.library_image(library_id, ".thumbs", media_id, None, None, requesting_user)
+                self.library_image(library_id, ".thumbs", media_id, None, size, requesting_user)
                     .await
             } else {
                 Err(error)

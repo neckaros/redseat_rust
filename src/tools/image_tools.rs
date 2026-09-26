@@ -84,7 +84,7 @@ impl FromStr for ImageSize {
             Err(_) => match input {
                 "thumb" => Ok(ImageSize::Thumb),
                 "small" => Ok(ImageSize::Small),
-                "large" => Ok(ImageSize::Small),
+                "large" => Ok(ImageSize::Large),
                 _ => Err(()),
             },
         }
@@ -644,6 +644,14 @@ mod tests {
     use std::fs;
 
     use super::*;
+
+    #[test]
+    fn image_size_from_str() {
+        assert_eq!(ImageSize::from_str("thumb"), Ok(ImageSize::Thumb));
+        assert_eq!(ImageSize::from_str("small"), Ok(ImageSize::Small));
+        assert_eq!(ImageSize::from_str("large"), Ok(ImageSize::Large));
+        assert_eq!(ImageSize::from_str("300"), Ok(ImageSize::Custom(300)));
+    }
 
     #[tokio::test]
     async fn convert() {

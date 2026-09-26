@@ -489,6 +489,50 @@ impl ModelController {
         let encryption_key = self.get_library_encryption_key(library_id).await;
 
         let m = self.library_source_for_library(&library_id).await?;
+
+        // Custom sizes are resized on demand and never cached
+        if let Some(ImageSize::Custom(width)) = size {
+            let original_filepath = format!(
+                "{}/{}{}.avif",
+                folder,
+                id,
+                ImageType::optional_to_filename_element(&kind)
+            );
+            let reader = m.get_file(&original_filepath, None).await?;
+            if reader.size().unwrap_or(200) == 0 {
+                m.remove(&original_filepath).await?;
+                return Err(RsError::CorruptedImage);
+            }
+            let reader = reader
+                .into_reader(
+                    Some(library_id),
+                    None,
+                    None,
+                    Some((self.clone(), &requesting_user)),
+                    None,
+                )
+                .await?;
+            let stream = Self::decrypt_stream_if_needed(reader, &encryption_key).stream;
+            // Bound the size so a request cannot force a huge upscale
+            let image = resize_image_reader(
+                stream,
+                width.clamp(1, ImageSize::Large.to_size()),
+                image::ImageFormat::Avif,
+                Some(50),
+                false,
+            )
+            .await?;
+            return Ok(FileStreamResult {
+                size: Some(image.len() as u64),
+                stream: Box::pin(std::io::Cursor::new(image)),
+                accept_range: false,
+                range: None,
+                mime: Some("image/avif".to_string()),
+                name: None,
+                cleanup: None,
+            });
+        }
+
         let mut source_filepath = format!(
             "{}/{}{}{}.avif",
             folder,
@@ -542,7 +586,7 @@ impl ModelController {
                         };
                         let image = resize_image_reader(
                             stream,
-                            512,
+                            int_size.to_size(),
                             image::ImageFormat::Avif,
                             Some(50),
                             false,
