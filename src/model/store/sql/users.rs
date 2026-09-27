@@ -258,12 +258,144 @@ mod tests {
 
     use super::SqliteStore;
     use crate::{
-        domain::watched::WatchedForAdd,
+        domain::{view_progress::ViewProgressForAdd, watched::WatchedForAdd},
         model::{
-            store::sql::{migrate_database, users::HistoryIdRewrite},
+            store::sql::{
+                migrate_database,
+                users::{HistoryIdRewrite, ProgressIdRewrite},
+            },
             users::HistoryQuery,
         },
     };
+
+    async fn progress_store() -> SqliteStore {
+        let connection = Connection::open_in_memory().await.unwrap();
+        migrate_database(&connection).await.unwrap();
+        SqliteStore {
+            server_store: connection,
+            libraries_stores: RwLock::new(HashMap::new()),
+        }
+    }
+
+    async fn add_progress(store: &SqliteStore, id: &str, user_ref: &str, progress: u64) {
+        store
+            .add_view_progress(
+                ViewProgressForAdd {
+                    kind: MediaType::Movie,
+                    id: id.to_string(),
+                    parent: None,
+                    progress,
+                },
+                user_ref.to_string(),
+            )
+            .await
+            .unwrap();
+    }
+
+    async fn set_progress_modified(store: &SqliteStore, id: &str, user_ref: &str, modified: u64) {
+        let (id, user_ref) = (id.to_string(), user_ref.to_string());
+        store
+            .server_store
+            .call(move |conn| {
+                conn.execute(
+                    "UPDATE progress SET modified = ? WHERE id = ? AND user_ref = ?",
+                    rusqlite::params![modified, id, user_ref],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+    }
+
+    /// (id, user_ref) -> (progress, modified)
+    async fn progress_rows(store: &SqliteStore) -> HashMap<(String, String), (u64, u64)> {
+        store
+            .get_all_view_progress_rows()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| ((row.id, row.user_ref), (row.progress, row.modified)))
+            .collect()
+    }
+
+    fn key(id: &str, user_ref: &str) -> (String, String) {
+        (id.to_string(), user_ref.to_string())
+    }
+
+    #[tokio::test]
+    async fn progress_time_is_per_user_and_changes_with_the_position() {
+        let store = progress_store().await;
+        add_progress(&store, "imdb:tt1", "user-a", 1000).await;
+        set_progress_modified(&store, "imdb:tt1", "user-a", 5).await;
+
+        // Another user's playback leaves user A's time alone.
+        add_progress(&store, "imdb:tt1", "user-b", 2000).await;
+        let rows = progress_rows(&store).await;
+        assert_eq!(rows[&key("imdb:tt1", "user-a")], (1000, 5));
+        assert!(rows[&key("imdb:tt1", "user-b")].1 > 5);
+
+        // Updating the position stamps it; other updates don't.
+        store
+            .server_store
+            .call(|conn| {
+                conn.execute(
+                    "UPDATE progress SET parent = 'x' WHERE user_ref = 'user-a'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert_eq!(progress_rows(&store).await[&key("imdb:tt1", "user-a")].1, 5);
+        store
+            .server_store
+            .call(|conn| {
+                conn.execute(
+                    "UPDATE progress SET progress = 3000 WHERE user_ref = 'user-a'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert!(progress_rows(&store).await[&key("imdb:tt1", "user-a")].1 > 5);
+    }
+
+    #[tokio::test]
+    async fn progress_rewrite_preserves_the_user_timestamp() {
+        let store = progress_store().await;
+        // Moved to a new id.
+        add_progress(&store, "redseat:moved", "user-a", 1000).await;
+        set_progress_modified(&store, "redseat:moved", "user-a", 5).await;
+        // Merged into an existing row: the most recent position and its time win.
+        add_progress(&store, "redseat:old", "user-a", 4000).await;
+        set_progress_modified(&store, "redseat:old", "user-a", 20).await;
+        add_progress(&store, "imdb:tt2", "user-a", 3000).await;
+        set_progress_modified(&store, "imdb:tt2", "user-a", 10).await;
+
+        let rewrite = |old_id: &str, new_id: &str| ProgressIdRewrite {
+            kind: MediaType::Movie,
+            old_id: old_id.to_string(),
+            new_id: new_id.to_string(),
+            new_parent: None,
+            user_ref: "user-a".to_string(),
+        };
+        store
+            .apply_history_rewrites(
+                vec![],
+                vec![
+                    rewrite("redseat:moved", "imdb:tt1"),
+                    rewrite("redseat:old", "imdb:tt2"),
+                ],
+            )
+            .await
+            .unwrap();
+
+        let rows = progress_rows(&store).await;
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[&key("imdb:tt1", "user-a")], (1000, 5));
+        assert_eq!(rows[&key("imdb:tt2", "user-a")], (4000, 20));
+    }
 
     #[tokio::test]
     async fn book_watched_rows_are_scoped_to_the_user() {
@@ -821,7 +953,8 @@ impl SqliteStore {
                         .optional()?;
 
                     if let Some((existing_progress, existing_parent, existing_modified)) = existing {
-                        let (merged_progress, merged_parent) =
+                        // The kept position keeps its own time.
+                        let (merged_progress, merged_parent, merged_modified) =
                             if source_modified >= existing_modified {
                                 (
                                     source_progress,
@@ -830,18 +963,21 @@ impl SqliteStore {
                                         .clone()
                                         .or(source_parent.clone())
                                         .or(existing_parent.clone()),
+                                    source_modified,
                                 )
                             } else {
                                 (
                                     existing_progress,
                                     rewrite.new_parent.clone().or(existing_parent.clone()),
+                                    existing_modified,
                                 )
                             };
                         tx.execute(
-                            "UPDATE progress SET progress = ?, parent = ? WHERE type = ? AND id = ? AND user_ref = ?",
+                            "UPDATE progress SET progress = ?, parent = ?, modified = ? WHERE type = ? AND id = ? AND user_ref = ?",
                             params![
                                 merged_progress,
                                 merged_parent,
+                                merged_modified,
                                 rewrite.kind,
                                 rewrite.new_id,
                                 rewrite.user_ref
