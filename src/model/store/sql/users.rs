@@ -362,6 +362,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn saving_progress_returns_the_stamped_row() {
+        let store = progress_store().await;
+        let saved = store
+            .add_view_progress(
+                ViewProgressForAdd {
+                    kind: MediaType::Episode,
+                    id: "episode:imdb/tt1/1/2".to_string(),
+                    parent: Some("serie:imdb/tt1".to_string()),
+                    progress: 1500,
+                },
+                "user-a".to_string(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(saved.kind, MediaType::Episode);
+        assert_eq!(saved.id, "episode:imdb/tt1/1/2");
+        assert_eq!(saved.user_ref, "user-a");
+        assert_eq!(saved.progress, 1500);
+        assert_eq!(saved.parent.as_deref(), Some("serie:imdb/tt1"));
+        assert_eq!(
+            saved.modified,
+            progress_rows(&store).await[&key("episode:imdb/tt1/1/2", "user-a")].1
+        );
+        assert!(saved.modified > 0);
+    }
+
+    #[tokio::test]
     async fn progress_rewrite_preserves_the_user_timestamp() {
         let store = progress_store().await;
         // Moved to a new id.
@@ -825,12 +853,14 @@ impl SqliteStore {
         Ok(row)
     }
 
+    /// Saves the position and returns the stored row, with the time the triggers set.
     pub async fn add_view_progress(
         &self,
         progress: ViewProgressForAdd,
         user_ref: String,
-    ) -> Result<()> {
-        self.server_store
+    ) -> Result<ViewProgress> {
+        let row = self
+            .server_store
             .call(move |conn| {
                 conn.execute(
                     "INSERT OR REPLACE INTO progress (type, id, user_ref, progress, parent)
@@ -843,11 +873,16 @@ impl SqliteStore {
                         progress.parent
                     ],
                 )?;
-
-                Ok(())
+                let row = conn.query_row(
+                    "SELECT type, id, user_ref, progress, parent, modified FROM progress
+                     WHERE type = ? AND id = ? AND user_ref = ?",
+                    params![progress.kind, progress.id, user_ref],
+                    Self::row_to_view_progress,
+                )?;
+                Ok(row)
             })
             .await?;
-        Ok(())
+        Ok(row)
     }
 
     pub async fn apply_history_rewrites(

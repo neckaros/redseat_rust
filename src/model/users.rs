@@ -624,6 +624,10 @@ impl ModelController {
         Ok(())
     }
 
+    pub fn send_view_progress(&self, progress: ViewProgress) {
+        self.broadcast_sse(SseEvent::ViewProgress(progress));
+    }
+
     pub async fn add_view_progress(
         &self,
         mut progress: ViewProgressForAdd,
@@ -639,12 +643,15 @@ impl ModelController {
                 .get_library_progress_merged_users(&library_id, user_id)
                 .await?;
             for id in all_ids {
-                self.store.add_view_progress(progress.clone(), id).await?;
+                let saved = self.store.add_view_progress(progress.clone(), id).await?;
+                self.send_view_progress(saved);
             }
         } else {
-            self.store
+            let saved = self
+                .store
                 .add_view_progress(progress.clone(), user_id)
                 .await?;
+            self.send_view_progress(saved);
         }
         Ok(())
     }
