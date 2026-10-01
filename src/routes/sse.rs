@@ -26,6 +26,7 @@ use crate::{
         request_processing::RequestProcessingMessage,
         serie::SeriesMessage,
         tag::TagMessage,
+        view_progress::ViewProgress,
         watched::{Unwatched, Watched},
     },
     model::{
@@ -59,6 +60,7 @@ pub enum SseEvent {
     MediaRating(MediasRatingMessage),
     Watched(Watched),
     Unwatched(Unwatched),
+    ViewProgress(ViewProgress),
     RequestProcessing(RequestProcessingMessage),
     Channels(ChannelMessage),
 }
@@ -84,6 +86,7 @@ impl SseEvent {
             SseEvent::MediaRating(_) => "media_rating",
             SseEvent::Watched(_) => "watched",
             SseEvent::Unwatched(_) => "unwatched",
+            SseEvent::ViewProgress(_) => "view_progress",
             SseEvent::RequestProcessing(_) => "request_processing",
             SseEvent::Channels(_) => "channels",
         }
@@ -109,6 +112,7 @@ impl SseEvent {
             SseEvent::MediaRating(m) => Some(&m.library),
             SseEvent::Watched(_) => None,
             SseEvent::Unwatched(_) => None,
+            SseEvent::ViewProgress(_) => None,
             SseEvent::RequestProcessing(m) => Some(&m.library),
             SseEvent::Channels(m) => Some(&m.library),
         }
@@ -161,6 +165,11 @@ impl SseEvent {
                 .zip(w.user_ref.as_ref())
                 .map(|(uid, wr)| uid == *wr)
                 .unwrap_or(false),
+
+            // User-specific events: only send to the user whose resume position this is
+            SseEvent::ViewProgress(p) => {
+                user.user_id().map(|uid| uid == p.user_ref).unwrap_or(false)
+            }
 
             // Library-scoped events (read access required)
             _ => {
@@ -362,6 +371,7 @@ mod tests {
         backup::{Backup, BackupMessage, BackupProcessStatus, BackupStatus, BackupWithStatus},
         book::{Book, BookWithAction, BooksMessage},
         library::{LibraryMessage, ServerLibrary},
+        view_progress::ViewProgress,
         watched::{Unwatched, Watched},
         ElementAction,
     };
@@ -459,6 +469,29 @@ mod tests {
         let serialized = serde_json::to_value(&event).unwrap();
         assert_eq!(serialized["unwatched"]["type"], "book");
         assert_eq!(serialized["unwatched"]["ids"][1], "oleid:OL123M");
+    }
+
+    #[test]
+    fn view_progress_events_are_serialized_and_user_scoped() {
+        let owner = connected_user("user-a");
+        let other = connected_user("user-b");
+        let event = SseEvent::ViewProgress(ViewProgress {
+            kind: MediaType::Movie,
+            id: "movie:imdb/tt0111161".to_string(),
+            user_ref: "user-a".to_string(),
+            progress: 1_200_000,
+            parent: None,
+            modified: 1_725_000_000_456,
+        });
+
+        assert_eq!(event.event_name(), "view_progress");
+        assert!(event.should_send_to(&owner));
+        assert!(!event.should_send_to(&other));
+        let serialized = serde_json::to_value(&event).unwrap();
+        assert_eq!(serialized["viewProgress"]["type"], "movie");
+        assert_eq!(serialized["viewProgress"]["id"], "movie:imdb/tt0111161");
+        assert_eq!(serialized["viewProgress"]["progress"], 1_200_000);
+        assert_eq!(serialized["viewProgress"]["modified"], 1_725_000_000_456u64);
     }
 
     #[test]

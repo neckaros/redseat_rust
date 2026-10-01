@@ -321,6 +321,7 @@ impl ModelController {
             .await?;
         if let Some(progress) = progress {
             movie.progress = Some(progress.progress);
+            movie.progress_modified = Some(progress.modified);
         }
 
         let watched = self
@@ -357,7 +358,7 @@ impl ModelController {
             )
             .await?
             .into_iter()
-            .map(|e| (e.id, e.progress))
+            .map(|e| (e.id, (e.progress, e.modified)))
             .collect::<HashMap<_, _>>();
         let watched = self
             .get_watched(
@@ -377,8 +378,10 @@ impl ModelController {
             if let Some(watch) = history_ids.iter().find_map(|id| watched.get(id)) {
                 movie.watched = Some(*watch);
             }
-            if let Some(progress) = history_ids.iter().find_map(|id| progresses.get(id)) {
+            if let Some((progress, modified)) = history_ids.iter().find_map(|id| progresses.get(id))
+            {
                 movie.progress = Some(*progress);
+                movie.progress_modified = Some(*modified);
             }
         }
         Ok(())

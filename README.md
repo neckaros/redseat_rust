@@ -245,5 +245,6 @@ The delete endpoint accepts multiple IDs because the watched entry could have be
 Real-time watch state changes are broadcast via SSE:
 - `watched` - Content marked as watched
 - `unwatched` - Content removed from watch history
+- `view_progress` - Resume position saved for a movie or episode
 
 See [docs/SSE.md](docs/SSE.md) for detailed SSE documentation.

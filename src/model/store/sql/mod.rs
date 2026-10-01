@@ -148,8 +148,17 @@ pub async fn migrate_database(connection: &Connection) -> Result<usize> {
                 println!("Update SQL to version 13 (backup max versions)")
             }
 
+            if version < 14 {
+                let update =
+                    String::from_utf8_lossy(include_bytes!("014 - PROGRESS TIMESTAMPS.sql"));
+                conn.execute_batch(&update)?;
+
+                conn.pragma_update(None, "user_version", 14)?;
+                println!("Update SQL to version 14 (per-user progress timestamps)")
+            }
+
             conn.execute("VACUUM;", params![])?;
-            Ok(13)
+            Ok(14)
         })
         .await?;
 
@@ -768,6 +777,7 @@ mod tests {
                 connection.execute_batch(
                     "CREATE TABLE Backups (id TEXT PRIMARY KEY);
                      INSERT INTO Backups (id) VALUES ('existing');
+                     CREATE TABLE progress (type TEXT, id TEXT, user_ref TEXT, parent TEXT, progress INTEGER, modified INTEGER DEFAULT 0, PRIMARY KEY (type, id, user_ref)) WITHOUT ROWID;
                      PRAGMA user_version = 12;",
                 )?;
                 Ok(())

@@ -549,7 +549,7 @@ impl ModelController {
                 .get_library_progress_merged_users(&library_id, user_id)
                 .await?;
             for id in all_ids {
-                self.store.add_watched(watched.clone(), id.clone()).await?;
+                let cleared = self.store.add_watched(watched.clone(), id.clone()).await?;
                 self.send_watched(Watched {
                     kind: watched.kind.clone(),
                     id: watched.id.clone(),
@@ -557,9 +557,11 @@ impl ModelController {
                     date: watched.date,
                     modified,
                 });
+                self.send_view_progress_cleared(cleared, modified);
             }
         } else {
-            self.store
+            let cleared = self
+                .store
                 .add_watched(watched.clone(), user_id.clone())
                 .await?;
             self.send_watched(Watched {
@@ -569,8 +571,21 @@ impl ModelController {
                 date: watched.date,
                 modified,
             });
+            self.send_view_progress_cleared(cleared, modified);
         }
         Ok(())
+    }
+
+    /// Marking as watched removes the resume position: tell the user's devices
+    /// with a `view_progress` event whose `progress` is 0.
+    fn send_view_progress_cleared(&self, cleared: Option<ViewProgress>, modified: u64) {
+        if let Some(cleared) = cleared {
+            self.send_view_progress(ViewProgress {
+                progress: 0,
+                modified,
+                ..cleared
+            });
+        }
     }
 
     pub fn send_unwatched(&self, unwatched: Unwatched) {
@@ -624,6 +639,10 @@ impl ModelController {
         Ok(())
     }
 
+    pub fn send_view_progress(&self, progress: ViewProgress) {
+        self.broadcast_sse(SseEvent::ViewProgress(progress));
+    }
+
     pub async fn add_view_progress(
         &self,
         mut progress: ViewProgressForAdd,
@@ -639,12 +658,15 @@ impl ModelController {
                 .get_library_progress_merged_users(&library_id, user_id)
                 .await?;
             for id in all_ids {
-                self.store.add_view_progress(progress.clone(), id).await?;
+                let saved = self.store.add_view_progress(progress.clone(), id).await?;
+                self.send_view_progress(saved);
             }
         } else {
-            self.store
+            let saved = self
+                .store
                 .add_view_progress(progress.clone(), user_id)
                 .await?;
+            self.send_view_progress(saved);
         }
         Ok(())
     }
