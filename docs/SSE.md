@@ -63,6 +63,7 @@ Missing files do not prevent entry deletion. Event payloads are unchanged.
 | `media_rating` | Rating changes (media, movies, series, episodes, books, people) | User-specific (only rating owner) |
 | `watched` | Content marked as watched | User-specific (only watched owner) |
 | `unwatched` | Content unmarked as watched | User-specific (only watched owner) |
+| `view_progress` | Resume position saved for a movie or episode | User-specific (only progress owner) |
 | `request_processing` | Request processing status updates | Library read access |
 
 `GET /libraries/:libraryId/books/:id/metadata/refresh` refreshes a book from
@@ -427,6 +428,16 @@ interface Unwatched {
   modified: number;
 }
 
+// View progress events (user-specific): the stored resume position of a title.
+interface ViewProgress {
+  type: string;     // MediaType: "movie", "episode", etc.
+  id: string;       // Typed history ID, same format as Watched
+  userRef: string;
+  progress: number; // Resume position
+  parent?: string;  // Series history ID for episodes, e.g. "series:imdb/tt0108778"
+  modified: number; // When this user's position last changed (unix ms)
+}
+
 // Request processing events
 interface RequestProcessingMessage {
   library: string;
@@ -471,6 +482,7 @@ type SseEvent =
   | { MediaRating: MediasRatingMessage }
   | { Watched: Watched }
   | { Unwatched: Unwatched }   // Note: different structure than Watched
+  | { viewProgress: ViewProgress }
   | { RequestProcessing: RequestProcessingMessage };
 ```
 
@@ -607,7 +619,8 @@ class SseClient {
       'library', 'library-status', 'medias', 'upload_progress',
       'convert_progress', 'episodes', 'series', 'movies', 'books',
       'people', 'tags', 'backups', 'backups-files', 'media_progress',
-      'media_rating', 'watched', 'unwatched', 'request_processing'
+      'media_rating', 'watched', 'unwatched', 'view_progress',
+      'request_processing'
     ];
 
     events.forEach(eventName => {
@@ -673,7 +686,8 @@ function useSse(options: UseSseOptions = {}) {
       'library', 'library-status', 'medias', 'upload_progress',
       'convert_progress', 'episodes', 'series', 'movies', 'books',
       'people', 'tags', 'backups', 'backups-files', 'media_progress',
-      'media_rating', 'watched', 'unwatched', 'request_processing'
+      'media_rating', 'watched', 'unwatched', 'view_progress',
+      'request_processing'
     ];
 
     eventTypes.forEach(eventName => {
@@ -986,6 +1000,64 @@ function isMatchingWatchedEvent(movie: LocalMovie, eventId: string): boolean {
 function isMatchingUnwatchedEvent(movie: LocalMovie, eventIds: string[]): boolean {
   return eventIds.some(eventId => isMatchingWatchedEvent(movie, eventId));
 }
+```
+
+## View Progress Events
+
+Saving a resume position broadcasts a `view_progress` event with the stored
+row, so a movie or episode resumed on one device updates the others without a
+full sync. `media_progress` covers the position inside a media file;
+`view_progress` covers the position of a title, keyed by its typed history ID.
+
+The event is emitted by:
+
+**Movies**: `POST /libraries/:libraryId/movies/:id/progress`
+```json
+{ "progress": 1200000 }
+```
+
+**Episodes**: `POST /libraries/:libraryId/series/:serieId/seasons/:season/episodes/:number/progress`
+```json
+{ "progress": 1200000 }
+```
+
+**Direct History**: `POST /users/me/history/progress`
+```json
+{
+  "type": "movie",
+  "id": "movie:imdb/tt1234567",
+  "progress": 1200000
+}
+```
+
+Payload (the wrapper key is `viewProgress`):
+
+```json
+{
+  "viewProgress": {
+    "type": "movie",
+    "id": "movie:imdb/tt1234567",
+    "userRef": "user-a",
+    "progress": 1200000,
+    "modified": 1725000000456
+  }
+}
+```
+
+- The event is sent only to the user named by `userRef`. When a library merges
+  progress between users, each merged user gets their own event with their own
+  row.
+- `modified` is per user and is the time the position was last saved. A history
+  ID rewrite keeps it; when a rewrite merges two rows, the kept position keeps
+  its own time. Movies expose the same value as `progressModified`.
+- Marking a title as watched deletes its resume position without a
+  `view_progress` event: clear the local position on the `watched` event.
+
+```typescript
+eventSource.addEventListener('view_progress', (event) => {
+  const { viewProgress } = JSON.parse(event.data);
+  console.log(`Resume ${viewProgress.type} ${viewProgress.id} at ${viewProgress.progress}`);
+});
 ```
 
 ## Offline Sync for Watch History

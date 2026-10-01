@@ -167,10 +167,9 @@ impl SseEvent {
                 .unwrap_or(false),
 
             // User-specific events: only send to the user whose resume position this is
-            SseEvent::ViewProgress(p) => user
-                .user_id()
-                .map(|uid| uid == p.user_ref)
-                .unwrap_or(false),
+            SseEvent::ViewProgress(p) => {
+                user.user_id().map(|uid| uid == p.user_ref).unwrap_or(false)
+            }
 
             // Library-scoped events (read access required)
             _ => {
