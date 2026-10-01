@@ -1050,8 +1050,10 @@ Payload (the wrapper key is `viewProgress`):
 - `modified` is per user and is the time the position was last saved. A history
   ID rewrite keeps it; when a rewrite merges two rows, the kept position keeps
   its own time. Movies expose the same value as `progressModified`.
-- Marking a title as watched deletes its resume position without a
-  `view_progress` event: clear the local position on the `watched` event.
+- Marking a title as watched deletes its resume position. When a position was
+  removed, the server sends a `view_progress` event with `progress: 0` (and the
+  time it was marked watched as `modified`) alongside the `watched` event:
+  treat `progress: 0` as "no resume position".
 
 ```typescript
 eventSource.addEventListener('view_progress', (event) => {

@@ -390,6 +390,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn marking_watched_returns_the_removed_progress() {
+        let store = progress_store().await;
+        add_progress(&store, "imdb:tt1", "user-a", 1000).await;
+        add_progress(&store, "imdb:tt1", "user-b", 2000).await;
+        let watched = || WatchedForAdd {
+            kind: MediaType::Movie,
+            id: "imdb:tt1".to_string(),
+            date: 1_700_000_000_000,
+        };
+
+        let cleared = store
+            .add_watched(watched(), "user-a".to_string())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(cleared.id, "imdb:tt1");
+        assert_eq!(cleared.user_ref, "user-a");
+        assert_eq!(cleared.progress, 1000);
+
+        // Only that user's position is removed; nothing is left to remove after.
+        let rows = progress_rows(&store).await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[&key("imdb:tt1", "user-b")].0, 2000);
+        let again = store
+            .add_watched(watched(), "user-a".to_string())
+            .await
+            .unwrap();
+        assert_eq!(again, None);
+    }
+
+    #[tokio::test]
     async fn progress_rewrite_preserves_the_user_timestamp() {
         let store = progress_store().await;
         // Moved to a new id.
@@ -684,8 +715,14 @@ impl SqliteStore {
         Ok(row)
     }
 
-    pub async fn add_watched(&self, watched: WatchedForAdd, user_id: String) -> Result<()> {
-        self.server_store
+    /// Marks as watched and returns the resume position it removed, if there was one.
+    pub async fn add_watched(
+        &self,
+        watched: WatchedForAdd,
+        user_id: String,
+    ) -> Result<Option<ViewProgress>> {
+        let cleared = self
+            .server_store
             .call(move |conn| {
                 conn.execute(
                     "INSERT OR REPLACE INTO Watched (type, id, user_ref, date)
@@ -693,15 +730,23 @@ impl SqliteStore {
                     params![watched.kind, watched.id, user_id, watched.date],
                 )?;
 
+                let cleared = conn
+                    .query_row(
+                        "SELECT type, id, user_ref, progress, parent, modified FROM progress
+                     WHERE type = ? AND id = ? AND user_ref = ?",
+                        params![watched.kind, watched.id, user_id],
+                        Self::row_to_view_progress,
+                    )
+                    .optional()?;
                 conn.execute(
                     "DELETE FROM progress where type = ? and id = ? and user_ref = ?",
                     params![watched.kind, watched.id, user_id,],
                 )?;
 
-                Ok(())
+                Ok(cleared)
             })
             .await?;
-        Ok(())
+        Ok(cleared)
     }
 
     /// Deletes watched entries and returns the IDs that existed.
