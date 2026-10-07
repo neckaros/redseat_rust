@@ -292,19 +292,27 @@ impl EmbeddingGemma {
         })
     }
 
+    /// The vision encoder, loaded if it is not in memory.
+    fn vision_session<'a>(
+        &self,
+        vision: &'a mut Option<Session>,
+    ) -> EmbeddingResult<&'a mut Session> {
+        Ok(match vision {
+            Some(session) => session,
+            empty => empty.insert(load_session(
+                self.directory.join(VISION_FILE),
+                self.threads,
+            )?),
+        })
+    }
+
     fn image_features(&self, patches: ImagePatches) -> EmbeddingResult<Vec<f32>> {
         let patch_values = (PATCH_SIZE * PATCH_SIZE * 3) as usize;
         let pixel_values = Tensor::from_array(([1, patches.count, patch_values], patches.pixels))?;
         let position_ids = Tensor::from_array(([1, patches.count, 2], patches.positions))?;
 
         let mut vision = self.vision.lock().map_err(poisoned)?;
-        let session = match &mut *vision {
-            Some(session) => session,
-            empty => empty.insert(load_session(
-                self.directory.join(VISION_FILE),
-                self.threads,
-            )?),
-        };
+        let session = self.vision_session(&mut vision)?;
         let outputs = session.run(ort::inputs![
             "pixel_values" => pixel_values,
             "pixel_position_ids" => position_ids,
@@ -372,6 +380,12 @@ impl Embedder for EmbeddingGemma {
             .map_err(|error| EmbeddingError::Tokenizer(error.to_string()))?;
         let input_ids = encoding.get_ids().iter().map(|id| i64::from(*id)).collect();
         self.sentence_embedding(input_ids, Vec::new())
+    }
+
+    fn prepare_image_resources(&self) -> EmbeddingResult<()> {
+        let mut vision = self.vision.lock().map_err(poisoned)?;
+        self.vision_session(&mut vision)?;
+        Ok(())
     }
 
     fn release_image_resources(&self) {

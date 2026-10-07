@@ -166,6 +166,16 @@ impl ModelController {
         Ok(embedder)
     }
 
+    /// Loads the embedder with its image side. A pass calls it first, so a model that
+    /// cannot load stops the pass before any media is charged with the failure.
+    pub async fn prepare_embedder_for_images(&self) -> RsResult<()> {
+        let embedder = self.get_embedder().await?;
+        tokio::task::spawn_blocking(move || embedder.prepare_image_resources())
+            .await
+            .map_err(|error| RsError::Error(format!("Join error: {}", error)))??;
+        Ok(())
+    }
+
     /// The embedder if it can be had without a long wait. When its files are missing
     /// the download is started in the background and `None` is returned.
     async fn get_embedder_for_search(&self) -> RsResult<Option<Arc<dyn Embedder>>> {

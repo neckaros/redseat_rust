@@ -169,6 +169,14 @@ offered again by later passes, at most once per pass, and is given up on after
 medias given up on; `POST .../embeddings/process?retryFailed=true` forgets the
 failures of the library.
 
+Two guards keep a problem that is not about the medias from being charged to them:
+
+- A pass loads the whole model, vision encoder included, before it touches a media.
+  A model that cannot load stops the pass with no failure recorded.
+- After 5 failures in a row a pass leaves the library until the next one. A broken
+  model or unreachable storage then costs those 5 medias an attempt, not the whole
+  library.
+
 ### Pending medias
 
 "What is left to embed" is one store method,

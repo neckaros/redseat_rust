@@ -207,6 +207,7 @@ the same human-readable messages as the face scan:
 - `Starting media embedding for library {name} (0/{total} - 0%)`
 - `Embedding media items... ({processed}/{total}) - {percent}%`
 - `Completed media embedding for library {name} ({embedded}/{total}) - 100%`
+- `Media embedding interrupted for library {name} after repeated failures ({embedded}/{total})`
 
 ## TypeScript Client Examples
 

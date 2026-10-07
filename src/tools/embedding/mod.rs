@@ -96,6 +96,12 @@ pub trait Embedder: Send + Sync {
     /// Returns an L2-normalised vector in the same space as [`Embedder::embed_image`].
     fn embed_text(&self, query: &str) -> EmbeddingResult<Vec<f32>>;
 
+    /// Loads what is only needed for images, so a model that cannot load fails here
+    /// and not on the first image.
+    fn prepare_image_resources(&self) -> EmbeddingResult<()> {
+        Ok(())
+    }
+
     /// Frees what is only needed for images. Text embedding must stay available.
     fn release_image_resources(&self) {}
 }
