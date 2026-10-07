@@ -16,9 +16,6 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             archive: tar.gz
-          - target: x86_64-apple-darwin
-            os: macos-15-intel
-            archive: zip
           - target: aarch64-apple-darwin
             os: macos-15
             archive: zip
