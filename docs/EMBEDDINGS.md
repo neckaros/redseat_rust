@@ -44,6 +44,11 @@ The model is downloaded on first use (about 316 MB) into
 `<config dir>/models/embeddinggemma-2-q4/`. It lives in the configuration directory
 rather than the working directory so that a Docker volume keeps it.
 
+The download is pinned to one commit of the model repository, and each file is
+checked against its SHA-256 before it is kept. The embedder id promises that every
+stored vector comes from the same weights, so moving to another revision of the
+files needs a new id.
+
 ### Cost
 
 Measured on 6 Haswell cores (AVX2), 4 threads: about 3 s per image, of which 2.7 s

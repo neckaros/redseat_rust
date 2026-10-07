@@ -15,6 +15,7 @@ use ort::{
     session::{builder::GraphOptimizationLevel, Session},
     value::Tensor,
 };
+use sha2::{Digest, Sha256};
 use tokenizers::Tokenizer;
 use tokio::io::AsyncWriteExt;
 
@@ -36,20 +37,39 @@ pub const SPEC: EmbedderSpec = EmbedderSpec {
 /// Sub-directory of the models directory holding the files below.
 pub const MODEL_DIRECTORY: &str = "embeddinggemma-2-q4";
 
-const BASE_URL: &str = "https://huggingface.co/onnx-community/embeddinggemma-2-ONNX/resolve/main/";
+/// Pinned to one commit of the repository: the embedder id promises that every stored
+/// vector comes from the same weights and tokenizer. Another revision needs a new id.
+const BASE_URL: &str = "https://huggingface.co/onnx-community/embeddinggemma-2-ONNX/resolve/daa72c51243991dfcaf9f9137d2c573d8f7790c0/";
 const BACKBONE_FILE: &str = "model_q4.onnx";
 const VISION_FILE: &str = "vision_encoder_q4.onnx";
 const TOKENIZER_FILE: &str = "tokenizer.json";
-/// (local name, path in the repository). Each `.onnx_data` must sit beside its `.onnx`.
-const FILES: &[(&str, &str)] = &[
-    ("model_q4.onnx_data", "onnx/model_q4.onnx_data"),
-    (BACKBONE_FILE, "onnx/model_q4.onnx"),
+/// (local name, path in the repository, SHA-256). Each `.onnx_data` must sit beside its `.onnx`.
+const FILES: &[(&str, &str, &str)] = &[
+    (
+        "model_q4.onnx_data",
+        "onnx/model_q4.onnx_data",
+        "c3975f2d1ab7a1878ae31a7d7a9b7804a827aff3800b60dfceafce21cac3df49",
+    ),
+    (
+        BACKBONE_FILE,
+        "onnx/model_q4.onnx",
+        "f9eeba97acddf139b8ee2ddf04bc30dceafa88de93fadf74d7644e0d61a477a9",
+    ),
     (
         "vision_encoder_q4.onnx_data",
         "onnx/vision_encoder_q4.onnx_data",
+        "0a9d6c927334f152a33dd90874f65d6ea5228999abe6a450d3f7813677fa704c",
     ),
-    (VISION_FILE, "onnx/vision_encoder_q4.onnx"),
-    (TOKENIZER_FILE, "tokenizer.json"),
+    (
+        VISION_FILE,
+        "onnx/vision_encoder_q4.onnx",
+        "7ea284226d4938f0ad921ab091f1d80a9ca699aa802984ef5cd5eec4f4761d96",
+    ),
+    (
+        TOKENIZER_FILE,
+        "tokenizer.json",
+        "4d777ef5bdc1aa36227abdfb77c3e49e7b9c892d16e1b6bda41c393504828be4",
+    ),
 ];
 
 const QUERY_PREFIX: &str = "task: search result | query: ";
@@ -72,16 +92,18 @@ pub fn default_threads() -> usize {
 }
 
 pub fn files_present(directory: &Path) -> bool {
-    FILES.iter().all(|(name, _)| directory.join(name).exists())
+    FILES
+        .iter()
+        .all(|(name, _, _)| directory.join(name).exists())
 }
 
-/// Downloads the missing model files into `directory`.
+/// Downloads the missing model files into `directory`, checking each against its checksum.
 pub async fn ensure_files(
     directory: &Path,
     on_progress: &(dyn Fn(String) + Send + Sync),
 ) -> EmbeddingResult<()> {
     tokio::fs::create_dir_all(directory).await?;
-    for (name, remote) in FILES {
+    for (name, remote, sha256) in FILES {
         let destination = directory.join(name);
         if destination.exists() {
             continue;
@@ -90,7 +112,7 @@ pub async fn ensure_files(
         // Download to .tmp first so an interrupted transfer never looks complete.
         let temporary = directory.join(format!("{name}.tmp"));
         let url = format!("{BASE_URL}{remote}");
-        match download_file(&url, &temporary, on_progress).await {
+        match download_file(&url, &temporary, sha256, on_progress).await {
             Ok(()) => tokio::fs::rename(&temporary, &destination).await?,
             Err(error) => {
                 let _ = tokio::fs::remove_file(&temporary).await;
@@ -104,6 +126,7 @@ pub async fn ensure_files(
 async fn download_file(
     url: &str,
     destination: &Path,
+    sha256: &str,
     on_progress: &(dyn Fn(String) + Send + Sync),
 ) -> EmbeddingResult<()> {
     let download_error =
@@ -121,9 +144,11 @@ async fn download_file(
     let mut stream = response.bytes_stream();
     let mut downloaded: u64 = 0;
     let mut last_percent: u64 = 0;
+    let mut hasher = Sha256::new();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(download_error)?;
         file.write_all(&chunk).await?;
+        hasher.update(&chunk);
         downloaded += chunk.len() as u64;
         if total_size > 0 {
             let percent = downloaded * 100 / total_size;
@@ -137,6 +162,12 @@ async fn download_file(
     if total_size > 0 && downloaded != total_size {
         return Err(EmbeddingError::Download(format!(
             "{url}: received {downloaded} of {total_size} bytes"
+        )));
+    }
+    let received = format!("{:x}", hasher.finalize());
+    if received != sha256 {
+        return Err(EmbeddingError::Download(format!(
+            "{url}: checksum {received} does not match the expected {sha256}"
         )));
     }
     Ok(())
