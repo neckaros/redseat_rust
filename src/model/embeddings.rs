@@ -308,12 +308,16 @@ impl ModelController {
 
     /// Queues an immediate embedding pass on one library. The library still has to
     /// have the `embeddings` setting on. `retry_failed` forgets recorded failures first.
+    ///
+    /// Returns false when a pass is already running. Passes do not overlap, so the
+    /// library is then handled by that pass, or by the next recurring one if that
+    /// pass is already past it.
     pub async fn start_media_embedding_task(
         &self,
         library_id: &str,
         retry_failed: bool,
         requesting_user: &ConnectedUser,
-    ) -> RsResult<()> {
+    ) -> RsResult<bool> {
         requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
         self.cache_check_library_notcrypt(library_id).await?;
         if !self.library_embeddings_enabled(library_id).await {
@@ -327,6 +331,8 @@ impl ModelController {
                 .clear_media_embedding_errors(self.embedder_spec().id.to_string())
                 .await?;
         }
+        let already_running = self.embeddings.backfill_running.load(Ordering::Relaxed);
+        // Queued even then: the running pass may be over before the scheduler ticks.
         self.scheduler
             .add(
                 RsTaskType::Embedding,
@@ -335,7 +341,8 @@ impl ModelController {
                     specific_library: Some(library_id.to_string()),
                 },
             )
-            .await
+            .await?;
+        Ok(!already_running)
     }
 
     /// Computes and stores the vector of one photo or video. A failure is recorded

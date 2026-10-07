@@ -344,12 +344,20 @@ async fn handler_embeddings_process(
     user: ConnectedUser,
     Query(query): Query<EmbeddingsProcessQuery>,
 ) -> Result<Json<Value>> {
-    mc.start_media_embedding_task(&library_id, query.retry_failed, &user)
+    let started = mc
+        .start_media_embedding_task(&library_id, query.retry_failed, &user)
         .await?;
-    Ok(Json(json!({
-        "status": "started",
-        "message": "Media embedding task has been queued to start immediately"
-    })))
+    Ok(Json(if started {
+        json!({
+            "status": "started",
+            "message": "Media embedding task has been queued to start immediately"
+        })
+    } else {
+        json!({
+            "status": "alreadyRunning",
+            "message": "A media embedding pass is already running, this library is handled by it or by the next one"
+        })
+    }))
 }
 
 async fn handler_similar(

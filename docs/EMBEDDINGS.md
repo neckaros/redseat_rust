@@ -282,6 +282,11 @@ while a pass is running on the server, for any library.
 Library admin only. Queues a pass on this library right away instead of waiting for
 the next one. The library must have `embeddings` on.
 
+The response `status` is `started`, or `alreadyRunning` when a pass is in progress.
+Passes do not overlap: the library is then handled by the running pass, or by the
+next recurring one (at most 10 minutes after it ends) if that pass is already past
+it. With `retryFailed=true` the failures are forgotten in both cases.
+
 ### Progress events
 
 While a pass runs, `library-status` SSE events carry its progress, in the same
