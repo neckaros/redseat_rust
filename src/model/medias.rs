@@ -3332,14 +3332,14 @@ impl ModelController {
             for plugin in plugins.clone() {
                 let mut path = get_plugin_fodler().await?;
                 path.push(&plugin.path);
-                let mut model: ort::session::Session = preload_model(&path).await?;
+                let model = preload_model(&path).await?;
                 for buffer in &images {
                     let mut prediction = predict_net(
                         path.clone(),
                         plugin.settings.bgr.unwrap_or(false),
                         plugin.settings.normalize.unwrap_or(false),
                         buffer.to_vec(),
-                        Some(&mut model),
+                        Some(model.clone()),
                     )
                     .await?;
                     prediction.sort_by(|a, b| b.probability.partial_cmp(&a.probability).unwrap());

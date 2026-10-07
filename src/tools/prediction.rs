@@ -4,6 +4,7 @@ use std::{
     io::{Read, Write},
     path::PathBuf,
     str::FromStr,
+    sync::{Arc, Mutex},
 };
 
 use crate::{Error, Result};
@@ -80,9 +81,13 @@ pub fn rgb_to_bgr(image: DynamicImage) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
     img_bgr
 }
 
-pub async fn preload_model(path: &PathBuf) -> Result<Session> {
+/// A loaded classification model, shared so one load serves every image of a run.
+pub type PredictionSession = Arc<Mutex<Session>>;
+
+pub async fn preload_model(path: &PathBuf) -> Result<PredictionSession> {
     let path = path.to_owned();
-    tokio::task::spawn_blocking(move || preload_model_sync(&path)).await?
+    let session = tokio::task::spawn_blocking(move || preload_model_sync(&path)).await??;
+    Ok(Arc::new(Mutex::new(session)))
 }
 
 pub fn preload_model_sync(path: &PathBuf) -> Result<Session> {
@@ -97,10 +102,19 @@ pub async fn predict_net(
     bgr: bool,
     normalize: bool,
     buffer_image: Vec<u8>,
-    model: Option<&mut Session>,
+    model: Option<PredictionSession>,
 ) -> Result<Vec<PredictionTagResult>> {
-    tokio::task::spawn_blocking(move || predict_net_sync(path, bgr, normalize, buffer_image, None))
-        .await?
+    tokio::task::spawn_blocking(move || match model {
+        Some(model) => {
+            // Locked inside the blocking task only, never across an await.
+            let mut session = model
+                .lock()
+                .map_err(|_| Error::Error("Prediction model lock poisoned".into()))?;
+            predict_net_sync(path, bgr, normalize, buffer_image, Some(&mut *session))
+        }
+        None => predict_net_sync(path, bgr, normalize, buffer_image, None),
+    })
+    .await?
 }
 pub fn predict_net_sync(
     path: PathBuf,
@@ -360,4 +374,54 @@ fn calculate_similarity(embedding1: &[f32], embedding2: &[f32]) -> f32 {
     let norm1: f32 = embedding1.iter().map(|a| a * a).sum::<f32>().sqrt();
     let norm2: f32 = embedding2.iter().map(|a| a * a).sum::<f32>().sqrt();
     dot / (norm1 * norm2)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Runs a real classification model the way a media prediction does.
+    /// `REDSEAT_PREDICTION_TEST_MODEL` is the `.onnx` file with its `.csv` mapping beside it,
+    /// `REDSEAT_PREDICTION_TEST_IMAGE` a PNG, `REDSEAT_PREDICTION_TEST_BGR` set for WD taggers.
+    /// Run with `cargo test --bin redseat-rust prediction_smoke -- --ignored --nocapture`.
+    #[tokio::test]
+    #[ignore = "needs a classification model"]
+    async fn prediction_smoke() {
+        let model = PathBuf::from(std::env::var("REDSEAT_PREDICTION_TEST_MODEL").unwrap());
+        let image = std::fs::read(std::env::var("REDSEAT_PREDICTION_TEST_IMAGE").unwrap()).unwrap();
+        let bgr = std::env::var("REDSEAT_PREDICTION_TEST_BGR").is_ok();
+
+        let started = std::time::Instant::now();
+        let session = preload_model(&model).await.unwrap();
+        println!("model loaded in {:?}", started.elapsed());
+
+        // The same loaded model must serve every image of a run.
+        let mut runs = Vec::new();
+        for preloaded in [Some(session.clone()), Some(session), None] {
+            let reused = preloaded.is_some();
+            let started = std::time::Instant::now();
+            let mut tags = predict_net(model.clone(), bgr, false, image.clone(), preloaded)
+                .await
+                .unwrap();
+            println!(
+                "prediction {} a preloaded model: {:?}",
+                if reused { "with" } else { "without" },
+                started.elapsed()
+            );
+            tags.sort_by(|a, b| b.probability.total_cmp(&a.probability));
+            runs.push(tags);
+        }
+
+        for tag in &runs[0] {
+            println!("{:.1} {}", tag.probability, tag.tag.name);
+        }
+        assert!(!runs[0].is_empty());
+        let summary = |tags: &[PredictionTagResult]| -> Vec<(String, f32)> {
+            tags.iter()
+                .map(|tag| (tag.tag.id.clone(), tag.probability))
+                .collect()
+        };
+        assert_eq!(summary(&runs[0]), summary(&runs[1]));
+        assert_eq!(summary(&runs[0]), summary(&runs[2]));
+    }
 }
