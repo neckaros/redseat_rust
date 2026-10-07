@@ -10,6 +10,7 @@ pub mod users;
 pub mod books;
 pub mod channels;
 pub mod deleted;
+pub mod embeddings;
 pub mod entity_images;
 pub mod entity_people;
 pub mod entity_search;
@@ -45,8 +46,9 @@ use crate::{
         image_tools::{resize_image_reader, ImageSize},
         log::log_info,
         scheduler::{
-            self, face_recognition::FaceRecognitionTask, iptv_refresh::IptvRefreshTask,
-            refresh::RefreshTask, request_progress::RequestProgressTask, RsScheduler, RsTaskType,
+            self, embedding::EmbeddingTask, face_recognition::FaceRecognitionTask,
+            iptv_refresh::IptvRefreshTask, refresh::RefreshTask,
+            request_progress::RequestProgressTask, RsScheduler, RsTaskType,
         },
     },
 };
@@ -80,6 +82,9 @@ use tokio::{
 };
 
 use crate::routes::sse::SseEvent;
+
+/// Seconds between two background passes embedding new medias.
+const EMBEDDING_TASK_INTERVAL: u64 = 600;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct VideoConvertQueueElement {
@@ -157,6 +162,9 @@ pub struct ModelController {
     /// Media HLS sessions: key = "library:media:convert_hash"
     pub media_hls_sessions:
         Arc<RwLock<HashMap<String, crate::tools::media_hls_session::MediaHlsSession>>>,
+
+    /// Media embeddings: loaded model and per-library search indexes
+    pub embeddings: Arc<embeddings::EmbeddingService>,
 }
 
 // Constructor
@@ -188,6 +196,8 @@ impl ModelController {
             active_streams: Arc::new(RwLock::new(HashMap::new())),
 
             media_hls_sessions: Arc::new(RwLock::new(HashMap::new())),
+
+            embeddings: Arc::new(embeddings::EmbeddingService::default()),
         };
 
         let pm_forload = mc.plugin_manager.clone();
@@ -225,6 +235,14 @@ impl ModelController {
                 IptvRefreshTask {
                     specific_library: None,
                 },
+            )
+            .await?;
+        // Only acts on libraries with the `embeddings` setting; idle passes are one count query each.
+        scheduler
+            .add(
+                RsTaskType::Embedding,
+                scheduler::RsSchedulerWhen::Every(EMBEDDING_TASK_INTERVAL),
+                EmbeddingTask::new(),
             )
             .await?;
         mc.initialize_backup_schedules().await?;

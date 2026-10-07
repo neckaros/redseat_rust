@@ -786,6 +786,7 @@ impl ModelController {
                 ))?;
 
         self.cache_remove_library(&library.id).await;
+        self.drop_embedding_index(library_id).await;
         self.store.remove_library(library_id.to_string()).await?;
         self.send_library(LibraryMessage {
             action: crate::domain::ElementAction::Deleted,
@@ -868,6 +869,7 @@ impl ModelController {
         Self::remove_directory_if_exists(&local_root).await?;
 
         self.cache_remove_library(library_id).await;
+        self.drop_embedding_index(library_id).await;
         self.store.remove_library(library_id.to_string()).await?;
         self.store.remove_library_from_store(library_id)?;
 

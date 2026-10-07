@@ -201,6 +201,13 @@ operations are temporarily unavailable:
 - `encryption-failed: ...`
 - `encryption-completed`
 
+Background media embedding (see `docs/EMBEDDINGS.md`) reports its progress with
+the same human-readable messages as the face scan:
+
+- `Starting media embedding for library {name} (0/{total} - 0%)`
+- `Embedding media items... ({processed}/{total}) - {percent}%`
+- `Completed media embedding for library {name} ({embedded}/{total}) - 100%`
+
 ## TypeScript Client Examples
 
 ### Basic Connection

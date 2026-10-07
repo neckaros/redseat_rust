@@ -21,6 +21,7 @@ pub mod serialization_tools;
 pub mod clock;
 pub mod compression;
 pub mod download_external_libs;
+pub mod embedding;
 pub mod hls_session;
 pub mod m3u_parser;
 pub mod media_hls_session;

@@ -675,13 +675,26 @@ impl ModelController {
         mut query: MediaQuery,
         requesting_user: &ConnectedUser,
     ) -> RsResult<Vec<ItemWithRelations<Media>>> {
+        let (query, limits) = self
+            .media_listing_scope(library_id, query, requesting_user)
+            .await?;
+        let store = self.store.get_library_store(library_id)?;
+        let medias = store.get_medias(query, limits).await?;
+        Ok(medias)
+    }
+
+    /// What a user may list in a library: the query narrowed to what they can see,
+    /// and their limits. Anything returning medias to a user must go through it.
+    pub(super) async fn media_listing_scope(
+        &self,
+        library_id: &str,
+        mut query: MediaQuery,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<(MediaQuery, LibraryLimits)> {
         if let Ok(key) = requesting_user.check_upload_key(library_id) {
             // UploadKey: can only see medias uploaded with this key
             query.uploadkey = Some(key.id.clone());
-            let limits = LibraryLimits::default();
-            let store = self.store.get_library_store(library_id)?;
-            let medias = store.get_medias(query, limits).await?;
-            return Ok(medias);
+            return Ok((query, LibraryLimits::default()));
         }
         let progress_user = self
             .get_library_mapped_user(library_id, requesting_user.user_id()?)
@@ -689,9 +702,7 @@ impl ModelController {
             .ok();
         let mut limits = requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         limits.user_id = progress_user;
-        let store = self.store.get_library_store(library_id)?;
-        let medias = store.get_medias(query, limits).await?;
-        Ok(medias)
+        Ok((query, limits))
     }
 
     pub async fn count_medias(
@@ -4792,6 +4803,8 @@ impl ModelController {
                 );
             }
             store.remove_media(media_id.to_string()).await?;
+            self.remove_media_from_embedding_index(library_id, media_id)
+                .await;
         }
         self.remove_library_image_files(library_id, ".thumbs", media_id, &None, &None)
             .await?;

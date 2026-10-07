@@ -130,14 +130,14 @@ pub fn predict_net_sync(
             Some(m) => m,
             None => loaded_session.as_ref().unwrap(),
         };
-        let output_info = sess_ref.outputs.first().ok_or(Error::Error(
+        let output_info = sess_ref.outputs().first().ok_or(Error::Error(
             "Prediction model does not have outputs".into(),
         ))?;
-        let input_info = sess_ref.inputs.first().ok_or(Error::Error(
+        let input_info = sess_ref.inputs().first().ok_or(Error::Error(
             "Prediction model does not have outputs".into(),
         ))?;
 
-        let size = match &input_info.input_type {
+        let size = match input_info.dtype() {
             ValueType::Tensor {
                 ty: _,
                 shape,
@@ -148,7 +148,11 @@ pub fn predict_net_sync(
             ValueType::Optional(_) => None,
         };
         let size = size.ok_or(Error::Error("Unable to get dimensions".into()))?;
-        (output_info.name.clone(), input_info.name.clone(), size)
+        (
+            output_info.name().to_string(),
+            input_info.name().to_string(),
+            size,
+        )
     };
     let resized = prepare_image(buffer_image, size, size)?;
     let image_rgb = if bgr {

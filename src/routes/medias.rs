@@ -13,6 +13,7 @@ use crate::{
     error::RsError,
     model::{
         self,
+        embeddings::MediaEmbeddingSearchQuery,
         medias::{MediaFileQuery, MediaQuery},
         series::{SerieForUpdate, SerieQuery},
         users::ConnectedUser,
@@ -57,12 +58,16 @@ pub fn routes(mc: ModelController) -> Router {
         .route("/download", post(handler_download))
         .route("/merge", post(handler_merge))
         .route("/request", post(handler_add_request))
+        .route("/embeddings/status", get(handler_embeddings_status))
+        .route("/embeddings/search", get(handler_embeddings_search))
+        .route("/embeddings/process", post(handler_embeddings_process))
         .route("/transfert/:destination", post(handler_transfert))
         .route("/:id/split", get(handler_split))
         .route("/:id/metadata", get(handler_get))
         .route("/:id/metadata/refresh", get(handler_refresh))
         .route("/:id/sharetoken", get(handler_sharetoken))
         .route("/:id/predict", get(handler_predict))
+        .route("/:id/similar", get(handler_similar))
         .route("/:id/convert", post(handler_convert))
         .route(
             "/:id/convert/plugin/:plugin_id",
@@ -304,6 +309,59 @@ async fn handler_predict(
     let body = Json(json!(prediction));
     //println!("BODY {:?}", body);
     Ok(body)
+}
+
+async fn handler_embeddings_status(
+    Path(library_id): Path<String>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<Json<Value>> {
+    let status = mc.get_media_embeddings_status(&library_id, &user).await?;
+    Ok(Json(json!(status)))
+}
+
+async fn handler_embeddings_search(
+    Path(library_id): Path<String>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Query(query): Query<MediaEmbeddingSearchQuery>,
+) -> Result<Json<Value>> {
+    let results = mc.search_medias_by_text(&library_id, query, &user).await?;
+    Ok(Json(json!(results)))
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct EmbeddingsProcessQuery {
+    /// Also try again the medias that were given up on.
+    #[serde(default)]
+    pub retry_failed: bool,
+}
+
+async fn handler_embeddings_process(
+    Path(library_id): Path<String>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Query(query): Query<EmbeddingsProcessQuery>,
+) -> Result<Json<Value>> {
+    mc.start_media_embedding_task(&library_id, query.retry_failed, &user)
+        .await?;
+    Ok(Json(json!({
+        "status": "started",
+        "message": "Media embedding task has been queued to start immediately"
+    })))
+}
+
+async fn handler_similar(
+    Path((library_id, media_id)): Path<(String, String)>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+    Query(query): Query<MediaEmbeddingSearchQuery>,
+) -> Result<Json<Value>> {
+    let results = mc
+        .search_similar_medias(&library_id, &media_id, query, &user)
+        .await?;
+    Ok(Json(json!(results)))
 }
 
 async fn handler_convert(
