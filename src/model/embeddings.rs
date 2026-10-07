@@ -132,6 +132,15 @@ pub struct MediaEmbeddingSearchQuery {
     pub offset: Option<usize>,
 }
 
+/// Search and status cover the whole library, which a token scoped to a single file
+/// must not reach. The listing scope refuses such a token too; this says so outright.
+fn check_library_wide_access(requesting_user: &ConnectedUser) -> RsResult<()> {
+    if matches!(requesting_user, ConnectedUser::Share(_)) {
+        return Err(ModelError::ShareTokenInsufficient.into());
+    }
+    Ok(())
+}
+
 async fn embedding_models_path() -> RsResult<PathBuf> {
     Ok(get_server_local_path().await?.join("models"))
 }
@@ -231,6 +240,7 @@ impl ModelController {
         library_id: &str,
         requesting_user: &ConnectedUser,
     ) -> RsResult<MediaEmbeddingStatus> {
+        check_library_wide_access(requesting_user)?;
         requesting_user.check_library_role(library_id, LibraryRole::Read)?;
         let spec = self.embedder_spec();
         let store = self.store.get_library_store(library_id)?;
@@ -545,6 +555,7 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> RsResult<MediaEmbeddingSearch> {
         // Checked before anything else so nothing is computed for a user without access.
+        check_library_wide_access(requesting_user)?;
         self.media_listing_scope(library_id, Default::default(), requesting_user)
             .await?;
         let text = query
@@ -596,6 +607,7 @@ impl ModelController {
         query: MediaEmbeddingSearchQuery,
         requesting_user: &ConnectedUser,
     ) -> RsResult<MediaEmbeddingSearch> {
+        check_library_wide_access(requesting_user)?;
         self.media_listing_scope(library_id, Default::default(), requesting_user)
             .await?;
         requesting_user.check_file_role(library_id, media_id, LibraryRole::Read)?;
@@ -725,7 +737,11 @@ mod tests {
     use crate::{
         domain::library::{LibraryType, ServerLibrarySettings},
         model::libraries::ServerLibraryForAdd,
-        tools::{scheduler::RsSchedulerTask, video_tools::VideoCommandBuilder},
+        tools::{
+            auth::{ClaimsLocal, ClaimsLocalType},
+            scheduler::RsSchedulerTask,
+            video_tools::VideoCommandBuilder,
+        },
     };
 
     async fn status(mc: &ModelController, library_id: &str) -> MediaEmbeddingStatus {
@@ -965,6 +981,28 @@ mod tests {
             .is_err());
         assert!(mc
             .get_media_embeddings_status(library_id, &ConnectedUser::Anonymous)
+            .await
+            .is_err());
+
+        // A share token for one file reaches nothing beyond that file: not the
+        // search, not medias similar to it or to another one, not the status.
+        let share = &ConnectedUser::Share(ClaimsLocal {
+            cr: "test".to_string(),
+            kind: ClaimsLocalType::File(library_id.to_string(), ids["cats.jpg"].clone()),
+            exp: ClaimsLocal::generate_seconds(60),
+        });
+        assert!(mc
+            .search_medias_by_text(library_id, text_query("cats"), share)
+            .await
+            .is_err());
+        for reference in ["cats.jpg", "image.jpg"] {
+            assert!(mc
+                .search_similar_medias(library_id, &ids[reference], Default::default(), share)
+                .await
+                .is_err());
+        }
+        assert!(mc
+            .get_media_embeddings_status(library_id, share)
             .await
             .is_err());
 
