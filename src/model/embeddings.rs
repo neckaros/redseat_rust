@@ -333,18 +333,23 @@ impl ModelController {
         {
             Ok(vector) => {
                 let quantized = embedding::quantize(&vector, spec.quantization_scale);
-                store
+                // Held across the write, so the row and the index change together: a
+                // delete of this media removes it from the index only once this is
+                // done, and an index load reads the row either before or after it.
+                let slot = self.embedding_index_slot(library_id).await;
+                let mut index = slot.write().await;
+                let stored = store
                     .add_media_embedding(
                         media_id.to_string(),
                         spec.id.to_string(),
                         embedding::to_bytes(&quantized),
                     )
                     .await?;
-                // Taken after the row is written: a load that started earlier holds
-                // the lock until done, one that starts later reads the row itself.
-                let slot = self.embedding_index_slot(library_id).await;
-                if let Some(index) = &mut *slot.write().await {
-                    index.upsert(media_id, &quantized);
+                // Not stored when the media was deleted while its vector was computed.
+                if stored {
+                    if let Some(index) = &mut *index {
+                        index.upsert(media_id, &quantized);
+                    }
                 }
                 Ok(())
             }

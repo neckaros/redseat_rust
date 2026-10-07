@@ -21,17 +21,22 @@ pub struct MediaEmbeddingCounts {
 
 impl SqliteLibraryStore {
     /// Stores the vector of a media for an embedder and forgets its earlier failures.
+    ///
+    /// Returns false, writing nothing, when the media no longer exists: it can be
+    /// deleted while its vector is computed, after the delete trigger has run.
     pub async fn add_media_embedding(
         &self,
         media_id: String,
         embedder: String,
         embedding: Vec<u8>,
-    ) -> Result<()> {
-        self.connection
+    ) -> Result<bool> {
+        let written = self
+            .connection
             .call(move |conn| {
                 let tx = conn.transaction()?;
-                tx.execute(
-                    "INSERT OR REPLACE INTO media_embeddings (media_ref, embedder, embedding) VALUES (?, ?, ?)",
+                let written = tx.execute(
+                    "INSERT OR REPLACE INTO media_embeddings (media_ref, embedder, embedding)
+                     SELECT ?1, ?2, ?3 WHERE EXISTS (SELECT 1 FROM medias WHERE id = ?1)",
                     params![media_id, embedder, embedding],
                 )?;
                 tx.execute(
@@ -39,10 +44,10 @@ impl SqliteLibraryStore {
                     params![media_id, embedder],
                 )?;
                 tx.commit()?;
-                Ok(())
+                Ok(written > 0)
             })
             .await?;
-        Ok(())
+        Ok(written)
     }
 
     pub async fn get_media_embedding(
@@ -186,7 +191,8 @@ impl SqliteLibraryStore {
         Ok(res)
     }
 
-    /// Records a failed attempt. Returns the number of attempts so far.
+    /// Records a failed attempt. Returns the number of attempts so far, 0 when the
+    /// media no longer exists (nothing is recorded then).
     pub async fn mark_media_embedding_error(
         &self,
         media_id: String,
@@ -197,16 +203,18 @@ impl SqliteLibraryStore {
         let res = self
             .connection
             .call(move |conn| {
-                let attempts = conn.query_row(
-                    "INSERT INTO media_embedding_errors (media_ref, embedder, error, attempts, modified)
-                     VALUES (?1, ?2, ?3, 1, ?4)
-                     ON CONFLICT (media_ref, embedder) DO UPDATE SET
-                        error = excluded.error, attempts = attempts + 1, modified = excluded.modified
-                     RETURNING attempts",
-                    params![media_id, embedder, error, now],
-                    |row| row.get::<_, u32>(0),
-                )?;
-                Ok(attempts)
+                let attempts = conn
+                    .query_row(
+                        "INSERT INTO media_embedding_errors (media_ref, embedder, error, attempts, modified)
+                         SELECT ?1, ?2, ?3, 1, ?4 WHERE EXISTS (SELECT 1 FROM medias WHERE id = ?1)
+                         ON CONFLICT (media_ref, embedder) DO UPDATE SET
+                            error = excluded.error, attempts = attempts + 1, modified = excluded.modified
+                         RETURNING attempts",
+                        params![media_id, embedder, error, now],
+                        |row| row.get::<_, u32>(0),
+                    )
+                    .optional()?;
+                Ok(attempts.unwrap_or(0))
             })
             .await?;
         Ok(res)
@@ -507,5 +515,45 @@ mod tests {
             .unwrap();
         assert_eq!(errors, 0);
         assert_eq!(counts(&store).await.total, 1);
+    }
+
+    #[tokio::test]
+    async fn nothing_is_written_for_a_media_deleted_meanwhile() {
+        let store = store_with_medias().await;
+        store.remove_media("photo-1".to_string()).await.unwrap();
+
+        assert!(!store
+            .add_media_embedding("photo-1".into(), EMBEDDER.into(), vec![1, 2])
+            .await
+            .unwrap());
+        let attempts = store
+            .mark_media_embedding_error("photo-1".into(), EMBEDDER.into(), "boom".into())
+            .await
+            .unwrap();
+        assert_eq!(attempts, 0);
+        let rows: u64 = store
+            .connection
+            .call(|conn| {
+                Ok(conn.query_row(
+                    "SELECT (SELECT COUNT(*) FROM media_embeddings)
+                          + (SELECT COUNT(*) FROM media_embedding_errors)",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(rows, 0);
+
+        // A media that is still there is written as before.
+        assert!(store
+            .add_media_embedding("photo-2".into(), EMBEDDER.into(), vec![1, 2])
+            .await
+            .unwrap());
+        let attempts = store
+            .mark_media_embedding_error("video-1".into(), EMBEDDER.into(), "boom".into())
+            .await
+            .unwrap();
+        assert_eq!(attempts, 1);
     }
 }
