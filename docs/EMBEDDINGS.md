@@ -292,6 +292,10 @@ it. With `retryFailed=true` the failures are forgotten in both cases.
 While a pass runs, `library-status` SSE events carry its progress, in the same
 form as the face scan. See `docs/SSE.md`.
 
+A pass that announced its start always sends a last message: completed,
+interrupted after repeated failures, or failed (for example when the model cannot
+be downloaded or loaded). The reason for a failure is in the server log.
+
 ## Known limits
 
 - **Scores are compressed.** With this model a good match scores around 0.69 to

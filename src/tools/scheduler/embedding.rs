@@ -24,6 +24,14 @@ impl EmbeddingTask {
     }
 }
 
+/// How a pass over one library ended.
+struct LibraryPass {
+    embedded: u64,
+    processed: u64,
+    /// Left early after too many failures in a row.
+    interrupted: bool,
+}
+
 #[async_trait]
 impl RsSchedulerTask for EmbeddingTask {
     async fn execute(&self, mc: ModelController) -> RsResult<()> {
@@ -95,95 +103,116 @@ impl EmbeddingTask {
                 library: library.id.clone(),
             });
 
-            // Loading (and on first use downloading) the model is not a media failure.
-            mc.prepare_embedder_for_images().await?;
-
-            const CHUNK_SIZE: usize = 20;
-            // That many failures in a row point at the model or the storage, not at
-            // the medias: the pass leaves the library so they are not all given up on.
-            const MAX_CONSECUTIVE_FAILURES: u32 = 5;
-            let pass_started = embedding_pass_start();
-            let mut processed_count: u64 = 0;
-            let mut embedded_count: u64 = 0;
-            let mut consecutive_failures: u32 = 0;
-            let mut interrupted = false;
-            let mut previous_ids: Vec<String> = Vec::new();
-
-            'library: loop {
-                // Stops between chunks when the library is turned off or removed.
-                if !mc.library_embeddings_enabled(&library.id).await {
-                    break;
-                }
-                let media_ids = mc
-                    .get_medias_pending_embedding(&library.id, pass_started, CHUNK_SIZE)
-                    .await?;
-                // The same chunk twice means nothing in it could be embedded or
-                // recorded as failed (library unreadable): leave it to a later pass.
-                if media_ids.is_empty() || media_ids == previous_ids {
-                    break;
-                }
-
-                for media_id in &media_ids {
-                    match mc.embed_media(&library.id, media_id).await {
-                        Ok(_) => {
-                            embedded_count += 1;
-                            consecutive_failures = 0;
-                        }
-                        Err(e) => {
-                            log_error(
-                                LogServiceType::Scheduler,
-                                format!("Error embedding media {}: {:#}", media_id, e),
-                            );
-                            consecutive_failures += 1;
-                        }
-                    }
-                    processed_count += 1;
-                    if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
-                        log_error(
-                            LogServiceType::Scheduler,
-                            format!(
-                                "Stopping media embedding for library {}: {} failures in a row",
-                                library.name, consecutive_failures
-                            ),
-                        );
-                        interrupted = true;
-                        break 'library;
-                    }
-                    let percent = ((processed_count * 100) / total_count).min(100);
-                    mc.send_library_status(LibraryStatusMessage {
-                        message: format!(
-                            "Embedding media items... ({}/{}) - {}%",
-                            processed_count, total_count, percent
-                        ),
-                        library: library.id.clone(),
-                    });
-                }
-                previous_ids = media_ids;
-            }
-
+            // Every way out of the pass is reported, so a listener that saw it start
+            // also sees it end.
+            let pass = self
+                .embed_library(mc, &library.id, &library.name, total_count)
+                .await;
             mc.send_library_status(LibraryStatusMessage {
-                message: if interrupted {
-                    format!(
+                message: match &pass {
+                    Ok(pass) if pass.interrupted => format!(
                         "Media embedding interrupted for library {} after repeated failures ({}/{})",
-                        library.name, embedded_count, total_count
-                    )
-                } else {
-                    format!(
+                        library.name, pass.embedded, total_count
+                    ),
+                    Ok(pass) => format!(
                         "Completed media embedding for library {} ({}/{}) - 100%",
-                        library.name, embedded_count, total_count
-                    )
+                        library.name, pass.embedded, total_count
+                    ),
+                    Err(_) => format!("Media embedding failed for library {}", library.name),
                 },
                 library: library.id.clone(),
             });
+            let pass = pass?;
             log_info(
                 LogServiceType::Scheduler,
                 format!(
                     "Embedded {} of {} medias in library {}",
-                    embedded_count, processed_count, library.name
+                    pass.embedded, pass.processed, library.name
                 ),
             );
         }
 
         Ok(())
+    }
+
+    /// Embeds the pending medias of one library.
+    async fn embed_library(
+        &self,
+        mc: &ModelController,
+        library_id: &str,
+        library_name: &str,
+        total_count: u64,
+    ) -> RsResult<LibraryPass> {
+        // Loading (and on first use downloading) the model is not a media failure.
+        mc.prepare_embedder_for_images().await?;
+
+        const CHUNK_SIZE: usize = 20;
+        // That many failures in a row point at the model or the storage, not at
+        // the medias: the pass leaves the library so they are not all given up on.
+        const MAX_CONSECUTIVE_FAILURES: u32 = 5;
+        let pass_started = embedding_pass_start();
+        let mut processed_count: u64 = 0;
+        let mut embedded_count: u64 = 0;
+        let mut consecutive_failures: u32 = 0;
+        let mut interrupted = false;
+        let mut previous_ids: Vec<String> = Vec::new();
+
+        'library: loop {
+            // Stops between chunks when the library is turned off or removed.
+            if !mc.library_embeddings_enabled(library_id).await {
+                break;
+            }
+            let media_ids = mc
+                .get_medias_pending_embedding(library_id, pass_started, CHUNK_SIZE)
+                .await?;
+            // The same chunk twice means nothing in it could be embedded or
+            // recorded as failed (library unreadable): leave it to a later pass.
+            if media_ids.is_empty() || media_ids == previous_ids {
+                break;
+            }
+
+            for media_id in &media_ids {
+                match mc.embed_media(library_id, media_id).await {
+                    Ok(_) => {
+                        embedded_count += 1;
+                        consecutive_failures = 0;
+                    }
+                    Err(e) => {
+                        log_error(
+                            LogServiceType::Scheduler,
+                            format!("Error embedding media {}: {:#}", media_id, e),
+                        );
+                        consecutive_failures += 1;
+                    }
+                }
+                processed_count += 1;
+                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                    log_error(
+                        LogServiceType::Scheduler,
+                        format!(
+                            "Stopping media embedding for library {}: {} failures in a row",
+                            library_name, consecutive_failures
+                        ),
+                    );
+                    interrupted = true;
+                    break 'library;
+                }
+                let percent = ((processed_count * 100) / total_count).min(100);
+                mc.send_library_status(LibraryStatusMessage {
+                    message: format!(
+                        "Embedding media items... ({}/{}) - {}%",
+                        processed_count, total_count, percent
+                    ),
+                    library: library_id.to_string(),
+                });
+            }
+            previous_ids = media_ids;
+        }
+
+        Ok(LibraryPass {
+            embedded: embedded_count,
+            processed: processed_count,
+            interrupted,
+        })
     }
 }
