@@ -256,6 +256,9 @@ When `status` is not `ok`, `results` is empty and `message` explains why.
 Medias closest to the given one, which is left out of the results. Same response.
 Uses stored vectors only, so it works even when the model is not loaded.
 
+The reference media goes through the same listing scope as the results: one the
+user cannot list is answered as not found.
+
 ### `GET /embeddings/status`
 
 ```json

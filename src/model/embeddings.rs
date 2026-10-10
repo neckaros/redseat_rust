@@ -615,9 +615,19 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> RsResult<MediaEmbeddingSearch> {
         check_library_wide_access(requesting_user)?;
-        self.media_listing_scope(library_id, Default::default(), requesting_user)
+        let (media_query, limits) = self
+            .media_listing_scope(library_id, Default::default(), requesting_user)
             .await?;
         requesting_user.check_file_role(library_id, media_id, LibraryRole::Read)?;
+        // The reference goes through the listing scope like the results: a media the
+        // user cannot list must not be usable as one, even when its id is known.
+        let store = self.store.get_library_store(library_id)?;
+        let listed = store
+            .get_medias_by_ids(vec![media_id.to_string()], media_query, limits)
+            .await?;
+        if listed.is_empty() {
+            return Err(ModelError::MediaNotFound(media_id.to_string()).into());
+        }
 
         let vector = {
             let index = self.embedding_index(library_id).await?;
@@ -627,10 +637,6 @@ impl ModelController {
                 .map(<[i8]>::to_vec)
         };
         let Some(vector) = vector else {
-            let store = self.store.get_library_store(library_id)?;
-            if store.get_media_source(media_id).await?.is_none() {
-                return Err(ModelError::MediaNotFound(media_id.to_string()).into());
-            }
             return Ok(MediaEmbeddingSearch::empty(
                 MediaEmbeddingSearchStatus::MediaNotEmbedded,
                 "This media has not been embedded yet",
@@ -742,8 +748,11 @@ mod tests {
 
     use super::*;
     use crate::{
-        domain::library::{LibraryType, ServerLibrarySettings},
-        model::libraries::ServerLibraryForAdd,
+        domain::library::{LibraryLimits, LibraryType, ServerLibrarySettings},
+        model::{
+            libraries::ServerLibraryForAdd,
+            users::{ServerUser, ServerUserLibrariesRights, UserRole},
+        },
         tools::{
             auth::{ClaimsLocal, ClaimsLocalType},
             scheduler::RsSchedulerTask,
@@ -1010,6 +1019,34 @@ mod tests {
         }
         assert!(mc
             .get_media_embeddings_status(library_id, share)
+            .await
+            .is_err());
+
+        // A user whose grant hides recent medias (everything here) finds nothing,
+        // and cannot use a hidden media as a similarity reference either.
+        let delayed = &ConnectedUser::Server(ServerUser {
+            id: "delayed".to_string(),
+            name: "delayed".to_string(),
+            role: UserRole::Read,
+            preferences: Default::default(),
+            libraries: vec![ServerUserLibrariesRights {
+                id: library_id.to_string(),
+                name: "embeddings".to_string(),
+                kind: LibraryType::Photos,
+                roles: vec![LibraryRole::Read],
+                limits: LibraryLimits {
+                    delay: Some(60),
+                    ..Default::default()
+                },
+            }],
+        });
+        let hidden = mc
+            .search_medias_by_text(library_id, text_query("cats"), delayed)
+            .await
+            .unwrap();
+        assert!(hidden.results.is_empty());
+        assert!(mc
+            .search_similar_medias(library_id, &ids["cats.jpg"], Default::default(), delayed)
             .await
             .is_err());
 
