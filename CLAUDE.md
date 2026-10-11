@@ -39,6 +39,7 @@ redseat-rust/
 | Config/env variables | `src/server.rs` | `REDSEAT_*` env vars |
 | Encryption | `src/tools/encryption.rs` | AES-256-CBC streaming |
 | Scheduled tasks | `src/tools/scheduler/` | 15s tick loop |
+| Library update and settings | `src/model/libraries.rs` + `src/domain/library.rs` | See `docs/LIBRARIES.md`; a new setting goes in both `ServerLibrarySettings` and `ServerLibrarySettingsPatch` |
 | Direct HTTPS (label, certificate, addresses) | `src/direct/` | See `docs/DIRECT_HTTPS.md`, keep it updated |
 | SSE and events | `docs/SSE.md` | don't forget to update the SSE.md file if you do modification or add events |
 | Media embeddings and semantic search | `src/tools/embedding/` + `src/model/embeddings.rs` | See `docs/EMBEDDINGS.md`; `src/tools/embedding/` must stay free of `crate::model`, routes and store imports |

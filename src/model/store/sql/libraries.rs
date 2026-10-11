@@ -206,13 +206,32 @@ impl SqliteStore {
         let library_id = library_id.to_string();
         self.server_store
             .call(move |conn| {
+                // The settings are read, changed and written under one write lock, so
+                // two changes made at the same time are both kept.
+                let transaction =
+                    conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                let settings = match update.settings {
+                    Some(patch) => transaction
+                        .query_row(
+                            "SELECT settings FROM Libraries WHERE id = ?1",
+                            [&library_id],
+                            |row| row.get::<_, ServerLibrarySettings>(0),
+                        )
+                        .optional()?
+                        .map(|mut settings| {
+                            settings.apply(patch);
+                            settings
+                        }),
+                    None => None,
+                };
+
                 let mut columns: Vec<String> = Vec::new();
                 let mut values: Vec<Box<dyn ToSql>> = Vec::new();
 
                 super::add_for_sql_update(update.name, "name", &mut columns, &mut values);
                 super::add_for_sql_update(update.source, "source", &mut columns, &mut values);
                 super::add_for_sql_update(update.root, "root", &mut columns, &mut values);
-                super::add_for_sql_update(update.settings, "settings", &mut columns, &mut values);
+                super::add_for_sql_update(settings, "settings", &mut columns, &mut values);
                 super::add_for_sql_update(
                     update.credentials,
                     "credentials",
@@ -224,8 +243,9 @@ impl SqliteStore {
                     values.push(Box::new(library_id));
                     let update_sql =
                         format!("UPDATE Libraries SET {} WHERE id = ?", columns.join(", "));
-                    conn.execute(&update_sql, params_from_iter(values))?;
+                    transaction.execute(&update_sql, params_from_iter(values))?;
                 }
+                transaction.commit()?;
                 Ok(())
             })
             .await?;
@@ -302,7 +322,114 @@ mod tests {
     use tokio_rusqlite::Connection as TokioConnection;
 
     use crate::domain::library::LibraryType;
+    use crate::model::libraries::ServerLibraryForUpdate;
     use crate::model::store::{sql::migrate_database, SqliteStore};
+
+    /// A store holding the library `library-1` with the given settings.
+    async fn store_with_library(settings: &'static str) -> SqliteStore {
+        let connection = TokioConnection::open_in_memory().await.unwrap();
+        migrate_database(&connection).await.unwrap();
+        connection
+            .call(move |conn| {
+                conn.execute(
+                    "INSERT INTO Libraries (id, name, type, source, root, settings)\
+                     VALUES ('library-1', 'Movies', 'movies', 'virtual', '', ?1)",
+                    [settings],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        SqliteStore {
+            server_store: connection,
+            libraries_stores: RwLock::new(HashMap::new()),
+        }
+    }
+
+    fn update(value: serde_json::Value) -> ServerLibraryForUpdate {
+        serde_json::from_value(value).unwrap()
+    }
+
+    async fn stored_settings(store: &SqliteStore) -> serde_json::Value {
+        let settings = store
+            .server_store
+            .call(|conn| {
+                let settings: String = conn.query_row(
+                    "SELECT settings FROM Libraries WHERE id = 'library-1'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                Ok(settings)
+            })
+            .await
+            .unwrap();
+        serde_json::from_str(&settings).unwrap()
+    }
+
+    #[tokio::test]
+    async fn update_library_merges_settings() {
+        let store =
+            store_with_library(r#"{"dataPath":"/data","embeddingsPaused":true,"maxStreams":2}"#)
+                .await;
+
+        store
+            .update_library(
+                "library-1",
+                update(serde_json::json!({
+                    "settings": { "embeddings": true, "maxStreams": null }
+                })),
+            )
+            .await
+            .unwrap();
+        let merged = serde_json::json!({
+            "dataPath": "/data",
+            "embeddingsPaused": true,
+            "embeddings": true
+        });
+        assert_eq!(stored_settings(&store).await, merged);
+
+        // Without settings in the update, they are left alone.
+        store
+            .update_library("library-1", update(serde_json::json!({ "name": "Films" })))
+            .await
+            .unwrap();
+        assert_eq!(stored_settings(&store).await, merged);
+        let library = store.get_library("library-1").await.unwrap().unwrap();
+        assert_eq!(library.name, "Films");
+
+        // An unknown library is left to the caller to report.
+        store
+            .update_library(
+                "missing",
+                update(serde_json::json!({ "settings": { "embeddings": false } })),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stored_settings(&store).await, merged);
+    }
+
+    #[tokio::test]
+    async fn update_library_keeps_settings_changed_at_the_same_time() {
+        let store = store_with_library("{}").await;
+
+        let (first, second) = tokio::join!(
+            store.update_library(
+                "library-1",
+                update(serde_json::json!({ "settings": { "epgUrl": "http://epg" } })),
+            ),
+            store.update_library(
+                "library-1",
+                update(serde_json::json!({ "settings": { "maxStreams": 3 } })),
+            ),
+        );
+        first.unwrap();
+        second.unwrap();
+
+        assert_eq!(
+            stored_settings(&store).await,
+            serde_json::json!({ "epgUrl": "http://epg", "maxStreams": 3 })
+        );
+    }
 
     #[test]
     fn library_type_books_sql_roundtrip() {

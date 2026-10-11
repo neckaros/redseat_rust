@@ -12,7 +12,7 @@ use crate::{
     domain::{
         library::{
             LibraryLimits, LibraryMessage, LibraryRole, LibraryStatusMessage, LibraryType,
-            ServerLibrary, ServerLibrarySettings, UserMapping,
+            ServerLibrary, ServerLibrarySettings, ServerLibrarySettingsPatch, UserMapping,
         },
         ElementAction,
     },
@@ -155,7 +155,8 @@ pub struct ServerLibraryForUpdate {
     pub name: Option<String>,
     pub source: Option<String>,
     pub root: Option<String>,
-    pub settings: Option<ServerLibrarySettings>,
+    /// Merged into the stored settings: the settings it does not name are kept.
+    pub settings: Option<ServerLibrarySettingsPatch>,
     pub credentials: Option<String>,
     pub plugin: Option<String>,
     #[serde(
@@ -499,6 +500,9 @@ impl ModelController {
         requesting_user: &ConnectedUser,
     ) -> Result<Option<super::libraries::ServerLibraryForRead>> {
         requesting_user.check_library_role(&library_id, LibraryRole::Admin)?;
+        if let Some(settings) = &update.settings {
+            settings.validate().map_err(Error::InvalidLibrarySettings)?;
+        }
         let gate = self.library_encryption_gate(library_id).await;
         let _migration_guard = gate.read().await;
         self.ensure_library_encryption_writable(library_id).await?;
@@ -518,21 +522,14 @@ impl ModelController {
         }
     }
 
-    /// Changes some settings of a library and keeps the others, unlike
-    /// `update_library`, which replaces the whole settings object.
+    /// Changes some settings of a library and keeps the others. Unlike a patch
+    /// received from a client, this one may set the settings the server owns.
     pub async fn update_library_settings(
         &self,
         library_id: &str,
-        change: impl FnOnce(&mut ServerLibrarySettings),
+        settings: ServerLibrarySettingsPatch,
         requesting_user: &ConnectedUser,
-    ) -> Result<Option<super::libraries::ServerLibraryForRead>> {
-        requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
-        let mut settings = self
-            .get_internal_library(library_id)
-            .await?
-            .ok_or(Error::LibraryNotFound(library_id.to_string()))?
-            .settings;
-        change(&mut settings);
+    ) -> Result<super::libraries::ServerLibraryForRead> {
         self.update_library(
             library_id,
             ServerLibraryForUpdate {
@@ -546,7 +543,8 @@ impl ModelController {
             },
             requesting_user,
         )
-        .await
+        .await?
+        .ok_or(Error::LibraryNotFound(library_id.to_string()))
     }
 
     pub async fn get_library_encryption_status(
@@ -1254,5 +1252,35 @@ mod tests {
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap().name.as_deref(), Some("Renamed"));
+    }
+
+    #[test]
+    fn library_updates_accept_a_library_as_it_was_read() {
+        let library = ServerLibrary {
+            id: "library-1".to_string(),
+            settings: ServerLibrarySettings {
+                embeddings: Some(true),
+                embeddings_paused: Some(true),
+                max_streams: Some(2),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let read = serde_json::to_value(ServerLibraryForRead::from(library)).unwrap();
+
+        let update = serde_json::from_value::<ServerLibraryForUpdate>(read).unwrap();
+        let settings = update.settings.unwrap();
+        assert_eq!(settings.embeddings, Some(Some(true)));
+        assert_eq!(settings.max_streams, Some(Some(2)));
+        assert_eq!(settings.embeddings_paused, None);
+    }
+
+    #[test]
+    fn library_updates_refuse_unknown_settings() {
+        let result = serde_json::from_value::<ServerLibraryForUpdate>(serde_json::json!({
+            "settings": { "maxStream": 2 }
+        }));
+
+        assert!(result.is_err());
     }
 }
