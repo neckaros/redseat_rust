@@ -61,6 +61,8 @@ pub fn routes(mc: ModelController) -> Router {
         .route("/embeddings/status", get(handler_embeddings_status))
         .route("/embeddings/search", get(handler_embeddings_search))
         .route("/embeddings/process", post(handler_embeddings_process))
+        .route("/embeddings/pause", post(handler_embeddings_pause))
+        .route("/embeddings/resume", post(handler_embeddings_resume))
         .route("/transfert/:destination", post(handler_transfert))
         .route("/:id/split", get(handler_split))
         .route("/:id/metadata", get(handler_get))
@@ -358,6 +360,28 @@ async fn handler_embeddings_process(
             "message": "A media embedding pass is already running, this library is handled by it or by the next one"
         })
     }))
+}
+
+async fn handler_embeddings_pause(
+    Path(library_id): Path<String>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<Json<Value>> {
+    let status = mc
+        .set_media_embeddings_paused(&library_id, true, &user)
+        .await?;
+    Ok(Json(json!(status)))
+}
+
+async fn handler_embeddings_resume(
+    Path(library_id): Path<String>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<Json<Value>> {
+    let status = mc
+        .set_media_embeddings_paused(&library_id, false, &user)
+        .await?;
+    Ok(Json(json!(status)))
 }
 
 async fn handler_similar(

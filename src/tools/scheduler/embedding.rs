@@ -36,8 +36,20 @@ struct LibraryPass {
     total: u64,
     processed: u64,
     embedded: u64,
-    /// Left early after too many failures in a row.
-    interrupted: bool,
+    /// Set when the pass leaves the library before its pending medias are done.
+    stopped: Option<EmbeddingPassState>,
+}
+
+/// Why a pass must leave the library now, as the state to report, if it must.
+async fn must_stop(mc: &ModelController, library_id: &str) -> Option<EmbeddingPassState> {
+    if !mc.library_embeddings_enabled(library_id).await {
+        // Turned off or removed: this pass has nothing more to do here.
+        Some(EmbeddingPassState::Completed)
+    } else if mc.library_embeddings_paused(library_id).await {
+        Some(EmbeddingPassState::Paused)
+    } else {
+        None
+    }
 }
 
 impl LibraryPass {
@@ -84,7 +96,7 @@ impl EmbeddingTask {
         };
 
         for library in libraries {
-            if !mc.library_embeddings_enabled(&library.id).await {
+            if must_stop(mc, &library.id).await.is_some() {
                 continue;
             }
             // The server cannot read the files of these libraries.
@@ -122,7 +134,7 @@ impl EmbeddingTask {
                 total: total_count,
                 processed: 0,
                 embedded: 0,
-                interrupted: false,
+                stopped: None,
             };
             mc.send_embedding_progress(pass.progress(EmbeddingPassState::Started));
 
@@ -131,8 +143,7 @@ impl EmbeddingTask {
             let result = self.embed_library(mc, &library.name, &mut pass).await;
             let state = match &result {
                 Err(_) => EmbeddingPassState::Failed,
-                Ok(()) if pass.interrupted => EmbeddingPassState::Interrupted,
-                Ok(()) => EmbeddingPassState::Completed,
+                Ok(()) => pass.stopped.unwrap_or(EmbeddingPassState::Completed),
             };
             mc.send_embedding_progress(pass.progress(state));
             result?;
@@ -167,9 +178,10 @@ impl EmbeddingTask {
         let mut previous_ids: Vec<String> = Vec::new();
 
         loop {
-            // Stops between chunks when the library is turned off or removed.
-            if !mc.library_embeddings_enabled(&pass.library).await {
-                break;
+            // Before reading the next chunk: the library may be gone by now.
+            if let Some(state) = must_stop(mc, &pass.library).await {
+                pass.stopped = Some(state);
+                return Ok(());
             }
             let media_ids = mc
                 .get_medias_pending_embedding(&pass.library, pass_started, CHUNK_SIZE)
@@ -181,6 +193,12 @@ impl EmbeddingTask {
             }
 
             for media_id in &media_ids {
+                // Before each media, so a pause or turning embeddings off takes
+                // effect as soon as the media in progress is done.
+                if let Some(state) = must_stop(mc, &pass.library).await {
+                    pass.stopped = Some(state);
+                    return Ok(());
+                }
                 match mc.embed_media(&pass.library, media_id).await {
                     Ok(_) => {
                         pass.embedded += 1;
@@ -203,7 +221,7 @@ impl EmbeddingTask {
                             library_name, consecutive_failures
                         ),
                     );
-                    pass.interrupted = true;
+                    pass.stopped = Some(EmbeddingPassState::Interrupted);
                     return Ok(());
                 }
                 mc.send_embedding_progress(pass.progress(EmbeddingPassState::Running));

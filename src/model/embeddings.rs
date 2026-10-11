@@ -76,6 +76,8 @@ pub struct MediaEmbeddingStatus {
     pub search_dimension: usize,
     /// Library setting `embeddings`: new and existing medias are embedded in the background.
     pub enabled: bool,
+    /// Library setting `embeddingsPaused`: nothing is embedded until it is resumed.
+    pub paused: bool,
     pub model: EmbeddingModelState,
     /// A backfill is running on this server (any library).
     pub running: bool,
@@ -92,6 +94,8 @@ pub enum EmbeddingPassState {
     /// Sent after each media.
     Running,
     Completed,
+    /// Left because the library was paused; resuming starts a new pass.
+    Paused,
     /// Left early after too many failures in a row; a later pass carries on.
     Interrupted,
     /// Could not run, for example because the model cannot be loaded.
@@ -99,7 +103,8 @@ pub enum EmbeddingPassState {
 }
 
 /// Payload of the `embedding_progress` event. A pass sends `started` once, `running`
-/// after each media, then exactly one of `completed`, `interrupted` or `failed`.
+/// after each media, then exactly one of `completed`, `paused`, `interrupted` or
+/// `failed`.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct EmbeddingProgressMessage {
@@ -271,6 +276,47 @@ impl ModelController {
             .unwrap_or(false)
     }
 
+    /// Whether background embedding is suspended for the library.
+    pub async fn library_embeddings_paused(&self, library_id: &str) -> bool {
+        self.cache_get_library(library_id)
+            .await
+            .and_then(|library| library.settings.embeddings_paused)
+            .unwrap_or(false)
+    }
+
+    /// Suspends or resumes background embedding on a library. A running pass leaves
+    /// the library once the media in progress is done. Resuming queues a pass right
+    /// away. The flag is a library setting, so it survives a restart.
+    pub async fn set_media_embeddings_paused(
+        &self,
+        library_id: &str,
+        paused: bool,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<MediaEmbeddingStatus> {
+        self.update_library_settings(
+            library_id,
+            |settings| settings.embeddings_paused = paused.then_some(true),
+            requesting_user,
+        )
+        .await?;
+        if !paused
+            && self.library_embeddings_enabled(library_id).await
+            && !self.cache_get_library_crypt(library_id).await
+        {
+            self.scheduler
+                .add(
+                    RsTaskType::Embedding,
+                    RsSchedulerWhen::At(0),
+                    EmbeddingTask {
+                        specific_library: Some(library_id.to_string()),
+                    },
+                )
+                .await?;
+        }
+        self.get_media_embeddings_status(library_id, requesting_user)
+            .await
+    }
+
     pub async fn get_media_embeddings_status(
         &self,
         library_id: &str,
@@ -288,6 +334,7 @@ impl ModelController {
             dimension: spec.dimension,
             search_dimension: spec.search_dimension,
             enabled: self.library_embeddings_enabled(library_id).await,
+            paused: self.library_embeddings_paused(library_id).await,
             model: self.embedding_model_state().await?,
             running: self.embeddings.backfill_running.load(Ordering::Relaxed),
             counts,
@@ -359,6 +406,11 @@ impl ModelController {
         if !self.library_embeddings_enabled(library_id).await {
             return Err(RsError::InvalidParams(
                 "Embeddings are not enabled for this library".to_string(),
+            ));
+        }
+        if self.library_embeddings_paused(library_id).await {
+            return Err(RsError::InvalidParams(
+                "Embeddings are paused for this library".to_string(),
             ));
         }
         if retry_failed {
@@ -802,6 +854,44 @@ mod tests {
             .unwrap()
     }
 
+    /// The next `embedding_progress` event of the library.
+    async fn next_progress(
+        events: &mut tokio::sync::broadcast::Receiver<SseEvent>,
+        library_id: &str,
+    ) -> EmbeddingProgressMessage {
+        loop {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(300), events.recv())
+                .await
+                .expect("no embedding progress in time")
+                .unwrap();
+            if let SseEvent::EmbeddingProgress(message) = event {
+                if message.library == library_id {
+                    return message;
+                }
+            }
+        }
+    }
+
+    fn in_progress(state: EmbeddingPassState) -> bool {
+        matches!(
+            state,
+            EmbeddingPassState::Started | EmbeddingPassState::Running
+        )
+    }
+
+    fn summary(pass: &[EmbeddingProgressMessage]) -> Vec<(EmbeddingPassState, u64, u64)> {
+        pass.iter()
+            .map(|message| (message.state, message.processed, message.embedded))
+            .collect()
+    }
+
+    /// The last event of a pass is sent just before the pass is marked as over.
+    async fn wait_idle(mc: &ModelController, library_id: &str) {
+        while status(mc, library_id).await.running {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
     fn text_query(text: &str) -> MediaEmbeddingSearchQuery {
         MediaEmbeddingSearchQuery {
             text: Some(text.to_string()),
@@ -945,25 +1035,97 @@ mod tests {
         .await
         .unwrap();
         assert!(status(&mc, library_id).await.enabled);
+
+        // Paused before anything ran: the task leaves the library alone and a manual
+        // start is refused. The flag is in the database, beside the other settings.
+        let paused = mc
+            .set_media_embeddings_paused(library_id, true, admin)
+            .await
+            .unwrap();
+        assert!(paused.paused && paused.enabled);
+        task.execute(mc.clone()).await.unwrap();
+        assert_eq!(status(&mc, library_id).await.counts.embedded, 0);
+        assert!(mc
+            .start_media_embedding_task(library_id, false, admin)
+            .await
+            .is_err());
+        let saved = mc
+            .store
+            .get_library(library_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .settings;
+        assert_eq!(
+            (saved.embeddings, saved.embeddings_paused),
+            (Some(true), Some(true))
+        );
+
+        // Resuming queues a pass. Paused again after its first media, that pass
+        // leaves the library once the media in progress is done.
         let mut events = mc.sse_tx.subscribe();
         let started = std::time::Instant::now();
-        task.execute(mc.clone()).await.unwrap();
-        println!("backfill of {total} medias took {:?}", started.elapsed());
-
-        // The pass reports itself: started, one event per media, then completed.
-        let mut progress = Vec::new();
-        while let Ok(event) = events.try_recv() {
-            if let SseEvent::EmbeddingProgress(message) = event {
-                assert_eq!(message.library, library_id);
-                assert_eq!(message.total, total);
-                progress.push((message.state, message.processed, message.embedded));
+        let resumed = mc
+            .set_media_embeddings_paused(library_id, false, admin)
+            .await
+            .unwrap();
+        assert!(!resumed.paused);
+        let mut first_pass = Vec::new();
+        loop {
+            let message = next_progress(&mut events, library_id).await;
+            let state = message.state;
+            first_pass.push(message);
+            if state == EmbeddingPassState::Running && first_pass.len() == 2 {
+                mc.set_media_embeddings_paused(library_id, true, admin)
+                    .await
+                    .unwrap();
+            }
+            if !in_progress(state) {
+                break;
             }
         }
-        println!("embedding_progress events: {progress:?}");
+        println!("first pass: {:?}", summary(&first_pass));
+        assert_eq!(first_pass[0].state, EmbeddingPassState::Started);
+        assert_eq!(first_pass[0].total, total);
+        let last = &first_pass[first_pass.len() - 1];
+        assert_eq!(last.state, EmbeddingPassState::Paused);
+        let done = last.processed;
+        assert!(done >= 1 && done < total, "paused after {done} of {total}");
+        assert_eq!(last.embedded, done);
+        wait_idle(&mc, library_id).await;
+        let partial = status(&mc, library_id).await;
+        assert!(partial.paused);
+        assert_eq!(
+            (partial.counts.embedded, partial.counts.pending),
+            (done, total - done)
+        );
+
+        // Resumed for good: a new pass embeds what is left and reports itself with
+        // started, one event per media, then completed.
+        mc.set_media_embeddings_paused(library_id, false, admin)
+            .await
+            .unwrap();
+        let mut second_pass = Vec::new();
+        loop {
+            let message = next_progress(&mut events, library_id).await;
+            let state = message.state;
+            second_pass.push(message);
+            if !in_progress(state) {
+                break;
+            }
+        }
+        println!("second pass: {:?}", summary(&second_pass));
+        let left = total - done;
+        assert!(second_pass.iter().all(|message| message.total == left));
         let mut expected = vec![(EmbeddingPassState::Started, 0, 0)];
-        expected.extend((1..=total).map(|done| (EmbeddingPassState::Running, done, done)));
-        expected.push((EmbeddingPassState::Completed, total, total));
-        assert_eq!(progress, expected);
+        expected.extend((1..=left).map(|n| (EmbeddingPassState::Running, n, n)));
+        expected.push((EmbeddingPassState::Completed, left, left));
+        assert_eq!(summary(&second_pass), expected);
+        println!(
+            "backfill of {total} medias took {:?}, pause included",
+            started.elapsed()
+        );
+        wait_idle(&mc, library_id).await;
 
         let after = status(&mc, library_id).await;
         println!("{}", serde_json::to_string(&after).unwrap());

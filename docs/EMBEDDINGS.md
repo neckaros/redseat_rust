@@ -211,8 +211,26 @@ PATCH /libraries/{libraryId}
 { "settings": { ...existing settings, "embeddings": true } }
 ```
 
-Turning it off stops the background work at the next chunk. Existing vectors are
-kept and stay searchable.
+Turning it off stops the background work once the media in progress is done.
+Existing vectors are kept and stay searchable.
+
+### Pausing
+
+A library can be paused without turning embeddings off:
+
+```
+POST /libraries/{libraryId}/medias/embeddings/pause
+POST /libraries/{libraryId}/medias/embeddings/resume
+```
+
+- While paused, nothing is embedded in the library: passes skip it and a manual
+  start is refused. Search keeps working on the vectors already stored.
+- A pass that is running leaves the library once the media in progress is done, and
+  reports `paused`.
+- Resuming queues a pass right away. It carries on with what is left, since pending
+  medias are always read from the database.
+- The pause is the library setting `embeddingsPaused`, so it survives a restart.
+  The two endpoints change only that setting and keep the others.
 
 Libraries with client-side encryption (`crypt`) are skipped: the server cannot read
 their files. Password-encrypted libraries work, the server decrypts them as it does
@@ -267,6 +285,7 @@ user cannot list is answered as not found.
   "dimension": 768,
   "searchDimension": 512,
   "enabled": true,
+  "paused": false,
   "model": "loaded",
   "running": false,
   "total": 12000,
@@ -278,17 +297,23 @@ user cannot list is answered as not found.
 
 `model` is `loaded`, `available` (on disk, loaded on first use), `downloading` or
 `missing`. `total` counts the photos and videos of the library. `running` is true
-while a pass is running on the server, for any library.
+while a pass is running on the server, for any library. `paused` is the library's
+pause, see above.
 
 ### `POST /embeddings/process?retryFailed=false`
 
 Library admin only. Queues a pass on this library right away instead of waiting for
-the next one. The library must have `embeddings` on.
+the next one. The library must have `embeddings` on and not be paused.
 
 The response `status` is `started`, or `alreadyRunning` when a pass is in progress.
 Passes do not overlap: the library is then handled by the running pass, or by the
 next recurring one (at most 10 minutes after it ends) if that pass is already past
 it. With `retryFailed=true` the failures are forgotten in both cases.
+
+### `POST /embeddings/pause` and `POST /embeddings/resume`
+
+Library admin only. See "Pausing" above. Both answer with the status object of
+`GET /embeddings/status`, as it is after the change.
 
 ### Progress events
 
@@ -309,10 +334,11 @@ to anyone with read access to that library:
 ```
 
 `state` is `started` (sent once, before the model is loaded), `running` (after each
-media), then exactly one of `completed`, `interrupted` (left after repeated
-failures) or `failed` (the pass could not run, for example when the model cannot be
-downloaded or loaded; the reason is in the server log). A pass that announced its
-start always sends one of these last three. See `docs/SSE.md`.
+media), then exactly one of `completed`, `paused` (the library was paused),
+`interrupted` (left after repeated failures) or `failed` (the pass could not run,
+for example when the model cannot be downloaded or loaded; the reason is in the
+server log). A pass that announced its start always sends one of these last four.
+See `docs/SSE.md`.
 
 ## Known limits
 

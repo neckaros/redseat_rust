@@ -223,7 +223,8 @@ Background media embedding (see `docs/EMBEDDINGS.md`) does not use
   succeeded (the others failed).
 - A pass over a library sends `started` once, before the model is loaded (and, the
   first time, downloaded), then `running` after each media, then exactly one of
-  `completed`, `interrupted` (left after repeated failures, a later pass carries
+  `completed`, `paused` (the library was paused; resuming starts a new pass),
+  `interrupted` (left after repeated failures, a later pass carries
   on) or `failed` (it could not run, for example the model cannot be loaded; the
   reason is in the server log).
 - Nothing is sent for a library with no pending media.
@@ -493,7 +494,7 @@ interface RsRequestProcessing {
 // Background media embedding progress
 interface EmbeddingProgressMessage {
   library: string;
-  state: 'started' | 'running' | 'completed' | 'interrupted' | 'failed';
+  state: 'started' | 'running' | 'completed' | 'paused' | 'interrupted' | 'failed';
   embedder: string;   // e.g. "embeddinggemma-2/q4/t140"
   processed: number;  // Medias tried so far in this pass
   embedded: number;   // Of which embedded; the others failed

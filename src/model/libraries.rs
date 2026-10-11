@@ -518,6 +518,37 @@ impl ModelController {
         }
     }
 
+    /// Changes some settings of a library and keeps the others, unlike
+    /// `update_library`, which replaces the whole settings object.
+    pub async fn update_library_settings(
+        &self,
+        library_id: &str,
+        change: impl FnOnce(&mut ServerLibrarySettings),
+        requesting_user: &ConnectedUser,
+    ) -> Result<Option<super::libraries::ServerLibraryForRead>> {
+        requesting_user.check_library_role(library_id, LibraryRole::Admin)?;
+        let mut settings = self
+            .get_internal_library(library_id)
+            .await?
+            .ok_or(Error::LibraryNotFound(library_id.to_string()))?
+            .settings;
+        change(&mut settings);
+        self.update_library(
+            library_id,
+            ServerLibraryForUpdate {
+                name: None,
+                source: None,
+                root: None,
+                settings: Some(settings),
+                credentials: None,
+                plugin: None,
+                _password: None,
+            },
+            requesting_user,
+        )
+        .await
+    }
+
     pub async fn get_library_encryption_status(
         &self,
         library_id: &str,
