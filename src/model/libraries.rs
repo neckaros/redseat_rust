@@ -507,6 +507,10 @@ impl ModelController {
         let _migration_guard = gate.read().await;
         self.ensure_library_encryption_writable(library_id).await?;
 
+        // Two updates made at the same time are both in the database, but the one
+        // that read first could write the cache and send its event last, leaving
+        // both without the other change.
+        let _update_guard = self.library_update_lock.lock().await;
         self.store.update_library(library_id, update).await?;
         let library = self.store.get_library(library_id).await?;
         if let Some(library) = library {

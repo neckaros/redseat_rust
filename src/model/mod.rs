@@ -146,6 +146,10 @@ pub struct ModelController {
     pub backup_processes: Arc<RwLock<Vec<BackupProcessStatus>>>,
 
     pub chache_libraries: Arc<RwLock<HashMap<String, ServerLibrary>>>,
+    /// Held by a library update from its write to its event, so the cache and the
+    /// event never come from an older read than the ones of another update. One
+    /// lock for all libraries: updates are rare and short.
+    pub library_update_lock: Arc<tokio::sync::Mutex<()>>,
     pub deleting_libraries: Arc<RwLock<HashSet<String>>>,
     /// Serializes migration creation against file mutations within each library. Mutations
     /// hold a read guard; creating the durable job briefly holds the matching write guard.
@@ -180,6 +184,7 @@ impl ModelController {
             imdb: Arc::new(ImdbContext::new()),
             scheduler: Arc::new(scheduler),
             chache_libraries: Arc::new(RwLock::new(HashMap::new())),
+            library_update_lock: Arc::new(tokio::sync::Mutex::new(())),
             deleting_libraries: Arc::new(RwLock::new(HashSet::new())),
             library_encryption_gates: Arc::new(RwLock::new(HashMap::new())),
             convert_queue: Arc::new(RwLock::new(VecDeque::new())),
