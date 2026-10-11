@@ -16,9 +16,9 @@ use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
 use self::{
-    backup::BackupTask, encrypt_library::EncryptLibraryTask, face_recognition::FaceRecognitionTask,
-    iptv_refresh::IptvRefreshTask, refresh::RefreshTask, request_progress::RequestProgressTask,
-    series::SerieTask,
+    backup::BackupTask, embedding::EmbeddingTask, encrypt_library::EncryptLibraryTask,
+    face_recognition::FaceRecognitionTask, iptv_refresh::IptvRefreshTask, refresh::RefreshTask,
+    request_progress::RequestProgressTask, series::SerieTask,
 };
 
 use super::{
@@ -27,6 +27,7 @@ use super::{
 };
 
 pub mod backup;
+pub mod embedding;
 pub mod encrypt_library;
 pub mod face_recognition;
 pub mod iptv_refresh;
@@ -319,6 +320,7 @@ pub enum RsTaskType {
     RequestProgress,
     EncryptLibrary,
     IptvRefresh,
+    Embedding,
 }
 
 #[derive(Debug)]
@@ -355,6 +357,10 @@ impl RsSchedulerItem {
             }
             RsTaskType::IptvRefresh => {
                 let deserialized: IptvRefreshTask = serde_json::from_str(&self.task)?;
+                Ok(Box::pin(deserialized))
+            }
+            RsTaskType::Embedding => {
+                let deserialized: EmbeddingTask = serde_json::from_str(&self.task)?;
                 Ok(Box::pin(deserialized))
             }
         }

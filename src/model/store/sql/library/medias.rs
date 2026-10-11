@@ -585,6 +585,42 @@ impl SqliteLibraryStore {
         Ok(row)
     }
 
+    /// The medias among `ids` that the listing would return for `query` and `limits`,
+    /// in no particular order.
+    pub async fn get_medias_by_ids(
+        &self,
+        ids: Vec<String>,
+        query: MediaQuery,
+        limits: LibraryLimits,
+    ) -> Result<Vec<ItemWithRelations<Media>>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let row = self
+            .connection
+            .call(move |conn| {
+                let media_raw_query = media_query(&limits.user_id);
+                let mut where_query = Self::build_media_query(query, limits);
+                where_query.add_where(SqlWhereType::In(
+                    "m.id".to_owned(),
+                    ids.into_iter()
+                        .map(|id| Box::new(id) as Box<dyn ToSql>)
+                        .collect(),
+                ));
+
+                let mut query = conn.prepare(&format!(
+                    "{} {} {}",
+                    where_query.format_recursive(),
+                    media_raw_query,
+                    where_query.format(),
+                ))?;
+                let rows = query.query_map(where_query.values(), Self::row_to_media)?;
+                Ok(rows.collect::<std::result::Result<Vec<_>, rusqlite::Error>>()?)
+            })
+            .await?;
+        Ok(row)
+    }
+
     pub async fn count_medias(&self, query: MediaQuery, limits: LibraryLimits) -> Result<u64> {
         let row = self
             .connection

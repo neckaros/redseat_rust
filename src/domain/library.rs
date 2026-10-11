@@ -109,6 +109,13 @@ pub struct ServerLibrarySettings {
     pub ignore_groups: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preduction_model: Option<String>,
+    /// Compute media embeddings in the background (semantic search). Off when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embeddings: Option<bool>,
+    /// Background embedding is suspended until it is resumed. Stored here so a
+    /// pause survives a restart.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embeddings_paused: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub map_progress: Option<Vec<UserMapping>>,
     #[serde(skip_serializing_if = "Option::is_none")]

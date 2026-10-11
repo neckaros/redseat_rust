@@ -15,6 +15,7 @@ use super::Result;
 pub mod books;
 pub mod channels;
 pub mod deleted;
+pub mod embeddings;
 pub mod entity_people;
 pub mod episodes;
 pub mod media_progress;
@@ -441,6 +442,18 @@ impl SqliteLibraryStore {
                         "061 - TITLE RELATIONS.sql"
                     )))?;
                     version = 61;
+                    conn.pragma_update(None, "user_version", version)?;
+                    log_info(
+                        LogServiceType::Database,
+                        format!("Update Library Database to version: {}", version),
+                    );
+                }
+
+                if version < 62 {
+                    conn.execute_batch(&String::from_utf8_lossy(include_bytes!(
+                        "062 - MEDIA EMBEDDINGS.sql"
+                    )))?;
+                    version = 62;
                     conn.pragma_update(None, "user_version", version)?;
                     log_info(
                         LogServiceType::Database,

@@ -512,12 +512,12 @@ impl FaceRecognitionService {
             .lock()
             .map_err(|e| RsError::Error(format!("Failed to lock session: {:?}", e)))?;
         let name = session
-            .inputs
+            .inputs()
             .iter()
             .next()
             .ok_or(RsError::Error("Unable to get input name".to_string()))?
-            .name
-            .clone();
+            .name()
+            .to_string();
         drop(session);
 
         let mut session = self
@@ -783,7 +783,7 @@ impl FaceRecognitionService {
             .alignment_session
             .lock()
             .map_err(|e| RsError::Error(format!("Failed to lock session: {:?}", e)))?;
-        let input_name = session.inputs[0].name.clone();
+        let input_name = session.inputs()[0].name().to_string();
         drop(session);
         let mut session = self
             .alignment_session
@@ -842,14 +842,14 @@ impl FaceRecognitionService {
             .lock()
             .map_err(|e| RsError::Error(format!("Failed to lock session: {:?}", e)))?;
         let name = session
-            .inputs
+            .inputs()
             .iter()
             .next()
             .ok_or(RsError::Error(
                 "Unable to get input name for recognition".to_string(),
             ))?
-            .name
-            .clone();
+            .name()
+            .to_string();
         drop(session);
 
         let mut session = self

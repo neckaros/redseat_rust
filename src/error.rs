@@ -236,6 +236,19 @@ impl IntoResponse for Error {
     }
 }
 
+// Session builder methods hand the builder back inside their error.
+impl From<ort::Error<ort::session::builder::SessionBuilder>> for Error {
+    fn from(error: ort::Error<ort::session::builder::SessionBuilder>) -> Self {
+        Self::ORT(error.into())
+    }
+}
+
+impl From<crate::tools::embedding::EmbeddingError> for Error {
+    fn from(error: crate::tools::embedding::EmbeddingError) -> Self {
+        Self::Error(error.to_string())
+    }
+}
+
 impl Error {
     pub fn client_status_and_error(&self) -> (StatusCode, ClientError) {
         #[allow(unreachable_patterns)]

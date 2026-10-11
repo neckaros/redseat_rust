@@ -41,6 +41,7 @@ redseat-rust/
 | Scheduled tasks | `src/tools/scheduler/` | 15s tick loop |
 | Direct HTTPS (label, certificate, addresses) | `src/direct/` | See `docs/DIRECT_HTTPS.md`, keep it updated |
 | SSE and events | `docs/SSE.md` | don't forget to update the SSE.md file if you do modification or add events |
+| Media embeddings and semantic search | `src/tools/embedding/` + `src/model/embeddings.rs` | See `docs/EMBEDDINGS.md`; `src/tools/embedding/` must stay free of `crate::model`, routes and store imports |
 
 ## ARCHITECTURE
 

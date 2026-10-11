@@ -65,6 +65,7 @@ Missing files do not prevent entry deletion. Event payloads are unchanged.
 | `unwatched` | Content unmarked as watched | User-specific (only watched owner) |
 | `view_progress` | Resume position saved for a movie or episode | User-specific (only progress owner) |
 | `request_processing` | Request processing status updates | Library read access |
+| `embedding_progress` | Progress of a background media embedding pass | Library read access |
 
 `GET /libraries/:libraryId/books/:id/metadata/refresh` refreshes a book from
 metadata plugins and emits a `books` event with `action: "Updated"` when scalar
@@ -200,6 +201,35 @@ operations are temporarily unavailable:
 - `encryption-retry: ...`
 - `encryption-failed: ...`
 - `encryption-completed`
+
+Background media embedding (see `docs/EMBEDDINGS.md`) does not use
+`library-status`. It has its own `embedding_progress` event:
+
+```json
+{
+  "embeddingProgress": {
+    "library": "<library id>",
+    "state": "running",
+    "embedder": "embeddinggemma-2/q4/t140",
+    "processed": 12,
+    "embedded": 11,
+    "total": 5400
+  }
+}
+```
+
+- `total` is the number of medias the pass covers: those pending when it started,
+  kept in step with uploads and deletions since, so it is never below `processed`.
+- `processed` is how many were tried so far, and `embedded` how many of those
+  succeeded (the others failed).
+- A pass over a library sends `started` once, before the model is loaded (and, the
+  first time, downloaded), then `running` after each media, then exactly one of
+  `completed`, `paused` (the library was paused; resuming starts a new pass),
+  `stopped` (embeddings were turned off for the library, or it was removed),
+  `interrupted` (left after repeated failures, a later pass carries
+  on) or `failed` (it could not run, for example the model cannot be loaded; the
+  reason is in the server log).
+- Nothing is sent for a library with no pending media.
 
 ## TypeScript Client Examples
 
@@ -463,6 +493,16 @@ interface RsRequestProcessing {
   added: number;        // Creation timestamp
 }
 
+// Background media embedding progress
+interface EmbeddingProgressMessage {
+  library: string;
+  state: 'started' | 'running' | 'completed' | 'paused' | 'stopped' | 'interrupted' | 'failed';
+  embedder: string;   // e.g. "embeddinggemma-2/q4/t140"
+  processed: number;  // Medias tried so far in this pass
+  embedded: number;   // Of which embedded; the others failed
+  total: number;      // Medias the pass covers; follows uploads and deletions
+}
+
 // Wrapper type matching the SSE event structure
 type SseEvent =
   | { Library: LibraryMessage }
@@ -483,7 +523,8 @@ type SseEvent =
   | { Watched: Watched }
   | { Unwatched: Unwatched }   // Note: different structure than Watched
   | { viewProgress: ViewProgress }
-  | { RequestProcessing: RequestProcessingMessage };
+  | { RequestProcessing: RequestProcessingMessage }
+  | { embeddingProgress: EmbeddingProgressMessage };
 ```
 
 ### Listening to Events
@@ -620,7 +661,7 @@ class SseClient {
       'convert_progress', 'episodes', 'series', 'movies', 'books',
       'people', 'tags', 'backups', 'backups-files', 'media_progress',
       'media_rating', 'watched', 'unwatched', 'view_progress',
-      'request_processing'
+      'request_processing', 'embedding_progress'
     ];
 
     events.forEach(eventName => {
@@ -687,7 +728,7 @@ function useSse(options: UseSseOptions = {}) {
       'convert_progress', 'episodes', 'series', 'movies', 'books',
       'people', 'tags', 'backups', 'backups-files', 'media_progress',
       'media_rating', 'watched', 'unwatched', 'view_progress',
-      'request_processing'
+      'request_processing', 'embedding_progress'
     ];
 
     eventTypes.forEach(eventName => {
