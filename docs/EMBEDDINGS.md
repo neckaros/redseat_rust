@@ -208,8 +208,10 @@ Embeddings are off by default. Set `embeddings` in the library settings:
 
 ```
 PATCH /libraries/{libraryId}
-{ "settings": { ...existing settings, "embeddings": true } }
+{ "settings": { "embeddings": true } }
 ```
+
+The other settings are kept: see `LIBRARIES.md`.
 
 Turning it off stops the background work once the media in progress is done; a
 pass that was running reports `stopped`. Existing vectors are kept and stay
@@ -231,7 +233,8 @@ POST /libraries/{libraryId}/medias/embeddings/resume
 - Resuming queues a pass right away. It carries on with what is left, since pending
   medias are always read from the database.
 - The pause is the library setting `embeddingsPaused`, so it survives a restart.
-  The two endpoints change only that setting and keep the others.
+  The two endpoints change only that setting and keep the others, and they are the
+  only way to change it: `embeddingsPaused` is ignored in a library update.
 
 Libraries with client-side encryption (`crypt`) are skipped: the server cannot read
 their files. Password-encrypted libraries work, the server decrypts them as it does

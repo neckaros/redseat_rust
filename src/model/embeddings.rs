@@ -17,7 +17,7 @@ use super::{
 };
 use crate::{
     domain::{
-        library::LibraryRole,
+        library::{LibraryRole, ServerLibrarySettingsPatch},
         media::{FileType, Media},
     },
     error::{RsError, RsResult},
@@ -324,7 +324,10 @@ impl ModelController {
     ) -> RsResult<MediaEmbeddingStatus> {
         self.update_library_settings(
             library_id,
-            |settings| settings.embeddings_paused = paused.then_some(true),
+            ServerLibrarySettingsPatch {
+                embeddings_paused: Some(paused.then_some(true)),
+                ..Default::default()
+            },
             requesting_user,
         )
         .await?;
@@ -1184,7 +1187,10 @@ mod tests {
             if state == EmbeddingPassState::Started {
                 mc.update_library_settings(
                     library_id,
-                    |settings| settings.embeddings = Some(false),
+                    ServerLibrarySettingsPatch {
+                        embeddings: Some(Some(false)),
+                        ..Default::default()
+                    },
                     admin,
                 )
                 .await
@@ -1206,7 +1212,10 @@ mod tests {
         // reports itself with started, one event per media, then completed.
         mc.update_library_settings(
             library_id,
-            |settings| settings.embeddings = Some(true),
+            ServerLibrarySettingsPatch {
+                embeddings: Some(Some(true)),
+                ..Default::default()
+            },
             admin,
         )
         .await

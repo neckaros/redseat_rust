@@ -550,6 +550,30 @@ mod tests {
             .unwrap()
     }
 
+    /// Runs one migration file on a store whose schema was brought back to what
+    /// that migration starts from. `migrate()` cannot do it: it would replay the
+    /// later migrations too, on a store that already holds what they create.
+    async fn apply_migration(store: &SqliteLibraryStore, migration: &'static [u8]) {
+        store
+            .connection
+            .call(move |conn| {
+                conn.execute_batch(&String::from_utf8_lossy(migration))?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+    }
+
+    /// What a title without any relation reports: every list it carries, empty.
+    fn no_relations(entity: PeopleEntity) -> serde_json::Value {
+        match entity {
+            PeopleEntity::Serie => serde_json::json!({"peopleDetails":[],"tags":[]}),
+            PeopleEntity::Movie | PeopleEntity::Book => {
+                serde_json::json!({"peopleDetails":[],"tags":[],"series":[]})
+            }
+        }
+    }
+
     fn summary() -> Person {
         Person {
             id: "tmdb:42".into(),
@@ -1061,13 +1085,11 @@ mod tests {
                     VALUES ('title','local-person','[\"Actor\"]','[\"Character\"]');"
                     ))?;
                 }
-                conn.execute_batch("PRAGMA user_version = 57;")?;
                 Ok(())
             })
             .await
             .unwrap();
-        assert_eq!(store.migrate().await.unwrap(), 58);
-        assert_eq!(store.migrate().await.unwrap(), 58);
+        apply_migration(&store, include_bytes!("058 - CREDIT RANK.sql")).await;
         for entity in [PeopleEntity::Movie, PeopleEntity::Serie, PeopleEntity::Book] {
             let credit = store
                 .get_entity_people(entity, "title")
@@ -1151,7 +1173,7 @@ mod tests {
             );
             assert_eq!(
                 serde_json::to_value(&snapshot["empty"]).unwrap(),
-                serde_json::json!({"peopleDetails":[]})
+                no_relations(entity)
             );
             // Live event title objects keep flat metadata and embed the same snapshot.
             let event = match entity {
@@ -1298,7 +1320,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 serde_json::to_value(&removed["title"]).unwrap(),
-                serde_json::json!({"peopleDetails":[]})
+                no_relations(entity)
             );
         }
     }
@@ -2248,14 +2270,20 @@ mod tests {
                 ALTER TABLE book_people_mapping DROP COLUMN rank;
                 ALTER TABLE book_people_mapping DROP COLUMN roles;
                 ALTER TABLE book_people_mapping DROP COLUMN characters;
-                PRAGMA user_version = 54;
                 INSERT INTO series (id, name) VALUES ('show', 'Existing Show');",
                 )?;
                 Ok(())
             })
             .await
             .unwrap();
-        assert_eq!(store.migrate().await.unwrap(), 58);
+        for migration in [
+            &include_bytes!("055 - ENTITY PEOPLE.sql")[..],
+            include_bytes!("056 - ENTITY PEOPLE SYNC.sql"),
+            include_bytes!("057 - PEOPLE ROLES.sql"),
+            include_bytes!("058 - CREDIT RANK.sql"),
+        ] {
+            apply_migration(&store, migration).await;
+        }
         assert_eq!(
             store
                 .get_person("local-person")

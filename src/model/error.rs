@@ -51,6 +51,7 @@ pub enum Error {
     LibraryEncryptionInProgress(String),
     LibraryEncryptionUnavailable(String),
     InvalidLibraryEncryptionRequest(String),
+    InvalidLibrarySettings(String),
     InvalidBackupSchedule(String),
     InvalidPaginationLimit {
         requested: u32,
@@ -167,6 +168,12 @@ impl Error {
                 },
             ),
             Error::InvalidLibraryEncryptionRequest(message) => (
+                StatusCode::BAD_REQUEST,
+                ClientError::Custom {
+                    message: message.clone(),
+                },
+            ),
+            Error::InvalidLibrarySettings(message) => (
                 StatusCode::BAD_REQUEST,
                 ClientError::Custom {
                     message: message.clone(),
