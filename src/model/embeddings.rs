@@ -96,6 +96,8 @@ pub enum EmbeddingPassState {
     Completed,
     /// Left because the library was paused; resuming starts a new pass.
     Paused,
+    /// Left because embeddings were turned off for the library, or it was removed.
+    Stopped,
     /// Left early after too many failures in a row; a later pass carries on.
     Interrupted,
     /// Could not run, for example because the model cannot be loaded.
@@ -103,8 +105,8 @@ pub enum EmbeddingPassState {
 }
 
 /// Payload of the `embedding_progress` event. A pass sends `started` once, `running`
-/// after each media, then exactly one of `completed`, `paused`, `interrupted` or
-/// `failed`.
+/// after each media, then exactly one of `completed`, `paused`, `stopped`,
+/// `interrupted` or `failed`.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct EmbeddingProgressMessage {
@@ -980,6 +982,12 @@ mod tests {
                 std::fs::read(root.join("test_data").join(name)).unwrap(),
             ));
         }
+        // A fourth one, so a pass can be cut short twice and still leave work.
+        let mut plain = Cursor::new(Vec::new());
+        image::RgbImage::from_pixel(640, 480, image::Rgb([200, 40, 40]))
+            .write_to(&mut plain, image::ImageFormat::Png)
+            .unwrap();
+        files.push(("plain.png".to_string(), plain.into_inner()));
         let video = std::env::var("REDSEAT_EMBEDDING_TEST_VIDEO").ok();
         if let Some(video) = &video {
             if VideoCommandBuilder::version().await.unwrap().is_none() {
@@ -1100,8 +1108,8 @@ mod tests {
             (done, total - done)
         );
 
-        // Resumed for good: a new pass embeds what is left and reports itself with
-        // started, one event per media, then completed.
+        // Resumed, then embeddings are turned off as the new pass starts: it leaves
+        // the library and says it was stopped, not that it completed.
         mc.set_media_embeddings_paused(library_id, false, admin)
             .await
             .unwrap();
@@ -1110,19 +1118,57 @@ mod tests {
             let message = next_progress(&mut events, library_id).await;
             let state = message.state;
             second_pass.push(message);
+            if state == EmbeddingPassState::Started {
+                mc.update_library_settings(
+                    library_id,
+                    |settings| settings.embeddings = Some(false),
+                    admin,
+                )
+                .await
+                .unwrap();
+            }
             if !in_progress(state) {
                 break;
             }
         }
         println!("second pass: {:?}", summary(&second_pass));
-        let left = total - done;
-        assert!(second_pass.iter().all(|message| message.total == left));
+        let last = &second_pass[second_pass.len() - 1];
+        assert_eq!(last.state, EmbeddingPassState::Stopped);
+        let left = total - done - last.processed;
+        assert!(left >= 1, "nothing left after the stopped pass");
+        wait_idle(&mc, library_id).await;
+        assert!(!status(&mc, library_id).await.enabled);
+
+        // Turned back on and started by hand: the pass embeds what is left and
+        // reports itself with started, one event per media, then completed.
+        mc.update_library_settings(
+            library_id,
+            |settings| settings.embeddings = Some(true),
+            admin,
+        )
+        .await
+        .unwrap();
+        assert!(mc
+            .start_media_embedding_task(library_id, false, admin)
+            .await
+            .unwrap());
+        let mut third_pass = Vec::new();
+        loop {
+            let message = next_progress(&mut events, library_id).await;
+            let state = message.state;
+            third_pass.push(message);
+            if !in_progress(state) {
+                break;
+            }
+        }
+        println!("third pass: {:?}", summary(&third_pass));
+        assert!(third_pass.iter().all(|message| message.total == left));
         let mut expected = vec![(EmbeddingPassState::Started, 0, 0)];
         expected.extend((1..=left).map(|n| (EmbeddingPassState::Running, n, n)));
         expected.push((EmbeddingPassState::Completed, left, left));
-        assert_eq!(summary(&second_pass), expected);
+        assert_eq!(summary(&third_pass), expected);
         println!(
-            "backfill of {total} medias took {:?}, pause included",
+            "backfill of {total} medias took {:?}, pause and stop included",
             started.elapsed()
         );
         wait_idle(&mc, library_id).await;

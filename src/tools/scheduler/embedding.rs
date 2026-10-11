@@ -43,8 +43,8 @@ struct LibraryPass {
 /// Why a pass must leave the library now, as the state to report, if it must.
 async fn must_stop(mc: &ModelController, library_id: &str) -> Option<EmbeddingPassState> {
     if !mc.library_embeddings_enabled(library_id).await {
-        // Turned off or removed: this pass has nothing more to do here.
-        Some(EmbeddingPassState::Completed)
+        // Embeddings turned off, or the library removed.
+        Some(EmbeddingPassState::Stopped)
     } else if mc.library_embeddings_paused(library_id).await {
         Some(EmbeddingPassState::Paused)
     } else {

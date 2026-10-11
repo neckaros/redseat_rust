@@ -211,8 +211,9 @@ PATCH /libraries/{libraryId}
 { "settings": { ...existing settings, "embeddings": true } }
 ```
 
-Turning it off stops the background work once the media in progress is done.
-Existing vectors are kept and stay searchable.
+Turning it off stops the background work once the media in progress is done; a
+pass that was running reports `stopped`. Existing vectors are kept and stay
+searchable.
 
 ### Pausing
 
@@ -334,11 +335,16 @@ to anyone with read access to that library:
 ```
 
 `state` is `started` (sent once, before the model is loaded), `running` (after each
-media), then exactly one of `completed`, `paused` (the library was paused),
-`interrupted` (left after repeated failures) or `failed` (the pass could not run,
-for example when the model cannot be downloaded or loaded; the reason is in the
-server log). A pass that announced its start always sends one of these last four.
-See `docs/SSE.md`.
+media), then exactly one of:
+
+- `completed`: nothing is left to embed in this pass.
+- `paused`: the library was paused.
+- `stopped`: embeddings were turned off for the library, or it was removed.
+- `interrupted`: left after repeated failures; a later pass carries on.
+- `failed`: the pass could not run, for example when the model cannot be downloaded
+  or loaded. The reason is in the server log.
+
+A pass that announced its start always sends one of these five. See `docs/SSE.md`.
 
 ## Known limits
 
