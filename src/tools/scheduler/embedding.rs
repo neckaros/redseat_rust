@@ -1,7 +1,10 @@
 use crate::{
-    domain::library::LibraryStatusMessage,
     error::RsResult,
-    model::{embeddings::embedding_pass_start, users::ConnectedUser, ModelController},
+    model::{
+        embeddings::{embedding_pass_start, EmbeddingPassState, EmbeddingProgressMessage},
+        users::ConnectedUser,
+        ModelController,
+    },
     tools::log::{log_error, log_info, LogServiceType},
 };
 use axum::async_trait;
@@ -24,12 +27,30 @@ impl EmbeddingTask {
     }
 }
 
-/// How a pass over one library ended.
+/// Counters of a pass over one library. Kept by the caller, so they are known
+/// however the pass ends.
 struct LibraryPass {
-    embedded: u64,
+    library: String,
+    embedder: String,
+    /// Medias that were pending when the pass started.
+    total: u64,
     processed: u64,
+    embedded: u64,
     /// Left early after too many failures in a row.
     interrupted: bool,
+}
+
+impl LibraryPass {
+    fn progress(&self, state: EmbeddingPassState) -> EmbeddingProgressMessage {
+        EmbeddingProgressMessage {
+            library: self.library.clone(),
+            state,
+            embedder: self.embedder.clone(),
+            processed: self.processed,
+            embedded: self.embedded,
+            total: self.total,
+        }
+    }
 }
 
 #[async_trait]
@@ -95,34 +116,26 @@ impl EmbeddingTask {
                     total_count, library.name
                 ),
             );
-            mc.send_library_status(LibraryStatusMessage {
-                message: format!(
-                    "Starting media embedding for library {} (0/{} - 0%)",
-                    library.name, total_count
-                ),
+            let mut pass = LibraryPass {
                 library: library.id.clone(),
-            });
+                embedder: mc.embedder_spec().id.to_string(),
+                total: total_count,
+                processed: 0,
+                embedded: 0,
+                interrupted: false,
+            };
+            mc.send_embedding_progress(pass.progress(EmbeddingPassState::Started));
 
             // Every way out of the pass is reported, so a listener that saw it start
             // also sees it end.
-            let pass = self
-                .embed_library(mc, &library.id, &library.name, total_count)
-                .await;
-            mc.send_library_status(LibraryStatusMessage {
-                message: match &pass {
-                    Ok(pass) if pass.interrupted => format!(
-                        "Media embedding interrupted for library {} after repeated failures ({}/{})",
-                        library.name, pass.embedded, total_count
-                    ),
-                    Ok(pass) => format!(
-                        "Completed media embedding for library {} ({}/{}) - 100%",
-                        library.name, pass.embedded, total_count
-                    ),
-                    Err(_) => format!("Media embedding failed for library {}", library.name),
-                },
-                library: library.id.clone(),
-            });
-            let pass = pass?;
+            let result = self.embed_library(mc, &library.name, &mut pass).await;
+            let state = match &result {
+                Err(_) => EmbeddingPassState::Failed,
+                Ok(()) if pass.interrupted => EmbeddingPassState::Interrupted,
+                Ok(()) => EmbeddingPassState::Completed,
+            };
+            mc.send_embedding_progress(pass.progress(state));
+            result?;
             log_info(
                 LogServiceType::Scheduler,
                 format!(
@@ -135,14 +148,13 @@ impl EmbeddingTask {
         Ok(())
     }
 
-    /// Embeds the pending medias of one library.
+    /// Embeds the pending medias of one library, counting them in `pass`.
     async fn embed_library(
         &self,
         mc: &ModelController,
-        library_id: &str,
         library_name: &str,
-        total_count: u64,
-    ) -> RsResult<LibraryPass> {
+        pass: &mut LibraryPass,
+    ) -> RsResult<()> {
         // Loading (and on first use downloading) the model is not a media failure.
         mc.prepare_embedder_for_images().await?;
 
@@ -151,19 +163,16 @@ impl EmbeddingTask {
         // the medias: the pass leaves the library so they are not all given up on.
         const MAX_CONSECUTIVE_FAILURES: u32 = 5;
         let pass_started = embedding_pass_start();
-        let mut processed_count: u64 = 0;
-        let mut embedded_count: u64 = 0;
         let mut consecutive_failures: u32 = 0;
-        let mut interrupted = false;
         let mut previous_ids: Vec<String> = Vec::new();
 
-        'library: loop {
+        loop {
             // Stops between chunks when the library is turned off or removed.
-            if !mc.library_embeddings_enabled(library_id).await {
+            if !mc.library_embeddings_enabled(&pass.library).await {
                 break;
             }
             let media_ids = mc
-                .get_medias_pending_embedding(library_id, pass_started, CHUNK_SIZE)
+                .get_medias_pending_embedding(&pass.library, pass_started, CHUNK_SIZE)
                 .await?;
             // The same chunk twice means nothing in it could be embedded or
             // recorded as failed (library unreadable): leave it to a later pass.
@@ -172,9 +181,9 @@ impl EmbeddingTask {
             }
 
             for media_id in &media_ids {
-                match mc.embed_media(library_id, media_id).await {
+                match mc.embed_media(&pass.library, media_id).await {
                     Ok(_) => {
-                        embedded_count += 1;
+                        pass.embedded += 1;
                         consecutive_failures = 0;
                     }
                     Err(e) => {
@@ -185,7 +194,7 @@ impl EmbeddingTask {
                         consecutive_failures += 1;
                     }
                 }
-                processed_count += 1;
+                pass.processed += 1;
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
                     log_error(
                         LogServiceType::Scheduler,
@@ -194,25 +203,14 @@ impl EmbeddingTask {
                             library_name, consecutive_failures
                         ),
                     );
-                    interrupted = true;
-                    break 'library;
+                    pass.interrupted = true;
+                    return Ok(());
                 }
-                let percent = ((processed_count * 100) / total_count).min(100);
-                mc.send_library_status(LibraryStatusMessage {
-                    message: format!(
-                        "Embedding media items... ({}/{}) - {}%",
-                        processed_count, total_count, percent
-                    ),
-                    library: library_id.to_string(),
-                });
+                mc.send_embedding_progress(pass.progress(EmbeddingPassState::Running));
             }
             previous_ids = media_ids;
         }
 
-        Ok(LibraryPass {
-            embedded: embedded_count,
-            processed: processed_count,
-            interrupted,
-        })
+        Ok(())
     }
 }

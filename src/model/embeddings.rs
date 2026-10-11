@@ -22,6 +22,7 @@ use crate::{
     },
     error::{RsError, RsResult},
     plugins::sources::error::SourcesError,
+    routes::sse::SseEvent,
     server::get_server_local_path,
     tools::{
         embedding::{self, index::VectorIndex, Embedder, EmbedderSpec},
@@ -80,6 +81,37 @@ pub struct MediaEmbeddingStatus {
     pub running: bool,
     #[serde(flatten)]
     pub counts: MediaEmbeddingCounts,
+}
+
+/// Where a background embedding pass over one library stands.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum EmbeddingPassState {
+    /// Sent before the model is loaded and, the first time, downloaded.
+    Started,
+    /// Sent after each media.
+    Running,
+    Completed,
+    /// Left early after too many failures in a row; a later pass carries on.
+    Interrupted,
+    /// Could not run, for example because the model cannot be loaded.
+    Failed,
+}
+
+/// Payload of the `embedding_progress` event. A pass sends `started` once, `running`
+/// after each media, then exactly one of `completed`, `interrupted` or `failed`.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct EmbeddingProgressMessage {
+    pub library: String,
+    pub state: EmbeddingPassState,
+    pub embedder: String,
+    /// Medias tried so far in this pass.
+    pub processed: u64,
+    /// Of which embedded; the others failed.
+    pub embedded: u64,
+    /// Medias that were pending when the pass started.
+    pub total: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
@@ -225,6 +257,10 @@ impl ModelController {
                 EmbeddingModelState::Missing
             },
         )
+    }
+
+    pub fn send_embedding_progress(&self, message: EmbeddingProgressMessage) {
+        self.broadcast_sse(SseEvent::EmbeddingProgress(message));
     }
 
     /// Whether background embedding is turned on for the library (off by default).
@@ -909,9 +945,25 @@ mod tests {
         .await
         .unwrap();
         assert!(status(&mc, library_id).await.enabled);
+        let mut events = mc.sse_tx.subscribe();
         let started = std::time::Instant::now();
         task.execute(mc.clone()).await.unwrap();
         println!("backfill of {total} medias took {:?}", started.elapsed());
+
+        // The pass reports itself: started, one event per media, then completed.
+        let mut progress = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if let SseEvent::EmbeddingProgress(message) = event {
+                assert_eq!(message.library, library_id);
+                assert_eq!(message.total, total);
+                progress.push((message.state, message.processed, message.embedded));
+            }
+        }
+        println!("embedding_progress events: {progress:?}");
+        let mut expected = vec![(EmbeddingPassState::Started, 0, 0)];
+        expected.extend((1..=total).map(|done| (EmbeddingPassState::Running, done, done)));
+        expected.push((EmbeddingPassState::Completed, total, total));
+        assert_eq!(progress, expected);
 
         let after = status(&mc, library_id).await;
         println!("{}", serde_json::to_string(&after).unwrap());

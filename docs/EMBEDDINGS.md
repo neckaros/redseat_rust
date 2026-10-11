@@ -292,12 +292,27 @@ it. With `retryFailed=true` the failures are forgotten in both cases.
 
 ### Progress events
 
-While a pass runs, `library-status` SSE events carry its progress, in the same
-form as the face scan. See `docs/SSE.md`.
+While a pass runs on a library, `embedding_progress` SSE events carry its progress
+to anyone with read access to that library:
 
-A pass that announced its start always sends a last message: completed,
-interrupted after repeated failures, or failed (for example when the model cannot
-be downloaded or loaded). The reason for a failure is in the server log.
+```json
+{
+  "embeddingProgress": {
+    "library": "<library id>",
+    "state": "running",
+    "embedder": "embeddinggemma-2/q4/t140",
+    "processed": 12,
+    "embedded": 11,
+    "total": 5400
+  }
+}
+```
+
+`state` is `started` (sent once, before the model is loaded), `running` (after each
+media), then exactly one of `completed`, `interrupted` (left after repeated
+failures) or `failed` (the pass could not run, for example when the model cannot be
+downloaded or loaded; the reason is in the server log). A pass that announced its
+start always sends one of these last three. See `docs/SSE.md`.
 
 ## Known limits
 
