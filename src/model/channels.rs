@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     io::Cursor,
+    time::Duration,
 };
 
 use nanoid::nanoid;
@@ -51,6 +52,11 @@ pub struct ImportRequest {
 pub struct StreamQuery {
     pub quality: Option<String>,
 }
+
+/// How long a request waits for a stream slot: closing the previous stream of
+/// a viewer who changes channel takes a moment.
+const STREAM_SLOT_WAIT: Duration = Duration::from_secs(3);
+const STREAM_SLOT_POLL: Duration = Duration::from_millis(100);
 
 impl ModelController {
     pub async fn get_channels(
@@ -688,6 +694,9 @@ impl ModelController {
 
     // -- Stream slot management (concurrent stream limiting) --
 
+    /// Takes one of the library's stream slots for a channel. A viewer changing
+    /// channel asks for the new stream while the server is still closing the
+    /// previous one, so a full library is given a moment to free a slot.
     pub async fn acquire_stream_slot(&self, library_id: &str, channel_id: &str) -> RsResult<()> {
         let library = self
             .cache_get_library(library_id)
@@ -698,52 +707,77 @@ impl ModelController {
             )))?;
         let max_streams = library.settings.max_streams.unwrap_or(1) as usize;
 
-        let mut streams = self.active_streams.write().await;
-        let channels = streams.entry(library_id.to_string()).or_default();
-
-        // Same channel is allowed (doesn't count as extra)
-        if channels.contains(channel_id) {
-            return Ok(());
-        }
-
-        if channels.len() >= max_streams {
-            // Evict the oldest HLS session for this library to make room
-            let oldest = {
-                let sessions = self.hls_sessions.read().await;
-                sessions
-                    .values()
-                    .filter(|s| s.library_id == library_id)
-                    .min_by_key(|s| s.last_active.load(std::sync::atomic::Ordering::Relaxed))
-                    .map(|s| (s.key.clone(), s.channel_id.clone()))
-            };
-
-            if let Some((key, old_channel_id)) = oldest {
-                log_info(LogServiceType::Source, format!(
-                    "IPTV stream limit reached for library {}, evicting oldest session (channel {})",
-                    library_id, old_channel_id
-                ));
-                // Drop the streams lock before stopping the session (stop_session needs hls_sessions lock only)
-                drop(streams);
-                crate::tools::hls_session::stop_session(&key, &self.hls_sessions).await;
-                // Re-acquire and update active_streams
-                let mut streams = self.active_streams.write().await;
-                if let Some(channels) = streams.get_mut(library_id) {
-                    channels.remove(&old_channel_id);
-                }
-                let channels = streams.entry(library_id.to_string()).or_default();
-                channels.insert(channel_id.to_string());
-            } else {
-                // No HLS session to evict (e.g., all slots taken by MPEG2-TS proxies)
+        let deadline = tokio::time::Instant::now() + STREAM_SLOT_WAIT;
+        loop {
+            if self
+                .try_acquire_stream_slot(library_id, channel_id, max_streams)
+                .await
+            {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
                 return Err(crate::Error::Error(format!(
                     "Maximum concurrent streams reached for this library ({}). Stop another stream first.",
                     max_streams
                 )));
             }
-        } else {
-            channels.insert(channel_id.to_string());
+            tokio::time::sleep(STREAM_SLOT_POLL).await;
+        }
+    }
+
+    /// Returns false when every slot is taken by an MPEG2-TS proxy stream.
+    async fn try_acquire_stream_slot(
+        &self,
+        library_id: &str,
+        channel_id: &str,
+        max_streams: usize,
+    ) -> bool {
+        let mut streams = self.active_streams.write().await;
+        let channels = streams.entry(library_id.to_string()).or_default();
+
+        // Same channel is allowed (doesn't count as extra)
+        if channels.contains(channel_id) {
+            return true;
         }
 
-        Ok(())
+        if channels.len() < max_streams {
+            channels.insert(channel_id.to_string());
+            return true;
+        }
+
+        // Evict the oldest HLS session for this library to make room
+        let oldest = {
+            let sessions = self.hls_sessions.read().await;
+            sessions
+                .values()
+                .filter(|s| s.library_id == library_id)
+                .min_by_key(|s| s.last_active.load(std::sync::atomic::Ordering::Relaxed))
+                .map(|s| (s.key.clone(), s.channel_id.clone()))
+        };
+
+        let Some((key, old_channel_id)) = oldest else {
+            // No HLS session to evict (all slots taken by MPEG2-TS proxies)
+            return false;
+        };
+
+        log_info(
+            LogServiceType::Source,
+            format!(
+                "IPTV stream limit reached for library {}, evicting oldest session (channel {})",
+                library_id, old_channel_id
+            ),
+        );
+        // Drop the streams lock before stopping the session (stop_session needs hls_sessions lock only)
+        drop(streams);
+        crate::tools::hls_session::stop_session(&key, &self.hls_sessions).await;
+        // Re-acquire and update active_streams
+        let mut streams = self.active_streams.write().await;
+        if let Some(channels) = streams.get_mut(library_id) {
+            channels.remove(&old_channel_id);
+        }
+        let channels = streams.entry(library_id.to_string()).or_default();
+        channels.insert(channel_id.to_string());
+        true
     }
 
     pub async fn release_stream_slot(&self, library_id: &str, channel_id: &str) {
