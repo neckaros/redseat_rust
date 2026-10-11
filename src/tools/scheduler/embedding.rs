@@ -32,7 +32,7 @@ impl EmbeddingTask {
 struct LibraryPass {
     library: String,
     embedder: String,
-    /// Medias that were pending when the pass started.
+    /// Medias the pass covers, see `EmbeddingProgressMessage::total`.
     total: u64,
     processed: u64,
     embedded: u64,
@@ -186,6 +186,11 @@ impl EmbeddingTask {
             let media_ids = mc
                 .get_medias_pending_embedding(&pass.library, pass_started, CHUNK_SIZE)
                 .await?;
+            // Medias uploaded or deleted since the pass started change what is left.
+            // The total follows, so progress never runs past it.
+            pass.total = pass.processed
+                + mc.count_medias_left_in_embedding_pass(&pass.library, pass_started)
+                    .await?;
             // The same chunk twice means nothing in it could be embedded or
             // recorded as failed (library unreadable): leave it to a later pass.
             if media_ids.is_empty() || media_ids == previous_ids {

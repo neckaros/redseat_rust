@@ -30,7 +30,7 @@ use crate::{
         watched::{Unwatched, Watched},
     },
     model::{
-        embeddings::EmbeddingProgressMessage,
+        embeddings::{check_library_wide_access, EmbeddingProgressMessage},
         libraries::LibrarySocketMessage,
         media_progresses::MediasProgressMessage,
         media_ratings::MediasRatingMessage,
@@ -173,6 +173,15 @@ impl SseEvent {
             // User-specific events: only send to the user whose resume position this is
             SseEvent::ViewProgress(p) => {
                 user.user_id().map(|uid| uid == p.user_ref).unwrap_or(false)
+            }
+
+            // Whole-library activity: read access, but not for a token scoped to a
+            // single file, which the role check accepts for its library.
+            SseEvent::EmbeddingProgress(m) => {
+                check_library_wide_access(user).is_ok()
+                    && user
+                        .check_library_role(&m.library, LibraryRole::Read)
+                        .is_ok()
             }
 
             // Library-scoped events (read access required)
@@ -382,6 +391,7 @@ mod tests {
     };
     use crate::model::embeddings::{EmbeddingPassState, EmbeddingProgressMessage};
     use crate::model::users::{ConnectedUser, ServerUser, ServerUserLibrariesRights, UserRole};
+    use crate::tools::auth::{ClaimsLocal, ClaimsLocalType};
     use rs_plugin_common_interfaces::MediaType;
 
     fn connected_user(id: &str) -> ConnectedUser {
@@ -606,6 +616,20 @@ mod tests {
         assert!(event.should_send_to(&reader_of("lib-photos")));
         assert!(!event.should_send_to(&reader_of("lib-other")));
         assert!(!event.should_send_to(&ConnectedUser::Anonymous));
+        // A share token for one file of the library does not see library-wide
+        // activity; a local admin credential does.
+        let share = |kind| {
+            ConnectedUser::Share(ClaimsLocal {
+                cr: "test".to_string(),
+                kind,
+                exp: ClaimsLocal::generate_seconds(60),
+            })
+        };
+        assert!(!event.should_send_to(&share(ClaimsLocalType::File(
+            "lib-photos".to_string(),
+            "media-1".to_string()
+        ))));
+        assert!(event.should_send_to(&share(ClaimsLocalType::Admin)));
         let serialized = serde_json::to_value(&event).unwrap();
         assert_eq!(
             serialized,

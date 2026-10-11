@@ -7,6 +7,19 @@ use crate::tools::get_time;
 /// Medias an embedder can process: photos and videos.
 const EMBEDDABLE_TYPES: &str = "('photo', 'video')";
 
+/// Condition on `medias m` for the medias a pass still has to embed, with the
+/// parameters `?1` embedder, `?2` max attempts and `?3` retry-failed-before (ms).
+fn pending_filter() -> String {
+    format!(
+        "m.type IN {EMBEDDABLE_TYPES}
+         AND NOT EXISTS (SELECT 1 FROM media_embeddings e
+              WHERE e.media_ref = m.id AND e.embedder = ?1)
+         AND NOT EXISTS (SELECT 1 FROM media_embedding_errors f
+              WHERE f.media_ref = m.id AND f.embedder = ?1
+                AND (f.attempts >= ?2 OR f.modified >= ?3))"
+    )
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaEmbeddingCounts {
@@ -134,20 +147,36 @@ impl SqliteLibraryStore {
             .connection
             .call(move |conn| {
                 let mut stmt = conn.prepare(&format!(
-                    "SELECT m.id FROM medias m
-                     WHERE m.type IN {EMBEDDABLE_TYPES}
-                       AND NOT EXISTS (SELECT 1 FROM media_embeddings e
-                            WHERE e.media_ref = m.id AND e.embedder = ?1)
-                       AND NOT EXISTS (SELECT 1 FROM media_embedding_errors f
-                            WHERE f.media_ref = m.id AND f.embedder = ?1
-                              AND (f.attempts >= ?2 OR f.modified >= ?3))
-                     ORDER BY m.added DESC, m.id LIMIT ?4"
+                    "SELECT m.id FROM medias m WHERE {}
+                     ORDER BY m.added DESC, m.id LIMIT ?4",
+                    pending_filter()
                 ))?;
                 let rows = stmt.query_map(
                     params![embedder, max_attempts, retry_failed_before, limit],
                     |row| row.get::<_, String>(0),
                 )?;
                 Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+            })
+            .await?;
+        Ok(res)
+    }
+
+    /// How many medias `get_medias_pending_embedding` still offers, with the same
+    /// arguments: what is left of a pass.
+    pub async fn count_medias_pending_embedding(
+        &self,
+        embedder: String,
+        max_attempts: u32,
+        retry_failed_before: i64,
+    ) -> Result<u64> {
+        let res = self
+            .connection
+            .call(move |conn| {
+                Ok(conn.query_row(
+                    &format!("SELECT COUNT(*) FROM medias m WHERE {}", pending_filter()),
+                    params![embedder, max_attempts, retry_failed_before],
+                    |row| row.get::<_, u64>(0),
+                )?)
             })
             .await?;
         Ok(res)
@@ -277,6 +306,12 @@ mod tests {
             )
             .await
             .unwrap();
+        // The count of what is left always agrees with the list.
+        let left = store
+            .count_medias_pending_embedding(EMBEDDER.to_string(), MAX_ATTEMPTS, retry_failed_before)
+            .await
+            .unwrap();
+        assert_eq!(left, ids.len() as u64);
         ids.sort();
         ids
     }

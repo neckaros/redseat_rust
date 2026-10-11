@@ -218,8 +218,9 @@ Background media embedding (see `docs/EMBEDDINGS.md`) does not use
 }
 ```
 
-- `total` is the number of medias that were pending when the pass started,
-  `processed` how many were tried so far and `embedded` how many of those
+- `total` is the number of medias the pass covers: those pending when it started,
+  kept in step with uploads and deletions since, so it is never below `processed`.
+- `processed` is how many were tried so far, and `embedded` how many of those
   succeeded (the others failed).
 - A pass over a library sends `started` once, before the model is loaded (and, the
   first time, downloaded), then `running` after each media, then exactly one of
@@ -499,7 +500,7 @@ interface EmbeddingProgressMessage {
   embedder: string;   // e.g. "embeddinggemma-2/q4/t140"
   processed: number;  // Medias tried so far in this pass
   embedded: number;   // Of which embedded; the others failed
-  total: number;      // Medias pending when the pass started
+  total: number;      // Medias the pass covers; follows uploads and deletions
 }
 
 // Wrapper type matching the SSE event structure

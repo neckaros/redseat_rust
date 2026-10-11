@@ -25,6 +25,7 @@ use crate::{
     routes::sse::SseEvent,
     server::get_server_local_path,
     tools::{
+        auth::ClaimsLocalType,
         embedding::{self, index::VectorIndex, Embedder, EmbedderSpec},
         get_time,
         image_tools::convert_image_reader,
@@ -40,6 +41,9 @@ const VIDEO_FRAMES: usize = 8;
 pub const EMBEDDING_MAX_ATTEMPTS: u32 = 3;
 const SEARCH_DEFAULT_LIMIT: usize = 50;
 const SEARCH_MAX_LIMIT: usize = 500;
+/// How far down the ranking a page may reach (`offset + limit`). A page is found by
+/// resolving the ranking from its top, so this bounds the work of one request.
+const SEARCH_MAX_WINDOW: usize = 10_000;
 /// Ranked ids resolved to medias per query.
 const SEARCH_RESOLVE_CHUNK: usize = 200;
 
@@ -117,7 +121,8 @@ pub struct EmbeddingProgressMessage {
     pub processed: u64,
     /// Of which embedded; the others failed.
     pub embedded: u64,
-    /// Medias that were pending when the pass started.
+    /// Medias this pass covers: those pending when it started, kept in step with
+    /// uploads and deletions since. Never below `processed`.
     pub total: u64,
 }
 
@@ -171,11 +176,33 @@ pub struct MediaEmbeddingSearchQuery {
     pub offset: Option<usize>,
 }
 
-/// Search and status cover the whole library, which a token scoped to a single file
-/// must not reach. The listing scope refuses such a token too; this says so outright.
-fn check_library_wide_access(requesting_user: &ConnectedUser) -> RsResult<()> {
-    if matches!(requesting_user, ConnectedUser::Share(_)) {
-        return Err(ModelError::ShareTokenInsufficient.into());
+impl MediaEmbeddingSearchQuery {
+    /// `(limit, offset)` of the requested page. Refused when it reaches further down
+    /// the ranking than `SEARCH_MAX_WINDOW`.
+    fn page(&self) -> RsResult<(usize, usize)> {
+        let limit = self
+            .limit
+            .unwrap_or(SEARCH_DEFAULT_LIMIT)
+            .min(SEARCH_MAX_LIMIT);
+        let offset = self.offset.unwrap_or(0);
+        if offset.saturating_add(limit) > SEARCH_MAX_WINDOW {
+            return Err(RsError::InvalidParams(format!(
+                "offset + limit cannot exceed {SEARCH_MAX_WINDOW}"
+            )));
+        }
+        Ok((limit, offset))
+    }
+}
+
+/// Search, status and progress cover the whole library, which a token scoped to a
+/// single file must not reach: `check_library_role` accepts such a token for its
+/// library. The other share claims are admin credentials, or are refused by the
+/// role checks themselves.
+pub(crate) fn check_library_wide_access(requesting_user: &ConnectedUser) -> RsResult<()> {
+    if let ConnectedUser::Share(claims) = requesting_user {
+        if matches!(claims.kind, ClaimsLocalType::File(..)) {
+            return Err(ModelError::ShareTokenInsufficient.into());
+        }
     }
     Ok(())
 }
@@ -349,6 +376,23 @@ impl ModelController {
             .count_media_embeddings(self.embedder_spec().id.to_string(), EMBEDDING_MAX_ATTEMPTS)
             .await?;
         Ok(counts.pending)
+    }
+
+    /// How many medias a pass started at `pass_started` (ms) still has to try.
+    pub async fn count_medias_left_in_embedding_pass(
+        &self,
+        library_id: &str,
+        pass_started: i64,
+    ) -> RsResult<u64> {
+        let store = self.store.get_library_store(library_id)?;
+        let left = store
+            .count_medias_pending_embedding(
+                self.embedder_spec().id.to_string(),
+                EMBEDDING_MAX_ATTEMPTS,
+                pass_started,
+            )
+            .await?;
+        Ok(left)
     }
 
     /// Next medias to embed. `pass_started` (ms) keeps medias that already failed
@@ -655,6 +699,8 @@ impl ModelController {
         check_library_wide_access(requesting_user)?;
         self.media_listing_scope(library_id, Default::default(), requesting_user)
             .await?;
+        // Before the query is embedded.
+        query.page()?;
         let text = query
             .text
             .as_deref()
@@ -750,12 +796,8 @@ impl ModelController {
         query: MediaEmbeddingSearchQuery,
         requesting_user: &ConnectedUser,
     ) -> RsResult<MediaEmbeddingSearch> {
-        let limit = query
-            .limit
-            .unwrap_or(SEARCH_DEFAULT_LIMIT)
-            .min(SEARCH_MAX_LIMIT);
-        let offset = query.offset.unwrap_or(0);
-        let wanted = offset.saturating_add(limit);
+        let (limit, offset) = query.page()?;
+        let wanted = offset + limit;
         // The same filters and per-user limits as the media listing.
         let (media_query, limits) = self
             .media_listing_scope(library_id, Default::default(), requesting_user)
@@ -892,6 +934,27 @@ mod tests {
         while status(mc, library_id).await.running {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
+    }
+
+    #[test]
+    fn search_page_is_bounded() {
+        let page = |limit, offset| {
+            MediaEmbeddingSearchQuery {
+                text: None,
+                limit,
+                offset,
+            }
+            .page()
+        };
+        assert_eq!(page(None, None).unwrap(), (SEARCH_DEFAULT_LIMIT, 0));
+        // The limit is capped, the offset is not: it is refused past the window.
+        assert_eq!(
+            page(Some(usize::MAX), Some(7)).unwrap(),
+            (SEARCH_MAX_LIMIT, 7)
+        );
+        assert!(page(Some(50), Some(SEARCH_MAX_WINDOW - 50)).is_ok());
+        assert!(page(Some(50), Some(SEARCH_MAX_WINDOW - 49)).is_err());
+        assert!(page(Some(0), Some(usize::MAX)).is_err());
     }
 
     fn text_query(text: &str) -> MediaEmbeddingSearchQuery {
@@ -1157,12 +1220,39 @@ mod tests {
             let message = next_progress(&mut events, library_id).await;
             let state = message.state;
             third_pass.push(message);
+            if state == EmbeddingPassState::Started {
+                // Uploaded while the pass runs: embedded by it, and counted in.
+                let mut late = Cursor::new(Vec::new());
+                image::RgbImage::from_pixel(640, 480, image::Rgb([40, 40, 200]))
+                    .write_to(&mut late, image::ImageFormat::Png)
+                    .unwrap();
+                let media = mc
+                    .add_library_file(
+                        library_id,
+                        "late.png",
+                        None,
+                        Cursor::new(late.into_inner()),
+                        admin,
+                    )
+                    .await
+                    .unwrap();
+                ids.insert("late.png".to_string(), media.id);
+            }
             if !in_progress(state) {
                 break;
             }
         }
-        println!("third pass: {:?}", summary(&third_pass));
-        assert!(third_pass.iter().all(|message| message.total == left));
+        println!(
+            "third pass: {:?}, totals {:?}",
+            summary(&third_pass),
+            third_pass.iter().map(|m| m.total).collect::<Vec<_>>()
+        );
+        // The total starts at what was pending and follows the upload: progress
+        // never runs past it, and it ends equal to what was done.
+        assert_eq!(third_pass[0].total, left);
+        assert!(third_pass.iter().all(|m| m.processed <= m.total));
+        let (left, total) = (left + 1, total + 1);
+        assert_eq!(third_pass[third_pass.len() - 1].total, left);
         let mut expected = vec![(EmbeddingPassState::Started, 0, 0)];
         expected.extend((1..=left).map(|n| (EmbeddingPassState::Running, n, n)));
         expected.push((EmbeddingPassState::Completed, left, left));
@@ -1281,6 +1371,45 @@ mod tests {
             .get_media_embeddings_status(library_id, share)
             .await
             .is_err());
+
+        // A local admin credential is a share claim too, and is not refused: it
+        // reads the status and gets it back from a pause and a resume.
+        let local_admin = &ConnectedUser::Share(ClaimsLocal {
+            cr: "test".to_string(),
+            kind: ClaimsLocalType::Admin,
+            exp: ClaimsLocal::generate_seconds(60),
+        });
+        assert!(mc
+            .get_media_embeddings_status(library_id, local_admin)
+            .await
+            .is_ok());
+        let paused = mc
+            .set_media_embeddings_paused(library_id, true, local_admin)
+            .await
+            .unwrap();
+        assert!(paused.paused);
+        let resumed = mc
+            .set_media_embeddings_paused(library_id, false, local_admin)
+            .await
+            .unwrap();
+        assert!(!resumed.paused);
+
+        // A page too far down the ranking is refused before any work is done.
+        for (limit, offset) in [(0, usize::MAX), (50, 10_000)] {
+            let too_deep = MediaEmbeddingSearchQuery {
+                text: Some("cats".to_string()),
+                limit: Some(limit),
+                offset: Some(offset),
+            };
+            assert!(mc
+                .search_medias_by_text(library_id, too_deep.clone(), admin)
+                .await
+                .is_err());
+            assert!(mc
+                .search_similar_medias(library_id, &ids["cats.jpg"], too_deep, admin)
+                .await
+                .is_err());
+        }
 
         // A user whose grant hides recent medias (everything here) finds nothing,
         // and cannot use a hidden media as a similarity reference either.

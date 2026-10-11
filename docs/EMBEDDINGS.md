@@ -244,6 +244,8 @@ All routes are under `/libraries/{libraryId}/medias`.
 ### `GET /embeddings/search?text=...&limit=50&offset=0`
 
 Medias closest to a text query, best first. `limit` defaults to 50 (maximum 500).
+A page may reach at most 10 000 results down the ranking: a request with
+`offset + limit` above that is refused.
 
 ```json
 {
