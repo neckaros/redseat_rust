@@ -513,12 +513,27 @@ mod tests {
         series::SerieQuery, tags::TagQuery,
     };
 
+    /// The highest number among the migration files of this directory.
+    fn latest_migration() -> usize {
+        let directory =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/model/store/sql/library");
+        std::fs::read_dir(directory)
+            .unwrap()
+            .filter_map(|entry| {
+                let name = entry.unwrap().file_name().into_string().unwrap();
+                name.strip_suffix(".sql")?.split(' ').next()?.parse().ok()
+            })
+            .max()
+            .unwrap()
+    }
+
     #[tokio::test]
     async fn cascade_delete_triggers() {
         let connection = tokio_rusqlite::Connection::open_in_memory().await.unwrap();
         let store = SqliteLibraryStore::new(connection).await.unwrap();
+        // A migration file that `migrate` does not apply would leave the version behind.
         let version = store.migrate().await.unwrap();
-        assert_eq!(version, 60);
+        assert_eq!(version, latest_migration());
 
         // Set up: insert a book and a media attached to it
         store

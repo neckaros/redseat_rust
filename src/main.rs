@@ -455,12 +455,13 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+        // Any origin is allowed: see the CORS layer in `app`.
         assert_eq!(
             response
                 .headers()
                 .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
                 .unwrap(),
-            "http://localhost:3000",
+            "*",
         );
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let body: Value = serde_json::from_slice(&body).unwrap();
