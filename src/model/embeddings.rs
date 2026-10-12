@@ -179,6 +179,9 @@ pub struct MediaEmbeddingSearchQuery {
     pub text: Option<String>,
     pub limit: Option<usize>,
     pub offset: Option<usize>,
+    /// Results scoring below it are left out. A text search defaults to the cut-off
+    /// of the embedder, a similarity search to none. `0` returns the whole ranking.
+    pub min_score: Option<f32>,
 }
 
 impl MediaEmbeddingSearchQuery {
@@ -696,7 +699,8 @@ impl ModelController {
         self.embeddings.indexes.lock().await.remove(library_id);
     }
 
-    /// Medias whose content is closest to a text query, best first.
+    /// Medias whose content matches a text query, best first. Those scoring under
+    /// the cut-off of the embedder are left out, unless the query sets its own.
     pub async fn search_medias_by_text(
         &self,
         library_id: &str,
@@ -734,8 +738,16 @@ impl ModelController {
                 "The embedding model is being downloaded, try again later",
             ));
         };
-        self.search_medias_by_vector(library_id, vector, None, query, requesting_user)
-            .await
+        let min_score = query.min_score.unwrap_or(self.embedder_spec().text_cutoff);
+        self.search_medias_by_vector(
+            library_id,
+            vector,
+            None,
+            Some(min_score),
+            query,
+            requesting_user,
+        )
+        .await
     }
 
     /// The vector of a search text, ready to be compared with the stored ones.
@@ -753,7 +765,8 @@ impl ModelController {
 
     /// The listing of a text search, ranked by content. First the medias that match
     /// the text the way the listing does, closest content first. Then the other
-    /// medias the rest of the query allows, closest content first.
+    /// medias the rest of the query allows whose content matches the text, closest
+    /// first.
     ///
     /// `None` when the listing has to answer as it does without embeddings: no text,
     /// nothing embedded in the library, or no model to embed the text with.
@@ -810,7 +823,8 @@ impl ModelController {
 
         let store = self.store.get_library_store(library_id)?;
         let index = self.embedding_index_slot(library_id).await;
-        let medias = hybrid_listing(&store, index, vector, query, limits, after).await?;
+        let min_score = self.embedder_spec().text_cutoff;
+        let medias = hybrid_listing(&store, index, vector, min_score, query, limits, after).await?;
         Ok(Some(medias))
     }
 
@@ -851,10 +865,12 @@ impl ModelController {
                 "This media has not been embedded yet",
             ));
         };
+        let min_score = query.min_score;
         self.search_medias_by_vector(
             library_id,
             vector,
             Some(media_id.to_string()),
+            min_score,
             query,
             requesting_user,
         )
@@ -866,6 +882,7 @@ impl ModelController {
         library_id: &str,
         vector: Vec<i8>,
         exclude: Option<String>,
+        min_score: Option<f32>,
         query: MediaEmbeddingSearchQuery,
         requesting_user: &ConnectedUser,
     ) -> RsResult<MediaEmbeddingSearch> {
@@ -898,6 +915,7 @@ impl ModelController {
                     let ranked: Vec<(String, f32)> = index
                         .rank(&vector, head.saturating_add(1))
                         .into_iter()
+                        .take_while(|(_, score)| min_score.is_none_or(|min| *score >= min))
                         .filter(|(id, _)| exclude.as_deref() != Some(*id))
                         .take(head)
                         .map(|(id, score)| (id.to_string(), score))
@@ -927,7 +945,8 @@ impl ModelController {
                 }));
                 resolved += chunk.len();
             }
-            if hits.len() >= wanted || head >= total {
+            // A head that came back short was cut at the minimum score.
+            if hits.len() >= wanted || head >= total || ranked.len() < head {
                 break;
             }
             head = head.saturating_mul(8);
@@ -943,12 +962,13 @@ impl ModelController {
 }
 
 /// One page of a text search over the listing, in the order of [`hybrid_order`].
-/// `vector` is the text as the index compares it, `after` the last media of the
-/// previous page.
+/// `vector` is the text as the index compares it, `min_score` the score a media that
+/// does not match the text must reach, `after` the last media of the previous page.
 async fn hybrid_listing(
     store: &SqliteLibraryStore,
     index: IndexSlot,
     vector: Vec<i8>,
+    min_score: f32,
     query: &MediaQuery,
     limits: &LibraryLimits,
     after: Option<String>,
@@ -976,7 +996,7 @@ async fn hybrid_listing(
             None => vec![None; scope.len()],
         };
         page_after(
-            hybrid_order(scope, &exact, &scores),
+            hybrid_order(scope, &exact, &scores, min_score),
             after.as_deref(),
             limit,
         )
@@ -1002,12 +1022,14 @@ async fn hybrid_listing(
 /// `None` when it has no vector.
 ///
 /// The medias of `exact` come first: closest content first, then those without a
-/// vector in the order of the listing. The other medias that have a vector follow,
-/// closest first. Equal scores are ordered by id so paging is stable.
+/// vector in the order of the listing. The other medias that score at least
+/// `min_score` follow, closest first. Equal scores are ordered by id so paging is
+/// stable.
 fn hybrid_order(
     scope: Vec<String>,
     exact: &HashSet<String>,
     scores: &[Option<f32>],
+    min_score: f32,
 ) -> Vec<String> {
     let mut exact_ranked = Vec::new();
     let mut exact_unranked = Vec::new();
@@ -1016,8 +1038,8 @@ fn hybrid_order(
         match (exact.contains(&id), score) {
             (true, Some(score)) => exact_ranked.push((id, *score)),
             (true, None) => exact_unranked.push(id),
-            (false, Some(score)) => others.push((id, *score)),
-            (false, None) => {}
+            (false, Some(score)) if *score >= min_score => others.push((id, *score)),
+            (false, _) => {}
         }
     }
     let closest_first =
@@ -1119,9 +1141,9 @@ mod tests {
     fn search_page_is_bounded() {
         let page = |limit, offset| {
             MediaEmbeddingSearchQuery {
-                text: None,
                 limit,
                 offset,
+                ..Default::default()
             }
             .page()
         };
@@ -1163,8 +1185,14 @@ mod tests {
         // one and keep the order of the listing. "a" and "c" only have a vector,
         // "f" has neither.
         assert_eq!(
-            hybrid_order(scope, &exact, &scores),
+            hybrid_order(scope.clone(), &exact, &scores, f32::MIN),
             strings(&["e", "b", "d", "g", "a", "c"])
+        );
+        // The minimum score only applies to the medias that do not match the text:
+        // "b" stays, "c" goes.
+        assert_eq!(
+            hybrid_order(scope, &exact, &scores, 0.6),
+            strings(&["e", "b", "d", "g", "a"])
         );
 
         // Equal scores fall back to the id, whatever the order of the listing.
@@ -1172,6 +1200,7 @@ mod tests {
             strings(&["z", "y", "x"]),
             &HashSet::new(),
             &[Some(0.5), Some(0.5), Some(0.6)],
+            0.5,
         );
         assert_eq!(tied, strings(&["x", "y", "z"]));
     }
@@ -1201,10 +1230,21 @@ mod tests {
             limits: LibraryLimits,
             after: Option<&str>,
         ) -> Vec<String> {
+            listed_above(store, index, f32::MIN, query, limits, after).await
+        }
+        async fn listed_above(
+            store: &SqliteLibraryStore,
+            index: &IndexSlot,
+            min_score: f32,
+            query: MediaQuery,
+            limits: LibraryLimits,
+            after: Option<&str>,
+        ) -> Vec<String> {
             hybrid_listing(
                 store,
                 index.clone(),
                 vec![100, 0],
+                min_score,
                 &query,
                 &limits,
                 after.map(str::to_string),
@@ -1273,6 +1313,19 @@ mod tests {
         assert_eq!(
             by_content,
             strings(&["sea", "clip", "described", "named", "city"])
+        );
+
+        // Under the minimum score a media is only kept by matching the text: "named"
+        // stays for "beach" and goes for "sunset", "city" goes for both.
+        let beach = listing_query("beach");
+        assert_eq!(
+            listed_above(&store, &index, 0.5, beach, everyone(), None).await,
+            strings(&["clip", "described", "named", "archive", "sea"])
+        );
+        let sunset = listing_query("sunset");
+        assert_eq!(
+            listed_above(&store, &index, 0.5, sunset, everyone(), None).await,
+            strings(&["sea", "clip", "described"])
         );
 
         // The other criteria apply to both groups.
@@ -1660,29 +1713,34 @@ mod tests {
             .unwrap();
         assert_eq!(stored.len(), after.dimension);
 
-        let found = mc
-            .search_medias_by_text(library_id, text_query("cats sleeping on a couch"), admin)
+        // Without a minimum score the whole library is ranked.
+        let whole_ranking = MediaEmbeddingSearchQuery {
+            min_score: Some(0.0),
+            ..text_query("cats sleeping on a couch")
+        };
+        let ranking = mc
+            .search_medias_by_text(library_id, whole_ranking.clone(), admin)
             .await
             .unwrap();
-        for hit in &found.results {
+        for hit in &ranking.results {
             println!("cats query: {} {:.4}", hit.media.item.name, hit.score);
         }
-        assert_eq!(found.status, MediaEmbeddingSearchStatus::Ok);
-        assert_eq!(found.results.len() as u64, total);
-        assert_eq!(found.results[0].media.item.id, ids["cats.jpg"]);
-        assert!(found
+        assert_eq!(ranking.status, MediaEmbeddingSearchStatus::Ok);
+        assert_eq!(ranking.results.len() as u64, total);
+        assert_eq!(ranking.results[0].media.item.id, ids["cats.jpg"]);
+        assert!(ranking
             .results
             .windows(2)
             .all(|pair| pair[0].score >= pair[1].score));
-        println!("{}", serde_json::to_string(&found.results[0]).unwrap());
+        println!("{}", serde_json::to_string(&ranking.results[0]).unwrap());
 
         let page = mc
             .search_medias_by_text(
                 library_id,
                 MediaEmbeddingSearchQuery {
-                    text: Some("cats sleeping on a couch".to_string()),
                     limit: Some(1),
                     offset: Some(1),
+                    ..whole_ranking.clone()
                 },
                 admin,
             )
@@ -1691,11 +1749,36 @@ mod tests {
         assert_eq!(page.results.len(), 1);
         assert_eq!(
             page.results[0].media.item.id,
-            found.results[1].media.item.id
+            ranking.results[1].media.item.id
         );
 
+        // By default the search stops at the cut-off of the embedder: the cats are
+        // found, the medias that have nothing to do with the text are not.
+        let cutoff = mc.embedder_spec().text_cutoff;
+        let found = mc
+            .search_medias_by_text(library_id, text_query("cats sleeping on a couch"), admin)
+            .await
+            .unwrap();
+        assert_eq!(found.results[0].media.item.id, ids["cats.jpg"]);
+        assert!((found.results.len() as u64) < total);
+        assert!(found.results.iter().all(|hit| hit.score >= cutoff));
+        assert_eq!(
+            found.results.len(),
+            ranking
+                .results
+                .iter()
+                .filter(|hit| hit.score >= cutoff)
+                .count()
+        );
+        let unrelated = mc
+            .search_medias_by_text(library_id, text_query("a submarine"), admin)
+            .await
+            .unwrap();
+        assert_eq!(unrelated.status, MediaEmbeddingSearchStatus::Ok);
+        assert!(unrelated.results.is_empty());
+
         // The listing ranks a text the same way. No name holds this one, so the
-        // whole library comes back in the order of the search by content.
+        // medias matching it by content come back in the order of that search.
         let listed = mc
             .get_medias(library_id, listing_query("cats sleeping on a couch"), admin)
             .await
@@ -1708,7 +1791,7 @@ mod tests {
                 .map(|hit| &hit.media.item.id)
                 .collect::<Vec<_>>()
         );
-        // A name that holds the text comes first, the rest still follows.
+        // A name that holds the text comes first, whatever its content.
         let named = mc
             .get_medias(library_id, listing_query("image"), admin)
             .await
@@ -1716,8 +1799,16 @@ mod tests {
         for media in &named {
             println!("image query: {}", media.item.name);
         }
-        assert_eq!(named.len() as u64, total);
         assert_eq!(named[0].item.id, ids["image.jpg"]);
+        // The three names holding this text are listed, in the order of their content.
+        let named = mc
+            .get_medias(library_id, listing_query("jpg"), admin)
+            .await
+            .unwrap();
+        assert!(named.len() >= 3);
+        assert!(named[..3]
+            .iter()
+            .all(|media| media.item.name.ends_with(".jpg")));
         // The next page starts after the media the page key names.
         let next = mc
             .get_medias(
@@ -1725,7 +1816,7 @@ mod tests {
                 MediaQuery {
                     limit: Some(1),
                     page_key: Some(format!("0|{}", named[0].item.id)),
-                    ..listing_query("image")
+                    ..listing_query("jpg")
                 },
                 admin,
             )
@@ -1836,6 +1927,7 @@ mod tests {
                 text: Some("cats".to_string()),
                 limit: Some(limit),
                 offset: Some(offset),
+                ..Default::default()
             };
             assert!(mc
                 .search_medias_by_text(library_id, too_deep.clone(), admin)
@@ -1880,7 +1972,7 @@ mod tests {
             .await
             .unwrap();
         let found = mc
-            .search_medias_by_text(library_id, text_query("cats sleeping on a couch"), admin)
+            .search_medias_by_text(library_id, whole_ranking, admin)
             .await
             .unwrap();
         assert_eq!(found.results.len() as u64, total - 1);

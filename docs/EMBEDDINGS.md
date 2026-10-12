@@ -64,7 +64,7 @@ uses up to 4 threads and only one pass runs at a time.
 
 ```rust
 pub trait Embedder: Send + Sync {
-    fn spec(&self) -> &EmbedderSpec;          // id, dimension, search_dimension, quantization_scale
+    fn spec(&self) -> &EmbedderSpec;          // id, dimension, search_dimension, quantization_scale, text_cutoff
     fn embed_image(&self, bytes: &[u8]) -> EmbeddingResult<Vec<f32>>;
     fn embed_text(&self, query: &str) -> EmbeddingResult<Vec<f32>>;
     fn release_image_resources(&self) {}
@@ -97,7 +97,8 @@ media becomes pending again; old rows can be deleted with
 1. Implement `Embedder` in a new file under `src/tools/embedding/`, with a `SPEC`
    constant. Set `search_dimension` equal to `dimension` unless the model is trained
    so that a prefix of the vector is usable on its own.
-2. Derive its `quantization_scale` (see below) and hard-code it next to the id.
+2. Derive its `quantization_scale` and its `text_cutoff` (see below) and hard-code
+   them next to the id.
 3. Point `active_spec`, `active_files_present` and `load_active` in
    `src/tools/embedding/mod.rs` at it.
 
@@ -203,6 +204,54 @@ on the first search of the library, a text on its listing included, updated as
 vectors are added and medias deleted, and dropped with the library. A search is a plain linear scan, about
 21 ms per 100 000 medias on one thread; there is no approximate index.
 
+### Cut-off
+
+A text search leaves out the medias scoring under the `text_cutoff` of the embedder.
+For `embeddinggemma-2/q4/t140`, **`text_cutoff = 0.67`**. It is a search setting
+only: changing it does not need a new id.
+
+It was chosen on 400 COCO val2017 photos and their 2 001 captions, scored as
+production does (int8, first 512 values):
+
+| Score of a text with | 1st percentile | 5th | median | 95th | 99th |
+| --- | --- | --- | --- | --- | --- |
+| the photo it describes | 0.664 | 0.699 | 0.759 | 0.806 | 0.828 |
+| another photo | 0.474 | 0.496 | 0.552 | 0.626 | 0.679 |
+
+At 0.67, 99% of the described photos are kept and 1.3% of the others, many of
+which show the same kind of scene. The ignored test `embeddinggemma_text_cutoff` in
+`src/tools/embedding/gemma.rs` prints these shares for a range of cut-offs:
+
+```bash
+REDSEAT_EMBEDDING_CALIBRATION_DIR=/path/to/images \
+REDSEAT_EMBEDDING_CAPTIONS=/path/to/captions.json \
+  cargo test --bin redseat-rust embeddinggemma_text_cutoff -- --ignored --nocapture
+```
+
+`captions.json` is an array of `{ "file": "000000397133.jpg", "captions": ["..."] }`.
+
+Other queries on the same photos, where a photo counts as relevant when at least
+two of its captions hold the word:
+
+| Query | Relevant photos kept at 0.67 |
+| --- | --- |
+| A caption | 99% |
+| One English word ("dog", "kitchen"; 38 words) | 88% |
+| One or two French words ("un chien", "salle de bain"; 15 queries) | 55% |
+
+Short and non-English queries score lower, so they lose more: at 0.66 the last two
+lines are 93% and 70%. What sits just under the cut-off is mostly near misses
+("pizza" and a pie, "toilet" and a bathroom sink), and under 0.65 almost nothing
+is related.
+
+A query about something no photo shows (30 queries such as "a submarine") returns
+nothing 93% of the time, and a meaningless one ("asdfgh", "IMG_2034") 90% of the
+time. Without a cut-off both return the whole library.
+
+Subtracting a per-query baseline (the score of the text with an average photo, or
+the mean score over the library) was tried and separates matches no better than the
+raw score, so the cut-off is a plain constant.
+
 ## Turning it on
 
 Embeddings are off by default. Set `embeddings` in the library settings:
@@ -245,11 +294,14 @@ for thumbnails.
 
 All routes are under `/libraries/{libraryId}/medias`.
 
-### `GET /embeddings/search?text=...&limit=50&offset=0`
+### `GET /embeddings/search?text=...&limit=50&offset=0&minScore=...`
 
-Medias closest to a text query, best first. `limit` defaults to 50 (maximum 500).
+Medias matching a text query, best first. `limit` defaults to 50 (maximum 500).
 A page may reach at most 10 000 results down the ranking: a request with
 `offset + limit` above that is refused.
+
+Medias scoring under `minScore` are left out. It defaults to the cut-off of the
+embedder (0.67, see [Cut-off](#cut-off)); `minScore=0` returns the whole ranking.
 
 ```json
 {
@@ -269,7 +321,7 @@ limits, upload keys).
 
 | `status` | Meaning |
 | --- | --- |
-| `ok` | `results` is the ranked list |
+| `ok` | `results` is the ranked list; empty when nothing reaches the minimum score |
 | `noEmbeddings` | Nothing is embedded yet in this library for the active embedder |
 | `modelDownloading` | The model is being downloaded; retry later |
 | `mediaNotEmbedded` | (`similar` only) the reference media has no vector yet |
@@ -280,13 +332,14 @@ When `status` is not `ok`, `results` is empty and `message` explains why.
 
 The listing itself searches by content when its query has a `text` and the library
 has embedded medias. The answer keeps its shape, an array of medias. What changes
-is its order, and that it goes on past the medias matching the text:
+is its order, and that it goes on to the medias whose content matches the text:
 
 1. First the medias the listing returns for this query without embeddings: the
    name or the description contains the text, and every other criterion holds.
    They are ordered closest content first. Those with no vector come last in this
    group, in the order given by `sort` and `order`.
-2. Then the other medias that meet every criterion but the text, closest content
+2. Then the other medias that meet every criterion but the text and whose content
+   scores at least the cut-off of the embedder (see [Cut-off](#cut-off)), closest
    first. Medias with no vector are left out of this group.
 
 The other criteria (`tags`, `people`, `types`, dates, ...) and the access rules of
@@ -312,10 +365,14 @@ the order of `sort`, when:
 A text search costs one text embedding, two queries for ids and one similarity per
 media the criteria allow, whatever the page.
 
-### `GET /{mediaId}/similar?limit=50&offset=0`
+### `GET /{mediaId}/similar?limit=50&offset=0&minScore=...`
 
 Medias closest to the given one, which is left out of the results. Same response.
 Uses stored vectors only, so it works even when the model is not loaded.
+
+There is no cut-off by default: every other embedded media is ranked. Two images
+score higher together than a text and an image do, so the text cut-off does not
+apply here; `minScore` sets one for the request.
 
 The reference media goes through the same listing scope as the results: one the
 user cannot list is answered as not found.
@@ -390,12 +447,15 @@ A pass that announced its start always sends one of these five. See `docs/SSE.md
 
 ## Known limits
 
-- **Scores are compressed.** With this model a good match scores around 0.69 to
-  0.75 and unrelated content around 0.60 to 0.64. Results are a ranked list; there
-  is no reliable score below which a result is "not a match", so the API applies
-  no cut-off. For the same reason a text search on the media listing does not stop
-  at the medias matching the text: paged to its end, it returns every embedded
-  media the other criteria allow.
+- **Scores are compressed**, so the cut-off sits in a narrow band: a match scores
+  around 0.70 to 0.80 and unrelated content around 0.50 to 0.63. It trades the two
+  errors measured in [Cut-off](#cut-off): some loosely related medias pass, and
+  short or non-English queries lose part of their matches.
+- **Videos pass the cut-off too easily.** On a real library a video was about 20
+  times more likely than a photo to pass it for an unrelated text (1.3% against
+  0.06%). The likely cause is the averaging of 8 frames: re-normalising the average
+  raises its score with every text. Fixing it changes the stored vectors, so it
+  needs a new embedder id.
 - **No content filtering.** A neutral query can surface adult content if the
   library contains it. Nothing flags or filters it yet.
 - **One vector per video**, from 8 frames. A short scene in a long video is easily

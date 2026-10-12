@@ -72,6 +72,9 @@ pub struct EmbedderSpec {
     pub search_dimension: usize,
     /// Fixed factor applied before rounding to int8, see [`quantize`].
     pub quantization_scale: f32,
+    /// Search score under which an image is not a match for a text. Only a search
+    /// setting: changing it does not need a new id.
+    pub text_cutoff: f32,
 }
 
 /// Blocking interface: callers run it off the async executor.
