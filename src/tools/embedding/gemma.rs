@@ -32,6 +32,9 @@ pub const SPEC: EmbedderSpec = EmbedderSpec {
     // values over a sample of real image and text embeddings (see docs/EMBEDDINGS.md).
     // Changing it requires a new id.
     quantization_scale: 408.6,
+    // Measured on 400 captioned photos: 99% of the photos a caption describes score
+    // above it, 1.3% of the others do (see docs/EMBEDDINGS.md).
+    text_cutoff: 0.67,
 };
 
 /// Sub-directory of the models directory holding the files below.
@@ -745,5 +748,80 @@ mod tests {
 
         embedder.release_image_resources();
         assert!(embedder.vision.lock().unwrap().is_none());
+    }
+
+    #[derive(serde::Deserialize)]
+    struct CaptionedImage {
+        file: String,
+        captions: Vec<String>,
+    }
+
+    /// How `SPEC.text_cutoff` was chosen. `REDSEAT_EMBEDDING_CAPTIONS` is a JSON array
+    /// of `{"file", "captions"}` naming images of `REDSEAT_EMBEDDING_CALIBRATION_DIR`.
+    /// Every caption is searched as production does: its own image is a match, the
+    /// other images count as unrelated.
+    #[tokio::test]
+    #[ignore = "downloads the EmbeddingGemma 2 model and needs captioned images"]
+    async fn embeddinggemma_text_cutoff() {
+        let directory = test_model_directory();
+        ensure_files(&directory, &|message| println!("{message}"))
+            .await
+            .unwrap();
+        let images_directory = PathBuf::from(
+            std::env::var("REDSEAT_EMBEDDING_CALIBRATION_DIR")
+                .expect("REDSEAT_EMBEDDING_CALIBRATION_DIR must point to a directory of images"),
+        );
+        let captions = std::env::var("REDSEAT_EMBEDDING_CAPTIONS")
+            .expect("REDSEAT_EMBEDDING_CAPTIONS must point to the captions of these images");
+        let images: Vec<CaptionedImage> =
+            serde_json::from_slice(&std::fs::read(captions).unwrap()).unwrap();
+
+        let embedder = EmbeddingGemma::load(&directory, default_threads()).unwrap();
+        let mut index = VectorIndex::new(SPEC.search_dimension);
+        for image in &images {
+            let bytes = std::fs::read(images_directory.join(&image.file)).unwrap();
+            let vector = embedder.embed_image(&bytes).unwrap();
+            index.upsert(&image.file, &quantize(&vector, SPEC.quantization_scale));
+        }
+
+        let (mut matches, mut unrelated) = (Vec::new(), Vec::new());
+        for image in &images {
+            for caption in &image.captions {
+                let text = quantize(
+                    &embedder.embed_text(caption).unwrap(),
+                    SPEC.quantization_scale,
+                );
+                for (file, score) in index.rank(&text, usize::MAX) {
+                    if file == image.file {
+                        matches.push(score);
+                    } else {
+                        unrelated.push(score);
+                    }
+                }
+            }
+        }
+        let kept = |scores: &[f32], cutoff: f32| {
+            scores.iter().filter(|score| **score >= cutoff).count() as f32 / scores.len() as f32
+        };
+        println!(
+            "{} images, {} captions: matches p1 {:.3}, p5 {:.3}, p50 {:.3}; unrelated p50 {:.3}, p95 {:.3}, p99 {:.3}",
+            images.len(),
+            matches.len(),
+            percentile(&mut matches, 1.0),
+            percentile(&mut matches, 5.0),
+            percentile(&mut matches, 50.0),
+            percentile(&mut unrelated, 50.0),
+            percentile(&mut unrelated, 95.0),
+            percentile(&mut unrelated, 99.0)
+        );
+        for cutoff in (62..=72).map(|cutoff| cutoff as f32 / 100.0) {
+            println!(
+                "cut-off {cutoff:.2}: keeps {:.1}% of the matches, {:.2}% of the unrelated",
+                kept(&matches, cutoff) * 100.0,
+                kept(&unrelated, cutoff) * 100.0
+            );
+        }
+        assert!(kept(&matches, SPEC.text_cutoff) > 0.95);
+        assert!(kept(&unrelated, SPEC.text_cutoff) < 0.05);
     }
 }
