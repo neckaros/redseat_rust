@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -12,12 +12,17 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, OwnedRwLockReadGuard, RwLock};
 
 use super::{
-    error::Error as ModelError, store::sql::library::embeddings::MediaEmbeddingCounts,
-    users::ConnectedUser, ModelController,
+    error::Error as ModelError,
+    medias::MediaQuery,
+    store::sql::library::{
+        embeddings::MediaEmbeddingCounts, medias::MEDIA_QUERY_DEFAULT_LIMIT, SqliteLibraryStore,
+    },
+    users::ConnectedUser,
+    ModelController,
 };
 use crate::{
     domain::{
-        library::{LibraryRole, ServerLibrarySettingsPatch},
+        library::{LibraryLimits, LibraryRole, ServerLibrarySettingsPatch},
         media::{FileType, Media},
     },
     error::{RsError, RsResult},
@@ -723,25 +728,90 @@ impl ModelController {
                 "No media of this library has been embedded yet",
             ));
         }
-        let Some(embedder) = self.get_embedder_for_search().await? else {
+        let Some(vector) = self.embed_search_text(text).await? else {
             return Ok(MediaEmbeddingSearch::empty(
                 MediaEmbeddingSearchStatus::ModelDownloading,
                 "The embedding model is being downloaded, try again later",
             ));
         };
+        self.search_medias_by_vector(library_id, vector, None, query, requesting_user)
+            .await
+    }
 
+    /// The vector of a search text, ready to be compared with the stored ones.
+    /// `None` when the model is not on disk yet.
+    async fn embed_search_text(&self, text: String) -> RsResult<Option<Vec<i8>>> {
+        let Some(embedder) = self.get_embedder_for_search().await? else {
+            return Ok(None);
+        };
         let scale = embedder.spec().quantization_scale;
         let vector = tokio::task::spawn_blocking(move || embedder.embed_text(&text))
             .await
             .map_err(|error| RsError::Error(format!("Join error: {}", error)))??;
-        self.search_medias_by_vector(
-            library_id,
-            embedding::quantize(&vector, scale),
-            None,
-            query,
-            requesting_user,
-        )
-        .await
+        Ok(Some(embedding::quantize(&vector, scale)))
+    }
+
+    /// The listing of a text search, ranked by content. First the medias that match
+    /// the text the way the listing does, closest content first. Then the other
+    /// medias the rest of the query allows, closest content first.
+    ///
+    /// `None` when the listing has to answer as it does without embeddings: no text,
+    /// nothing embedded in the library, or no model to embed the text with.
+    pub(super) async fn search_medias_hybrid(
+        &self,
+        library_id: &str,
+        query: &MediaQuery,
+        limits: &LibraryLimits,
+        requesting_user: &ConnectedUser,
+    ) -> RsResult<Option<Vec<ItemWithRelations<Media>>>> {
+        let Some(text) = query
+            .text
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        else {
+            return Ok(None);
+        };
+        if check_library_wide_access(requesting_user).is_err() {
+            return Ok(None);
+        }
+        // The ranking is resumed after the media a page key names. A key that names
+        // none can only page the plain listing.
+        let after = match query.page_key.as_deref() {
+            None => None,
+            Some(key) => match key.split_once('|') {
+                Some((_, id)) => Some(id.to_string()),
+                None => return Ok(None),
+            },
+        };
+        if self
+            .embedding_index(library_id)
+            .await?
+            .as_ref()
+            .is_none_or(VectorIndex::is_empty)
+        {
+            return Ok(None);
+        }
+        let vector = match self.embed_search_text(text.to_string()).await {
+            Ok(Some(vector)) => vector,
+            Ok(None) => return Ok(None),
+            Err(error) => {
+                // The listing still answers when the model does not.
+                log_error(
+                    LogServiceType::Source,
+                    format!(
+                        "Unable to embed the search text, listing exact matches only: {:#}",
+                        error
+                    ),
+                );
+                return Ok(None);
+            }
+        };
+
+        let store = self.store.get_library_store(library_id)?;
+        let index = self.embedding_index_slot(library_id).await;
+        let medias = hybrid_listing(&store, index, vector, query, limits, after).await?;
+        Ok(Some(medias))
     }
 
     /// Medias whose content is closest to the one given, best first. Uses stored
@@ -872,6 +942,109 @@ impl ModelController {
     }
 }
 
+/// One page of a text search over the listing, in the order of [`hybrid_order`].
+/// `vector` is the text as the index compares it, `after` the last media of the
+/// previous page.
+async fn hybrid_listing(
+    store: &SqliteLibraryStore,
+    index: IndexSlot,
+    vector: Vec<i8>,
+    query: &MediaQuery,
+    limits: &LibraryLimits,
+    after: Option<String>,
+) -> RsResult<Vec<ItemWithRelations<Media>>> {
+    let limit = query.limit.unwrap_or(MEDIA_QUERY_DEFAULT_LIMIT);
+    let mut exact_query = query.clone();
+    exact_query.page_key = None;
+    // Without the text, the query says which medias may be returned at all.
+    let mut scope_query = exact_query.clone();
+    scope_query.text = None;
+    let scope = store
+        .get_media_ids(scope_query.clone(), limits.clone())
+        .await?;
+    let exact: HashSet<String> = store
+        .get_media_ids(exact_query, limits.clone())
+        .await?
+        .into_iter()
+        .collect();
+
+    // The guard lives inside the blocking scan only.
+    let index = index.read_owned().await;
+    let page = tokio::task::spawn_blocking(move || {
+        let scores = match index.as_ref() {
+            Some(index) => index.scores(&vector, &scope),
+            None => vec![None; scope.len()],
+        };
+        page_after(
+            hybrid_order(scope, &exact, &scores),
+            after.as_deref(),
+            limit,
+        )
+    })
+    .await
+    .map_err(|error| RsError::Error(format!("Join error: {}", error)))?;
+
+    let mut medias = Vec::with_capacity(page.len());
+    for chunk in page.chunks(SEARCH_RESOLVE_CHUNK) {
+        let mut found: HashMap<String, ItemWithRelations<Media>> = store
+            .get_medias_by_ids(chunk.to_vec(), scope_query.clone(), limits.clone())
+            .await?
+            .into_iter()
+            .map(|media| (media.item.id.clone(), media))
+            .collect();
+        medias.extend(chunk.iter().filter_map(|id| found.remove(id)));
+    }
+    Ok(medias)
+}
+
+/// Order of a text search over `scope`, the medias the rest of the query allows, in
+/// the order of the listing. `scores` gives the similarity of each with the text,
+/// `None` when it has no vector.
+///
+/// The medias of `exact` come first: closest content first, then those without a
+/// vector in the order of the listing. The other medias that have a vector follow,
+/// closest first. Equal scores are ordered by id so paging is stable.
+fn hybrid_order(
+    scope: Vec<String>,
+    exact: &HashSet<String>,
+    scores: &[Option<f32>],
+) -> Vec<String> {
+    let mut exact_ranked = Vec::new();
+    let mut exact_unranked = Vec::new();
+    let mut others = Vec::new();
+    for (id, score) in scope.into_iter().zip(scores) {
+        match (exact.contains(&id), score) {
+            (true, Some(score)) => exact_ranked.push((id, *score)),
+            (true, None) => exact_unranked.push(id),
+            (false, Some(score)) => others.push((id, *score)),
+            (false, None) => {}
+        }
+    }
+    let closest_first =
+        |a: &(String, f32), b: &(String, f32)| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0));
+    exact_ranked.sort_unstable_by(closest_first);
+    others.sort_unstable_by(closest_first);
+    exact_ranked
+        .into_iter()
+        .map(|(id, _)| id)
+        .chain(exact_unranked)
+        .chain(others.into_iter().map(|(id, _)| id))
+        .collect()
+}
+
+/// The `limit` ids that follow `after` in `order`, from its start when there is none.
+/// Nothing when `after` is no longer in it: the page cannot be placed.
+fn page_after(order: Vec<String>, after: Option<&str>, limit: usize) -> Vec<String> {
+    let start = match after {
+        None => 0,
+        Some(after) => match order.iter().position(|id| id == after) {
+            Some(position) => position + 1,
+            None => return Vec::new(),
+        },
+    };
+    order.into_iter().skip(start).take(limit).collect()
+}
+
 /// Milliseconds since the epoch, the unit of the embedding failure timestamps.
 pub fn embedding_pass_start() -> i64 {
     get_time().as_millis() as i64
@@ -883,7 +1056,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        domain::library::{LibraryLimits, LibraryType, ServerLibrarySettings},
+        domain::{
+            library::{LibraryLimits, LibraryType, ServerLibrarySettings},
+            media::MediaForAdd,
+        },
         model::{
             libraries::ServerLibraryForAdd,
             users::{ServerUser, ServerUserLibrariesRights, UserRole},
@@ -965,6 +1141,191 @@ mod tests {
             text: Some(text.to_string()),
             ..Default::default()
         }
+    }
+
+    fn listing_query(text: &str) -> MediaQuery {
+        MediaQuery {
+            text: Some(text.to_string()),
+            ..Default::default()
+        }
+    }
+
+    fn strings(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn hybrid_order_puts_text_matches_first_then_the_closest_others() {
+        let scope = strings(&["a", "b", "c", "d", "e", "f", "g"]);
+        let exact: HashSet<String> = strings(&["b", "d", "e", "g"]).into_iter().collect();
+        let scores = [Some(0.9), Some(0.2), Some(0.5), None, Some(0.7), None, None];
+        // "e" and "b" match the text and have a vector, "d" and "g" match without
+        // one and keep the order of the listing. "a" and "c" only have a vector,
+        // "f" has neither.
+        assert_eq!(
+            hybrid_order(scope, &exact, &scores),
+            strings(&["e", "b", "d", "g", "a", "c"])
+        );
+
+        // Equal scores fall back to the id, whatever the order of the listing.
+        let tied = hybrid_order(
+            strings(&["z", "y", "x"]),
+            &HashSet::new(),
+            &[Some(0.5), Some(0.5), Some(0.6)],
+        );
+        assert_eq!(tied, strings(&["x", "y", "z"]));
+    }
+
+    #[test]
+    fn page_after_resumes_from_the_last_media() {
+        let order = strings(&["a", "b", "c", "d"]);
+        assert_eq!(
+            page_after(order.clone(), None, 3),
+            strings(&["a", "b", "c"])
+        );
+        assert_eq!(page_after(order.clone(), Some("c"), 3), strings(&["d"]));
+        assert!(page_after(order.clone(), Some("d"), 3).is_empty());
+        // A media that left the ranking cannot place the page.
+        assert!(page_after(order.clone(), Some("gone"), 3).is_empty());
+        assert!(page_after(order, None, 0).is_empty());
+    }
+
+    /// The ranking of a text search on a real store: the criteria and the limits of
+    /// the user still decide what is returned, pages follow the last media.
+    #[tokio::test]
+    async fn hybrid_listing_keeps_the_criteria_and_pages_by_last_media() {
+        async fn listed(
+            store: &SqliteLibraryStore,
+            index: &IndexSlot,
+            query: MediaQuery,
+            limits: LibraryLimits,
+            after: Option<&str>,
+        ) -> Vec<String> {
+            hybrid_listing(
+                store,
+                index.clone(),
+                vec![100, 0],
+                &query,
+                &limits,
+                after.map(str::to_string),
+            )
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|media| media.item.id)
+            .collect()
+        }
+
+        let connection = tokio_rusqlite::Connection::open_in_memory().await.unwrap();
+        let store = SqliteLibraryStore::new(connection).await.unwrap();
+        for (id, name, description, kind) in [
+            ("sea", "IMG_0001.jpg", None, FileType::Photo),
+            ("named", "beach.jpg", None, FileType::Photo),
+            (
+                "described",
+                "IMG_0003.jpg",
+                Some("a day at the beach"),
+                FileType::Photo,
+            ),
+            ("clip", "beach.mp4", None, FileType::Video),
+            ("city", "IMG_0005.jpg", None, FileType::Photo),
+            ("archive", "beach.zip", None, FileType::Archive),
+            ("pending", "IMG_0007.jpg", None, FileType::Photo),
+        ] {
+            store
+                .add_media(
+                    MediaForAdd {
+                        name: name.to_string(),
+                        description: description.map(str::to_string),
+                        kind,
+                        ..Default::default()
+                    }
+                    .into_insert_with_id(id.to_string()),
+                )
+                .await
+                .unwrap();
+        }
+        // Closeness to the query `[100, 0]`: sea, clip, described, named, city.
+        // "archive" and "pending" have no vector.
+        let mut index = VectorIndex::new(2);
+        for (id, vector) in [
+            ("sea", [100, 5]),
+            ("named", [20, 100]),
+            ("described", [80, 60]),
+            ("clip", [90, 30]),
+            ("city", [-100, 10]),
+        ] {
+            index.upsert(id, &vector);
+        }
+        let index: IndexSlot = Arc::new(RwLock::new(Some(index)));
+        let everyone = LibraryLimits::default;
+
+        // Name and description matches first, the one without a vector last among
+        // them, then the rest of the library by content. "pending" is left out.
+        let all = listed(&store, &index, listing_query("beach"), everyone(), None).await;
+        assert_eq!(
+            all,
+            strings(&["clip", "described", "named", "archive", "sea", "city"])
+        );
+
+        // A text matching nothing is a search by content alone.
+        let by_content = listed(&store, &index, listing_query("sunset"), everyone(), None).await;
+        assert_eq!(
+            by_content,
+            strings(&["sea", "clip", "described", "named", "city"])
+        );
+
+        // The other criteria apply to both groups.
+        let photos = MediaQuery {
+            types: vec![FileType::Photo],
+            ..listing_query("beach")
+        };
+        assert_eq!(
+            listed(&store, &index, photos, everyone(), None).await,
+            strings(&["described", "named", "sea", "city"])
+        );
+
+        // Pages are cut in the same ranking, each one after the last media of the
+        // previous one, across both groups.
+        let page = MediaQuery {
+            limit: Some(2),
+            ..listing_query("beach")
+        };
+        let mut paged = Vec::new();
+        let mut after: Option<String> = None;
+        loop {
+            let ids = listed(&store, &index, page.clone(), everyone(), after.as_deref()).await;
+            if ids.is_empty() {
+                break;
+            }
+            assert!(ids.len() <= 2);
+            after = ids.last().cloned();
+            paged.extend(ids);
+        }
+        assert_eq!(paged, all);
+
+        // A user whose grant hides recent medias (everything here) gets nothing.
+        let delayed = LibraryLimits {
+            delay: Some(60),
+            ..Default::default()
+        };
+        assert!(
+            listed(&store, &index, listing_query("beach"), delayed, None)
+                .await
+                .is_empty()
+        );
+
+        // Without an index only the text matches are left, in the listing's order.
+        let no_index: IndexSlot = Default::default();
+        let plain = store
+            .get_media_ids(listing_query("beach"), everyone())
+            .await
+            .unwrap();
+        assert_eq!(plain.len(), 4);
+        assert_eq!(
+            listed(&store, &no_index, listing_query("beach"), everyone(), None).await,
+            plain
+        );
     }
 
     /// Whole flow on a throwaway server directory: library opt-in, background task,
@@ -1098,6 +1459,13 @@ mod tests {
             .unwrap();
         assert_eq!(nothing.status, MediaEmbeddingSearchStatus::NoEmbeddings);
         assert!(nothing.results.is_empty());
+        // With nothing embedded, a text on the listing is the plain filter.
+        let plain = mc
+            .get_medias(library_id, listing_query("cats"), admin)
+            .await
+            .unwrap();
+        assert_eq!(plain.len(), 1);
+        assert_eq!(plain[0].item.id, ids["cats.jpg"]);
 
         // Opt in through the regular library update, then run the task.
         mc.update_library(
@@ -1325,6 +1693,65 @@ mod tests {
             page.results[0].media.item.id,
             found.results[1].media.item.id
         );
+
+        // The listing ranks a text the same way. No name holds this one, so the
+        // whole library comes back in the order of the search by content.
+        let listed = mc
+            .get_medias(library_id, listing_query("cats sleeping on a couch"), admin)
+            .await
+            .unwrap();
+        assert_eq!(
+            listed.iter().map(|m| &m.item.id).collect::<Vec<_>>(),
+            found
+                .results
+                .iter()
+                .map(|hit| &hit.media.item.id)
+                .collect::<Vec<_>>()
+        );
+        // A name that holds the text comes first, the rest still follows.
+        let named = mc
+            .get_medias(library_id, listing_query("image"), admin)
+            .await
+            .unwrap();
+        for media in &named {
+            println!("image query: {}", media.item.name);
+        }
+        assert_eq!(named.len() as u64, total);
+        assert_eq!(named[0].item.id, ids["image.jpg"]);
+        // The next page starts after the media the page key names.
+        let next = mc
+            .get_medias(
+                library_id,
+                MediaQuery {
+                    limit: Some(1),
+                    page_key: Some(format!("0|{}", named[0].item.id)),
+                    ..listing_query("image")
+                },
+                admin,
+            )
+            .await
+            .unwrap();
+        assert_eq!(next.len(), 1);
+        assert_eq!(next[0].item.id, named[1].item.id);
+        // The other criteria still decide what may be returned.
+        let archives = mc
+            .get_medias(
+                library_id,
+                MediaQuery {
+                    types: vec![FileType::Archive],
+                    ..listing_query("image")
+                },
+                admin,
+            )
+            .await
+            .unwrap();
+        assert!(archives.is_empty());
+        // Without a text the listing is untouched.
+        let untouched = mc
+            .get_medias(library_id, Default::default(), admin)
+            .await
+            .unwrap();
+        assert_eq!(untouched.len() as u64, total);
 
         let similar = mc
             .search_similar_medias(library_id, &ids["cats.jpg"], Default::default(), admin)

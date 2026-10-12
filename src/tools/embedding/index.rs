@@ -25,6 +25,15 @@ fn norm(vector: &[i8]) -> f32 {
     (dot(vector, vector) as f32).sqrt()
 }
 
+fn cosine(row: &[i8], row_norm: f32, query: &[i8], query_norm: f32) -> f32 {
+    let denominator = row_norm * query_norm;
+    if denominator > 0.0 {
+        dot(row, query) as f32 / denominator
+    } else {
+        0.0
+    }
+}
+
 impl VectorIndex {
     pub fn new(search_dimension: usize) -> Self {
         Self::with_capacity(search_dimension, 0)
@@ -117,14 +126,7 @@ impl VectorIndex {
             .data
             .chunks_exact(self.search_dimension)
             .zip(&self.norms)
-            .map(|(row, row_norm)| {
-                let denominator = row_norm * query_norm;
-                if denominator > 0.0 {
-                    dot(row, query) as f32 / denominator
-                } else {
-                    0.0
-                }
-            })
+            .map(|(row, row_norm)| cosine(row, *row_norm, query, query_norm))
             .enumerate()
             .collect();
         let order = |a: &(usize, f32), b: &(usize, f32)| {
@@ -140,6 +142,26 @@ impl VectorIndex {
         ranked
             .into_iter()
             .map(|(position, score)| (self.ids[position].as_str(), score))
+            .collect()
+    }
+
+    /// Cosine similarity of `query` with the vector of each of `ids`, in the same
+    /// order. `None` for an id that has no vector here.
+    pub fn scores<S: AsRef<str>>(&self, query: &[i8], ids: &[S]) -> Vec<Option<f32>> {
+        let Some(query) = query.get(..self.search_dimension) else {
+            return vec![None; ids.len()];
+        };
+        let query_norm = norm(query);
+        ids.iter()
+            .map(|id| {
+                let position = *self.positions.get(id.as_ref())?;
+                Some(cosine(
+                    self.row(position),
+                    self.norms[position],
+                    query,
+                    query_norm,
+                ))
+            })
             .collect()
     }
 }
@@ -217,6 +239,25 @@ mod tests {
         index.upsert("zero", &vector(&[0, 0]));
         assert_eq!(index.rank(&vector(&[5, 5]), usize::MAX)[0].1, 0.0);
         assert!(index.rank(&[1], usize::MAX).is_empty());
+    }
+
+    #[test]
+    fn scores_follow_the_ids_given_and_agree_with_the_ranking() {
+        let mut index = VectorIndex::new(2);
+        index.upsert("near", &[100, 10, -127, -127]);
+        index.upsert("far", &[-100, 5, 127, 127]);
+        index.upsert("zero", &vector(&[0, 0]));
+        let query = [127, 0, 127, 127];
+
+        let scores = index.scores(&query, &["far", "unknown", "near", "zero"]);
+        let ranked: HashMap<&str, f32> = index.rank(&query, usize::MAX).into_iter().collect();
+        assert_eq!(
+            scores,
+            vec![Some(ranked["far"]), None, Some(ranked["near"]), Some(0.0)]
+        );
+        // A query shorter than the search dimension scores nothing.
+        assert_eq!(index.scores(&[1], &["near"]), vec![None]);
+        assert!(index.scores(&query, &[] as &[&str]).is_empty());
     }
 
     #[test]

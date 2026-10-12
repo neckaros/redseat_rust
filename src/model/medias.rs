@@ -678,6 +678,13 @@ impl ModelController {
         let (query, limits) = self
             .media_listing_scope(library_id, query, requesting_user)
             .await?;
+        // A text search is ranked by content when the library has embeddings.
+        if let Some(medias) = self
+            .search_medias_hybrid(library_id, &query, &limits, requesting_user)
+            .await?
+        {
+            return Ok(medias);
+        }
         let store = self.store.get_library_store(library_id)?;
         let medias = store.get_medias(query, limits).await?;
         Ok(medias)
