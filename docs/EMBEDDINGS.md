@@ -17,6 +17,7 @@ tags. The two do not share code or data.
 | In-memory search index | `src/tools/embedding/index.rs` |
 | Table and queries | `src/model/store/sql/library/embeddings.rs`, migration `062 - MEDIA EMBEDDINGS.sql` |
 | Embedding a media, search, access rules | `src/model/embeddings.rs` |
+| Text search in the media listing | `search_medias_hybrid` in `src/model/embeddings.rs`, called by `get_medias` in `src/model/medias.rs` |
 | Background task | `src/tools/scheduler/embedding.rs` |
 | Routes | `src/routes/medias.rs` |
 
@@ -198,8 +199,8 @@ same int8 conversion. Text queries are embedded with the prefix
 
 Each library has an in-memory index: the 512-byte prefixes in one contiguous
 buffer with their norms pre-computed, about 51 MB per 100 000 medias. It is loaded
-on the first search of the library, updated as vectors are added and medias
-deleted, and dropped with the library. A search is a plain linear scan, about
+on the first search of the library, a text on its listing included, updated as
+vectors are added and medias deleted, and dropped with the library. A search is a plain linear scan, about
 21 ms per 100 000 medias on one thread; there is no approximate index.
 
 ## Turning it on
@@ -274,6 +275,42 @@ limits, upload keys).
 | `mediaNotEmbedded` | (`similar` only) the reference media has no vector yet |
 
 When `status` is not `ok`, `results` is empty and `message` explains why.
+
+### `GET /?text=...`: the media listing
+
+The listing itself searches by content when its query has a `text` and the library
+has embedded medias. The answer keeps its shape, an array of medias. What changes
+is its order, and that it goes on past the medias matching the text:
+
+1. First the medias the listing returns for this query without embeddings: the
+   name or the description contains the text, and every other criterion holds.
+   They are ordered closest content first. Those with no vector come last in this
+   group, in the order given by `sort` and `order`.
+2. Then the other medias that meet every criterion but the text, closest content
+   first. Medias with no vector are left out of this group.
+
+The other criteria (`tags`, `people`, `types`, dates, ...) and the access rules of
+the user decide what may be returned in both groups. `sort` and `order` have no
+other effect than the one given above: a text search is ordered by relevance.
+
+`limit` (default 200) and `pageKey` page through this ranking. Only the id after
+the `|` of `pageKey` is read, and the next page starts after that media, so a
+client that sends `<sort value>|<id of the last media>` pages as it does on the
+plain listing. A page is empty past the end of the ranking, and also when the
+media named is no longer in it (deleted, or it no longer meets the criteria).
+
+`GET /count` is not changed: with a `text` it counts the first group.
+
+The listing answers as it does without embeddings, with the text as a filter and
+the order of `sort`, when:
+
+- the query has no `text`;
+- no media of the library has a vector for the active embedder;
+- the model is not on disk yet (its download is started), or it fails on the text;
+- `pageKey` holds no id (the single-number form).
+
+A text search costs one text embedding, two queries for ids and one similarity per
+media the criteria allow, whatever the page.
 
 ### `GET /{mediaId}/similar?limit=50&offset=0`
 
@@ -356,7 +393,9 @@ A pass that announced its start always sends one of these five. See `docs/SSE.md
 - **Scores are compressed.** With this model a good match scores around 0.69 to
   0.75 and unrelated content around 0.60 to 0.64. Results are a ranked list; there
   is no reliable score below which a result is "not a match", so the API applies
-  no cut-off.
+  no cut-off. For the same reason a text search on the media listing does not stop
+  at the medias matching the text: paged to its end, it returns every embedded
+  media the other criteria allow.
 - **No content filtering.** A neutral query can surface adult content if the
   library contains it. Nothing flags or filters it yet.
 - **One vector per video**, from 8 frames. A short scene in a long video is easily

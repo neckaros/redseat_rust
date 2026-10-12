@@ -48,6 +48,10 @@ use crate::{
         text_tools::{extract_people, extract_tags},
     },
 };
+
+/// Page size of the listing when the query gives none.
+pub const MEDIA_QUERY_DEFAULT_LIMIT: usize = 200;
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MediaBackup {
     pub id: String,
@@ -143,7 +147,9 @@ fn media_query(user_id: &Option<String>) -> String {
     }
 }
 
-fn media_backup_query(query: &MediaQuery) -> String {
+/// Computed columns the filters and the order of `query` refer to, for a query that
+/// selects from `medias AS m` alone, without the joins of the listing.
+fn media_filter_fields(query: &MediaQuery) -> String {
     let mut filter_fields = Vec::new();
     if query.min_rating.is_some() || query.max_rating.is_some() || query.sort == RsSort::Rating {
         filter_fields.push(
@@ -160,12 +166,15 @@ fn media_backup_query(query: &MediaQuery) -> String {
             ", (SELECT GROUP_CONCAT(serie_ref || '|' || printf('%04d', season) || '|' || printf('%04d', episode)) FROM media_serie_mapping WHERE media_ref = m.id) AS series",
         );
     }
+    filter_fields.concat()
+}
 
+fn media_backup_query(query: &MediaQuery) -> String {
     format!(
         "SELECT m.id, m.name, m.size,
                 m.md5 AS source_hash{}
          FROM medias AS m",
-        filter_fields.concat()
+        media_filter_fields(query)
     )
 }
 
@@ -556,7 +565,7 @@ impl SqliteLibraryStore {
             .call(move |conn| {
                 let media_raw_query = media_query(&limits.user_id);
 
-                let limit = query.limit.unwrap_or(200);
+                let limit = query.limit.unwrap_or(MEDIA_QUERY_DEFAULT_LIMIT);
                 let mut where_query = Self::build_media_query(query, limits);
 
                 let mut query = conn.prepare(&format!(
@@ -583,6 +592,32 @@ impl SqliteLibraryStore {
             })
             .await?;
         Ok(row)
+    }
+
+    /// Ids of every media the listing returns for `query` and `limits`, in its order.
+    /// The page limit of the query is not applied.
+    pub async fn get_media_ids(
+        &self,
+        query: MediaQuery,
+        limits: LibraryLimits,
+    ) -> Result<Vec<String>> {
+        let fields = media_filter_fields(&query);
+        let ids = self
+            .connection
+            .call(move |conn| {
+                let mut where_query = Self::build_media_query(query, limits);
+                let mut query = conn.prepare(&format!(
+                    "{} SELECT m.id{} FROM medias AS m {} {}",
+                    where_query.format_recursive(),
+                    fields,
+                    where_query.format(),
+                    where_query.format_order(),
+                ))?;
+                let rows = query.query_map(where_query.values(), |row| row.get::<_, String>(0))?;
+                Ok(rows.collect::<std::result::Result<Vec<_>, rusqlite::Error>>()?)
+            })
+            .await?;
+        Ok(ids)
     }
 
     /// The medias among `ids` that the listing would return for `query` and `limits`,
@@ -1522,6 +1557,147 @@ mod tests {
             .unwrap();
         assert_eq!(by_book.len(), 1);
         assert_eq!(by_book[0].item.id, media_id);
+    }
+
+    #[tokio::test]
+    async fn media_ids_follow_the_listing() {
+        use crate::{domain::library::LibraryLimits, model::tags::TagForInsert};
+
+        let connection = tokio_rusqlite::Connection::open_in_memory().await.unwrap();
+        let store = SqliteLibraryStore::new(connection).await.unwrap();
+        for (id, name, description, kind) in [
+            ("m1", "beach.jpg", None, FileType::Photo),
+            (
+                "m2",
+                "IMG_0002.jpg",
+                Some("a day at the beach"),
+                FileType::Photo,
+            ),
+            ("m3", "IMG_0003.mp4", None, FileType::Video),
+            ("m4", "notes.zip", None, FileType::Archive),
+        ] {
+            store
+                .add_media(
+                    MediaForAdd {
+                        name: name.to_string(),
+                        description: description.map(str::to_string),
+                        kind,
+                        ..Default::default()
+                    }
+                    .into_insert_with_id(id.to_string()),
+                )
+                .await
+                .unwrap();
+        }
+        store
+            .add_tag(TagForInsert {
+                id: "holidays".to_string(),
+                name: "holidays".to_string(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        store
+            .connection
+            .call(|conn| {
+                conn.execute(
+                    "INSERT INTO media_tag_mapping (media_ref, tag_ref)
+                     VALUES ('m2', 'holidays'), ('m3', 'holidays')",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO media_people_mapping (media_ref, people_ref) VALUES ('m3', 'alice')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        let text = |text: &str| MediaQuery {
+            text: Some(text.to_string()),
+            ..Default::default()
+        };
+        // Filters and orders that need a computed column are in: people, rating.
+        let queries = [
+            (MediaQuery::default(), 4),
+            (text("beach"), 2),
+            (
+                MediaQuery {
+                    types: vec![FileType::Photo],
+                    sort: RsSort::Name,
+                    order: SqlOrder::ASC,
+                    ..Default::default()
+                },
+                2,
+            ),
+            (
+                MediaQuery {
+                    tags: vec!["holidays".to_string()],
+                    ..Default::default()
+                },
+                2,
+            ),
+            (
+                MediaQuery {
+                    people: vec!["alice".to_string()],
+                    ..Default::default()
+                },
+                1,
+            ),
+            (
+                MediaQuery {
+                    sort: RsSort::Rating,
+                    ..Default::default()
+                },
+                4,
+            ),
+            (
+                MediaQuery {
+                    tags: vec!["holidays".to_string()],
+                    ..text("beach")
+                },
+                1,
+            ),
+        ];
+        for (query, expected) in queries {
+            let listed: Vec<String> = store
+                .get_medias(query.clone(), LibraryLimits::default())
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|media| media.item.id)
+                .collect();
+            let ids = store
+                .get_media_ids(query.clone(), LibraryLimits::default())
+                .await
+                .unwrap();
+            assert_eq!(ids, listed, "{:?}", query);
+            assert_eq!(ids.len(), expected, "{:?}", query);
+        }
+
+        // The page limit of the query is left out, the limits of the user are not.
+        let unpaged = MediaQuery {
+            limit: Some(1),
+            ..Default::default()
+        };
+        assert_eq!(
+            store
+                .get_media_ids(unpaged, LibraryLimits::default())
+                .await
+                .unwrap()
+                .len(),
+            4
+        );
+        let delayed = LibraryLimits {
+            delay: Some(60),
+            ..Default::default()
+        };
+        assert!(store
+            .get_media_ids(MediaQuery::default(), delayed)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
