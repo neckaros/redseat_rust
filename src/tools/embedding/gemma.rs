@@ -285,9 +285,36 @@ struct ImageSessions {
     gpu_backbone: Option<Session>,
 }
 
-/// Whether the ONNX Runtime of this build can run a graph on the GPU.
+/// The library the GPU provider of ONNX Runtime lives in, on Windows.
+const GPU_LIBRARY: &str = "webgpu_dawn.dll";
+
+/// Whether the ONNX Runtime of this build can run a graph on the GPU, and the
+/// library it needs for that is there.
 pub fn gpu_supported() -> bool {
+    gpu_built_in() && gpu_library_present()
+}
+
+fn gpu_built_in() -> bool {
     ep::WebGPU::default().is_available().unwrap_or(false)
+}
+
+/// The server links the GPU library so that Windows loads it on first use, not at
+/// startup (see `build.rs`): it starts without it. Using the GPU without it would
+/// end the process, so the library is loaded here first, where failing is an answer.
+#[cfg(windows)]
+fn gpu_library_present() -> bool {
+    extern "system" {
+        fn LoadLibraryW(name: *const u16) -> *mut std::ffi::c_void;
+    }
+    let name: Vec<u16> = GPU_LIBRARY.encode_utf16().chain([0]).collect();
+    // SAFETY: `name` is a NUL-terminated UTF-16 string that outlives the call.
+    !unsafe { LoadLibraryW(name.as_ptr()) }.is_null()
+}
+
+/// Elsewhere the library is loaded with the program, which would not run without it.
+#[cfg(not(windows))]
+fn gpu_library_present() -> bool {
+    true
 }
 
 fn load_session(path: PathBuf, threads: usize, gpu: bool) -> EmbeddingResult<Session> {
@@ -427,8 +454,13 @@ impl EmbeddingGemma {
             Some(sessions) => sessions,
             empty => {
                 let mut loaded = None;
-                if self.device == EmbeddingDevice::Auto && !*gpu_failed && gpu_supported() {
-                    match self.load_image_sessions(true) {
+                if self.device == EmbeddingDevice::Auto && !*gpu_failed && gpu_built_in() {
+                    let sessions = if gpu_library_present() {
+                        self.load_image_sessions(true)
+                    } else {
+                        Err(EmbeddingError::Model(format!("{GPU_LIBRARY} is missing")))
+                    };
+                    match sessions {
                         Ok(sessions) => {
                             (self.report)("Embedding images on the GPU".to_string());
                             loaded = Some(sessions);

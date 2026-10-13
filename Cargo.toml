@@ -18,7 +18,8 @@ path = "src/main.rs"
 
 [features]
 # Media embeddings on the GPU, through the WebGPU provider of ONNX Runtime. The
-# libraries it needs must then ship beside the binary: see docs/EMBEDDINGS.md.
+# libraries it needs must then ship beside the binary, or it embeds on the CPU: see
+# docs/EMBEDDINGS.md.
 gpu = ["ort/webgpu"]
 
 [dependencies]

@@ -114,10 +114,13 @@ cargo build --release --features gpu
 ```
 
 - **Libraries.** The build links another ONNX Runtime, which needs its libraries
-  beside the binary. On Windows: `webgpu_dawn.dll`, `dxcompiler.dll` and `dxil.dll`.
-  Cargo puts them in `target/release`; a packaged release has to ship them. Without
-  `webgpu_dawn.dll` the server does not start. Without the two others it starts and
-  embeds on the CPU.
+  beside the binary to use the GPU. On Windows: `webgpu_dawn.dll`, `dxcompiler.dll`
+  and `dxil.dll`. Cargo puts them in `target/release`; a packaged release has to
+  ship them. When one is missing the server still starts, says so in the log when a
+  pass begins, and embeds on the CPU. For `webgpu_dawn.dll` that takes two things:
+  `build.rs` has Windows load it on first use instead of at startup, and
+  `gpu_library_present` in `gemma.rs` loads it before the GPU is touched. On Linux
+  and macOS the library is loaded with the program, which does not start without it.
 - **Platforms.** Only tried on Windows x86_64 with an NVIDIA card (Direct3D 12).
   `ort` also has this runtime for Linux x86_64 and macOS arm64; a target without
   one builds the usual runtime and embeds on the CPU.
