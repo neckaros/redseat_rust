@@ -303,9 +303,10 @@ the same 5: 30 such files in a row took 3 hours, three passes each.
 - A media whose file is recognised as an image and cannot be decoded is not counted
   in the 5 (`is_undecodable_media`): that failure is about the media. A read that
   gives nothing recognisable is still counted, since the storage may be the cause,
-  and so is any other error. With ImageMagick (`imagesUseIm`) that covers every
-  file it rejects: it gives back nothing whether the file is broken or ImageMagick
-  itself is, and the second must stop a pass.
+  and so is any other error. ImageMagick (`imagesUseIm`) gives back nothing
+  whether the file is broken or ImageMagick itself is, so a file it gives nothing
+  for is read without it: that gives the image when the file was fine, and the
+  error that tells the two apart when it was not.
 
 ### Pending medias
 

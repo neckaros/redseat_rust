@@ -389,10 +389,33 @@ pub async fn decode_image_reader(mut reader: AsyncReadPinBox) -> RsResult<Dynami
     let config = get_config().await;
 
     if config.imagesUseIm {
-        let data = convert_image_reader_im(reader, ImageFormat::Png, None, true).await?;
-        Ok(tokio::task::spawn_blocking(move || image::load_from_memory(&data)).await??)
+        decode_image_reader_im(reader).await
     } else {
         Ok(reader_to_image(&mut reader).await?.image)
+    }
+}
+
+async fn decode_image_reader_im(mut reader: AsyncReadPinBox) -> RsResult<DynamicImage> {
+    let mut source = Vec::new();
+    reader.read_to_end(&mut source).await?;
+    let converted = convert_image_reader_im(
+        Box::pin(Cursor::new(source.clone())),
+        ImageFormat::Png,
+        None,
+        true,
+    )
+    .await?;
+    converted_or_native_image(converted, &source).await
+}
+
+/// The image ImageMagick `converted` a `source` to, or the source read natively when
+/// ImageMagick gave nothing readable. It gives back the same nothing for a file that
+/// is broken and when it is broken itself: the native read tells which, with the
+/// image of a file that was fine or an error that names the format of a broken one.
+async fn converted_or_native_image(converted: Vec<u8>, source: &[u8]) -> RsResult<DynamicImage> {
+    match tokio::task::spawn_blocking(move || image::load_from_memory(&converted)).await? {
+        Ok(image) => Ok(image),
+        Err(_) => Ok(reader_to_image(&mut &*source).await?.image),
     }
 }
 
@@ -701,20 +724,82 @@ mod tests {
         Box::pin(Cursor::new(bytes.to_vec()))
     }
 
+    fn png(image: &DynamicImage) -> Vec<u8> {
+        let mut png = Cursor::new(Vec::new());
+        image.write_to(&mut png, ImageFormat::Png).unwrap();
+        png.into_inner()
+    }
+
+    fn colors(width: u32, height: u32) -> DynamicImage {
+        DynamicImage::ImageRgb8(image::ImageBuffer::from_fn(width, height, |x, y| {
+            image::Rgb([(x * 2) as u8, (y * 3) as u8, (x + y) as u8])
+        }))
+    }
+
+    /// A PNG whose header says a bit depth that does not exist.
+    fn broken_png() -> Vec<u8> {
+        let mut broken = png(&colors(96, 64));
+        broken[24] = 7;
+        broken
+    }
+
+    fn names_png(error: &RsError) -> bool {
+        use image::error::ImageFormatHint;
+        matches!(
+            error,
+            RsError::Image(image::ImageError::Decoding(error))
+                if error.format_hint() == ImageFormatHint::Exact(ImageFormat::Png)
+        )
+    }
+
+    /// ImageMagick gives back nothing for a file it rejects and when it is broken
+    /// itself: only the first is about the media, and the error must say so.
+    #[tokio::test]
+    async fn what_image_magick_gives_nothing_for_is_read_natively() {
+        let image = colors(96, 64);
+        let source = png(&image);
+
+        // What ImageMagick converted is what is used.
+        let converted = png(&colors(8, 8));
+        let used = converted_or_native_image(converted, &source).await.unwrap();
+        assert_eq!(used, colors(8, 8));
+
+        // A file that is fine: ImageMagick is what failed.
+        let read = converted_or_native_image(Vec::new(), &source)
+            .await
+            .unwrap();
+        assert_eq!(read, image);
+
+        // A broken file: its error names its format.
+        let error = converted_or_native_image(Vec::new(), &broken_png())
+            .await
+            .unwrap_err();
+        assert!(names_png(&error), "{error:?}");
+
+        // Nothing was read: no format, the storage may be the cause.
+        let error = converted_or_native_image(Vec::new(), &[])
+            .await
+            .unwrap_err();
+        assert!(!names_png(&error), "{error:?}");
+    }
+
+    #[tokio::test]
+    #[ignore = "needs ImageMagick"]
+    async fn image_magick_decodes_and_names_the_format_of_what_it_rejects() {
+        let image = colors(96, 64);
+        let decoded = decode_image_reader_im(reader(&png(&image))).await.unwrap();
+        assert_eq!(decoded.to_rgb8(), image.to_rgb8());
+
+        let error = decode_image_reader_im(reader(&broken_png()))
+            .await
+            .unwrap_err();
+        assert!(names_png(&error), "{error:?}");
+    }
+
     /// Media embeddings take the decoded image where they used to decode the PNG:
     /// both must be the same pixels, or the stored vectors would change.
     #[tokio::test]
     async fn decoded_image_is_the_one_the_png_holds() {
-        let png = |image: DynamicImage| {
-            let mut png = Cursor::new(Vec::new());
-            image.write_to(&mut png, ImageFormat::Png).unwrap();
-            png.into_inner()
-        };
-        let colors = |width, height| {
-            DynamicImage::ImageRgb8(image::ImageBuffer::from_fn(width, height, |x, y| {
-                image::Rgb([(x * 2) as u8, (y * 3) as u8, (x + y) as u8])
-            }))
-        };
         let mut sources: Vec<Vec<u8>> = ["face1.jpg", "image2.webp"]
             .iter()
             .map(|name| fs::read(format!("test_data/{name}")).unwrap())
@@ -726,13 +811,13 @@ mod tests {
         };
         sources.push(save_image_native(thumbnail, ImageFormat::Avif, Some(50), true).unwrap());
         // What FFmpeg writes for a frame of a 10-bit video.
-        sources.push(png(DynamicImage::ImageRgb16(image::ImageBuffer::from_fn(
+        sources.push(png(&DynamicImage::ImageRgb16(image::ImageBuffer::from_fn(
             640,
             360,
             |x, y| image::Rgb([(x * 100) as u16, (y * 180) as u16, ((x + y) * 65) as u16]),
         ))));
         // Tall enough to be cut to its top square before it is scaled.
-        sources.push(png(colors(60, 600)));
+        sources.push(png(&colors(60, 600)));
 
         for source in &sources {
             let encoded =
