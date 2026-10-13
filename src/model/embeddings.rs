@@ -625,13 +625,71 @@ impl ModelController {
         Ok(images)
     }
 
+    /// Frames spread evenly over the video, in its order: as many as
+    /// [`video_frame_count`] gives its duration. Frames that cannot be extracted are
+    /// skipped.
     async fn video_embedding_frames(
         &self,
         library_id: &str,
         media_id: &str,
     ) -> RsResult<Vec<DynamicImage>> {
         let uri = self.get_media_uri(library_id, media_id, Some(240)).await?;
-        video_frames(&uri, media_id).await
+        let duration = video_tools::get_duration(&uri)
+            .await?
+            .ok_or_else(|| RsError::Error("Unable to get video duration".to_string()))?;
+
+        let count = video_frame_count(duration);
+        let times = (0..count).map(|index| duration * (index as f64 + 0.5) / count as f64);
+        let extracted = futures::future::join_all(times.map(|seconds| async move {
+            let frame = self
+                .video_embedding_frame(library_id, media_id, seconds)
+                .await;
+            (seconds, frame)
+        }))
+        .await;
+
+        let mut frames = Vec::with_capacity(count);
+        for (seconds, frame) in extracted {
+            match frame {
+                Ok(frame) => frames.push(frame),
+                Err(error) => log_error(
+                    LogServiceType::Source,
+                    format!(
+                        "Unable to extract frame at {}s of {} for embedding: {:#}",
+                        seconds, media_id, error
+                    ),
+                ),
+            }
+        }
+        Ok(frames)
+    }
+
+    /// The frame of a video at `seconds`, scaled down like its thumbnail.
+    async fn video_embedding_frame(
+        &self,
+        library_id: &str,
+        media_id: &str,
+        seconds: f64,
+    ) -> RsResult<DynamicImage> {
+        // One slot for every three threads of the machine, so a small one reads its
+        // frames one after the other.
+        static SLOTS: OnceLock<Semaphore> = OnceLock::new();
+        let slots = SLOTS.get_or_init(|| {
+            let threads = std::thread::available_parallelism().map_or(1, |threads| threads.get());
+            Semaphore::new((threads / 3).clamp(1, VIDEO_FRAMES_AT_ONCE))
+        });
+        let _slot = slots
+            .acquire()
+            .await
+            .map_err(|error| RsError::Error(format!("Video frame slots closed: {}", error)))?;
+        // Signed once the frame has its slot: a link made for the whole video
+        // expires while the frames of a slow one wait their turn.
+        let uri = self.get_media_uri(library_id, media_id, None).await?;
+        let frame =
+            video_tools::thumb_video_scaled(&uri, VideoTime::Seconds(seconds), VIDEO_FRAME_SIZE)
+                .await?;
+        // What is left to do on a frame that already has its size.
+        resize_image_reader_to_image(Box::pin(std::io::Cursor::new(frame)), VIDEO_FRAME_SIZE).await
     }
 
     async fn embedding_index_slot(&self, library_id: &str) -> IndexSlot {
@@ -953,63 +1011,12 @@ impl ModelController {
     }
 }
 
-/// Frames spread evenly over the video at `uri`, in its order: as many as
-/// [`video_frame_count`] gives its duration. Frames that cannot be extracted are
-/// skipped.
-async fn video_frames(uri: &str, media_id: &str) -> RsResult<Vec<DynamicImage>> {
-    let duration = video_tools::get_duration(uri)
-        .await?
-        .ok_or_else(|| RsError::Error("Unable to get video duration".to_string()))?;
-
-    let count = video_frame_count(duration);
-    let times = (0..count).map(|index| duration * (index as f64 + 0.5) / count as f64);
-    let extracted = futures::future::join_all(
-        times.map(|seconds| async move { (seconds, video_frame(uri, seconds).await) }),
-    )
-    .await;
-
-    let mut frames = Vec::with_capacity(count);
-    for (seconds, frame) in extracted {
-        match frame {
-            Ok(frame) => frames.push(frame),
-            Err(error) => log_error(
-                LogServiceType::Source,
-                format!(
-                    "Unable to extract frame at {}s of {} for embedding: {:#}",
-                    seconds, media_id, error
-                ),
-            ),
-        }
-    }
-    Ok(frames)
-}
-
 /// Frames a video of `duration` seconds is embedded from: 1 under 4 seconds, 2 under
 /// 8, and so on up to `VIDEO_FRAMES` from 28 seconds.
 fn video_frame_count(duration: f64) -> usize {
     // The cast gives 0 to a duration that is negative or not a number.
     let spans = (duration / VIDEO_SECONDS_PER_FRAME) as usize;
     spans.saturating_add(1).min(VIDEO_FRAMES)
-}
-
-/// The frame of a video at `seconds`, scaled down like its thumbnail.
-async fn video_frame(uri: &str, seconds: f64) -> RsResult<DynamicImage> {
-    // One slot for every three threads of the machine, so a small one reads its
-    // frames one after the other.
-    static SLOTS: OnceLock<Semaphore> = OnceLock::new();
-    let slots = SLOTS.get_or_init(|| {
-        let threads = std::thread::available_parallelism().map_or(1, |threads| threads.get());
-        Semaphore::new((threads / 3).clamp(1, VIDEO_FRAMES_AT_ONCE))
-    });
-    let _slot = slots
-        .acquire()
-        .await
-        .map_err(|error| RsError::Error(format!("Video frame slots closed: {}", error)))?;
-    let frame =
-        video_tools::thumb_video_scaled(uri, VideoTime::Seconds(seconds), VIDEO_FRAME_SIZE).await?;
-    // What is left to do on a frame that already has its size: the same cut of a
-    // very tall picture as a thumbnail gets.
-    resize_image_reader_to_image(Box::pin(std::io::Cursor::new(frame)), VIDEO_FRAME_SIZE).await
 }
 
 /// The vector of a media from its images: each one is embedded, a video is the

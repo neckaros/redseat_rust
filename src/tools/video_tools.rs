@@ -1262,6 +1262,10 @@ pub async fn thumb_video(uri: &str, at_time: VideoTime) -> Result<Vec<u8>, Error
 /// The frame [`thumb_video`] returns, scaled down by FFmpeg to fit in a square of
 /// `size` pixels, in a PNG that is hardly compressed. For a frame that is used at
 /// that size and not kept: a full 4K picture is slow to write, to pass and to decode.
+///
+/// A frame more than four times taller than wide is cut to its top square before
+/// it is scaled, as `resize_image_reader` does: scaled whole, that square would be
+/// left with a few pixels.
 pub async fn thumb_video_scaled(
     uri: &str,
     at_time: VideoTime,
@@ -1289,6 +1293,8 @@ async fn thumb_video_png(
     let _lock = FFMPEG_LOCK.read().await;
     let mut command = Command::new(VideoCommandBuilder::get_ffmpeg_path());
     command
+        // The caller that gives up, cancelled or timed out, does not leave FFmpeg running.
+        .kill_on_drop(true)
         .arg("-ss")
         .arg(ss.to_string())
         .arg("-i")
@@ -1305,7 +1311,7 @@ async fn thumb_video_png(
         command
             .arg("-vf")
             .arg(format!(
-                "scale='min({size},iw)':'min({size},ih)':force_original_aspect_ratio=decrease:flags=area"
+                "crop=iw:'if(lt(iw*4,ih),iw,ih)':0:0,scale='min({size},iw)':'min({size},ih)':force_original_aspect_ratio=decrease:flags=area"
             ))
             .arg("-compression_level")
             .arg("1");
@@ -1459,7 +1465,12 @@ mod tests {
             VideoCommandBuilder::download().await.unwrap();
         }
         let directory = tempfile::tempdir().unwrap();
-        for (source, expected) in [("1280x720", (512, 288)), ("320x180", (320, 180))] {
+        // The last one is more than four times taller than wide: its top square.
+        for (source, expected) in [
+            ("1280x720", (512, 288)),
+            ("320x180", (320, 180)),
+            ("160x1280", (160, 160)),
+        ] {
             let video = directory.path().join(format!("{source}.mp4"));
             let made = Command::new(VideoCommandBuilder::get_ffmpeg_path())
                 .args(["-f", "lavfi", "-i"])
@@ -1479,8 +1490,14 @@ mod tests {
                 let scaled = image::load_from_memory(&scaled).unwrap().to_rgb8();
                 assert_eq!(scaled.dimensions(), expected);
 
-                // Scaled afterwards, as embeddings did before: close, not equal.
-                let usual = full.unwrap().thumbnail(expected.0, expected.1).to_rgb8();
+                // Cut and scaled afterwards, as embeddings did before: close, not equal.
+                let full = full.unwrap();
+                let cut = if full.width() * 4 < full.height() {
+                    full.crop_imm(0, 0, full.width(), full.width())
+                } else {
+                    full
+                };
+                let usual = cut.thumbnail(expected.0, expected.1).to_rgb8();
                 let difference = usual
                     .as_raw()
                     .iter()

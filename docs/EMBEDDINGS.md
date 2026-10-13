@@ -50,7 +50,8 @@ A pass reads the images of the next 2 medias while the model is on the current o
 is not the model: the thumbnail from storage, FFmpeg for the frames, decoding,
 scaling down to 512 pixels. The medias are still embedded and stored one by one, in
 the order of the queue. A pause or a stop still takes effect once the media in
-progress is done; what was read ahead is dropped.
+progress is done; what was read ahead is dropped, and what was still being read is
+stopped, its FFmpeg processes included.
 
 Frames are read several at a time: one for every three threads of the machine, 4 at
 most, whatever the number of videos being read. Each frame is an FFmpeg process
@@ -302,7 +303,9 @@ the same 5: 30 such files in a row took 3 hours, three passes each.
 - A media whose file is recognised as an image and cannot be decoded is not counted
   in the 5 (`is_undecodable_media`): that failure is about the media. A read that
   gives nothing recognisable is still counted, since the storage may be the cause,
-  and so is any other error.
+  and so is any other error. With ImageMagick (`imagesUseIm`) that covers every
+  file it rejects: it gives back nothing whether the file is broken or ImageMagick
+  itself is, and the second must stop a pass.
 
 ### Pending medias
 

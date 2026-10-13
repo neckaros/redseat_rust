@@ -13,6 +13,7 @@ use crate::{
 use axum::async_trait;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
+use tokio_util::task::AbortOnDropHandle;
 
 use super::RsSchedulerTask;
 
@@ -205,13 +206,15 @@ impl EmbeddingTask {
             }
 
             // Each read is its own task, started when the media enters the buffer:
-            // it goes on while this loop waits for the model.
+            // it goes on while this loop waits for the model. It is stopped with
+            // the buffer, so a pass that ends leaves nothing reading behind it.
             let library = pass.library.clone();
             let mut read = futures::stream::iter(media_ids.clone())
                 .map(|media_id| {
                     let (mc, library, id) = (mc.clone(), library.clone(), media_id.clone());
-                    let images =
-                        tokio::spawn(async move { mc.media_embedding_images(&library, &id).await });
+                    let images = AbortOnDropHandle::new(tokio::spawn(async move {
+                        mc.media_embedding_images(&library, &id).await
+                    }));
                     async move {
                         let images = images.await.unwrap_or_else(|error| {
                             Err(RsError::Error(format!("Join error: {}", error)))
@@ -223,7 +226,7 @@ impl EmbeddingTask {
             while let Some((media_id, images)) = read.next().await {
                 // Before each media, so a pause or turning embeddings off takes
                 // effect as soon as the media in progress is done. What was read
-                // ahead is dropped.
+                // ahead is dropped, what was being read is stopped.
                 if let Some(state) = must_stop(mc, &pass.library).await {
                     pass.stopped = Some(state);
                     return Ok(());
