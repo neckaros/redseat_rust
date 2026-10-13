@@ -16,6 +16,11 @@ path = "src/main.rs"
 #[profile.test]
 #inherits = "release"
 
+[features]
+# Media embeddings on the GPU, through the WebGPU provider of ONNX Runtime. The
+# libraries it needs must then ship beside the binary: see docs/EMBEDDINGS.md.
+gpu = ["ort/webgpu"]
+
 [dependencies]
 axum = {version = "0.7", features = ["query", "macros", "multipart"]}
 axum-server = { version = "0.7", features = ["tls-rustls"] }

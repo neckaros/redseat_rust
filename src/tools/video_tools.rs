@@ -1256,6 +1256,27 @@ impl VideoTime {
 }
 
 pub async fn thumb_video(uri: &str, at_time: VideoTime) -> Result<Vec<u8>, Error> {
+    thumb_video_png(uri, at_time, None).await
+}
+
+/// The frame [`thumb_video`] returns, scaled down by FFmpeg to fit in a square of
+/// `size` pixels, in a PNG that is hardly compressed. For a frame that is used at
+/// that size and not kept: a full 4K picture is slow to write, to pass and to decode.
+pub async fn thumb_video_scaled(
+    uri: &str,
+    at_time: VideoTime,
+    size: u32,
+) -> Result<Vec<u8>, Error> {
+    thumb_video_png(uri, at_time, Some(size)).await
+}
+
+/// With a `size` the frame is scaled down to fit in that square, never up, and the
+/// PNG is written fast rather than small.
+async fn thumb_video_png(
+    uri: &str,
+    at_time: VideoTime,
+    size: Option<u32>,
+) -> Result<Vec<u8>, Error> {
     let ss = match at_time {
         VideoTime::Seconds(s) => s,
         VideoTime::Percent(p) => {
@@ -1266,7 +1287,8 @@ pub async fn thumb_video(uri: &str, at_time: VideoTime) -> Result<Vec<u8>, Error
         }
     };
     let _lock = FFMPEG_LOCK.read().await;
-    let output = Command::new(VideoCommandBuilder::get_ffmpeg_path())
+    let mut command = Command::new(VideoCommandBuilder::get_ffmpeg_path());
+    command
         .arg("-ss")
         .arg(ss.to_string())
         .arg("-i")
@@ -1276,11 +1298,22 @@ pub async fn thumb_video(uri: &str, at_time: VideoTime) -> Result<Vec<u8>, Error
         .arg("-f")
         .arg("image2pipe")
         .arg("-vcodec")
-        .arg("png")
-        .arg("pipe:1")
-        .output()
-        .await
-        .map_err(|error| Error::Error(format!("unable to get video thumb ffmpeg: {:?}", error)))?;
+        .arg("png");
+    if let Some(size) = size {
+        // `area` averages the pixels a scaled one covers, like the scaling of a
+        // thumbnail does.
+        command
+            .arg("-vf")
+            .arg(format!(
+                "scale='min({size},iw)':'min({size},ih)':force_original_aspect_ratio=decrease:flags=area"
+            ))
+            .arg("-compression_level")
+            .arg("1");
+    }
+    let output =
+        command.arg("pipe:1").output().await.map_err(|error| {
+            Error::Error(format!("unable to get video thumb ffmpeg: {:?}", error))
+        })?;
     /*if let Ok(val) = str::from_utf8(&output.stderr) {
         if val != "" {
             return Err(Error::Error { message: val.to_string() })
@@ -1413,5 +1446,51 @@ mod tests {
     #[tokio::test]
     async fn convert() {
         //convert_to_pipe("C:/Users/arnau/Downloads/IMG_5020.mov", None).await;
+    }
+
+    /// A frame scaled by FFmpeg must be the frame read the usual way, at the size
+    /// asked: the same picture as scaling it afterwards, and never scaled up.
+    /// Downloads FFmpeg beside the test binary when missing.
+    /// Run with `cargo test --bin redseat-rust scaled_thumb_is_the_same_picture -- --ignored --nocapture`.
+    #[tokio::test]
+    #[ignore = "needs FFmpeg"]
+    async fn scaled_thumb_is_the_same_picture() {
+        if VideoCommandBuilder::version().await.unwrap().is_none() {
+            VideoCommandBuilder::download().await.unwrap();
+        }
+        let directory = tempfile::tempdir().unwrap();
+        for (source, expected) in [("1280x720", (512, 288)), ("320x180", (320, 180))] {
+            let video = directory.path().join(format!("{source}.mp4"));
+            let made = Command::new(VideoCommandBuilder::get_ffmpeg_path())
+                .args(["-f", "lavfi", "-i"])
+                .arg(format!("testsrc2=duration=2:size={source}:rate=10"))
+                .args(["-pix_fmt", "yuv420p"])
+                .arg(&video)
+                .output()
+                .await
+                .unwrap();
+            assert!(made.status.success());
+            let uri = video.to_string_lossy().to_string();
+
+            for seconds in [0.25, 1.0, 1.75] {
+                let at = || VideoTime::Seconds(seconds);
+                let full = image::load_from_memory(&thumb_video(&uri, at()).await.unwrap());
+                let scaled = thumb_video_scaled(&uri, at(), 512).await.unwrap();
+                let scaled = image::load_from_memory(&scaled).unwrap().to_rgb8();
+                assert_eq!(scaled.dimensions(), expected);
+
+                // Scaled afterwards, as embeddings did before: close, not equal.
+                let usual = full.unwrap().thumbnail(expected.0, expected.1).to_rgb8();
+                let difference = usual
+                    .as_raw()
+                    .iter()
+                    .zip(scaled.as_raw())
+                    .map(|(a, b)| f64::from(a.abs_diff(*b)))
+                    .sum::<f64>()
+                    / usual.as_raw().len() as f64;
+                println!("{source} at {seconds} s: mean difference {difference:.2} of 255");
+                assert!(difference < 6.0, "mean difference {difference}");
+            }
+        }
     }
 }

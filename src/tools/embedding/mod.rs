@@ -77,6 +77,26 @@ pub struct EmbedderSpec {
     pub text_cutoff: f32,
 }
 
+/// Receives what an embedder has to say while it loads and works: downloads, the
+/// device images run on.
+pub type Report = Arc<dyn Fn(String) + Send + Sync>;
+
+/// Where the image side of an embedder may run. Text queries always run on the CPU.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EmbeddingDevice {
+    /// The GPU when this build can use one and it works, else the CPU.
+    #[default]
+    Auto,
+    Cpu,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct EmbedderOptions {
+    pub device: EmbeddingDevice,
+    /// Threads of a graph that runs on the CPU. `None` leaves it to the embedder.
+    pub threads: Option<usize>,
+}
+
 /// Blocking interface: callers run it off the async executor.
 pub trait Embedder: Send + Sync {
     fn spec(&self) -> &EmbedderSpec;
@@ -93,8 +113,13 @@ pub trait Embedder: Send + Sync {
         self.spec().search_dimension
     }
 
+    /// Returns an L2-normalised vector.
+    fn embed_decoded_image(&self, image: &image::DynamicImage) -> EmbeddingResult<Vec<f32>>;
+
     /// `bytes` is an encoded image (PNG, JPEG, WebP...). Returns an L2-normalised vector.
-    fn embed_image(&self, bytes: &[u8]) -> EmbeddingResult<Vec<f32>>;
+    fn embed_image(&self, bytes: &[u8]) -> EmbeddingResult<Vec<f32>> {
+        self.embed_decoded_image(&image::load_from_memory(bytes)?)
+    }
 
     /// Returns an L2-normalised vector in the same space as [`Embedder::embed_image`].
     fn embed_text(&self, query: &str) -> EmbeddingResult<Vec<f32>>;
@@ -123,12 +148,13 @@ pub fn active_files_present(models_dir: &Path) -> bool {
 /// Downloads the active embedder's files if needed, then loads it.
 pub async fn load_active(
     models_dir: &Path,
-    on_progress: &(dyn Fn(String) + Send + Sync),
+    options: EmbedderOptions,
+    report: Report,
 ) -> EmbeddingResult<Arc<dyn Embedder>> {
     let directory = models_dir.join(gemma::MODEL_DIRECTORY);
-    gemma::ensure_files(&directory, on_progress).await?;
+    gemma::ensure_files(&directory, report.as_ref()).await?;
     let embedder = tokio::task::spawn_blocking(move || {
-        gemma::EmbeddingGemma::load(&directory, gemma::default_threads())
+        gemma::EmbeddingGemma::load(&directory, options, report)
     })
     .await
     .map_err(|error| EmbeddingError::Model(format!("Join error: {error}")))??;

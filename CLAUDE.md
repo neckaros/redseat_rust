@@ -125,6 +125,7 @@ cargo watch -c -w src -x "run --bin redseat-rust"
 
 # Build
 cargo build --release
+cargo build --release --features gpu # Media embeddings on the GPU, see docs/EMBEDDINGS.md
 
 # Test
 cargo test                           # Some tests need ffmpeg/yt-dlp
@@ -147,6 +148,8 @@ docker run -v redseat_config:/root/.config/redseat -p 8080:8080 neckaros/redseat
 | `REDSEAT_NOCERT` | Disable direct HTTPS (TLS handled by a proxy); plain HTTP only |
 | `REDSEAT_PORT_FORWARDED` | Port forwarded manually: report public IPv4 for direct HTTPS |
 | `REDSEAT_LAN_IPS` | Comma-separated LAN addresses to report for direct HTTPS (Docker) |
+| `REDSEAT_EMBEDDINGS_CPU` | `true` keeps media embeddings on the CPU in a `gpu` build |
+| `REDSEAT_EMBEDDINGS_THREADS` | CPU threads of the embedding model (default: up to 4) |
 
 ## SUBDIRECTORY AGENTS
 

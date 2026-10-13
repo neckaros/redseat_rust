@@ -3,13 +3,14 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, OnceLock,
     },
 };
 
+use image::DynamicImage;
 use rs_plugin_common_interfaces::domain::ItemWithRelations;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, OwnedRwLockReadGuard, RwLock};
+use tokio::sync::{Mutex, OwnedRwLockReadGuard, RwLock, Semaphore};
 
 use super::{
     error::Error as ModelError,
@@ -28,20 +29,31 @@ use crate::{
     error::{RsError, RsResult},
     plugins::sources::error::SourcesError,
     routes::sse::SseEvent,
-    server::get_server_local_path,
+    server::{embeddings_on_cpu, embeddings_threads, get_server_local_path},
     tools::{
         auth::ClaimsLocalType,
-        embedding::{self, index::VectorIndex, Embedder, EmbedderSpec},
+        embedding::{
+            self, index::VectorIndex, Embedder, EmbedderOptions, EmbedderSpec, EmbeddingDevice,
+        },
         get_time,
-        image_tools::convert_image_reader,
+        image_tools::{self, decode_image_reader, resize_image_reader_to_image},
         log::{log_error, log_info, LogServiceType},
         scheduler::{embedding::EmbeddingTask, RsSchedulerWhen, RsTaskType},
         video_tools::{self, VideoTime},
     },
 };
 
-/// Frames averaged into the single vector of a video.
+/// Most frames averaged into the single vector of a video.
 const VIDEO_FRAMES: usize = 8;
+/// Seconds of video a frame stands for: a video has one frame, and one more for
+/// each of these spans it completes. Under 4 seconds, as a live photo is, it is a
+/// single picture.
+const VIDEO_SECONDS_PER_FRAME: f64 = 4.0;
+/// Most frames read at the same time, over all the videos being read. Each is an
+/// FFmpeg process decoding a video.
+const VIDEO_FRAMES_AT_ONCE: usize = 4;
+/// Longest side of a frame, the size of a thumbnail. FFmpeg scales it down itself.
+const VIDEO_FRAME_SIZE: u32 = 512;
 /// Failed attempts after which a media is no longer offered for embedding.
 pub const EMBEDDING_MAX_ATTEMPTS: u32 = 3;
 const SEARCH_DEFAULT_LIMIT: usize = 50;
@@ -235,9 +247,19 @@ impl ModelController {
         self.embeddings
             .downloading
             .store(must_download, Ordering::Relaxed);
-        let loaded = embedding::load_active(&models_path, &|message| {
-            log_info(LogServiceType::Source, message)
-        })
+        let options = EmbedderOptions {
+            device: if embeddings_on_cpu() {
+                EmbeddingDevice::Cpu
+            } else {
+                EmbeddingDevice::Auto
+            },
+            threads: embeddings_threads(),
+        };
+        let loaded = embedding::load_active(
+            &models_path,
+            options,
+            Arc::new(|message| log_info(LogServiceType::Source, message)),
+        )
         .await;
         self.embeddings.downloading.store(false, Ordering::Relaxed);
         let embedder = loaded?;
@@ -493,16 +515,29 @@ impl ModelController {
     /// Computes and stores the vector of one photo or video. A failure is recorded
     /// against the media so it is not retried forever.
     pub async fn embed_media(&self, library_id: &str, media_id: &str) -> RsResult<()> {
+        let images = self.media_embedding_images(library_id, media_id).await;
+        self.embed_media_images(library_id, media_id, images).await
+    }
+
+    /// The second half of [`Self::embed_media`]: `images` is what
+    /// [`Self::media_embedding_images`] returned for the media, its failure included.
+    pub async fn embed_media_images(
+        &self,
+        library_id: &str,
+        media_id: &str,
+        images: RsResult<Vec<DynamicImage>>,
+    ) -> RsResult<()> {
         // Same limit as the rest of media processing: the server cannot read these files.
         self.cache_check_library_notcrypt(library_id).await?;
         let embedder = self.get_embedder().await?;
         let spec = *embedder.spec();
         let store = self.store.get_library_store(library_id)?;
 
-        match self
-            .compute_media_embedding(library_id, media_id, &embedder)
-            .await
-        {
+        let vector = match images {
+            Ok(images) => embed_images(media_id, images, embedder).await,
+            Err(error) => Err(error),
+        };
+        match vector {
             Ok(vector) => {
                 let quantized = embedding::quantize(&vector, spec.quantization_scale);
                 // Held across the write, so the row and the index change together: a
@@ -545,12 +580,15 @@ impl ModelController {
         }
     }
 
-    async fn compute_media_embedding(
+    /// The images a media is embedded from: frames for a video, else its image. The
+    /// model is not involved, so a pass reads them for the next medias while the
+    /// model is on the current one.
+    pub async fn media_embedding_images(
         &self,
         library_id: &str,
         media_id: &str,
-        embedder: &Arc<dyn Embedder>,
-    ) -> RsResult<Vec<f32>> {
+    ) -> RsResult<Vec<DynamicImage>> {
+        self.cache_check_library_notcrypt(library_id).await?;
         let user = &ConnectedUser::ServerAdmin;
         let store = self.store.get_library_store(library_id)?;
         let source =
@@ -564,10 +602,7 @@ impl ModelController {
                 ))?;
 
         let mut images = if source.kind == FileType::Video {
-            match self
-                .video_embedding_frames(library_id, media_id, user)
-                .await
-            {
+            match self.video_embedding_frames(library_id, media_id).await {
                 Ok(frames) => frames,
                 Err(error) => {
                     log_error(
@@ -585,61 +620,18 @@ impl ModelController {
         };
         if images.is_empty() {
             let thumbnail = self.media_image(library_id, media_id, None, user).await?;
-            images.push(
-                convert_image_reader(thumbnail.stream, image::ImageFormat::Png, None, true).await?,
-            );
+            images.push(decode_image_reader(thumbnail.stream).await?);
         }
-
-        let embedder = embedder.clone();
-        let vectors = tokio::task::spawn_blocking(move || {
-            images
-                .iter()
-                .map(|image| embedder.embed_image(image))
-                .collect::<Result<Vec<_>, _>>()
-        })
-        .await
-        .map_err(|error| RsError::Error(format!("Join error: {}", error)))??;
-        embedding::average_normalized(&vectors)
-            .ok_or_else(|| RsError::Error(format!("No embedding computed for {}", media_id)))
+        Ok(images)
     }
 
-    /// A few frames spread evenly over the video. Frames that cannot be extracted are skipped.
     async fn video_embedding_frames(
         &self,
         library_id: &str,
         media_id: &str,
-        requesting_user: &ConnectedUser,
-    ) -> RsResult<Vec<Vec<u8>>> {
+    ) -> RsResult<Vec<DynamicImage>> {
         let uri = self.get_media_uri(library_id, media_id, Some(240)).await?;
-        let duration = video_tools::get_duration(&uri)
-            .await?
-            .ok_or_else(|| RsError::Error("Unable to get video duration".to_string()))?;
-
-        let mut frames = Vec::with_capacity(VIDEO_FRAMES);
-        for index in 0..VIDEO_FRAMES {
-            let seconds = duration * (index as f64 + 0.5) / VIDEO_FRAMES as f64;
-            match self
-                .get_video_thumb(
-                    library_id,
-                    media_id,
-                    VideoTime::Seconds(seconds),
-                    image::ImageFormat::Png,
-                    None,
-                    requesting_user,
-                )
-                .await
-            {
-                Ok(frame) => frames.push(frame),
-                Err(error) => log_error(
-                    LogServiceType::Source,
-                    format!(
-                        "Unable to extract frame at {}s of {} for embedding: {:#}",
-                        seconds, media_id, error
-                    ),
-                ),
-            }
-        }
-        Ok(frames)
+        video_frames(&uri, media_id).await
     }
 
     async fn embedding_index_slot(&self, library_id: &str) -> IndexSlot {
@@ -961,6 +953,84 @@ impl ModelController {
     }
 }
 
+/// Frames spread evenly over the video at `uri`, in its order: as many as
+/// [`video_frame_count`] gives its duration. Frames that cannot be extracted are
+/// skipped.
+async fn video_frames(uri: &str, media_id: &str) -> RsResult<Vec<DynamicImage>> {
+    let duration = video_tools::get_duration(uri)
+        .await?
+        .ok_or_else(|| RsError::Error("Unable to get video duration".to_string()))?;
+
+    let count = video_frame_count(duration);
+    let times = (0..count).map(|index| duration * (index as f64 + 0.5) / count as f64);
+    let extracted = futures::future::join_all(
+        times.map(|seconds| async move { (seconds, video_frame(uri, seconds).await) }),
+    )
+    .await;
+
+    let mut frames = Vec::with_capacity(count);
+    for (seconds, frame) in extracted {
+        match frame {
+            Ok(frame) => frames.push(frame),
+            Err(error) => log_error(
+                LogServiceType::Source,
+                format!(
+                    "Unable to extract frame at {}s of {} for embedding: {:#}",
+                    seconds, media_id, error
+                ),
+            ),
+        }
+    }
+    Ok(frames)
+}
+
+/// Frames a video of `duration` seconds is embedded from: 1 under 4 seconds, 2 under
+/// 8, and so on up to `VIDEO_FRAMES` from 28 seconds.
+fn video_frame_count(duration: f64) -> usize {
+    // The cast gives 0 to a duration that is negative or not a number.
+    let spans = (duration / VIDEO_SECONDS_PER_FRAME) as usize;
+    spans.saturating_add(1).min(VIDEO_FRAMES)
+}
+
+/// The frame of a video at `seconds`, scaled down like its thumbnail.
+async fn video_frame(uri: &str, seconds: f64) -> RsResult<DynamicImage> {
+    // One slot for every three threads of the machine, so a small one reads its
+    // frames one after the other.
+    static SLOTS: OnceLock<Semaphore> = OnceLock::new();
+    let slots = SLOTS.get_or_init(|| {
+        let threads = std::thread::available_parallelism().map_or(1, |threads| threads.get());
+        Semaphore::new((threads / 3).clamp(1, VIDEO_FRAMES_AT_ONCE))
+    });
+    let _slot = slots
+        .acquire()
+        .await
+        .map_err(|error| RsError::Error(format!("Video frame slots closed: {}", error)))?;
+    let frame =
+        video_tools::thumb_video_scaled(uri, VideoTime::Seconds(seconds), VIDEO_FRAME_SIZE).await?;
+    // What is left to do on a frame that already has its size: the same cut of a
+    // very tall picture as a thumbnail gets.
+    resize_image_reader_to_image(Box::pin(std::io::Cursor::new(frame)), VIDEO_FRAME_SIZE).await
+}
+
+/// The vector of a media from its images: each one is embedded, a video is the
+/// average of its frames.
+async fn embed_images(
+    media_id: &str,
+    images: Vec<DynamicImage>,
+    embedder: Arc<dyn Embedder>,
+) -> RsResult<Vec<f32>> {
+    let vectors = tokio::task::spawn_blocking(move || {
+        images
+            .iter()
+            .map(|image| embedder.embed_decoded_image(image))
+            .collect::<Result<Vec<_>, _>>()
+    })
+    .await
+    .map_err(|error| RsError::Error(format!("Join error: {}", error)))??;
+    embedding::average_normalized(&vectors)
+        .ok_or_else(|| RsError::Error(format!("No embedding computed for {}", media_id)))
+}
+
 /// One page of a text search over the listing, in the order of [`hybrid_order`].
 /// `vector` is the text as the index compares it, `min_score` the score a media that
 /// does not match the text must reach, `after` the last media of the previous page.
@@ -1065,6 +1135,25 @@ fn page_after(order: Vec<String>, after: Option<&str>, limit: usize) -> Vec<Stri
         },
     };
     order.into_iter().skip(start).take(limit).collect()
+}
+
+/// Whether a failed embedding is about the media alone: its file was recognised as
+/// an image and cannot be decoded. Any other failure may come from the storage or
+/// the model, which a pass must not charge to every media it tries.
+pub fn is_undecodable_media(error: &RsError) -> bool {
+    use image::error::{ImageError, ImageFormatHint};
+    let image_error = match error {
+        RsError::Image(error) => error,
+        RsError::RsImage(image_tools::ImageError::RsImageError(error)) => error,
+        RsError::HeifErrorCode(_) => return true,
+        _ => return false,
+    };
+    // Data of no known format may just as well be an empty or a cut read.
+    match image_error {
+        ImageError::Decoding(error) => error.format_hint() != ImageFormatHint::Unknown,
+        ImageError::Unsupported(error) => error.format_hint() != ImageFormatHint::Unknown,
+        _ => false,
+    }
 }
 
 /// Milliseconds since the epoch, the unit of the embedding failure timestamps.
@@ -1203,6 +1292,66 @@ mod tests {
             0.5,
         );
         assert_eq!(tied, strings(&["x", "y", "z"]));
+    }
+
+    #[test]
+    fn a_video_has_a_frame_for_each_four_seconds_it_starts() {
+        for (duration, frames) in [
+            (0.0, 1),
+            (0.59, 1),
+            (2.575, 1),
+            (3.99, 1),
+            (4.0, 2),
+            (7.99, 2),
+            (9.255, 3),
+            (26.3, 7),
+            (27.99, 7),
+            (28.0, 8),
+            (30_903.0, 8),
+            (f64::INFINITY, 8),
+            (f64::NAN, 1),
+            (-1.0, 1),
+        ] {
+            assert_eq!(video_frame_count(duration), frames, "{duration} s");
+        }
+    }
+
+    #[test]
+    fn only_a_recognised_file_that_cannot_be_decoded_is_about_the_media() {
+        use image::error::{
+            DecodingError, ImageError, ImageFormatHint, UnsupportedError, UnsupportedErrorKind,
+        };
+        let unsupported = |format: ImageFormatHint| {
+            ImageError::Unsupported(UnsupportedError::from_format_and_kind(
+                format,
+                UnsupportedErrorKind::GenericFeature("unknown photometric interpretation".into()),
+            ))
+        };
+        let tiff = ImageFormatHint::Exact(image::ImageFormat::Tiff);
+
+        // A raw photo in a TIFF container: read fine, refused by the decoder.
+        assert!(is_undecodable_media(&RsError::Image(unsupported(
+            tiff.clone()
+        ))));
+        assert!(is_undecodable_media(&RsError::Image(ImageError::Decoding(
+            DecodingError::new(tiff.clone(), "broken strip")
+        ))));
+        assert!(is_undecodable_media(&RsError::RsImage(
+            image_tools::ImageError::RsImageError(unsupported(tiff))
+        )));
+        assert!(is_undecodable_media(&RsError::HeifErrorCode(2)));
+
+        // Nothing recognisable was read: the storage may have given nothing.
+        assert!(!is_undecodable_media(&RsError::Image(unsupported(
+            ImageFormatHint::Unknown
+        ))));
+        let unreadable = std::io::Error::new(std::io::ErrorKind::NotFound, "gone");
+        assert!(!is_undecodable_media(&RsError::Image(ImageError::IoError(
+            unreadable
+        ))));
+        assert!(!is_undecodable_media(&RsError::Error(
+            "embedding model error".to_string()
+        )));
     }
 
     #[test]

@@ -317,13 +317,22 @@ pub async fn resize_image_reader(
     Ok(data)
 }
 
-pub async fn resize_image_reader_native(
-    mut reader: AsyncReadPinBox,
+/// The image [`resize_image_reader`] encodes, before it is encoded.
+pub async fn resize_image_reader_to_image(
+    reader: AsyncReadPinBox,
     size: u32,
-    format: ImageFormat,
-    quality: Option<u16>,
-    fast: bool,
-) -> RsResult<Vec<u8>> {
+) -> RsResult<DynamicImage> {
+    let config = get_config().await;
+
+    if config.imagesUseIm {
+        let data = resize_image_reader_im(reader, size).await?;
+        Ok(tokio::task::spawn_blocking(move || image::load_from_memory(&data)).await??)
+    } else {
+        Ok(resized_image_native(reader, size).await?.image)
+    }
+}
+
+async fn resized_image_native(mut reader: AsyncReadPinBox, size: u32) -> RsResult<ImageAndProfile> {
     let mut image = reader_to_image(&mut reader).await?;
     let width = image.image.width();
     let height = image.image.height();
@@ -333,6 +342,17 @@ pub async fn resize_image_reader_native(
     }
     let scaled = resize(image.image, size).await?;
     image.image = scaled;
+    Ok(image)
+}
+
+pub async fn resize_image_reader_native(
+    reader: AsyncReadPinBox,
+    size: u32,
+    format: ImageFormat,
+    quality: Option<u16>,
+    fast: bool,
+) -> RsResult<Vec<u8>> {
+    let image = resized_image_native(reader, size).await?;
     tokio::task::spawn_blocking(move || save_image_native(image, format, quality, fast)).await?
 }
 
@@ -362,6 +382,18 @@ pub async fn convert_image_reader(
         convert_image_reader_native(reader, format, quality, fast).await
     };
     data
+}
+
+/// The image [`convert_image_reader`] encodes, before it is encoded.
+pub async fn decode_image_reader(mut reader: AsyncReadPinBox) -> RsResult<DynamicImage> {
+    let config = get_config().await;
+
+    if config.imagesUseIm {
+        let data = convert_image_reader_im(reader, ImageFormat::Png, None, true).await?;
+        Ok(tokio::task::spawn_blocking(move || image::load_from_memory(&data)).await??)
+    } else {
+        Ok(reader_to_image(&mut reader).await?.image)
+    }
 }
 
 pub async fn convert_image_reader_im(
@@ -663,5 +695,59 @@ mod tests {
         let info = ImageCommandBuilder::new().infos(&mut file).await.unwrap();
         println!("INFOS: {:?}", info)
         //convert_to_pipe("C:/Users/arnau/Downloads/IMG_5020.mov", None).await;
+    }
+
+    fn reader(bytes: &[u8]) -> AsyncReadPinBox {
+        Box::pin(Cursor::new(bytes.to_vec()))
+    }
+
+    /// Media embeddings take the decoded image where they used to decode the PNG:
+    /// both must be the same pixels, or the stored vectors would change.
+    #[tokio::test]
+    async fn decoded_image_is_the_one_the_png_holds() {
+        let png = |image: DynamicImage| {
+            let mut png = Cursor::new(Vec::new());
+            image.write_to(&mut png, ImageFormat::Png).unwrap();
+            png.into_inner()
+        };
+        let colors = |width, height| {
+            DynamicImage::ImageRgb8(image::ImageBuffer::from_fn(width, height, |x, y| {
+                image::Rgb([(x * 2) as u8, (y * 3) as u8, (x + y) as u8])
+            }))
+        };
+        let mut sources: Vec<Vec<u8>> = ["face1.jpg", "image2.webp"]
+            .iter()
+            .map(|name| fs::read(format!("test_data/{name}")).unwrap())
+            .collect();
+        // What a thumbnail is stored as.
+        let thumbnail = ImageAndProfile {
+            image: colors(96, 64),
+            profile: None,
+        };
+        sources.push(save_image_native(thumbnail, ImageFormat::Avif, Some(50), true).unwrap());
+        // What FFmpeg writes for a frame of a 10-bit video.
+        sources.push(png(DynamicImage::ImageRgb16(image::ImageBuffer::from_fn(
+            640,
+            360,
+            |x, y| image::Rgb([(x * 100) as u16, (y * 180) as u16, ((x + y) * 65) as u16]),
+        ))));
+        // Tall enough to be cut to its top square before it is scaled.
+        sources.push(png(colors(60, 600)));
+
+        for source in &sources {
+            let encoded =
+                resize_image_reader_native(reader(source), 512, ImageFormat::Png, None, false)
+                    .await
+                    .unwrap();
+            let resized = resized_image_native(reader(source), 512).await.unwrap();
+            assert_eq!(image::load_from_memory(&encoded).unwrap(), resized.image);
+
+            let encoded = convert_image_reader_native(reader(source), ImageFormat::Png, None, true)
+                .await
+                .unwrap();
+            let mut source = reader(source);
+            let decoded = reader_to_image(&mut source).await.unwrap();
+            assert_eq!(image::load_from_memory(&encoded).unwrap(), decoded.image);
+        }
     }
 }
