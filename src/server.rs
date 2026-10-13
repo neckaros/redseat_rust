@@ -40,6 +40,8 @@ const ENV_NOCERT: &str = "REDSEAT_NOCERT";
 const ENV_SIGNALING_URL: &str = "REDSEAT_SIGNALING_URL";
 const ENV_PORT_FORWARDED: &str = "REDSEAT_PORT_FORWARDED";
 const ENV_LAN_IPS: &str = "REDSEAT_LAN_IPS";
+const ENV_EMBEDDINGS_CPU: &str = "REDSEAT_EMBEDDINGS_CPU";
+const ENV_EMBEDDINGS_THREADS: &str = "REDSEAT_EMBEDDINGS_THREADS";
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ServerConfig {
     pub id: Option<String>,
@@ -103,6 +105,22 @@ impl ServerConfig {
         self.get_explicit_exposed_port()
             .unwrap_or_else(|| self.get_port())
     }
+}
+
+/// Media embeddings stay on the CPU, even in a build that can use the GPU.
+pub fn embeddings_on_cpu() -> bool {
+    env::var(ENV_EMBEDDINGS_CPU)
+        .ok()
+        .and_then(|val| val.parse::<bool>().ok())
+        .unwrap_or(false)
+}
+
+/// Threads of the embedding model on the CPU, when its default is not wanted.
+pub fn embeddings_threads() -> Option<usize> {
+    env::var(ENV_EMBEDDINGS_THREADS)
+        .ok()
+        .and_then(|val| val.parse::<usize>().ok())
+        .filter(|threads| *threads > 0)
 }
 
 #[derive(Parser, Debug, Default)]

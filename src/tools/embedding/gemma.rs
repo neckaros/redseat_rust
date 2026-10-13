@@ -1,7 +1,11 @@
-//! EmbeddingGemma 2 (`onnx-community/embeddinggemma-2-ONNX`), q4 weights, on CPU.
+//! EmbeddingGemma 2 (`onnx-community/embeddinggemma-2-ONNX`), q4 weights.
 //!
 //! An image goes through the vision encoder, whose features are then spliced into
 //! the text backbone in place of image tokens. A text query only needs the backbone.
+//!
+//! Text queries run on the CPU. Images run on the GPU when ONNX Runtime was built
+//! with its WebGPU provider and the GPU works, else on the CPU. Both give the same
+//! vectors, see `docs/EMBEDDINGS.md`.
 
 use std::{
     path::{Path, PathBuf},
@@ -11,15 +15,19 @@ use std::{
 use futures::StreamExt;
 use image::imageops::FilterType;
 use ort::{
+    ep::{self, ExecutionProvider},
     memory::Allocator,
     session::{builder::GraphOptimizationLevel, Session},
-    value::Tensor,
+    value::{Tensor, TensorRef},
 };
 use sha2::{Digest, Sha256};
 use tokenizers::Tokenizer;
 use tokio::io::AsyncWriteExt;
 
-use super::{l2_normalize, Embedder, EmbedderSpec, EmbeddingError, EmbeddingResult};
+use super::{
+    l2_normalize, Embedder, EmbedderOptions, EmbedderSpec, EmbeddingDevice, EmbeddingError,
+    EmbeddingResult, Report,
+};
 
 /// Vision tokens per image. Part of the embedder id: another budget is another space.
 pub const TOKEN_BUDGET: u32 = 140;
@@ -251,18 +259,74 @@ pub fn image_token_ids(tokens: usize) -> Vec<i64> {
 pub struct EmbeddingGemma {
     directory: PathBuf,
     threads: usize,
+    device: EmbeddingDevice,
+    report: Report,
     tokenizer: Tokenizer,
+    /// On the CPU, so a text query never waits for the GPU. Also takes the image
+    /// features when the vision encoder runs on the CPU.
     backbone: Mutex<Session>,
-    /// About 2.7 s per image and several hundred MB: loaded on first image,
-    /// dropped by `release_image_resources` once a batch is over.
-    vision: Mutex<Option<Session>>,
+    image: Mutex<ImageSide>,
 }
 
-fn load_session(path: PathBuf, threads: usize) -> EmbeddingResult<Session> {
-    Ok(Session::builder()?
+/// What only images need. The vision encoder is most of the time of an image and
+/// several hundred MB: loaded on first image, dropped by `release_image_resources`
+/// once a batch is over.
+#[derive(Default)]
+struct ImageSide {
+    sessions: Option<ImageSessions>,
+    /// The GPU failed to load or to run: the CPU is used until the release.
+    gpu_failed: bool,
+}
+
+struct ImageSessions {
+    vision: Session,
+    /// A second backbone beside the vision encoder when that one is on the GPU.
+    /// `None` on the CPU, where images go through the backbone of the text queries.
+    gpu_backbone: Option<Session>,
+}
+
+/// The library the GPU provider of ONNX Runtime lives in, on Windows.
+const GPU_LIBRARY: &str = "webgpu_dawn.dll";
+
+/// Whether the ONNX Runtime of this build can run a graph on the GPU, and the
+/// library it needs for that is there.
+pub fn gpu_supported() -> bool {
+    gpu_built_in() && gpu_library_present()
+}
+
+fn gpu_built_in() -> bool {
+    ep::WebGPU::default().is_available().unwrap_or(false)
+}
+
+/// The server links the GPU library so that Windows loads it on first use, not at
+/// startup (see `build.rs`): it starts without it. Using the GPU without it would
+/// end the process, so the library is loaded here first, where failing is an answer.
+#[cfg(windows)]
+fn gpu_library_present() -> bool {
+    extern "system" {
+        fn LoadLibraryW(name: *const u16) -> *mut std::ffi::c_void;
+    }
+    let name: Vec<u16> = GPU_LIBRARY.encode_utf16().chain([0]).collect();
+    // SAFETY: `name` is a NUL-terminated UTF-16 string that outlives the call.
+    !unsafe { LoadLibraryW(name.as_ptr()) }.is_null()
+}
+
+/// Elsewhere the library is loaded with the program, which would not run without it.
+#[cfg(not(windows))]
+fn gpu_library_present() -> bool {
+    true
+}
+
+fn load_session(path: PathBuf, threads: usize, gpu: bool) -> EmbeddingResult<Session> {
+    let mut builder = Session::builder()?
         .with_optimization_level(GraphOptimizationLevel::Level3)?
-        .with_intra_threads(threads)?
-        .commit_from_file(path)?)
+        .with_intra_threads(threads)?;
+    if gpu {
+        // Fails instead of quietly leaving the graph on the CPU: the caller reports it.
+        builder =
+            builder.with_execution_providers([ep::WebGPU::default().build().error_on_failure()])?;
+    }
+    Ok(builder.commit_from_file(path)?)
 }
 
 /// `[rows, FEATURE_SIZE]` tensor. `Tensor::from_array` refuses a zero-length
@@ -280,86 +344,166 @@ fn poisoned<T>(_: T) -> EmbeddingError {
     EmbeddingError::Model("embedding session lock poisoned".to_string())
 }
 
+/// The output of the vision encoder for one image: `[tokens, FEATURE_SIZE]`.
+fn image_features(vision: &mut Session, patches: &ImagePatches) -> EmbeddingResult<Vec<f32>> {
+    let patch_values = (PATCH_SIZE * PATCH_SIZE * 3) as usize;
+    let pixel_values =
+        TensorRef::from_array_view(([1, patches.count, patch_values], patches.pixels.as_slice()))?;
+    let position_ids =
+        TensorRef::from_array_view(([1, patches.count, 2], patches.positions.as_slice()))?;
+    let outputs = vision.run(ort::inputs![
+        "pixel_values" => pixel_values,
+        "pixel_position_ids" => position_ids,
+    ])?;
+    let (_, features) = outputs["image_features"].try_extract_tensor::<f32>()?;
+    Ok(features.to_vec())
+}
+
+/// The output of the backbone for one sequence, as the graph gives it.
+fn sentence_embedding(
+    backbone: &mut Session,
+    input_ids: Vec<i64>,
+    image_features: Vec<f32>,
+) -> EmbeddingResult<Vec<f32>> {
+    let length = input_ids.len();
+    let attention_mask = Tensor::from_array(([1, length], vec![1i64; length]))?;
+    let input_ids = Tensor::from_array(([1, length], input_ids))?;
+    let image_features = features_tensor(image_features)?;
+    // The graph requires the video and audio inputs even when there is nothing in them.
+    let video_features = features_tensor(Vec::new())?;
+    let audio_features = features_tensor(Vec::new())?;
+
+    let outputs = backbone.run(ort::inputs![
+        "input_ids" => input_ids,
+        "attention_mask" => attention_mask,
+        "image_features" => image_features,
+        "video_features" => video_features,
+        "audio_features" => audio_features,
+    ])?;
+    let (_, embedding) = outputs["sentence_embedding"].try_extract_tensor::<f32>()?;
+    Ok(embedding.to_vec())
+}
+
+/// Checks and L2-normalises what the backbone returned.
+fn normalized(mut embedding: Vec<f32>) -> EmbeddingResult<Vec<f32>> {
+    if embedding.len() != SPEC.dimension {
+        return Err(EmbeddingError::Model(format!(
+            "unexpected embedding length {}",
+            embedding.len()
+        )));
+    }
+    l2_normalize(&mut embedding);
+    if embedding.iter().any(|value| !value.is_finite()) {
+        return Err(EmbeddingError::Model(
+            "embedding contains non-finite values".to_string(),
+        ));
+    }
+    Ok(embedding)
+}
+
 impl EmbeddingGemma {
     /// Loads the tokenizer and the backbone. Blocking.
-    pub fn load(directory: &Path, threads: usize) -> EmbeddingResult<Self> {
+    pub fn load(
+        directory: &Path,
+        options: EmbedderOptions,
+        report: Report,
+    ) -> EmbeddingResult<Self> {
+        let threads = options.threads.unwrap_or_else(default_threads);
         let tokenizer = Tokenizer::from_file(directory.join(TOKENIZER_FILE))
             .map_err(|error| EmbeddingError::Tokenizer(error.to_string()))?;
-        let backbone = load_session(directory.join(BACKBONE_FILE), threads)?;
+        let backbone = load_session(directory.join(BACKBONE_FILE), threads, false)?;
         Ok(Self {
             directory: directory.to_path_buf(),
             threads,
+            device: options.device,
+            report,
             tokenizer,
             backbone: Mutex::new(backbone),
-            vision: Mutex::new(None),
+            image: Mutex::new(ImageSide::default()),
         })
     }
 
-    /// The vision encoder, loaded if it is not in memory.
-    fn vision_session<'a>(
-        &self,
-        vision: &'a mut Option<Session>,
-    ) -> EmbeddingResult<&'a mut Session> {
-        Ok(match vision {
-            Some(session) => session,
-            empty => empty.insert(load_session(
-                self.directory.join(VISION_FILE),
+    fn load_image_sessions(&self, gpu: bool) -> EmbeddingResult<ImageSessions> {
+        let vision = load_session(self.directory.join(VISION_FILE), self.threads, gpu)?;
+        let gpu_backbone = if gpu {
+            Some(load_session(
+                self.directory.join(BACKBONE_FILE),
                 self.threads,
-            )?),
+                true,
+            )?)
+        } else {
+            None
+        };
+        Ok(ImageSessions {
+            vision,
+            gpu_backbone,
         })
     }
 
-    fn image_features(&self, patches: ImagePatches) -> EmbeddingResult<Vec<f32>> {
-        let patch_values = (PATCH_SIZE * PATCH_SIZE * 3) as usize;
-        let pixel_values = Tensor::from_array(([1, patches.count, patch_values], patches.pixels))?;
-        let position_ids = Tensor::from_array(([1, patches.count, 2], patches.positions))?;
-
-        let mut vision = self.vision.lock().map_err(poisoned)?;
-        let session = self.vision_session(&mut vision)?;
-        let outputs = session.run(ort::inputs![
-            "pixel_values" => pixel_values,
-            "pixel_position_ids" => position_ids,
-        ])?;
-        let (_, features) = outputs["image_features"].try_extract_tensor::<f32>()?;
-        Ok(features.to_vec())
+    /// The image sessions, loaded if they are not in memory: on the GPU when it is
+    /// allowed and works, else on the CPU.
+    fn image_sessions<'a>(
+        &self,
+        side: &'a mut ImageSide,
+    ) -> EmbeddingResult<&'a mut ImageSessions> {
+        let ImageSide {
+            sessions,
+            gpu_failed,
+        } = side;
+        Ok(match sessions {
+            Some(sessions) => sessions,
+            empty => {
+                let mut loaded = None;
+                if self.device == EmbeddingDevice::Auto && !*gpu_failed && gpu_built_in() {
+                    let sessions = if gpu_library_present() {
+                        self.load_image_sessions(true)
+                    } else {
+                        Err(EmbeddingError::Model(format!("{GPU_LIBRARY} is missing")))
+                    };
+                    match sessions {
+                        Ok(sessions) => {
+                            (self.report)("Embedding images on the GPU".to_string());
+                            loaded = Some(sessions);
+                        }
+                        Err(error) => {
+                            *gpu_failed = true;
+                            (self.report)(format!(
+                                "Unable to embed images on the GPU, using the CPU: {error}"
+                            ));
+                        }
+                    }
+                }
+                empty.insert(match loaded {
+                    Some(sessions) => sessions,
+                    None => {
+                        let sessions = self.load_image_sessions(false)?;
+                        (self.report)(format!(
+                            "Embedding images on the CPU, {} threads",
+                            self.threads
+                        ));
+                        sessions
+                    }
+                })
+            }
+        })
     }
 
-    fn sentence_embedding(
+    /// One image through the vision encoder then the backbone, on the loaded sessions.
+    fn image_embedding(
         &self,
-        input_ids: Vec<i64>,
-        image_features: Vec<f32>,
+        side: &mut ImageSide,
+        patches: &ImagePatches,
     ) -> EmbeddingResult<Vec<f32>> {
-        let length = input_ids.len();
-        let attention_mask = Tensor::from_array(([1, length], vec![1i64; length]))?;
-        let input_ids = Tensor::from_array(([1, length], input_ids))?;
-        let image_features = features_tensor(image_features)?;
-        // The graph requires the video and audio inputs even when there is nothing in them.
-        let video_features = features_tensor(Vec::new())?;
-        let audio_features = features_tensor(Vec::new())?;
-
-        let mut session = self.backbone.lock().map_err(poisoned)?;
-        let outputs = session.run(ort::inputs![
-            "input_ids" => input_ids,
-            "attention_mask" => attention_mask,
-            "image_features" => image_features,
-            "video_features" => video_features,
-            "audio_features" => audio_features,
-        ])?;
-        let (_, embedding) = outputs["sentence_embedding"].try_extract_tensor::<f32>()?;
-        if embedding.len() != SPEC.dimension {
-            return Err(EmbeddingError::Model(format!(
-                "unexpected embedding length {}",
-                embedding.len()
-            )));
+        let sessions = self.image_sessions(side)?;
+        let features = image_features(&mut sessions.vision, patches)?;
+        let input_ids = image_token_ids(features.len() / FEATURE_SIZE);
+        match &mut sessions.gpu_backbone {
+            Some(backbone) => sentence_embedding(backbone, input_ids, features),
+            None => {
+                let mut backbone = self.backbone.lock().map_err(poisoned)?;
+                sentence_embedding(&mut backbone, input_ids, features)
+            }
         }
-        let mut embedding = embedding.to_vec();
-        l2_normalize(&mut embedding);
-        if embedding.iter().any(|value| !value.is_finite()) {
-            return Err(EmbeddingError::Model(
-                "embedding contains non-finite values".to_string(),
-            ));
-        }
-        Ok(embedding)
     }
 }
 
@@ -368,11 +512,26 @@ impl Embedder for EmbeddingGemma {
         &SPEC
     }
 
-    fn embed_image(&self, bytes: &[u8]) -> EmbeddingResult<Vec<f32>> {
-        let image = image::load_from_memory(bytes)?;
-        let features = self.image_features(image_patches(&image, TOKEN_BUDGET))?;
-        let tokens = features.len() / FEATURE_SIZE;
-        self.sentence_embedding(image_token_ids(tokens), features)
+    fn embed_decoded_image(&self, image: &image::DynamicImage) -> EmbeddingResult<Vec<f32>> {
+        let patches = image_patches(image, TOKEN_BUDGET);
+        let mut side = self.image.lock().map_err(poisoned)?;
+        let on_gpu = self.image_sessions(&mut side)?.gpu_backbone.is_some();
+        let embedding = match self.image_embedding(&mut side, &patches) {
+            // A GPU that is lost or out of memory says nothing about the image: it
+            // goes through the CPU, as do the next ones until the release.
+            Err(error) if on_gpu => {
+                (self.report)(format!(
+                    "Embedding on the GPU failed, using the CPU for now: {error}"
+                ));
+                *side = ImageSide {
+                    sessions: None,
+                    gpu_failed: true,
+                };
+                self.image_embedding(&mut side, &patches)
+            }
+            result => result,
+        }?;
+        normalized(embedding)
     }
 
     fn embed_text(&self, query: &str) -> EmbeddingResult<Vec<f32>> {
@@ -382,18 +541,20 @@ impl Embedder for EmbeddingGemma {
             .encode(format!("{QUERY_PREFIX}{query}"), true)
             .map_err(|error| EmbeddingError::Tokenizer(error.to_string()))?;
         let input_ids = encoding.get_ids().iter().map(|id| i64::from(*id)).collect();
-        self.sentence_embedding(input_ids, Vec::new())
+        let mut backbone = self.backbone.lock().map_err(poisoned)?;
+        normalized(sentence_embedding(&mut backbone, input_ids, Vec::new())?)
     }
 
     fn prepare_image_resources(&self) -> EmbeddingResult<()> {
-        let mut vision = self.vision.lock().map_err(poisoned)?;
-        self.vision_session(&mut vision)?;
+        let mut side = self.image.lock().map_err(poisoned)?;
+        self.image_sessions(&mut side)?;
         Ok(())
     }
 
     fn release_image_resources(&self) {
-        if let Ok(mut vision) = self.vision.lock() {
-            *vision = None;
+        if let Ok(mut side) = self.image.lock() {
+            // The GPU gets another chance at the next batch.
+            *side = ImageSide::default();
         }
     }
 }
@@ -453,6 +614,15 @@ mod tests {
 
     fn cosine(a: &[f32], b: &[f32]) -> f32 {
         a.iter().zip(b).map(|(a, b)| a * b).sum()
+    }
+
+    fn load_embedder(directory: &Path, device: EmbeddingDevice) -> EmbeddingGemma {
+        let options = EmbedderOptions {
+            device,
+            threads: None,
+        };
+        let report: Report = std::sync::Arc::new(|message| println!("{message}"));
+        EmbeddingGemma::load(directory, options, report).unwrap()
     }
 
     fn test_model_directory() -> PathBuf {
@@ -537,7 +707,7 @@ mod tests {
             .collect();
         paths.sort();
 
-        let embedder = EmbeddingGemma::load(&directory, default_threads()).unwrap();
+        let embedder = load_embedder(&directory, EmbeddingDevice::Auto);
         let images: Vec<Vec<f32>> = paths
             .iter()
             .map(|path| embedder.embed_image(&std::fs::read(path).unwrap()).unwrap())
@@ -704,7 +874,7 @@ mod tests {
         .await
         .unwrap();
 
-        let embedder = EmbeddingGemma::load(&directory, default_threads()).unwrap();
+        let embedder = load_embedder(&directory, EmbeddingDevice::Auto);
         let started = std::time::Instant::now();
         let image = embedder.embed_image(&image).unwrap();
         println!("image embedded in {:?}", started.elapsed());
@@ -747,7 +917,75 @@ mod tests {
         }
 
         embedder.release_image_resources();
-        assert!(embedder.vision.lock().unwrap().is_none());
+        assert!(embedder.image.lock().unwrap().sessions.is_none());
+    }
+
+    /// The GPU and the CPU must give the same stored vectors: they share an embedder
+    /// id. Embeds the images of `test_data` on both and compares what would be stored.
+    /// Passes without comparing anything when this build has no GPU support.
+    /// Run with `cargo test --features gpu --bin redseat-rust embeddinggemma_gpu_matches_cpu -- --ignored --nocapture`.
+    #[tokio::test]
+    #[ignore = "downloads the EmbeddingGemma 2 model and needs a GPU"]
+    async fn embeddinggemma_gpu_matches_cpu() {
+        let directory = test_model_directory();
+        ensure_files(&directory, &|message| println!("{message}"))
+            .await
+            .unwrap();
+        if !gpu_supported() {
+            println!("this build has no GPU support, nothing to compare");
+            return;
+        }
+        let gpu = load_embedder(&directory, EmbeddingDevice::Auto);
+        let cpu = load_embedder(&directory, EmbeddingDevice::Cpu);
+        gpu.prepare_image_resources().unwrap();
+        let on_gpu = |embedder: &EmbeddingGemma| {
+            let side = embedder.image.lock().unwrap();
+            side.sessions
+                .as_ref()
+                .is_some_and(|sessions| sessions.gpu_backbone.is_some())
+        };
+        assert!(on_gpu(&gpu), "the GPU could not be used");
+
+        let images = Path::new(env!("CARGO_MANIFEST_DIR")).join("test_data");
+        // Three shapes, so three numbers of patches.
+        for name in ["face1.jpg", "face2.webp", "image-thumb.jpg", "image2.webp"] {
+            let image = image::open(images.join(name)).unwrap();
+            let started = std::time::Instant::now();
+            let from_gpu = gpu.embed_decoded_image(&image).unwrap();
+            let gpu_time = started.elapsed();
+            let started = std::time::Instant::now();
+            let from_cpu = cpu.embed_decoded_image(&image).unwrap();
+            let cpu_time = started.elapsed();
+
+            let stored_gpu = quantize(&from_gpu, SPEC.quantization_scale);
+            let stored_cpu = quantize(&from_cpu, SPEC.quantization_scale);
+            let differing = stored_gpu
+                .iter()
+                .zip(&stored_cpu)
+                .filter(|(a, b)| a != b)
+                .count();
+            let largest = stored_gpu
+                .iter()
+                .zip(&stored_cpu)
+                .map(|(a, b)| (i16::from(*a) - i16::from(*b)).abs())
+                .max()
+                .unwrap();
+            let score = integer_cosine(
+                &stored_gpu[..SPEC.search_dimension],
+                &stored_cpu[..SPEC.search_dimension],
+            );
+            println!(
+                "{name}: gpu {gpu_time:?}, cpu {cpu_time:?}, float cosine {:.6}, {differing} of {} stored values differ (by at most {largest}), search score {score:.5}",
+                cosine(&from_gpu, &from_cpu),
+                SPEC.dimension
+            );
+            // Rounding to int8 may move a value that sits on a boundary by one step.
+            assert!(largest <= 1);
+            assert!(differing <= SPEC.dimension / 100);
+            assert!(score > 0.9999);
+        }
+        assert!(on_gpu(&gpu), "the GPU was given up on while embedding");
+        assert!(!on_gpu(&cpu));
     }
 
     #[derive(serde::Deserialize)]
@@ -776,7 +1014,7 @@ mod tests {
         let images: Vec<CaptionedImage> =
             serde_json::from_slice(&std::fs::read(captions).unwrap()).unwrap();
 
-        let embedder = EmbeddingGemma::load(&directory, default_threads()).unwrap();
+        let embedder = load_embedder(&directory, EmbeddingDevice::Auto);
         let mut index = VectorIndex::new(SPEC.search_dimension);
         for image in &images {
             let bytes = std::fs::read(images_directory.join(&image.file)).unwrap();

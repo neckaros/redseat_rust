@@ -15,4 +15,16 @@ fn main() {
                 )
             });
     }
+
+    // The ONNX Runtime of the `gpu` feature comes with a library of its own. Loaded
+    // on first use rather than at startup, the server starts without it and embeds
+    // on the CPU: see `gpu_library_present` in src/tools/embedding/gemma.rs.
+    let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+    if std::env::var_os("CARGO_FEATURE_GPU").is_some()
+        && target_os == "windows"
+        && target_env == "msvc"
+    {
+        println!("cargo:rustc-link-arg-bin=redseat-rust=/DELAYLOAD:webgpu_dawn.dll");
+        println!("cargo:rustc-link-arg-bin=redseat-rust=delayimp.lib");
+    }
 }
