@@ -135,6 +135,8 @@ impl SqliteLibraryStore {
     ///
     /// A media that failed is offered again until it reaches `max_attempts`, but
     /// not before `retry_failed_before` (ms), so one pass tries it at most once.
+    /// It comes after the medias that never failed: a pass that stops on failures
+    /// in a row must not stop on its retries, with new medias waiting behind them.
     pub async fn get_medias_pending_embedding(
         &self,
         embedder: String,
@@ -148,7 +150,9 @@ impl SqliteLibraryStore {
             .call(move |conn| {
                 let mut stmt = conn.prepare(&format!(
                     "SELECT m.id FROM medias m WHERE {}
-                     ORDER BY m.added DESC, m.id LIMIT ?4",
+                     ORDER BY EXISTS (SELECT 1 FROM media_embedding_errors f
+                            WHERE f.media_ref = m.id AND f.embedder = ?1),
+                        m.added DESC, m.id LIMIT ?4",
                     pending_filter()
                 ))?;
                 let rows = stmt.query_map(
@@ -511,6 +515,39 @@ mod tests {
             1
         );
         assert_eq!(pending(&store, i64::MAX).await, vec!["photo-2", "video-1"]);
+    }
+
+    #[tokio::test]
+    async fn a_media_that_failed_is_offered_after_the_others() {
+        let store = store_with_medias().await;
+        let queue = |limit| {
+            store.get_medias_pending_embedding(EMBEDDER.into(), MAX_ATTEMPTS, i64::MAX, limit)
+        };
+        let untouched = queue(10).await.unwrap();
+        assert_eq!(untouched.len(), 3);
+
+        // Whatever its place in the queue, a media that failed goes to the end.
+        for failed in &untouched {
+            store
+                .mark_media_embedding_error(failed.clone(), EMBEDDER.into(), "boom".into())
+                .await
+                .unwrap();
+            let offered = queue(10).await.unwrap();
+            assert_eq!(offered.len(), 3);
+            assert_eq!(offered.last(), Some(failed));
+            assert_ne!(queue(1).await.unwrap(), vec![failed.clone()]);
+            store
+                .clear_media_embedding_errors(EMBEDDER.into())
+                .await
+                .unwrap();
+        }
+
+        // A failure with another embedder does not move it.
+        store
+            .mark_media_embedding_error(untouched[0].clone(), "other/v1".into(), "boom".into())
+            .await
+            .unwrap();
+        assert_eq!(queue(10).await.unwrap(), untouched);
     }
 
     #[tokio::test]

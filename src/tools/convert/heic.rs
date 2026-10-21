@@ -141,7 +141,10 @@ pub fn read_heic_file_to_image(heif_data: &[u8]) -> RsResult<ImageAndProfile> {
     let height = unsafe { lh::heif_image_handle_get_height(handle.0) };
 
     // Pass the raw pointer, careful not to double-free in helper if it took ownership (helper does not take ownership of handle)
-    let infos = heic_get_color_profile(handle.0)?;
+    // A picture with no colour profile, or one that cannot be read, is still a picture.
+    let profile = heic_get_color_profile(handle.0)
+        .ok()
+        .and_then(|infos| infos.1);
 
     let mut image_ptr = ptr::null_mut();
     let options = unsafe { lh::heif_decoding_options_alloc() };
@@ -199,7 +202,7 @@ pub fn read_heic_file_to_image(heif_data: &[u8]) -> RsResult<ImageAndProfile> {
 
     Ok(ImageAndProfile {
         image: DynamicImage::from(image_buf),
-        profile: infos.1,
+        profile,
     })
 }
 
@@ -306,8 +309,9 @@ fn heic_get_color_profile(
                 let profile_data =
                     unsafe { slice::from_raw_parts(buffer_ptr as *const u8, BUFFER_SIZE) };
                 //println!("First 10 bytes of raw color profile: {:?}", &profile_data[..10]);
-                let name = extract_icc_profile_name(profile_data)?;
-                Ok((Some(name), Some(profile_data.to_vec())))
+                // The profile is kept even when its name cannot be read.
+                let name = extract_icc_profile_name(profile_data).ok();
+                Ok((name, Some(profile_data.to_vec())))
             } else {
                 Err(RsError::Error(format!(
                     "Error retrieving raw color profile: {:?}/{:?} : {:?}",
@@ -321,85 +325,132 @@ fn heic_get_color_profile(
     }
 }
 
+/// The description of an ICC profile ("Display P3", "sRGB IEC61966-2.1"...), read
+/// from its `desc` tag: a `mluc` record in a version 4 profile, plain ASCII in a
+/// version 2 one. Every read is checked: profiles come from files.
 fn extract_icc_profile_name(raw_profile: &[u8]) -> RsResult<String> {
-    // Ensure the profile is large enough to contain the ICC header
-    if raw_profile.len() < 128 {
-        return Err(RsError::Error("Invalid ICC profile: too small".to_string()));
-    }
+    let invalid = |what: &str| RsError::Error(format!("Invalid ICC profile: {what}"));
+    let number = |data: &[u8], at: usize| -> Option<usize> {
+        let bytes: [u8; 4] = data.get(at..at.checked_add(4)?)?.try_into().ok()?;
+        Some(u32::from_be_bytes(bytes) as usize)
+    };
+    let slice = |data: &'_ [u8], from: usize, length: usize| -> Option<Vec<u8>> {
+        Some(data.get(from..from.checked_add(length)?)?.to_vec())
+    };
 
-    // Read the number of tags from the tag table
-    let tag_count_offset = 128; // Offset where the tag table starts
-    if raw_profile.len() < tag_count_offset + 4 {
-        return Err(RsError::Error(
-            "Invalid ICC profile: no tag table".to_string(),
-        ));
-    }
-    let bytes: [u8; 4] = raw_profile[tag_count_offset..tag_count_offset + 4].try_into()?;
-    let tag_count = u32::from_be_bytes(bytes);
-
-    // Parse each tag to find the "desc" tag
-    let mut tag_table_offset = tag_count_offset + 4;
-    for _ in 0..tag_count {
-        if raw_profile.len() < tag_table_offset + 12 {
-            return Err(RsError::Error(
-                "Invalid ICC profile: malformed tag table".to_string(),
-            ));
+    // The tag table follows the 128 bytes of header: a count, then 12 bytes a tag
+    // (signature, offset, size).
+    let tag_count = number(raw_profile, 128).ok_or_else(|| invalid("no tag table"))?;
+    for tag in 0..tag_count {
+        let malformed = || invalid("malformed tag table");
+        let entry = tag
+            .checked_mul(12)
+            .and_then(|offset| offset.checked_add(132))
+            .ok_or_else(malformed)?;
+        let signature = slice(raw_profile, entry, 4).ok_or_else(malformed)?;
+        if signature != b"desc" {
+            continue;
         }
+        let offset = number(raw_profile, entry + 4).ok_or_else(malformed)?;
+        let size = number(raw_profile, entry + 8).ok_or_else(malformed)?;
+        let desc =
+            slice(raw_profile, offset, size).ok_or_else(|| invalid("desc tag out of bounds"))?;
+        let text_out_of_bounds = || invalid("desc text out of bounds");
 
-        // Read the tag signature, offset, and size
-        let tag_signature = &raw_profile[tag_table_offset..tag_table_offset + 4];
-        let tag_offset =
-            u32::from_be_bytes(raw_profile[tag_table_offset + 4..tag_table_offset + 8].try_into()?)
-                as usize;
-        let tag_size = u32::from_be_bytes(
-            raw_profile[tag_table_offset + 8..tag_table_offset + 12].try_into()?,
-        ) as usize;
-
-        // Check if this is the "desc" tag
-        if tag_signature == b"desc" {
-            if raw_profile.len() < tag_offset + tag_size {
-                return Err(RsError::Error(
-                    "Invalid ICC profile: desc tag out of bounds".to_string(),
-                ));
+        return match desc.get(..4) {
+            // Records of 12 bytes from byte 16, the first one read: its text is
+            // UTF-16BE, its place counted from the start of the tag.
+            Some(b"mluc") => {
+                let length = number(&desc, 20).ok_or_else(text_out_of_bounds)?;
+                let start = number(&desc, 24).ok_or_else(text_out_of_bounds)?;
+                let text = slice(&desc, start, length).ok_or_else(text_out_of_bounds)?;
+                let units: Vec<u16> = text
+                    .chunks_exact(2)
+                    .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+                    .collect();
+                String::from_utf16(&units).map_err(|_| invalid("desc text is not UTF-16"))
             }
-
-            // Parse the "desc" tag
-            let desc_data = &raw_profile[tag_offset..tag_offset + tag_size];
-            if desc_data.len() < 8 {
-                return Err(RsError::Error(
-                    "Invalid ICC profile: malformed desc tag".to_string(),
-                ));
+            // ASCII from byte 12, its length counting the NUL that ends it.
+            Some(b"desc") => {
+                let length = number(&desc, 8).ok_or_else(text_out_of_bounds)?;
+                let text = slice(&desc, 12, length).ok_or_else(text_out_of_bounds)?;
+                Ok(String::from_utf8_lossy(&text)
+                    .trim_end_matches('\0')
+                    .to_string())
             }
-
-            // Read the length of the description string
-            let first_name_length = u32::from_be_bytes(desc_data[20..24].try_into()?) as usize;
-
-            // Read the length of the description string
-            let first_name_offset = u32::from_be_bytes(desc_data[24..28].try_into()?) as usize;
-
-            // Extract the UTF-16BE string and convert it to UTF-8
-            let utf16_data = &desc_data[first_name_offset..first_name_offset + first_name_length];
-            let utf16_string: Vec<u16> = utf16_data
-                .chunks(2)
-                .map(|chunk| u16::from_be_bytes(chunk.try_into().unwrap_or_default()))
-                .collect();
-
-            return String::from_utf16(&utf16_string)
-                .map_err(|e| RsError::Error("Unable to convert icc profile utf16".to_string()));
-        }
-
-        // Move to the next tag
-        tag_table_offset += 12;
+            _ => Err(invalid("unknown type of desc tag")),
+        };
     }
 
-    return Err(RsError::Error(
-        "ICC profile does not contain a desc tag".to_string(),
-    ));
+    Err(invalid("no desc tag"))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::read_heic_file_to_image;
+    use super::{extract_icc_profile_name, read_heic_file_to_image};
+
+    /// An ICC profile reduced to what the name is read from: a header, one tag.
+    fn profile_with_desc(desc: &[u8]) -> Vec<u8> {
+        let mut profile = vec![0u8; 128];
+        profile.extend(1u32.to_be_bytes());
+        profile.extend(b"desc");
+        profile.extend(144u32.to_be_bytes());
+        profile.extend((desc.len() as u32).to_be_bytes());
+        profile.extend(desc);
+        profile
+    }
+
+    #[test]
+    fn reads_the_name_of_both_versions_of_icc_profile() {
+        // Version 2, as the front camera of an iPhone writes it.
+        let mut text = b"desc\0\0\0\0".to_vec();
+        text.extend(11u32.to_be_bytes());
+        text.extend(b"Display P3\0");
+        text.extend([0u8; 78]);
+        assert_eq!(
+            extract_icc_profile_name(&profile_with_desc(&text)).unwrap(),
+            "Display P3"
+        );
+
+        // Version 4: one record, its text 28 bytes into the tag.
+        let name: Vec<u8> = "sRGB".encode_utf16().flat_map(u16::to_be_bytes).collect();
+        let mut unicode = b"mluc\0\0\0\0".to_vec();
+        unicode.extend(1u32.to_be_bytes());
+        unicode.extend(12u32.to_be_bytes());
+        unicode.extend(b"enUS");
+        unicode.extend((name.len() as u32).to_be_bytes());
+        unicode.extend(28u32.to_be_bytes());
+        unicode.extend(&name);
+        assert_eq!(
+            extract_icc_profile_name(&profile_with_desc(&unicode)).unwrap(),
+            "sRGB"
+        );
+    }
+
+    #[test]
+    fn a_broken_icc_profile_is_an_error_not_a_panic() {
+        let mut text = b"desc\0\0\0\0".to_vec();
+        text.extend(11u32.to_be_bytes());
+        text.extend(b"Display P3\0");
+        let whole = profile_with_desc(&text);
+        // Cut anywhere, and with every length field pointing far outside.
+        for length in 0..whole.len() {
+            assert!(extract_icc_profile_name(&whole[..length]).is_err());
+        }
+        for field in [136, 140, 152] {
+            let mut broken = whole.clone();
+            broken[field..field + 4].copy_from_slice(&u32::MAX.to_be_bytes());
+            assert!(extract_icc_profile_name(&broken).is_err(), "field {field}");
+        }
+        // A count of tags that cannot be true does not hide the one that is there.
+        let mut counted = whole.clone();
+        counted[128..132].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert_eq!(extract_icc_profile_name(&counted).unwrap(), "Display P3");
+        // A version 2 text read as a version 4 record was the panic.
+        let mut unicode = text.clone();
+        unicode[..4].copy_from_slice(b"mluc");
+        assert!(extract_icc_profile_name(&profile_with_desc(&unicode)).is_err());
+    }
 
     #[test]
     fn decodes_bundled_heic_fixture() {

@@ -1,14 +1,19 @@
 use crate::{
-    error::RsResult,
+    error::{RsError, RsResult},
     model::{
-        embeddings::{embedding_pass_start, EmbeddingPassState, EmbeddingProgressMessage},
+        embeddings::{
+            embedding_pass_start, is_undecodable_media, EmbeddingPassState,
+            EmbeddingProgressMessage,
+        },
         users::ConnectedUser,
         ModelController,
     },
     tools::log::{log_error, log_info, LogServiceType},
 };
 use axum::async_trait;
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
+use tokio_util::task::AbortOnDropHandle;
 
 use super::RsSchedulerTask;
 
@@ -170,6 +175,9 @@ impl EmbeddingTask {
         mc.prepare_embedder_for_images().await?;
 
         const CHUNK_SIZE: usize = 20;
+        // Medias whose images are being read while the model is on another one.
+        // Reading a video takes about as long as a GPU takes to embed one.
+        const READ_AHEAD: usize = 2;
         // That many failures in a row point at the model or the storage, not at
         // the medias: the pass leaves the library so they are not all given up on.
         const MAX_CONSECUTIVE_FAILURES: u32 = 5;
@@ -197,14 +205,36 @@ impl EmbeddingTask {
                 break;
             }
 
-            for media_id in &media_ids {
+            // Each read is its own task, started when the media enters the buffer:
+            // it goes on while this loop waits for the model. It is stopped with
+            // the buffer, so a pass that ends leaves nothing reading behind it.
+            let library = pass.library.clone();
+            let mut read = futures::stream::iter(media_ids.clone())
+                .map(|media_id| {
+                    let (mc, library, id) = (mc.clone(), library.clone(), media_id.clone());
+                    let images = AbortOnDropHandle::new(tokio::spawn(async move {
+                        mc.media_embedding_images(&library, &id).await
+                    }));
+                    async move {
+                        let images = images.await.unwrap_or_else(|error| {
+                            Err(RsError::Error(format!("Join error: {}", error)))
+                        });
+                        (media_id, images)
+                    }
+                })
+                .buffered(READ_AHEAD + 1);
+            while let Some((media_id, images)) = read.next().await {
                 // Before each media, so a pause or turning embeddings off takes
-                // effect as soon as the media in progress is done.
+                // effect as soon as the media in progress is done. What was read
+                // ahead is dropped, what was being read is stopped.
                 if let Some(state) = must_stop(mc, &pass.library).await {
                     pass.stopped = Some(state);
                     return Ok(());
                 }
-                match mc.embed_media(&pass.library, media_id).await {
+                match mc
+                    .embed_media_images(&pass.library, &media_id, images)
+                    .await
+                {
                     Ok(_) => {
                         pass.embedded += 1;
                         consecutive_failures = 0;
@@ -214,7 +244,11 @@ impl EmbeddingTask {
                             LogServiceType::Scheduler,
                             format!("Error embedding media {}: {:#}", media_id, e),
                         );
-                        consecutive_failures += 1;
+                        // A file that cannot be decoded says nothing about the
+                        // model or the storage: a run of them does not end the pass.
+                        if !is_undecodable_media(&e) {
+                            consecutive_failures += 1;
+                        }
                     }
                 }
                 pass.processed += 1;

@@ -2,7 +2,8 @@
 
 The server can compute one vector (an *embedding*) per photo and video, and use it
 to find medias from a text query ("kids at the beach") or medias that look like a
-given one. Everything runs locally on CPU.
+given one. Everything runs locally: on the CPU, or for images on the GPU in a build
+that has it (see [GPU](#gpu)).
 
 This is separate from tag prediction (`PluginType::ImageClassification`,
 `src/tools/prediction.rs`), which is a fixed-label classifier writing `ai/<tag>`
@@ -13,7 +14,7 @@ tags. The two do not share code or data.
 | Part | Location |
 | --- | --- |
 | `Embedder` trait, int8 conversion | `src/tools/embedding/mod.rs` |
-| EmbeddingGemma 2 implementation, model download | `src/tools/embedding/gemma.rs` |
+| EmbeddingGemma 2 implementation, model download, CPU or GPU | `src/tools/embedding/gemma.rs` |
 | In-memory search index | `src/tools/embedding/index.rs` |
 | Table and queries | `src/model/store/sql/library/embeddings.rs`, migration `062 - MEDIA EMBEDDINGS.sql` |
 | Embedding a media, search, access rules | `src/model/embeddings.rs` |
@@ -36,10 +37,25 @@ on a faster machine) re-declare the module and reuse it unchanged.
    - **Photo**: the server's decoded image (`media_image`, the same image used for
      thumbnails), not the full-resolution original. The model resizes its input to
      roughly 624×480 anyway.
-   - **Video**: 8 frames spread evenly over the duration are each embedded as an
+   - **Video**: frames spread evenly over the duration are each embedded as an
      image; the float vectors are averaged, re-normalised, and stored as one vector.
-     If no frame can be extracted the video thumbnail is used instead.
+     A video has one frame for every 4 seconds it starts, 8 at most: 1 under 4 s
+     (a live photo is one picture, its middle frame), 2 under 8 s, 3 under 12 s,
+     and 8 from 28 s. FFmpeg scales each frame down to 512 pixels itself, and the
+     frame is only decoded after, never resized again. If no frame can be extracted the video thumbnail is used instead.
 4. A search embeds the query text on the server, then scans the library's vectors.
+
+A pass reads the images of the next 2 medias while the model is on the current one
+(`media_embedding_images`, then `embed_media_images`). Reading is everything that
+is not the model: the thumbnail from storage, FFmpeg for the frames, decoding,
+scaling down to 512 pixels. The medias are still embedded and stored one by one, in
+the order of the queue. A pause or a stop still takes effect once the media in
+progress is done; what was read ahead is dropped, and what was still being read is
+stopped, its FFmpeg processes included.
+
+Frames are read several at a time: one for every three threads of the machine, 4 at
+most, whatever the number of videos being read. Each frame is an FFmpeg process
+decoding a video, so a machine with 4 threads still reads them one after the other.
 
 The model is downloaded on first use (about 316 MB) into
 `<config dir>/models/embeddinggemma-2-q4/`. It lives in the configuration directory
@@ -56,22 +72,120 @@ Measured on 6 Haswell cores (AVX2), 4 threads: about 3 s per image, of which 2.7
 is the vision encoder, so a video costs about 25 s. A text query takes about 45 ms.
 Both sessions loaded use about 0.9 GB.
 
+On a Ryzen 5 5600X (6 cores, 12 threads) with an RTX 3090, on 15 photos and 11
+videos of a real library (phone videos, 1080p and more), per media:
+
+| | Photo | Video: reading its frames | Video: the model |
+| --- | --- | --- | --- |
+| CPU, 4 threads | 2.3 s | 1.3 s | 17 s |
+| GPU | 0.11 s | 1.4 s | 0.9 s |
+
+Another pass was using 4 cores of the machine meanwhile, so an idle one does a
+little better. Reading a photo, its thumbnail, takes 3 ms.
+
+On the CPU the time is the vision encoder, 1.9 s of a photo, and in it the matrix
+products of the q4 weights (`MatMulNBits`, 70%) and the attention (18%). With 6
+threads instead of 4 the encoder takes 1.35 s. Sending the 8 frames of a video
+through a graph in one batch was tried and gains nothing, on the CPU or the GPU.
+
+Reading the frames of a video took 5.3 s when they were read one after the other,
+each written by FFmpeg as a fully compressed PNG and encoded once more after being
+scaled down.
+
+With the model on the GPU, reading the frames is what a pass waits for: on a
+stretch of 10 to 30 s videos in 1080p and 4K, FFmpeg kept the CPU at 70 to 90%
+while the GPU was idle, about 6 s per video. That is why a video now has a frame
+for every 4 seconds rather than always 8, and why FFmpeg scales the frame down
+before it writes it: a 4K HDR frame is 35 MB as a PNG, and under 1 MB at 512 pixels.
+The table above was measured before these two changes, with 8 frames at full size.
+
 The text backbone stays loaded once used, so searches stay fast. The vision encoder
-is loaded when a pass starts embedding and released when the pass ends. Embedding
-uses up to 4 threads and only one pass runs at a time.
+is loaded when a pass starts embedding and released when the pass ends. Only one
+pass runs at a time. On the CPU a graph uses up to 4 threads;
+`REDSEAT_EMBEDDINGS_THREADS` sets another number, for example the number of cores
+of a machine that has nothing else to do.
+
+## GPU
+
+Images can go through the GPU instead of the CPU, with the WebGPU provider of ONNX
+Runtime. It is a build option, off by default:
+
+```bash
+cargo build --release --features gpu
+```
+
+- **Libraries.** The build links another ONNX Runtime, which needs its libraries
+  beside the binary to use the GPU. On Windows: `webgpu_dawn.dll`, `dxcompiler.dll`
+  and `dxil.dll`. Cargo puts them in `target/release`; a packaged release has to
+  ship them. When one is missing the server still starts, says so in the log when a
+  pass begins, and embeds on the CPU. For `webgpu_dawn.dll` that takes two things:
+  `build.rs` has Windows load it on first use instead of at startup, and
+  `gpu_library_present` in `gemma.rs` loads it before the GPU is touched. On Linux
+  and macOS the library is loaded with the program, which does not start without it.
+- **Platforms.** Only tried on Windows x86_64 with an NVIDIA card (Direct3D 12).
+  `ort` also has this runtime for Linux x86_64 and macOS arm64; a target without
+  one builds the usual runtime and embeds on the CPU.
+- **What runs where.** A text query always runs on the CPU, so a search does not
+  wait for a pass. During a pass the vision encoder and a second copy of the
+  backbone are on the GPU, about 0.6 GB of its memory, released when the pass ends.
+- **When the GPU cannot be used.** The log says which of the two is used when a
+  pass starts. A GPU that cannot be loaded leaves the pass on the CPU. A GPU that
+  fails on an image has that image embedded on the CPU, like the next ones until
+  the pass ends; the following pass tries the GPU again. None of this is charged to
+  a media.
+- **Staying on the CPU.** `REDSEAT_EMBEDDINGS_CPU=true` keeps a `gpu` build on the
+  CPU. It is read when the model is loaded, so it needs a restart.
+
+### Same vectors, same id
+
+The GPU runs the same graphs on the same q4 weights, in float like the CPU, so its
+vectors carry the same embedder id. The two differ by rounding only. 26 medias that
+a CPU pass had already embedded (15 photos, 11 videos) were embedded again and
+compared with their stored vectors:
+
+| | Identical to the stored vector | The others |
+| --- | --- | --- |
+| CPU | 26 of 26 | |
+| GPU | 25 of 26 | 2 of 768 values, one step each |
+
+The ignored test `embeddinggemma_gpu_matches_cpu` in `src/tools/embedding/gemma.rs`
+embeds the images of `test_data` on both and fails past one step, or past 1% of the
+values:
+
+```bash
+cargo test --features gpu --bin redseat-rust embeddinggemma_gpu_matches_cpu -- --ignored --nocapture
+```
+
+A debug build does not give the vectors of a release build: on the same 26 medias,
+up to 28 of 768 values were one step away, on the CPU as on the GPU. Compare
+vectors made by the same profile.
+
+This comparison was made when a video was 8 frames scaled down by the server. A
+video embedded since no longer gives the vector stored before, see
+[Known limits](#known-limits); a photo still does.
+
+### Why not DirectML
+
+The ONNX Runtime of the default Windows build already has DirectML, with no library
+to ship. It was tried and left aside: it refuses the vision encoder as it is
+(`Reshape` with `allowzero`), and with that attribute cleared it runs the encoder in
+0.2 to 0.4 s, 3 to 6 times slower than WebGPU, because its `Gelu` stays on the CPU
+and the data goes back and forth at every layer.
 
 ## The embedder abstraction
 
 ```rust
 pub trait Embedder: Send + Sync {
     fn spec(&self) -> &EmbedderSpec;          // id, dimension, search_dimension, quantization_scale, text_cutoff
-    fn embed_image(&self, bytes: &[u8]) -> EmbeddingResult<Vec<f32>>;
+    fn embed_decoded_image(&self, image: &image::DynamicImage) -> EmbeddingResult<Vec<f32>>;
+    fn embed_image(&self, bytes: &[u8]) -> EmbeddingResult<Vec<f32>> { .. }  // decodes, then the one above
     fn embed_text(&self, query: &str) -> EmbeddingResult<Vec<f32>>;
+    fn prepare_image_resources(&self) -> EmbeddingResult<()> { Ok(()) }
     fn release_image_resources(&self) {}
 }
 ```
 
-Both methods return L2-normalised float vectors in the same space. Storage, the
+All three return L2-normalised float vectors in the same space. Storage, the
 index and search only ever see vectors and the `EmbedderSpec`; nothing outside
 `gemma.rs` knows about tokens, patches or ONNX graphs.
 
@@ -88,8 +202,9 @@ embeddinggemma-2/q4/t140
 ```
 
 **Any change that alters the stored numbers needs a new id**, including a change of
-the int8 scale below. After an id change the old rows are simply ignored and every
-media becomes pending again; old rows can be deleted with
+the int8 scale below. Where the graphs run does not: see
+[Same vectors, same id](#same-vectors-same-id). After an id change the old rows are
+simply ignored and every media becomes pending again; old rows can be deleted with
 `DELETE FROM media_embeddings WHERE embedder = '<old id>'`.
 
 ### Adding another embedder
@@ -166,8 +281,8 @@ for 39 of 40 queries. Against float vectors the int8 score is off by at most 0.0
 ### Failures
 
 A media that cannot be embedded gets a row in `media_embedding_errors`. It is
-offered again by later passes, at most once per pass, and is given up on after
-3 attempts. A success deletes the row. `failed` in the status below counts the
+offered again by later passes, at most once per pass and after the medias that
+never failed, and is given up on after 3 attempts. A success deletes the row. `failed` in the status below counts the
 medias given up on; `POST .../embeddings/process?retryFailed=true` forgets the
 failures of the library.
 
@@ -178,6 +293,22 @@ Two guards keep a problem that is not about the medias from being charged to the
 - After 5 failures in a row a pass leaves the library until the next one. A broken
   model or unreachable storage then costs those 5 medias an attempt, not the whole
   library.
+
+Two things keep that second guard from holding the queue on medias that are just
+unreadable. Without them a pass tried 5 of them, left, and the next one started on
+the same 5: 30 such files in a row took 3 hours, three passes each.
+
+- The medias that already failed are offered last, after those never tried. Their
+  retries can end a pass, never start it.
+- A media whose file is recognised as an image and cannot be decoded is not counted
+  in the 5 (`is_undecodable_media`): that failure is about the media. A read that
+  gives nothing recognisable is still counted, since the storage may be the cause,
+  and so is any other error. For HEIF files libheif tells which: only its invalid
+  input and unsupported file type are about the file; a missing decoder, memory or
+  a plugin that does not load are counted. ImageMagick (`imagesUseIm`) gives back nothing
+  whether the file is broken or ImageMagick itself is, so a file it gives nothing
+  for is read without it: that gives the image when the file was fine, and the
+  error that tells the two apart when it was not.
 
 ### Pending medias
 
@@ -458,13 +589,20 @@ A pass that announced its start always sends one of these five. See `docs/SSE.md
   needs a new embedder id.
 - **No content filtering.** A neutral query can surface adult content if the
   library contains it. Nothing flags or filters it yet.
-- **One vector per video**, from 8 frames. A short scene in a long video is easily
-  missed.
+- **One vector per video**, from 8 frames at most. A short scene in a long video is
+  easily missed.
+- **Videos embedded before 13 October 2026 keep their vector**, made of 8 frames
+  whatever their length, each scaled down by the server. Since then a video has a
+  frame for every 4 seconds and FFmpeg scales it, which gives a slightly different
+  picture (2 of 255 per value on a test pattern). The embedder id did not change
+  for it: the vectors stay comparable. To have these videos embedded again, with
+  the server stopped:
+  `DELETE FROM media_embeddings WHERE media_ref IN (SELECT id FROM medias WHERE type = 'video')`.
 - **Vectors are not refreshed** when a media's image is replaced. Delete its row
   in `media_embeddings` to have it embedded again.
 - **Photos are embedded from the server's thumbnail-sized image**, so very small
   details of a large photo are lost.
-- **CPU only and slow**: about 3 s per image. A large library takes days to
-  backfill.
+- **Slow on the CPU**: 2 to 3 s per image, so a large library takes days to
+  backfill. A GPU build takes about 0.1 s per image, see [GPU](#gpu).
 - **No Intel macOS build.** The model needs ONNX Runtime 1.23 or later, and `ort`
   ships no prebuilt runtime for `x86_64-apple-darwin` at those versions.
