@@ -29,7 +29,10 @@ use tokio_util::io::ReaderStream;
 
 use crate::{
     domain::{
-        backup::Backup, library::ServerLibrary, media::MediaForUpdate, plugin::PluginWithCredential,
+        backup::Backup,
+        library::{LibraryStorage, ServerLibrary},
+        media::MediaForUpdate,
+        plugin::PluginWithCredential,
     },
     error::{RsError, RsResult},
     model::{users::ConnectedUser, ModelController},
@@ -432,6 +435,18 @@ impl Source for PluginProvider {
 
     async fn clean(&self, sources: Vec<String>) -> RsResult<Vec<(String, u64)>> {
         Ok(vec![])
+    }
+
+    async fn storage(&self) -> RsResult<Option<LibraryStorage>> {
+        self.plugin_manager
+            .provider_storage(
+                RsProviderPath {
+                    root: Some(self.root.clone()),
+                    source: String::new(),
+                },
+                &self.plugin,
+            )
+            .await
     }
 }
 

@@ -24,7 +24,11 @@ use tokio::{
 };
 
 use crate::{
-    domain::{backup::Backup, library::ServerLibrary, media::MediaForUpdate},
+    domain::{
+        backup::Backup,
+        library::{LibraryStorage, ServerLibrary},
+        media::MediaForUpdate,
+    },
     error::{RsError, RsResult},
     model::ModelController,
     routes::mw_range::RangeDefinition,
@@ -53,6 +57,10 @@ impl PathProvider {
     pub fn with_maintenance_guard(mut self, guard: OwnedRwLockReadGuard<()>) -> Self {
         self._maintenance_guard = Some(guard);
         self
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
     }
 
     pub fn get_full_path(&self, source: &str) -> PathBuf {
@@ -223,6 +231,32 @@ impl PathProvider {
             .to_string();
         Ok((source.to_string(), Box::pin(file)))
     }
+}
+
+/// Identifies the disk holding `path`: the device number on Unix, the drive or share
+/// on Windows.
+#[cfg(unix)]
+fn volume_id(path: &Path) -> Option<String> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path).ok().map(|m| m.dev().to_string())
+}
+
+#[cfg(windows)]
+fn volume_id(path: &Path) -> Option<String> {
+    use std::path::{Component, Prefix};
+    let path = std::fs::canonicalize(path).ok()?;
+    let Component::Prefix(prefix) = path.components().next()? else {
+        return None;
+    };
+    Some(match prefix.kind() {
+        Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => format!("{}:", drive as char),
+        Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => format!(
+            r"\\{}\{}",
+            server.to_string_lossy(),
+            share.to_string_lossy()
+        ),
+        _ => prefix.as_os_str().to_string_lossy().to_string(),
+    })
 }
 
 impl PathProvider {
@@ -539,6 +573,21 @@ impl Source for PathProvider {
         let file = BufWriter::with_capacity(FILE_IO_BUFFER_SIZE, File::create(&file_path).await?);
 
         Ok((source, Box::pin(file)))
+    }
+
+    async fn storage(&self) -> RsResult<Option<LibraryStorage>> {
+        let root = self.root.clone();
+        let storage = tokio::task::spawn_blocking(move || -> RsResult<LibraryStorage> {
+            let stats = fs4::statvfs(&root)?;
+            Ok(LibraryStorage {
+                used: Some(stats.total_space().saturating_sub(stats.free_space())),
+                free: Some(stats.available_space()),
+                total: Some(stats.total_space()),
+                volume: volume_id(&root),
+            })
+        })
+        .await??;
+        Ok(Some(storage))
     }
 
     async fn clean(&self, sources: Vec<String>) -> RsResult<Vec<(String, u64)>> {

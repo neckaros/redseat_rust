@@ -14,7 +14,7 @@ use rs_plugin_common_interfaces::{
 use serde_json::json;
 
 use crate::{
-    domain::{plugin::PluginWithCredential, progress::RsProgressCallback},
+    domain::{library::LibraryStorage, plugin::PluginWithCredential, progress::RsProgressCallback},
     error::RsResult,
     plugins::sources::{error::SourcesError, AsyncReadPinBox, FileStreamResult},
     tools::{
@@ -222,6 +222,50 @@ impl PluginManager {
                 plugin_with_creds.plugin.name
             )))
         }
+    }
+
+    /// Space of the storage behind a provider plugin, from its optional `storage_info`
+    /// export. `None` when the plugin does not export it.
+    pub async fn provider_storage(
+        &self,
+        path: RsProviderPath,
+        plugin_with_creds: &PluginWithCredential,
+    ) -> RsResult<Option<LibraryStorage>> {
+        let Some(plugin) = self
+            .plugin_by_filename(&plugin_with_creds.plugin.path)
+            .await
+        else {
+            return Err(Error::ModelNotFound(format!(
+                "provider plugin {}",
+                plugin_with_creds.plugin.name
+            )));
+        };
+        if !plugin.infos.capabilities.contains(&PluginType::Provider) {
+            return Err(Error::ModelNotFound(format!(
+                "provider plugin {}",
+                plugin.filename
+            )));
+        }
+        if !plugin.plugin.lock().await.function_exists("storage_info") {
+            return Ok(None);
+        }
+        let call_object: RsPluginRequest<RsProviderPath> = RsPluginRequest {
+            request: path,
+            plugin_settings: plugin_with_creds
+                .credential
+                .as_ref()
+                .map(|c| c.settings.clone())
+                .unwrap_or(json!({})),
+            credential: plugin_with_creds.credential.clone().map(|c| c.into()),
+        };
+        plugin
+            .call_get_error_code::<Json<RsPluginRequest<RsProviderPath>>, Json<LibraryStorage>>(
+                "storage_info",
+                Json(call_object),
+            )
+            .await
+            .map(|Json(storage)| Some(storage))
+            .map_err(|error| plugin_call_error(&plugin.infos.name, "storage_info", error))
     }
 
     pub async fn provider_info_file(

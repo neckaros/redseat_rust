@@ -12,7 +12,11 @@ use tokio::{
 };
 
 use crate::{
-    domain::{backup::Backup, library::ServerLibrary, media::MediaForUpdate},
+    domain::{
+        backup::Backup,
+        library::{LibraryStorage, ServerLibrary},
+        media::MediaForUpdate,
+    },
     error::RsResult,
     model::ModelController,
     plugins::{sources::local_provider_for_library, PluginManager},
@@ -106,5 +110,9 @@ impl Source for VirtualProvider {
 
     async fn clean(&self, sources: Vec<String>) -> RsResult<Vec<(String, u64)>> {
         Ok(vec![])
+    }
+
+    async fn storage(&self) -> RsResult<Option<LibraryStorage>> {
+        Ok(None)
     }
 }

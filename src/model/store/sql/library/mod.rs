@@ -25,6 +25,7 @@ pub mod movie;
 pub mod people;
 pub mod request_processing;
 pub mod series;
+pub mod stats;
 pub mod tags;
 
 pub struct SqliteLibraryStore {
