@@ -41,8 +41,8 @@ on a faster machine) re-declare the module and reuse it unchanged.
      image; the float vectors are averaged, re-normalised, and stored as one vector.
      A video has one frame for every 4 seconds it starts, 8 at most: 1 under 4 s
      (a live photo is one picture, its middle frame), 2 under 8 s, 3 under 12 s,
-     and 8 from 28 s. FFmpeg scales each frame down to 512 pixels itself.
-     If no frame can be extracted the video thumbnail is used instead.
+     and 8 from 28 s. FFmpeg scales each frame down to 512 pixels itself, and the
+     frame is only decoded after, never resized again. If no frame can be extracted the video thumbnail is used instead.
 4. A search embeds the query text on the server, then scans the library's vectors.
 
 A pass reads the images of the next 2 medias while the model is on the current one
@@ -303,7 +303,9 @@ the same 5: 30 such files in a row took 3 hours, three passes each.
 - A media whose file is recognised as an image and cannot be decoded is not counted
   in the 5 (`is_undecodable_media`): that failure is about the media. A read that
   gives nothing recognisable is still counted, since the storage may be the cause,
-  and so is any other error. ImageMagick (`imagesUseIm`) gives back nothing
+  and so is any other error. For HEIF files libheif tells which: only its invalid
+  input and unsupported file type are about the file; a missing decoder, memory or
+  a plugin that does not load are counted. ImageMagick (`imagesUseIm`) gives back nothing
   whether the file is broken or ImageMagick itself is, so a file it gives nothing
   for is read without it: that gives the image when the file was fine, and the
   error that tells the two apart when it was not.

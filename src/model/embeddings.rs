@@ -36,7 +36,7 @@ use crate::{
             self, index::VectorIndex, Embedder, EmbedderOptions, EmbedderSpec, EmbeddingDevice,
         },
         get_time,
-        image_tools::{self, decode_image_reader, resize_image_reader_to_image},
+        image_tools::{self, decode_image_reader},
         log::{log_error, log_info, LogServiceType},
         scheduler::{embedding::EmbeddingTask, RsSchedulerWhen, RsTaskType},
         video_tools::{self, VideoTime},
@@ -688,8 +688,9 @@ impl ModelController {
         let frame =
             video_tools::thumb_video_scaled(&uri, VideoTime::Seconds(seconds), VIDEO_FRAME_SIZE)
                 .await?;
-        // What is left to do on a frame that already has its size.
-        resize_image_reader_to_image(Box::pin(std::io::Cursor::new(frame)), VIDEO_FRAME_SIZE).await
+        // FFmpeg gave the frame its crop and its size: it is only decoded. A resize
+        // through ImageMagick would scale it up again, its shorter side to the size.
+        Ok(tokio::task::spawn_blocking(move || image::load_from_memory(&frame)).await??)
     }
 
     async fn embedding_index_slot(&self, library_id: &str) -> IndexSlot {
@@ -1152,7 +1153,15 @@ pub fn is_undecodable_media(error: &RsError) -> bool {
     let image_error = match error {
         RsError::Image(error) => error,
         RsError::RsImage(image_tools::ImageError::RsImageError(error)) => error,
-        RsError::HeifErrorCode(_) => return true,
+        // libheif saying the file is wrong. Its other errors, a missing decoder or
+        // memory among them, are about the server.
+        RsError::HeifErrorCode(code) => {
+            return [
+                libheif_sys::heif_error_code_heif_error_Invalid_input,
+                libheif_sys::heif_error_code_heif_error_Unsupported_filetype,
+            ]
+            .contains(&(*code as libheif_sys::heif_error_code))
+        }
         _ => return false,
     };
     // Data of no known format may just as well be an empty or a cut read.
@@ -1346,7 +1355,23 @@ mod tests {
         assert!(is_undecodable_media(&RsError::RsImage(
             image_tools::ImageError::RsImageError(unsupported(tiff))
         )));
-        assert!(is_undecodable_media(&RsError::HeifErrorCode(2)));
+        let heif = |code: libheif_sys::heif_error_code| RsError::HeifErrorCode(code as i32);
+        assert!(is_undecodable_media(&heif(
+            libheif_sys::heif_error_code_heif_error_Invalid_input
+        )));
+        assert!(is_undecodable_media(&heif(
+            libheif_sys::heif_error_code_heif_error_Unsupported_filetype
+        )));
+
+        // libheif failing whatever the file: no decoder, no memory, no plugin.
+        for code in [
+            libheif_sys::heif_error_code_heif_error_Unsupported_feature,
+            libheif_sys::heif_error_code_heif_error_Memory_allocation_error,
+            libheif_sys::heif_error_code_heif_error_Plugin_loading_error,
+        ] {
+            assert!(!is_undecodable_media(&heif(code)), "{code}");
+        }
+        assert!(!is_undecodable_media(&RsError::HeifErrorCode(0)));
 
         // Nothing recognisable was read: the storage may have given nothing.
         assert!(!is_undecodable_media(&RsError::Image(unsupported(
