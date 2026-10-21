@@ -1,5 +1,5 @@
 use axum::{
-    body::Body,
+    body::{Body, Bytes},
     extract::{Path, Query, State},
     response::{IntoResponse, Response},
     routing::{delete, get, post},
@@ -145,6 +145,11 @@ const MAX_UPSTREAM_RECONNECT_ATTEMPTS: u32 = 8;
 const STABLE_UPSTREAM_BYTES: usize = 512 * 1024;
 const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const UPSTREAM_READ_TIMEOUT: Duration = Duration::from_secs(15);
+/// After a stream was closed for this one, the provider may still count its
+/// connection for a moment: the first connection is tried again this long.
+const REPLACED_UPSTREAM_CONNECT_WINDOW: Duration = Duration::from_secs(6);
+/// Chunks kept for a client that reads slower than the source sends.
+const PROXY_BUFFERED_CHUNKS: usize = 64;
 
 fn upstream_error(error: &reqwest::Error) -> io::Error {
     let message = if error.is_timeout() {
@@ -182,21 +187,27 @@ fn upstream_reconnect_delay(attempt: u32) -> Duration {
     Duration::from_millis(500 * (1_u64 << exponent))
 }
 
-/// Guard that releases the stream slot when the response body is dropped
-struct StreamGuard {
-    mc: ModelController,
-    library_id: String,
-    channel_id: String,
-}
-
-impl Drop for StreamGuard {
-    fn drop(&mut self) {
-        let mc = self.mc.clone();
-        let library_id = self.library_id.clone();
-        let channel_id = self.channel_id.clone();
-        tokio::spawn(async move {
-            mc.release_stream_slot(&library_id, &channel_id).await;
-        });
+/// The first connection to the source. When another stream was just closed
+/// for this one, a refusal is tried again for a few seconds.
+async fn connect_first_upstream(
+    client: &reqwest::Client,
+    stream_url: &str,
+    replaced: bool,
+) -> io::Result<reqwest::Response> {
+    let deadline = tokio::time::Instant::now() + REPLACED_UPSTREAM_CONNECT_WINDOW;
+    let mut attempt = 0_u32;
+    loop {
+        match connect_channel_upstream(client, stream_url).await {
+            Ok(response) => return Ok(response),
+            Err(error) => {
+                attempt += 1;
+                let delay = upstream_reconnect_delay(attempt);
+                if !replaced || tokio::time::Instant::now() + delay > deadline {
+                    return Err(error);
+                }
+                tokio::time::sleep(delay).await;
+            }
+        }
     }
 }
 
@@ -206,39 +217,35 @@ async fn handler_stream(
     user: ConnectedUser,
     Query(query): Query<StreamQuery>,
 ) -> Result<Response> {
-    // Enforce concurrent stream limit
-    mc.acquire_stream_slot(&library_id, &channel_id).await?;
+    // Enforce concurrent stream limit: the slot is freed when it is dropped.
+    let (slot, replaced) = mc
+        .acquire_proxy_stream_slot(&library_id, &channel_id)
+        .await?;
 
-    let stream_url = match mc
+    let stream_url = mc
         .get_channel_stream_url(&library_id, &channel_id, query.quality, &user)
-        .await
-    {
-        Ok(url) => url,
-        Err(e) => {
-            mc.release_stream_slot(&library_id, &channel_id).await;
-            return Err(e.into());
-        }
-    };
+        .await?;
 
     // Proxy the stream through our server
-    let client = match reqwest::Client::builder()
+    let client = reqwest::Client::builder()
         .connect_timeout(UPSTREAM_CONNECT_TIMEOUT)
         .read_timeout(UPSTREAM_READ_TIMEOUT)
         .build()
-    {
-        Ok(client) => client,
-        Err(_) => {
-            mc.release_stream_slot(&library_id, &channel_id).await;
-            return Err(Error::ChannelStreamUnavailable(
+        .map_err(|_| {
+            Error::ChannelStreamUnavailable(
                 "Unable to initialize the channel source connection.".to_string(),
-            ));
+            )
+        })?;
+    // A newer request for the slot cancels this one while it connects too.
+    let cancel = slot.cancel.clone();
+    let upstream = tokio::select! {
+        upstream = connect_first_upstream(&client, &stream_url, replaced) => {
+            upstream.map_err(|error| Error::ChannelStreamUnavailable(error.to_string()))?
         }
-    };
-    let upstream = match connect_channel_upstream(&client, &stream_url).await {
-        Ok(resp) => resp,
-        Err(error) => {
-            mc.release_stream_slot(&library_id, &channel_id).await;
-            return Err(Error::ChannelStreamUnavailable(error.to_string()));
+        _ = cancel.cancelled() => {
+            return Err(Error::ChannelStreamUnavailable(
+                "The stream was replaced by a newer one.".to_string(),
+            ));
         }
     };
 
@@ -249,75 +256,29 @@ async fn handler_stream(
         .unwrap_or("video/mp2t")
         .to_string();
 
-    // Wrap the stream with a guard that releases the slot on drop
-    let guard = StreamGuard {
-        mc: mc.clone(),
-        library_id,
-        channel_id,
-    };
-
-    let reconnect_library_id = guard.library_id.clone();
-    let reconnect_channel_id = guard.channel_id.clone();
-    let guarded_stream = async_stream::try_stream! {
-        let _guard = guard;
-        let mut next_upstream = Some(upstream);
-        let mut reconnect_attempts = 0_u32;
-
-        loop {
-            let response = if let Some(response) = next_upstream.take() {
-                response
-            } else {
-                match connect_channel_upstream(&client, &stream_url).await {
-                    Ok(response) => response,
-                    Err(error) => {
-                        reconnect_attempts += 1;
-                        if reconnect_attempts > MAX_UPSTREAM_RECONNECT_ATTEMPTS {
-                            Err::<(), io::Error>(error)?;
-                        }
-                        tokio::time::sleep(upstream_reconnect_delay(reconnect_attempts)).await;
-                        continue;
-                    }
-                }
-            };
-
-            let mut received_bytes = 0_usize;
-            let mut byte_stream = response.bytes_stream();
-            while let Some(chunk) = byte_stream.next().await {
-                match chunk {
-                    Ok(chunk) => {
-                        received_bytes = received_bytes.saturating_add(chunk.len());
-                        if received_bytes >= STABLE_UPSTREAM_BYTES {
-                            reconnect_attempts = 0;
-                        }
-                        yield chunk;
-                    }
-                    Err(_) => break,
-                }
+    // The source is read by a task of its own: it ends, closing the source
+    // connection and freeing the slot, when the client goes away or a newer
+    // stream needs the slot, even if the client stopped reading.
+    let (tx, rx) = tokio::sync::mpsc::channel(PROXY_BUFFERED_CHUNKS);
+    tokio::spawn(async move {
+        let result = tokio::select! {
+            result = forward_channel_stream(&client, &stream_url, upstream, &tx, &library_id, &channel_id) => result,
+            _ = cancel.cancelled() => {
+                log_info(
+                    LogServiceType::Source,
+                    format!("IPTV stream closed for a newer one: library {}, channel {}", library_id, channel_id),
+                );
+                Ok(())
             }
-
-            reconnect_attempts += 1;
-            if reconnect_attempts > MAX_UPSTREAM_RECONNECT_ATTEMPTS {
-                Err::<(), io::Error>(io::Error::other(
-                    "The channel source could not be restored after repeated attempts.",
-                ))?;
-            }
-
-            log_info(
-                LogServiceType::Source,
-                format!(
-                    "IPTV source disconnected for library {}, channel {}; reconnecting ({}/{})",
-                    reconnect_library_id,
-                    reconnect_channel_id,
-                    reconnect_attempts,
-                    MAX_UPSTREAM_RECONNECT_ATTEMPTS
-                ),
-            );
-            tokio::time::sleep(upstream_reconnect_delay(reconnect_attempts)).await;
+            _ = tx.closed() => Ok(()),
+        };
+        if let Err(error) = result {
+            let _ = tx.try_send(Err(error));
         }
-    };
-    // `try_stream!` cannot infer its error type from the diverging reconnect loop.
-    let guarded_stream = guarded_stream.map(|item: std::result::Result<_, io::Error>| item);
-    let body = Body::from_stream(guarded_stream);
+        // The source connection is closed by now: the slot can go.
+        drop(slot);
+    });
+    let body = Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx));
 
     let response = Response::builder()
         .header(CONTENT_TYPE, content_type)
@@ -326,6 +287,71 @@ async fn handler_stream(
         .map_err(|e| Error::Error(format!("Failed to build response: {}", e)))?;
 
     Ok(response)
+}
+
+/// Sends the source to the client, reconnecting to it when it drops. Returns
+/// when the client is gone, or with an error when the source can't be restored.
+async fn forward_channel_stream(
+    client: &reqwest::Client,
+    stream_url: &str,
+    upstream: reqwest::Response,
+    tx: &tokio::sync::mpsc::Sender<io::Result<Bytes>>,
+    library_id: &str,
+    channel_id: &str,
+) -> io::Result<()> {
+    let mut next_upstream = Some(upstream);
+    let mut reconnect_attempts = 0_u32;
+
+    loop {
+        let response = if let Some(response) = next_upstream.take() {
+            response
+        } else {
+            match connect_channel_upstream(client, stream_url).await {
+                Ok(response) => response,
+                Err(error) => {
+                    reconnect_attempts += 1;
+                    if reconnect_attempts > MAX_UPSTREAM_RECONNECT_ATTEMPTS {
+                        return Err(error);
+                    }
+                    tokio::time::sleep(upstream_reconnect_delay(reconnect_attempts)).await;
+                    continue;
+                }
+            }
+        };
+
+        let mut received_bytes = 0_usize;
+        let mut byte_stream = response.bytes_stream();
+        while let Some(chunk) = byte_stream.next().await {
+            match chunk {
+                Ok(chunk) => {
+                    received_bytes = received_bytes.saturating_add(chunk.len());
+                    if received_bytes >= STABLE_UPSTREAM_BYTES {
+                        reconnect_attempts = 0;
+                    }
+                    if tx.send(Ok(chunk)).await.is_err() {
+                        return Ok(());
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+
+        reconnect_attempts += 1;
+        if reconnect_attempts > MAX_UPSTREAM_RECONNECT_ATTEMPTS {
+            return Err(io::Error::other(
+                "The channel source could not be restored after repeated attempts.",
+            ));
+        }
+
+        log_info(
+            LogServiceType::Source,
+            format!(
+                "IPTV source disconnected for library {}, channel {}; reconnecting ({}/{})",
+                library_id, channel_id, reconnect_attempts, MAX_UPSTREAM_RECONNECT_ATTEMPTS
+            ),
+        );
+        tokio::time::sleep(upstream_reconnect_delay(reconnect_attempts)).await;
+    }
 }
 
 // -- HLS endpoints --
