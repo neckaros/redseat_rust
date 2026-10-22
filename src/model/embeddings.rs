@@ -404,11 +404,14 @@ impl ModelController {
     }
 
     pub async fn count_medias_pending_embedding(&self, library_id: &str) -> RsResult<u64> {
+        Ok(self.media_embedding_counts(library_id).await?.pending)
+    }
+
+    pub async fn media_embedding_counts(&self, library_id: &str) -> RsResult<MediaEmbeddingCounts> {
         let store = self.store.get_library_store(library_id)?;
-        let counts = store
+        Ok(store
             .count_media_embeddings(self.embedder_spec().id.to_string(), EMBEDDING_MAX_ATTEMPTS)
-            .await?;
-        Ok(counts.pending)
+            .await?)
     }
 
     /// How many medias a pass started at `pass_started` (ms) still has to try.

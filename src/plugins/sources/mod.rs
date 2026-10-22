@@ -30,7 +30,7 @@ use tokio::{
 use crate::{
     domain::{
         backup::Backup,
-        library::{self, ServerLibrary},
+        library::{self, LibraryStorage, ServerLibrary},
         media::MediaForUpdate,
         progress::{RsProgress, RsProgressCallback},
     },
@@ -674,6 +674,9 @@ pub trait Source: Send + Sync {
 
     async fn clean(&self, sources: Vec<String>) -> RsResult<Vec<(String, u64)>>;
 
+    /// Space of the storage behind the provider. `None` when the provider cannot tell.
+    async fn storage(&self) -> RsResult<Option<LibraryStorage>>;
+
     //async fn fill_file_information(&self, file: &mut ServerFile) -> SourcesResult<()>;
 }
 
@@ -774,6 +777,10 @@ impl Source for GuardedSource {
 
     async fn clean(&self, sources: Vec<String>) -> RsResult<Vec<(String, u64)>> {
         self.inner.clean(sources).await
+    }
+
+    async fn storage(&self) -> RsResult<Option<LibraryStorage>> {
+        self.inner.storage().await
     }
 }
 
