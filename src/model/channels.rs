@@ -24,6 +24,7 @@ use crate::{
         image_tools::{convert_image_reader, ImageSize},
         log::{log_error, log_info, LogServiceType},
         m3u_parser::{self, M3uContentType, M3uEntry, QUALITY_ORDER},
+        stream_slots::ProxySlot,
     },
 };
 
@@ -693,11 +694,14 @@ impl ModelController {
     }
 
     // -- Stream slot management (concurrent stream limiting) --
+    //
+    // A library's slots are shared by its HLS sessions (`active_streams`) and its
+    // MPEG2-TS proxy streams (`proxy_streams`). When they are all taken, the
+    // newest request wins: a viewer changing channel or quality asks for the new
+    // stream before the server notices that the previous one was closed, and the
+    // provider usually accepts a single connection.
 
-    /// Takes one of the library's stream slots for a channel. A viewer changing
-    /// channel asks for the new stream while the server is still closing the
-    /// previous one, so a full library is given a moment to free a slot.
-    pub async fn acquire_stream_slot(&self, library_id: &str, channel_id: &str) -> RsResult<()> {
+    async fn library_max_streams(&self, library_id: &str) -> RsResult<usize> {
         let library = self
             .cache_get_library(library_id)
             .await
@@ -705,8 +709,19 @@ impl ModelController {
                 "Library {} not found",
                 library_id
             )))?;
-        let max_streams = library.settings.max_streams.unwrap_or(1) as usize;
+        Ok(library.settings.max_streams.unwrap_or(1) as usize)
+    }
 
+    fn stream_limit_reached(max_streams: usize) -> crate::Error {
+        crate::Error::Error(format!(
+            "Maximum concurrent streams reached for this library ({}). Stop another stream first.",
+            max_streams
+        ))
+    }
+
+    /// Takes one of the library's stream slots for an HLS session.
+    pub async fn acquire_stream_slot(&self, library_id: &str, channel_id: &str) -> RsResult<()> {
+        let max_streams = self.library_max_streams(library_id).await?;
         let deadline = tokio::time::Instant::now() + STREAM_SLOT_WAIT;
         loop {
             if self
@@ -716,36 +731,126 @@ impl ModelController {
                 return Ok(());
             }
             if tokio::time::Instant::now() >= deadline {
-                return Err(crate::Error::Error(format!(
-                    "Maximum concurrent streams reached for this library ({}). Stop another stream first.",
-                    max_streams
-                )));
+                return Err(Self::stream_limit_reached(max_streams));
             }
             tokio::time::sleep(STREAM_SLOT_POLL).await;
         }
     }
 
-    /// Returns false when every slot is taken by an MPEG2-TS proxy stream.
+    /// Returns false while the slots are taken by MPEG2-TS proxy streams: the
+    /// oldest is asked to close.
     async fn try_acquire_stream_slot(
         &self,
         library_id: &str,
         channel_id: &str,
         max_streams: usize,
     ) -> bool {
-        let mut streams = self.active_streams.write().await;
-        let channels = streams.entry(library_id.to_string()).or_default();
+        let _reserving = self.proxy_streams.reserving().await;
+        {
+            let mut streams = self.active_streams.write().await;
+            let channels = streams.entry(library_id.to_string()).or_default();
 
-        // Same channel is allowed (doesn't count as extra)
-        if channels.contains(channel_id) {
-            return true;
+            // Same channel is allowed (doesn't count as extra)
+            if channels.contains(channel_id) {
+                return true;
+            }
+
+            if channels.len() + self.proxy_streams.count(library_id) < max_streams {
+                channels.insert(channel_id.to_string());
+                return true;
+            }
+            if channels.is_empty() {
+                streams.remove(library_id);
+            }
         }
 
-        if channels.len() < max_streams {
+        // A stream already closing frees the slot: wait for it.
+        if self.proxy_streams.has_closing(library_id) {
+            return false;
+        }
+        if self.evict_oldest_hls_session(library_id).await {
+            let mut streams = self.active_streams.write().await;
+            let channels = streams.entry(library_id.to_string()).or_default();
             channels.insert(channel_id.to_string());
             return true;
         }
+        self.cancel_oldest_proxy_stream(library_id);
+        false
+    }
 
-        // Evict the oldest HLS session for this library to make room
+    /// Takes one of the library's stream slots for an MPEG2-TS proxy stream,
+    /// held until the returned slot is dropped. A full library closes its
+    /// oldest stream for it. Returns whether a stream was closed: the provider
+    /// may take a moment to accept the new connection.
+    ///
+    /// Check the requester's access to the channel first: this may stop
+    /// another viewer's stream.
+    pub async fn acquire_proxy_stream_slot(
+        &self,
+        library_id: &str,
+        channel_id: &str,
+    ) -> RsResult<(ProxySlot, bool)> {
+        let max_streams = self.library_max_streams(library_id).await?;
+        let deadline = tokio::time::Instant::now() + STREAM_SLOT_WAIT;
+        let mut replaced = false;
+        loop {
+            let released = self.proxy_streams.released();
+            {
+                // HLS and proxy requests check and take the slots one at a time.
+                let _reserving = self.proxy_streams.reserving().await;
+                let hls_streams = self
+                    .active_streams
+                    .read()
+                    .await
+                    .get(library_id)
+                    .map_or(0, HashSet::len);
+                if let Some(slot) = self.proxy_streams.try_register(
+                    library_id,
+                    channel_id,
+                    max_streams.saturating_sub(hls_streams),
+                ) {
+                    return Ok((slot, replaced));
+                }
+
+                // A stream already closing frees the slot: wait for it
+                // rather than closing another one.
+                if !self.proxy_streams.has_closing(library_id) {
+                    if self.cancel_oldest_proxy_stream(library_id) {
+                        replaced = true;
+                    } else if self.evict_oldest_hls_session(library_id).await {
+                        replaced = true;
+                        continue;
+                    }
+                }
+            }
+
+            if tokio::time::Instant::now() >= deadline {
+                return Err(Self::stream_limit_reached(max_streams));
+            }
+            // A closing proxy stream wakes us when it is gone; an HLS session doesn't.
+            tokio::select! {
+                _ = released => {}
+                _ = tokio::time::sleep(STREAM_SLOT_POLL) => {}
+            }
+        }
+    }
+
+    fn cancel_oldest_proxy_stream(&self, library_id: &str) -> bool {
+        let Some(channel_id) = self.proxy_streams.cancel_oldest(library_id) else {
+            return false;
+        };
+        log_info(
+            LogServiceType::Source,
+            format!(
+                "IPTV stream limit reached for library {}, closing the oldest stream (channel {})",
+                library_id, channel_id
+            ),
+        );
+        true
+    }
+
+    /// Stops the library's oldest HLS session and frees its slot.
+    async fn evict_oldest_hls_session(&self, library_id: &str) -> bool {
         let oldest = {
             let sessions = self.hls_sessions.read().await;
             sessions
@@ -756,7 +861,6 @@ impl ModelController {
         };
 
         let Some((key, old_channel_id)) = oldest else {
-            // No HLS session to evict (all slots taken by MPEG2-TS proxies)
             return false;
         };
 
@@ -767,16 +871,14 @@ impl ModelController {
                 library_id, old_channel_id
             ),
         );
-        // Drop the streams lock before stopping the session (stop_session needs hls_sessions lock only)
-        drop(streams);
         crate::tools::hls_session::stop_session(&key, &self.hls_sessions).await;
-        // Re-acquire and update active_streams
         let mut streams = self.active_streams.write().await;
         if let Some(channels) = streams.get_mut(library_id) {
             channels.remove(&old_channel_id);
+            if channels.is_empty() {
+                streams.remove(library_id);
+            }
         }
-        let channels = streams.entry(library_id.to_string()).or_default();
-        channels.insert(channel_id.to_string());
         true
     }
 
@@ -813,13 +915,14 @@ impl ModelController {
             }
         }
 
-        // Acquire stream slot (enforces max_streams)
-        self.acquire_stream_slot(library_id, channel_id).await?;
-
-        // Resolve the stream URL
+        // Resolve the stream URL first: it checks the requester's access, and
+        // taking a slot may stop another viewer's stream.
         let stream_url = self
             .get_channel_stream_url(library_id, channel_id, quality, requesting_user)
             .await?;
+
+        // Acquire stream slot (enforces max_streams)
+        self.acquire_stream_slot(library_id, channel_id).await?;
 
         // Create the session
         match crate::tools::hls_session::create_session(

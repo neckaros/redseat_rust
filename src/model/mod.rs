@@ -160,8 +160,11 @@ pub struct ModelController {
 
     /// HLS session manager: key = "library:channel:quality"
     pub hls_sessions: Arc<RwLock<HashMap<String, crate::tools::hls_session::HlsSession>>>,
-    /// Active IPTV streams per library: library_id → set of channel_ids currently streaming
+    /// IPTV HLS sessions per library: library_id → set of channel_ids currently streaming
     pub active_streams: Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    /// IPTV MPEG2-TS proxy streams per library: they share the library's stream slots
+    /// with the HLS sessions in `active_streams`
+    pub proxy_streams: Arc<crate::tools::stream_slots::ProxyStreams>,
 
     /// Media HLS sessions: key = "library:media:convert_hash"
     pub media_hls_sessions:
@@ -199,6 +202,7 @@ impl ModelController {
 
             hls_sessions: Arc::new(RwLock::new(HashMap::new())),
             active_streams: Arc::new(RwLock::new(HashMap::new())),
+            proxy_streams: Arc::new(Default::default()),
 
             media_hls_sessions: Arc::new(RwLock::new(HashMap::new())),
 
