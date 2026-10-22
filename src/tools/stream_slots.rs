@@ -18,6 +18,9 @@ pub struct ProxyStreams {
     inner: Mutex<Inner>,
     /// Woken whenever a stream ends and frees its slot.
     released: Notify,
+    /// Held while a request checks and takes a slot, HLS or proxy: the two
+    /// kinds share the library's slots but are kept in different maps.
+    reserving: tokio::sync::Mutex<()>,
 }
 
 #[derive(Default)]
@@ -101,6 +104,10 @@ impl ProxyStreams {
             .libraries
             .get(library_id)
             .is_some_and(|streams| streams.iter().any(|entry| entry.cancel.is_cancelled()))
+    }
+
+    pub async fn reserving(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.reserving.lock().await
     }
 
     /// Resolves when a stream frees its slot. Created before checking the

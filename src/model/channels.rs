@@ -745,6 +745,7 @@ impl ModelController {
         channel_id: &str,
         max_streams: usize,
     ) -> bool {
+        let _reserving = self.proxy_streams.reserving().await;
         {
             let mut streams = self.active_streams.write().await;
             let channels = streams.entry(library_id.to_string()).or_default();
@@ -763,6 +764,10 @@ impl ModelController {
             }
         }
 
+        // A stream already closing frees the slot: wait for it.
+        if self.proxy_streams.has_closing(library_id) {
+            return false;
+        }
         if self.evict_oldest_hls_session(library_id).await {
             let mut streams = self.active_streams.write().await;
             let channels = streams.entry(library_id.to_string()).or_default();
@@ -777,6 +782,9 @@ impl ModelController {
     /// held until the returned slot is dropped. A full library closes its
     /// oldest stream for it. Returns whether a stream was closed: the provider
     /// may take a moment to accept the new connection.
+    ///
+    /// Check the requester's access to the channel first: this may stop
+    /// another viewer's stream.
     pub async fn acquire_proxy_stream_slot(
         &self,
         library_id: &str,
@@ -787,27 +795,33 @@ impl ModelController {
         let mut replaced = false;
         loop {
             let released = self.proxy_streams.released();
-            let hls_streams = self
-                .active_streams
-                .read()
-                .await
-                .get(library_id)
-                .map_or(0, HashSet::len);
-            if let Some(slot) = self.proxy_streams.try_register(
-                library_id,
-                channel_id,
-                max_streams.saturating_sub(hls_streams),
-            ) {
-                return Ok((slot, replaced));
-            }
-
-            if self.cancel_oldest_proxy_stream(library_id) {
-                replaced = true;
-            } else if !self.proxy_streams.has_closing(library_id)
-                && self.evict_oldest_hls_session(library_id).await
             {
-                replaced = true;
-                continue;
+                // HLS and proxy requests check and take the slots one at a time.
+                let _reserving = self.proxy_streams.reserving().await;
+                let hls_streams = self
+                    .active_streams
+                    .read()
+                    .await
+                    .get(library_id)
+                    .map_or(0, HashSet::len);
+                if let Some(slot) = self.proxy_streams.try_register(
+                    library_id,
+                    channel_id,
+                    max_streams.saturating_sub(hls_streams),
+                ) {
+                    return Ok((slot, replaced));
+                }
+
+                // A stream already closing frees the slot: wait for it
+                // rather than closing another one.
+                if !self.proxy_streams.has_closing(library_id) {
+                    if self.cancel_oldest_proxy_stream(library_id) {
+                        replaced = true;
+                    } else if self.evict_oldest_hls_session(library_id).await {
+                        replaced = true;
+                        continue;
+                    }
+                }
             }
 
             if tokio::time::Instant::now() >= deadline {
@@ -901,13 +915,14 @@ impl ModelController {
             }
         }
 
-        // Acquire stream slot (enforces max_streams)
-        self.acquire_stream_slot(library_id, channel_id).await?;
-
-        // Resolve the stream URL
+        // Resolve the stream URL first: it checks the requester's access, and
+        // taking a slot may stop another viewer's stream.
         let stream_url = self
             .get_channel_stream_url(library_id, channel_id, quality, requesting_user)
             .await?;
+
+        // Acquire stream slot (enforces max_streams)
+        self.acquire_stream_slot(library_id, channel_id).await?;
 
         // Create the session
         match crate::tools::hls_session::create_session(

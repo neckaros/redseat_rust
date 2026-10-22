@@ -21,7 +21,7 @@ use crate::{
     },
     tools::{
         hls_session::PLAYLIST_READY_TIMEOUT_MS,
-        log::{log_info, LogServiceType},
+        log::{log_error, log_info, LogServiceType},
     },
     Error, Result,
 };
@@ -217,13 +217,15 @@ async fn handler_stream(
     user: ConnectedUser,
     Query(query): Query<StreamQuery>,
 ) -> Result<Response> {
+    // Resolve the stream URL first: it checks the requester's access, and
+    // taking a slot may stop another viewer's stream.
+    let stream_url = mc
+        .get_channel_stream_url(&library_id, &channel_id, query.quality, &user)
+        .await?;
+
     // Enforce concurrent stream limit: the slot is freed when it is dropped.
     let (slot, replaced) = mc
         .acquire_proxy_stream_slot(&library_id, &channel_id)
-        .await?;
-
-    let stream_url = mc
-        .get_channel_stream_url(&library_id, &channel_id, query.quality, &user)
         .await?;
 
     // Proxy the stream through our server
@@ -273,6 +275,13 @@ async fn handler_stream(
             _ = tx.closed() => Ok(()),
         };
         if let Err(error) = result {
+            log_error(
+                LogServiceType::Source,
+                format!(
+                    "IPTV stream ended for library {}, channel {}: {}",
+                    library_id, channel_id, error
+                ),
+            );
             let _ = tx.try_send(Err(error));
         }
         // The source connection is closed by now: the slot can go.
