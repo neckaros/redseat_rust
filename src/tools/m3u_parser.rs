@@ -6,7 +6,10 @@ pub const QUALITY_ORDER: &[&str] = &["4K", "FHD", "HEVC", "HD", "SD", "FHD BKP",
 
 lazy_static! {
     static ref RE_COUNTRY_PREFIX: Regex = Regex::new(r"^\|[A-Z]+\|\s*").unwrap();
-    static ref RE_QUALITY_SUFFIX: Regex = Regex::new(r"(?i)\s*(4K\s*HDR?\s*(UHD)?|UHD|FHD\+*|FULL\s*HD|FHD|HD|SD|LOW|HEVC|H265)(\s*BKP)?\s*(\(.*?\))?\s*$").unwrap();
+    // Every quality word at the end of a name (`4K UHD HDR`, `FHD/HD`, `TV-4K`,
+    // `FHD DOLBY DIGITAL`), then a remark in brackets: `(DOUBLE AUDIO)`. A
+    // bracket without quality before it is part of the name: `HBO (EAST) HD`.
+    static ref RE_QUALITY_SUFFIX: Regex = Regex::new(r"(?i)(?:(?:^|[\s/\-_]+)(?:4K|UHD|HDR(?:10)?\+?|FHD\+*|FULL\s*HD|HD\+?|SD|LOW|HEVC|H\.?26[45]|BKP|DOLBY(?:\s+DIGITAL)?(?:\s+PLUS)?))+\s*(?:\(.*?\))?\s*$").unwrap();
     static ref RE_SEASON_EPISODE: Regex = Regex::new(r"S(\d+)\s*E(\d+)").unwrap();
     static ref RE_SEASON_EPISODE_TAIL: Regex = Regex::new(r"\s*S\d+\s*E\d+.*$").unwrap();
     static ref RE_TRAILING_YEAR: Regex = Regex::new(r"\s+(\d{4})\s*$").unwrap();
@@ -18,6 +21,9 @@ lazy_static! {
 #[serde(rename_all = "camelCase")]
 pub struct M3uHeader {
     pub url_tvg: Option<String>,
+    /// The content has an `#EXTM3U` line: it is a playlist, even an empty one.
+    #[serde(default)]
+    pub has_header: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,6 +96,46 @@ impl M3uEntry {
         cleaned.trim().to_string()
     }
 
+    /// Identifies the channel of a live entry across playlist refreshes: its
+    /// country prefix and its name without the quality, in upper case with single
+    /// spaces. `|FR| TF1 HD` and `|FR| TF1 FHD` share `FR|TF1`; `|BE| AB3` and
+    /// `|FR| AB3` stay apart. `None` for an entry without a name.
+    pub fn import_key(&self) -> Option<String> {
+        let full_name = self.tvg_name.as_deref().unwrap_or(&self.display_name);
+        // Section dividers of the playlist, like `▀▄ FR ▀▄▀▄ CINEMA ▄▀▄▀▄`.
+        if full_name
+            .chars()
+            .any(|c| ('\u{2580}'..='\u{259F}').contains(&c))
+        {
+            return None;
+        }
+        // Spelling differences between the qualities of a channel:
+        // `COTE-D'AZUR` and `COTE D'AZUR`, `MILLIONS?` and `MILLIONS ?`,
+        // `MOVISTAR_DEPORTES_4` and `MOVISTAR DEPORTES 4`.
+        let name = self.channel_key().replace(['-', '_'], " ");
+        let name = name
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .replace(" ?", "?")
+            .replace(" !", "!");
+        if name.is_empty() {
+            return None;
+        }
+        let country = self.country().unwrap_or_default();
+        Some(format!("{}|{}", country, name.to_uppercase()))
+    }
+
+    /// The country prefix of the name: `FR` for `|FR| TF1 HD`. A region for
+    /// some providers (`|AR|`), and not the language: `|BE|` channels are often
+    /// in French.
+    pub fn country(&self) -> Option<String> {
+        let name = self.tvg_name.as_deref().unwrap_or(&self.display_name);
+        RE_COUNTRY_PREFIX
+            .find(name)
+            .map(|m| m.as_str().trim().trim_matches('|').to_string())
+    }
+
     /// Parse season and episode from series entry names like "Show Name S01 E02"
     pub fn parse_season_episode(&self) -> Option<(u32, u32)> {
         let name = self.tvg_name.as_deref().unwrap_or(&self.display_name);
@@ -141,17 +187,21 @@ pub struct M3uParseResult {
 
 /// Parse an M3U Plus format string into header + entries.
 pub fn parse_m3u(content: &str) -> M3uParseResult {
-    let mut header = M3uHeader { url_tvg: None };
+    let mut header = M3uHeader {
+        url_tvg: None,
+        has_header: false,
+    };
     let mut entries = Vec::new();
     let mut current_extinf: Option<(i64, String)> = None;
 
     for line in content.lines() {
-        let line = line.trim();
+        let line = line.trim_start_matches('\u{feff}').trim();
         if line.is_empty() {
             continue;
         }
 
         if line.starts_with("#EXTM3U") {
+            header.has_header = true;
             // Parse header attributes
             if let Some(url) = extract_attribute(line, "url-tvg") {
                 header.url_tvg = Some(url);
@@ -359,5 +409,87 @@ http://host:80/user/pass/7183"#;
         let entry = &result.entries[0];
         assert_eq!(entry.quality(), Some("HEVC".to_string()));
         assert_eq!(entry.channel_key(), "CANAL+");
+    }
+
+    #[test]
+    fn header_detection() {
+        assert!(parse_m3u("#EXTM3U").header.has_header);
+        let with_bom = parse_m3u("\u{feff}#EXTM3U url-tvg=\"http://epg\"\n");
+        assert!(with_bom.header.has_header);
+        assert_eq!(with_bom.header.url_tvg.as_deref(), Some("http://epg"));
+        assert!(parse_m3u(SAMPLE).header.has_header);
+        for content in ["", "<html><body>Account expired</body></html>", "{}"] {
+            let result = parse_m3u(content);
+            assert!(!result.header.has_header);
+            assert!(result.entries.is_empty());
+        }
+    }
+
+    #[test]
+    fn import_key_groups_the_qualities_of_a_channel() {
+        let entry = |name: &str| M3uEntry {
+            tvg_id: None,
+            tvg_name: Some(name.to_string()),
+            tvg_logo: None,
+            group_title: None,
+            display_name: name.to_string(),
+            url: "http://host/1".to_string(),
+            duration: -1,
+        };
+        let key = |name: &str| entry(name).import_key();
+        assert_eq!(key("|FR| TF1 HD"), Some("FR|TF1".to_string()));
+        assert_eq!(key("|FR| TF1 FHD"), key("|FR| TF1 HD"));
+        assert_eq!(key("|FR| CINE  FAMILY SD"), key("|FR| CINE FAMILY HD"));
+        assert_eq!(
+            key("|FR| DAZN LALIGA 2 FHD (LIVE MATCH ONLY)"),
+            Some("FR|DAZN LALIGA 2".to_string())
+        );
+        assert_ne!(key("|FR| DAZN LALIGA 1 HD"), key("|FR| DAZN LALIGA 2 HD"));
+        assert_ne!(key("|BE| AB3 FHD"), key("|FR| AB3 HD"));
+        assert_eq!(key("Some channel"), key("SOME CHANNEL HD"));
+        // Every quality word goes, whatever their order and separators.
+        for name in [
+            "|FR| FRANCE 2 4K UHD",
+            "|FR| FRANCE 2 UHD 4K",
+            "|FR| FRANCE 2 4K UHD HDR",
+            "|FR| FRANCE 2 HDR 4K",
+            "|FR| FRANCE 2 HD+",
+            "|FR| FRANCE 2 FHD/HD",
+            "|FR| FRANCE 2-4K UHD",
+            "|FR| FRANCE 2 FHD DOLBY DIGITAL",
+            "|FR| FRANCE 2 FHD DOLBY DIGITAL (EXCLUS)",
+            "|FR| FRANCE 2 FHD (DOUBLE AUDIO)",
+            "|FR| FRANCE 2 H264",
+            "|FR| FRANCE_2_FHD",
+        ] {
+            assert_eq!(key(name), Some("FR|FRANCE 2".to_string()), "{name}");
+        }
+        assert_eq!(
+            key("|FR| FRANCE 3 COTE-D'AZUR FHD"),
+            key("|FR| FRANCE 3 COTE D'AZUR HD")
+        );
+        assert_eq!(
+            key("|FR| QUI VEUT GAGNER DES MILLIONS? HD"),
+            key("|FR| QUI VEUT GAGNER DES MILLIONS ? FHD")
+        );
+        // A bracket that is not a quality remark names another channel.
+        assert_ne!(key("|US| HBO HD"), key("|US| HBO (EAST) HD"));
+        assert_ne!(
+            key("|FR| DRAGON BALL KAI (SAGA BOUBOU) HD"),
+            key("|FR| DRAGON BALL KAI (SAGA FREEZER - CELL) HD")
+        );
+        // Words that only start like a quality stay.
+        assert_eq!(key("|FR| M6 HDTV"), Some("FR|M6 HDTV".to_string()));
+        assert_eq!(key("|DE| SAT.1 GOLD"), Some("DE|SAT.1 GOLD".to_string()));
+        // Section dividers are not channels.
+        assert_eq!(key("▀▄ FR ▀▄▀▄  CINEMA  ▄▀▄▀▄"), None);
+        assert_eq!(key("|AR| ▀▄▀▄▀ [ IRAK ] ▀▄▀▄▀"), None);
+        assert_eq!(key("HD"), None);
+        assert_eq!(entry("|FR| TF1 HD").country().as_deref(), Some("FR"));
+        assert_eq!(entry("|USA| ESPN FHD").country().as_deref(), Some("USA"));
+        // Not a country: the name of a channel package.
+        assert_eq!(entry("|LIGUE 1+| MATCH 1 HD").country(), None);
+        assert_eq!(entry("TF1 HD").country(), None);
+        assert_eq!(key(""), None);
     }
 }

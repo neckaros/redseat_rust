@@ -6,16 +6,17 @@ use crate::model::store::sql::pagination_clause;
 
 use super::{Result, SqliteLibraryStore};
 
-const CHANNEL_SELECT: &str = "SELECT c.id, c.name, c.tvg_id, c.logo, c.channel_number, c.posterv, c.modified, c.added, (SELECT GROUP_CONCAT(tag_ref) FROM channel_tag_mapping WHERE channel_ref = c.id) AS tags FROM channels c";
+const CHANNEL_SELECT: &str = "SELECT c.id, c.name, c.tvg_id, c.logo, c.channel_number, c.posterv, c.modified, c.added, c.country, (SELECT GROUP_CONCAT(tag_ref) FROM channel_tag_mapping WHERE channel_ref = c.id) AS tags FROM channels c";
 
 impl SqliteLibraryStore {
     fn row_to_channel(row: &Row) -> rusqlite::Result<Channel> {
-        let tags_raw: Option<String> = row.get(8)?;
+        let tags_raw: Option<String> = row.get(9)?;
         let tags = tags_raw.map(|s| s.split(',').map(|t| t.to_string()).collect::<Vec<_>>());
         Ok(Channel {
             id: row.get(0)?,
             name: row.get(1)?,
             tvg_id: row.get(2)?,
+            country: row.get(8)?,
             logo: row.get(3)?,
             tags,
             channel_number: row.get(4)?,
@@ -136,17 +137,37 @@ impl SqliteLibraryStore {
         Ok(row)
     }
 
-    pub async fn add_channel(&self, channel: Channel) -> Result<()> {
+    /// The channel imported from the playlist entries with this key (see
+    /// `M3uEntry::import_key`).
+    pub async fn get_channel_by_import_key(&self, import_key: &str) -> Result<Option<Channel>> {
+        let import_key = import_key.to_string();
+        let row = self
+            .connection
+            .call(move |conn| {
+                let sql = format!("{} WHERE c.import_key = ? LIMIT 1", CHANNEL_SELECT);
+                let mut statement = conn.prepare(&sql)?;
+                let row = statement
+                    .query_row([import_key], Self::row_to_channel)
+                    .optional()?;
+                Ok(row)
+            })
+            .await?;
+        Ok(row)
+    }
+
+    pub async fn add_channel(&self, channel: Channel, import_key: Option<String>) -> Result<()> {
         self.connection
             .call(move |conn| {
                 conn.execute(
-                    "INSERT OR REPLACE INTO channels (id, name, tvg_id, logo, channel_number) VALUES (?, ?, ?, ?, ?)",
+                    "INSERT OR REPLACE INTO channels (id, name, tvg_id, logo, channel_number, import_key, country) VALUES (?, ?, ?, ?, ?, ?, ?)",
                     params![
                         channel.id,
                         channel.name,
                         channel.tvg_id,
                         channel.logo,
                         channel.channel_number,
+                        import_key,
+                        channel.country,
                     ],
                 )?;
                 Ok(())

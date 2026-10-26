@@ -9,6 +9,9 @@ pub struct Channel {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tvg_id: Option<String>,
+    /// Country prefix of the playlist entries, like `FR` for `|FR| TF1 HD`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
     #[serde(skip_serializing)]
     pub logo: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -57,6 +57,7 @@ Missing files do not prevent entry deletion. Event payloads are unchanged.
 | `books` | Books created/updated/deleted, including metadata and relationship refreshes | Library read access |
 | `people` | People created/updated/deleted | Library read access |
 | `tags` | Tags created/updated/deleted | Library read access |
+| `channels` | IPTV channels created/updated/deleted | Library read access |
 | `backups` | Backup job events | Library admin or server admin |
 | `backups-files` | Backup file progress | Server admin only |
 | `media_progress` | Playback position tracking | User-specific (only progress owner) |
@@ -201,6 +202,23 @@ operations are temporarily unavailable:
 - `encryption-retry: ...`
 - `encryption-failed: ...`
 - `encryption-completed`
+
+A `channels` event carries `{ library, channels: [{ action, channel }] }`. The
+channel object is the one returned by `GET /libraries/{libraryId}/channels`: it
+has `id`, `name`, and when known `tvgId` (EPG id), `country` (the prefix
+of the playlist names, `FR` for `|FR| TF1 HD`: a country or a region such as
+`AR`, not the language), `tags`, `channelNumber`, `posterv`, `modified` and
+`added`. A playlist refresh groups the entries of a channel by country and name
+without the quality: `|FR| TF1 HD` and `|FR| TF1 FHD` are variants of one channel,
+`|BE| AB3` and `|FR| AB3` are two channels.
+
+An IPTV playlist refresh (`POST /libraries/{libraryId}/channels/import`,
+`/channels/refresh` or the daily scheduled refresh) reports its progress with
+`Fetching M3U playlist...`, `Parsed {n} entries, importing...` and
+`Import complete: ...`. A refresh refused because the provider answered an HTTP
+error, something that is not an M3U playlist, or a playlist without live channels
+while the library has some, sends `M3U refresh refused, channels kept: {reason}`;
+no channel is changed and no `channels` event is sent.
 
 Background media embedding (see `docs/EMBEDDINGS.md`) does not use
 `library-status`. It has its own `embedding_progress` event:
