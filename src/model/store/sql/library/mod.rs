@@ -462,6 +462,18 @@ impl SqliteLibraryStore {
                     );
                 }
 
+                if version < 63 {
+                    conn.execute_batch(&String::from_utf8_lossy(include_bytes!(
+                        "063 - CHANNEL IMPORT KEY.sql"
+                    )))?;
+                    version = 63;
+                    conn.pragma_update(None, "user_version", version)?;
+                    log_info(
+                        LogServiceType::Database,
+                        format!("Update Library Database to version: {}", version),
+                    );
+                }
+
                 // VACUUM is expensive on large media libraries; schema startup
                 // should be read-only once the database is current.
                 if initial_version != version {
