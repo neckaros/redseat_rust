@@ -31,6 +31,22 @@ impl ServerLibrary {
     }
 }
 
+/// Space of the storage holding a library, in bytes. A provider gives what it knows:
+/// one without a quota leaves out `free` and `total`.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryStorage {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub used: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub free: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total: Option<u64>,
+    /// Libraries with the same value share this storage: count its space once.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub volume: Option<String>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, EnumString, Default)]
 #[serde(rename_all = "camelCase")]
 #[strum(serialize_all = "camelCase")]

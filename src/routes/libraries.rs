@@ -52,6 +52,7 @@ pub fn routes(mc: ModelController) -> Router {
         .route("/:id/deleted", get(handler_list_deleted))
         .route("/:id/progresses", get(handler_list_progress))
         .route("/:id/ratings", get(handler_list_ratings))
+        .route("/:id/stats", get(handler_stats))
         .route("/", post(handler_post))
         .route("/import", post(handler_import))
         .route("/:id/clean", get(handler_clean))
@@ -140,6 +141,14 @@ async fn handler_id(
             library_id
         )))
     }
+}
+
+async fn handler_stats(
+    Path(library_id): Path<String>,
+    State(mc): State<ModelController>,
+    user: ConnectedUser,
+) -> Result<Json<Value>> {
+    Ok(Json(json!(mc.get_library_stats(&library_id, &user).await?)))
 }
 
 async fn handler_patch(

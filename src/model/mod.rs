@@ -2,6 +2,7 @@ pub mod backups;
 pub mod credentials;
 pub mod error;
 pub mod libraries;
+pub mod library_stats;
 pub mod plugins;
 pub mod server;
 pub mod store;

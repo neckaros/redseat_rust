@@ -109,6 +109,22 @@ pub fn executable_dir() -> RsResult<PathBuf> {
     return Ok(exe_dir.to_path_buf());
 }
 
+/// Bytes of the files under `path`, subfolders included. Links are not followed and
+/// entries that cannot be read are skipped: a missing folder is 0.
+pub fn folder_size(path: &Path) -> u64 {
+    let Ok(entries) = fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|entry| match entry.file_type() {
+            Ok(kind) if kind.is_dir() => folder_size(&entry.path()),
+            Ok(kind) if kind.is_file() => entry.metadata().map(|m| m.len()).unwrap_or(0),
+            _ => 0,
+        })
+        .sum()
+}
+
 // Add this function to your module (e.g., impl or lib.rs)
 pub async fn extract_zip(
     reader: &mut (dyn AsyncRead + Unpin + Send),
@@ -187,8 +203,20 @@ pub async fn extract_zip(
 
 #[cfg(test)]
 mod tests {
-    use super::{file_type_from_mime, file_type_from_mime_or_filename};
+    use super::{file_type_from_mime, file_type_from_mime_or_filename, folder_size};
     use crate::domain::media::FileType;
+
+    #[test]
+    fn folder_size_adds_files_of_subfolders() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a"), [0u8; 10]).unwrap();
+        std::fs::create_dir_all(dir.path().join(".thumbs/sub")).unwrap();
+        std::fs::write(dir.path().join(".thumbs/b"), [0u8; 5]).unwrap();
+        std::fs::write(dir.path().join(".thumbs/sub/c"), [0u8; 1]).unwrap();
+
+        assert_eq!(folder_size(dir.path()), 16);
+        assert_eq!(folder_size(&dir.path().join("missing")), 0);
+    }
 
     #[test]
     fn classifies_comic_archive_extensions_even_with_generic_mime() {
